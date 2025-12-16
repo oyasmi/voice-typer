@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
 
+# 应用信息
+APP_NAME = "VoiceTyper"
+APP_VERSION = "1.0.0"
+CONFIG_DIR_NAME = "voice_typer"
+
 
 @dataclass
 class ModelConfig:
@@ -18,7 +23,7 @@ class ModelConfig:
 @dataclass
 class HotkeyConfig:
     modifiers: List[str] = field(default_factory=lambda: ["ctrl"])
-    key: str = "space"
+    key: str = "tab"
 
 
 @dataclass
@@ -33,34 +38,41 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
     hotword_files: List[str] = field(default_factory=list)
-    hotwords: List[str] = field(default_factory=list)  # 从文件加载后的实际词库
+    hotwords: List[str] = field(default_factory=list)
     ui: UIConfig = field(default_factory=UIConfig)
+
+
+def get_config_dir() -> Path:
+    """获取配置目录 ~/.config/voice_typer"""
+    config_dir = Path.home() / ".config" / CONFIG_DIR_NAME
+    return config_dir
 
 
 def get_config_path() -> Path:
     """获取配置文件路径"""
-    user_config = Path.home() / ".config" / "voice_input" / "config.yaml"
-    if user_config.exists():
-        return user_config
-    
-    local_config = Path(__file__).parent / "config.yaml"
-    if local_config.exists():
-        return local_config
-    
-    return user_config
+    return get_config_dir() / "config.yaml"
+
+
+def get_default_hotwords_path() -> Path:
+    """获取默认热词文件路径"""
+    return get_config_dir() / "hotwords.txt"
+
+
+def ensure_config_dir():
+    """确保配置目录存在"""
+    config_dir = get_config_dir()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
 
 
 def resolve_path(file_path: str, base_dir: Path) -> Path:
     """解析文件路径，支持绝对路径、相对路径、~ 展开"""
-    # 展开 ~
     expanded = os.path.expanduser(file_path)
     path = Path(expanded)
     
-    # 如果是绝对路径，直接返回
     if path.is_absolute():
         return path
     
-    # 相对路径，相对于配置文件目录
     return base_dir / path
 
 
@@ -71,7 +83,6 @@ def load_hotwords_from_file(file_path: Path) -> List[str]:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 word = line.strip()
-                # 跳过空行和注释行
                 if word and not word.startswith('#'):
                     words.append(word)
         print(f"  已加载词库: {file_path} ({len(words)} 词)")
@@ -88,7 +99,7 @@ def load_hotwords_from_file(file_path: Path) -> List[str]:
 def load_all_hotwords(file_paths: List[str], base_dir: Path) -> List[str]:
     """加载所有热词文件"""
     all_words = []
-    seen = set()  # 去重
+    seen = set()
     
     for file_path in file_paths:
         resolved = resolve_path(file_path, base_dir)
@@ -101,15 +112,29 @@ def load_all_hotwords(file_paths: List[str], base_dir: Path) -> List[str]:
     return all_words
 
 
+def ensure_default_files():
+    """确保默认配置文件和热词文件存在"""
+    config_dir = ensure_config_dir()
+    config_path = get_config_path()
+    hotwords_path = get_default_hotwords_path()
+    
+    # 创建默认配置文件
+    if not config_path.exists():
+        save_default_config(config_path)
+        print(f"已创建默认配置文件: {config_path}")
+    
+    # 创建默认热词文件
+    if not hotwords_path.exists():
+        create_default_hotwords_file(hotwords_path)
+        print(f"已创建默认词库文件: {hotwords_path}")
+
+
 def load_config() -> AppConfig:
     """加载配置文件"""
-    config_path = get_config_path()
+    # 确保配置目录和默认文件存在
+    ensure_default_files()
     
-    if not config_path.exists():
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        save_default_config(config_path)
-        create_default_hotwords_file(config_path.parent)
-        print(f"已创建默认配置文件: {config_path}")
+    config_path = get_config_path()
     
     with open(config_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
@@ -119,7 +144,8 @@ def load_config() -> AppConfig:
     # 加载热词文件
     if config.hotword_files:
         print("加载用户词库...")
-        config.hotwords = load_all_hotwords(config.hotword_files, config_path.parent)
+        config_dir = get_config_dir()
+        config.hotwords = load_all_hotwords(config.hotword_files, config_dir)
         if config.hotwords:
             print(f"  词库加载完成，共 {len(config.hotwords)} 个词")
         else:
@@ -180,16 +206,13 @@ model:
 hotkey:
   modifiers:
     - "ctrl"
-  key: "space"
+  key: "tab"
 
 # 用户自定义词库文件
 # 支持多个文件，每个文件每行一个词
-# 支持绝对路径或相对路径（相对于配置文件目录）
-# 文件不存在时仅警告，不影响启动
+# 支持绝对路径或相对路径（相对于 ~/.config/voice_typer/）
 hotword_files:
   - "hotwords.txt"
-  # - "/path/to/custom_words.txt"
-  # - "~/Documents/my_hotwords.txt"
 
 # UI 配置
 ui:
@@ -201,11 +224,9 @@ ui:
         f.write(default_yaml)
 
 
-def create_default_hotwords_file(config_dir: Path):
+def create_default_hotwords_file(path: Path):
     """创建默认热词文件"""
-    hotwords_file = config_dir / "hotwords.txt"
-    if not hotwords_file.exists():
-        default_content = """# VoiceTyper 用户自定义词库
+    default_content = """# VoiceTyper 用户自定义词库
 # 每行一个词，支持中英文
 # 以 # 开头的行为注释
 
@@ -218,9 +239,8 @@ ChatGPT
 
 # 在下方添加你的自定义词汇...
 """
-        with open(hotwords_file, 'w', encoding='utf-8') as f:
-            f.write(default_content)
-        print(f"已创建默认词库文件: {hotwords_file}")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(default_content)
 
 
 def get_hotwords_string(hotwords: List[str]) -> str:
