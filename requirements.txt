@@ -1,0 +1,23 @@
+# FunASR 语音识别
+funasr>=1.2.0
+modelscope
+
+# PyTorch (Apple Silicon 优化)
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# 音频处理
+sounddevice>=0.4.6
+numpy>=1.23,<2.0
+
+# 热键监听和文本输入
+pynput>=1.7.6
+
+# macOS 菜单栏应用
+rumps>=0.4.0
+
+# macOS 原生 UI (替代 tkinter)
+pyobjc-framework-Cocoa>=10.0
+
+# 配置文件
+PyYAML>=6.0
