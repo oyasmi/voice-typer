@@ -4,6 +4,17 @@ VoiceTyper - macOS 本地语音输入工具
 """
 import sys
 import os
+
+# 修复打包后的路径问题
+if getattr(sys, 'frozen', False):
+    # 打包环境
+    base_path = sys._MEIPASS
+    os.environ['JIEBA_DATA'] = os.path.join(base_path, 'jieba')
+    
+# 强制立即初始化，不要延迟加载
+import jieba
+jieba.initialize()
+
 import time
 import threading
 import subprocess
