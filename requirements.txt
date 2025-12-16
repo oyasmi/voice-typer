@@ -16,8 +16,11 @@ pynput>=1.7.6
 # macOS 菜单栏应用
 rumps>=0.4.0
 
-# macOS 原生 UI (替代 tkinter)
+# macOS 原生 UI
 pyobjc-framework-Cocoa>=10.0
 
 # 配置文件
 PyYAML>=6.0
+
+# 打包 (开发依赖)
+pyinstaller>=6.0.0

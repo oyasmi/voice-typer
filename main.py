@@ -3,9 +3,23 @@
 VoiceTyper - macOS 本地语音输入工具
 """
 import sys
+import os
 import time
 import threading
 import subprocess
+import signal
+import atexit
+
+# 打包后的路径处理
+if getattr(sys, 'frozen', False):
+    # 运行在打包后的应用中
+    APP_DIR = os.path.dirname(sys.executable)
+    RESOURCES_DIR = os.path.join(os.path.dirname(APP_DIR), 'Resources')
+    os.chdir(RESOURCES_DIR)
+else:
+    # 开发模式
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    RESOURCES_DIR = APP_DIR
 
 import rumps
 
@@ -19,7 +33,7 @@ class VoiceTyperApp(rumps.App):
     def __init__(self):
         super().__init__(
             name="VoiceTyper",
-            title="⚪",  # 初始灰色
+            title="⚪",
             quit_button=None,
         )
         
@@ -38,14 +52,26 @@ class VoiceTyperApp(rumps.App):
             self._toggle_item,
             None,
             rumps.MenuItem("打开配置文件", callback=self.open_config),
+            rumps.MenuItem("打开词库文件", callback=self.open_hotwords),
             rumps.MenuItem("重新加载配置", callback=self.reload_config),
             None,
             rumps.MenuItem("关于", callback=self.show_about),
             rumps.MenuItem("退出", callback=self.quit_app),
         ]
         
+        # 注册清理函数
+        atexit.register(self._cleanup)
+        
         # 异步初始化
         threading.Thread(target=self._async_init, daemon=True).start()
+    
+    def _cleanup(self):
+        """清理资源"""
+        if self._enabled and self.controller:
+            try:
+                self.controller.stop()
+            except:
+                pass
     
     def _async_init(self):
         """异步初始化"""
@@ -74,7 +100,7 @@ class VoiceTyperApp(rumps.App):
             
         except Exception as e:
             self._update_status(f"初始化失败: {e}")
-            print(f"初始化错误: {e}")
+            self._log(f"初始化错误: {e}")
             import traceback
             traceback.print_exc()
     
@@ -86,7 +112,6 @@ class VoiceTyperApp(rumps.App):
         self.title = "🎤"
         self._update_status("就绪")
         
-        # 显示通知
         hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
         rumps.notification("VoiceTyper 已启动", "", f"按住 {hotkey} 开始语音输入")
     
@@ -99,7 +124,6 @@ class VoiceTyperApp(rumps.App):
         """更新状态"""
         self._status_item.title = f"状态: {status}"
         
-        # 更新图标
         if "录音" in status:
             self.title = "🔴"
         elif "识别" in status:
@@ -122,7 +146,6 @@ class VoiceTyperApp(rumps.App):
         hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
         
         if self._enabled:
-            # 禁用
             self._enabled = False
             self.controller.stop()
             sender.state = False
@@ -130,7 +153,6 @@ class VoiceTyperApp(rumps.App):
             self.title = "⚪"
             self._update_status("已禁用")
         else:
-            # 启用
             self._enabled = True
             self.controller.start()
             sender.state = True
@@ -143,8 +165,23 @@ class VoiceTyperApp(rumps.App):
         """打开配置文件"""
         config_path = get_config_path()
         if not config_path.exists():
-            load_config()  # 创建默认配置
+            load_config()  # 会创建默认配置
         subprocess.run(["open", str(config_path)])
+    
+    def open_hotwords(self, _):
+        """打开词库文件"""
+        config_path = get_config_path()
+        hotwords_path = config_path.parent / "hotwords.txt"
+        
+        if not hotwords_path.exists():
+            # 创建默认词库文件
+            load_config()
+        
+        if hotwords_path.exists():
+            subprocess.run(["open", str(hotwords_path)])
+        else:
+            # 打开配置目录
+            subprocess.run(["open", str(config_path.parent)])
     
     def reload_config(self, _):
         """重新加载配置"""
@@ -152,7 +189,6 @@ class VoiceTyperApp(rumps.App):
             rumps.notification("VoiceTyper", "", "请等待初始化完成")
             return
         
-        # 停止
         if self._enabled:
             self._enabled = False
             self.controller.stop()
@@ -167,7 +203,6 @@ class VoiceTyperApp(rumps.App):
                 self.controller.on_status_change = self._on_controller_status
                 self.controller.initialize(callback=self._log)
                 
-                # 重新自动启用
                 self._auto_enable()
                 
                 hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
@@ -186,9 +221,10 @@ class VoiceTyperApp(rumps.App):
         rumps.alert(
             title="VoiceTyper",
             message=(
-                "本地语音输入工具 v1.0\n\n"
+                "本地语音输入工具 v1.0.0\n\n"
                 "基于 FunASR 的离线语音识别\n"
                 "所有处理均在本地完成\n\n"
+                "配置目录: ~/.config/voice_input/\n\n"
                 "https://github.com/modelscope/FunASR"
             ),
             ok="确定",
@@ -196,34 +232,50 @@ class VoiceTyperApp(rumps.App):
     
     def quit_app(self, _):
         """退出"""
-        if self._enabled and self.controller:
-            self.controller.stop()
+        self._cleanup()
         rumps.quit_application()
+
+
+# 全局 app 引用
+_app = None
+
+
+def signal_handler(signum, frame):
+    """信号处理"""
+    print("\n正在退出...")
+    if _app:
+        _app._cleanup()
+    sys.exit(0)
 
 
 def main():
     """主函数"""
-    print("=" * 50)
-    print("VoiceTyper - macOS 本地语音输入工具")
-    print("=" * 50)
-    print()
+    global _app
     
-    # 检查麦克风
-    print("检查麦克风...")
-    try:
-        import sounddevice as sd
-        default_input = sd.query_devices(kind='input')
-        print(f"  默认输入设备: {default_input['name']}")
-    except Exception as e:
-        print(f"  警告: {e}")
+    # 非打包模式下输出启动信息
+    if not getattr(sys, 'frozen', False):
+        print("=" * 50)
+        print("VoiceTyper - macOS 本地语音输入工具")
+        print("=" * 50)
+        print()
+        print("检查麦克风...")
+        try:
+            import sounddevice as sd
+            default_input = sd.query_devices(kind='input')
+            print(f"  默认输入设备: {default_input['name']}")
+        except Exception as e:
+            print(f"  警告: {e}")
+        print()
+        print("启动应用...")
+        print("提示: 需要在「系统设置 → 隐私与安全性 → 辅助功能」中授权")
+        print()
     
-    print()
-    print("启动应用...")
-    print("提示: 需要在「系统设置 → 隐私与安全性 → 辅助功能」中授权")
-    print()
+    # 注册信号处理
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    app = VoiceTyperApp()
-    app.run()
+    _app = VoiceTyperApp()
+    _app.run()
 
 
 if __name__ == "__main__":
