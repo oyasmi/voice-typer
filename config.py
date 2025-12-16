@@ -11,7 +11,6 @@ from pathlib import Path
 @dataclass
 class ModelConfig:
     name: str = "paraformer-zh"
-    streaming_name: str = "paraformer-zh-streaming"
     punc_model: Optional[str] = "ct-punc"
     device: str = "mps"
 
@@ -20,12 +19,6 @@ class ModelConfig:
 class HotkeyConfig:
     modifiers: List[str] = field(default_factory=lambda: ["ctrl"])
     key: str = "space"
-
-
-@dataclass
-class StreamingConfig:
-    threshold_seconds: float = 7.0
-    chunk_size: List[int] = field(default_factory=lambda: [0, 10, 5])
 
 
 @dataclass
@@ -39,25 +32,73 @@ class UIConfig:
 class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
-    streaming: StreamingConfig = field(default_factory=StreamingConfig)
-    hotwords: List[str] = field(default_factory=list)
+    hotword_files: List[str] = field(default_factory=list)
+    hotwords: List[str] = field(default_factory=list)  # 从文件加载后的实际词库
     ui: UIConfig = field(default_factory=UIConfig)
 
 
 def get_config_path() -> Path:
     """获取配置文件路径"""
-    # 优先使用用户目录下的配置
     user_config = Path.home() / ".config" / "voice_input" / "config.yaml"
     if user_config.exists():
         return user_config
     
-    # 其次使用当前目录
     local_config = Path(__file__).parent / "config.yaml"
     if local_config.exists():
         return local_config
     
-    # 返回用户配置路径（将创建默认配置）
     return user_config
+
+
+def resolve_path(file_path: str, base_dir: Path) -> Path:
+    """解析文件路径，支持绝对路径、相对路径、~ 展开"""
+    # 展开 ~
+    expanded = os.path.expanduser(file_path)
+    path = Path(expanded)
+    
+    # 如果是绝对路径，直接返回
+    if path.is_absolute():
+        return path
+    
+    # 相对路径，相对于配置文件目录
+    return base_dir / path
+
+
+def load_hotwords_from_file(file_path: Path) -> List[str]:
+    """从文件加载热词列表"""
+    words = []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                word = line.strip()
+                # 跳过空行和注释行
+                if word and not word.startswith('#'):
+                    words.append(word)
+        print(f"  已加载词库: {file_path} ({len(words)} 词)")
+    except FileNotFoundError:
+        print(f"  警告: 词库文件不存在: {file_path}")
+    except PermissionError:
+        print(f"  警告: 词库文件无权访问: {file_path}")
+    except Exception as e:
+        print(f"  警告: 加载词库文件失败 {file_path}: {e}")
+    
+    return words
+
+
+def load_all_hotwords(file_paths: List[str], base_dir: Path) -> List[str]:
+    """加载所有热词文件"""
+    all_words = []
+    seen = set()  # 去重
+    
+    for file_path in file_paths:
+        resolved = resolve_path(file_path, base_dir)
+        words = load_hotwords_from_file(resolved)
+        for word in words:
+            if word not in seen:
+                seen.add(word)
+                all_words.append(word)
+    
+    return all_words
 
 
 def load_config() -> AppConfig:
@@ -65,15 +106,26 @@ def load_config() -> AppConfig:
     config_path = get_config_path()
     
     if not config_path.exists():
-        # 创建默认配置
         config_path.parent.mkdir(parents=True, exist_ok=True)
         save_default_config(config_path)
+        create_default_hotwords_file(config_path.parent)
         print(f"已创建默认配置文件: {config_path}")
     
     with open(config_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
     
-    return parse_config(data)
+    config = parse_config(data)
+    
+    # 加载热词文件
+    if config.hotword_files:
+        print("加载用户词库...")
+        config.hotwords = load_all_hotwords(config.hotword_files, config_path.parent)
+        if config.hotwords:
+            print(f"  词库加载完成，共 {len(config.hotwords)} 个词")
+        else:
+            print(f"  词库为空")
+    
+    return config
 
 
 def parse_config(data: dict) -> AppConfig:
@@ -84,7 +136,6 @@ def parse_config(data: dict) -> AppConfig:
         m = data['model']
         config.model = ModelConfig(
             name=m.get('name', config.model.name),
-            streaming_name=m.get('streaming_name', config.model.streaming_name),
             punc_model=m.get('punc_model'),
             device=m.get('device', config.model.device),
         )
@@ -96,15 +147,8 @@ def parse_config(data: dict) -> AppConfig:
             key=h.get('key', config.hotkey.key),
         )
     
-    if 'streaming' in data:
-        s = data['streaming']
-        config.streaming = StreamingConfig(
-            threshold_seconds=s.get('threshold_seconds', config.streaming.threshold_seconds),
-            chunk_size=s.get('chunk_size', config.streaming.chunk_size),
-        )
-    
-    if 'hotwords' in data:
-        config.hotwords = data['hotwords'] or []
+    if 'hotword_files' in data:
+        config.hotword_files = data['hotword_files'] or []
     
     if 'ui' in data:
         u = data['ui']
@@ -123,35 +167,29 @@ def save_default_config(path: Path):
 
 # 模型配置
 model:
-  # 可选: paraformer-zh, paraformer-en, SenseVoiceSmall
+  # 模型：paraformer-zh (中文), SenseVoiceSmall (多语言)
   name: "paraformer-zh"
-  # 流式模型 (当录音超过阈值时使用)
-  streaming_name: "paraformer-zh-streaming"
-  # 标点恢复模型 (可选，设为 null 禁用)
+  # 标点恢复模型，设为 null 可加快启动
   punc_model: "ct-punc"
   # 设备: mps (Apple Silicon), cpu
   device: "mps"
 
 # 热键配置
-# 支持的修饰键: ctrl, alt, shift, cmd
+# 支持的修饰键: ctrl, alt/option, shift, cmd/command
 # 支持的按键: space, tab, a-z, 0-9, f1-f12 等
 hotkey:
   modifiers:
     - "ctrl"
   key: "space"
 
-# 流式识别配置
-streaming:
-  # 切换到流式识别的时间阈值 (秒)
-  threshold_seconds: 7
-  # chunk 大小配置 [0, 10, 5] = 600ms 延迟
-  chunk_size: [0, 10, 5]
-
-# 用户自定义词库 (热词)
-hotwords:
-  - "FunASR"
-  - "Python"
-  - "macOS"
+# 用户自定义词库文件
+# 支持多个文件，每个文件每行一个词
+# 支持绝对路径或相对路径（相对于配置文件目录）
+# 文件不存在时仅警告，不影响启动
+hotword_files:
+  - "hotwords.txt"
+  # - "/path/to/custom_words.txt"
+  # - "~/Documents/my_hotwords.txt"
 
 # UI 配置
 ui:
@@ -163,15 +201,28 @@ ui:
         f.write(default_yaml)
 
 
+def create_default_hotwords_file(config_dir: Path):
+    """创建默认热词文件"""
+    hotwords_file = config_dir / "hotwords.txt"
+    if not hotwords_file.exists():
+        default_content = """# VoiceTyper 用户自定义词库
+# 每行一个词，支持中英文
+# 以 # 开头的行为注释
+
+# 技术术语示例
+FunASR
+Python
+GitHub
+OpenAI
+ChatGPT
+
+# 在下方添加你的自定义词汇...
+"""
+        with open(hotwords_file, 'w', encoding='utf-8') as f:
+            f.write(default_content)
+        print(f"已创建默认词库文件: {hotwords_file}")
+
+
 def get_hotwords_string(hotwords: List[str]) -> str:
-    """将热词列表转换为 FunASR 所需的字符串格式"""
+    """将热词列表转换为空格分隔的字符串"""
     return ' '.join(hotwords) if hotwords else ''
-
-
-if __name__ == "__main__":
-    # 测试配置加载
-    config = load_config()
-    print(f"模型: {config.model.name}")
-    print(f"热键: {config.hotkey.modifiers} + {config.hotkey.key}")
-    print(f"流式阈值: {config.streaming.threshold_seconds}s")
-    print(f"热词: {config.hotwords}")

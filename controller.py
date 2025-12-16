@@ -1,58 +1,49 @@
 """
-核心控制器 - 协调各模块工作
+核心控制器
 """
 import time
 import threading
-from typing import Optional, Callable
+from typing import Optional, Callable, Set
 from pynput import keyboard
 
 from config import AppConfig, get_hotwords_string
 from recorder import AudioRecorder
-from recognizer import SpeechRecognizer, StreamingSession
+from recognizer import SpeechRecognizer
 from text_inserter import insert_text
 from indicator import get_indicator
 
 
 class HotkeyListener:
-    """热键监听器"""
+    """热键监听器 - 支持多修饰键组合"""
     
     # 修饰键映射
-    MODIFIER_MAP = {
-        'ctrl': keyboard.Key.ctrl,
-        'control': keyboard.Key.ctrl,
-        'alt': keyboard.Key.alt,
-        'option': keyboard.Key.alt,
-        'shift': keyboard.Key.shift,
-        'cmd': keyboard.Key.cmd,
-        'command': keyboard.Key.cmd,
+    MODIFIER_KEYS = {
+        'ctrl': {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r},
+        'control': {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r},
+        'alt': {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r},
+        'option': {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r},
+        'shift': {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r},
+        'cmd': {keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r},
+        'command': {keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r},
     }
     
+    # 所有修饰键集合
+    ALL_MODIFIERS = set()
+    for keys in MODIFIER_KEYS.values():
+        ALL_MODIFIERS.update(keys)
+    
     # 特殊键映射
-    SPECIAL_KEY_MAP = {
+    SPECIAL_KEYS = {
         'space': keyboard.Key.space,
         'tab': keyboard.Key.tab,
         'enter': keyboard.Key.enter,
         'return': keyboard.Key.enter,
         'esc': keyboard.Key.esc,
         'escape': keyboard.Key.esc,
-        'backspace': keyboard.Key.backspace,
-        'delete': keyboard.Key.delete,
-        'up': keyboard.Key.up,
-        'down': keyboard.Key.down,
-        'left': keyboard.Key.left,
-        'right': keyboard.Key.right,
-        'f1': keyboard.Key.f1,
-        'f2': keyboard.Key.f2,
-        'f3': keyboard.Key.f3,
-        'f4': keyboard.Key.f4,
-        'f5': keyboard.Key.f5,
-        'f6': keyboard.Key.f6,
-        'f7': keyboard.Key.f7,
-        'f8': keyboard.Key.f8,
-        'f9': keyboard.Key.f9,
-        'f10': keyboard.Key.f10,
-        'f11': keyboard.Key.f11,
-        'f12': keyboard.Key.f12,
+        'f1': keyboard.Key.f1, 'f2': keyboard.Key.f2, 'f3': keyboard.Key.f3,
+        'f4': keyboard.Key.f4, 'f5': keyboard.Key.f5, 'f6': keyboard.Key.f6,
+        'f7': keyboard.Key.f7, 'f8': keyboard.Key.f8, 'f9': keyboard.Key.f9,
+        'f10': keyboard.Key.f10, 'f11': keyboard.Key.f11, 'f12': keyboard.Key.f12,
     }
     
     def __init__(
@@ -65,72 +56,78 @@ class HotkeyListener:
         self.on_press_callback = on_press
         self.on_release_callback = on_release
         
-        # 解析修饰键
-        self.required_modifiers = set()
+        # 解析需要的修饰键类型
+        self.required_modifier_types: Set[str] = set()
         for mod in modifiers:
             mod_lower = mod.lower()
-            if mod_lower in self.MODIFIER_MAP:
-                self.required_modifiers.add(self.MODIFIER_MAP[mod_lower])
+            if mod_lower in ('ctrl', 'control'):
+                self.required_modifier_types.add('ctrl')
+            elif mod_lower in ('alt', 'option'):
+                self.required_modifier_types.add('alt')
+            elif mod_lower in ('shift',):
+                self.required_modifier_types.add('shift')
+            elif mod_lower in ('cmd', 'command'):
+                self.required_modifier_types.add('cmd')
         
         # 解析主键
         key_lower = key.lower()
-        if key_lower in self.SPECIAL_KEY_MAP:
-            self.target_key = self.SPECIAL_KEY_MAP[key_lower]
+        if key_lower in self.SPECIAL_KEYS:
+            self.target_key = self.SPECIAL_KEYS[key_lower]
         else:
             self.target_key = keyboard.KeyCode.from_char(key_lower)
         
-        self._pressed_modifiers = set()
+        self._pressed_keys: Set = set()
         self._hotkey_active = False
         self._listener: Optional[keyboard.Listener] = None
     
+    def _get_pressed_modifier_types(self) -> Set[str]:
+        """获取当前按下的修饰键类型"""
+        types = set()
+        for key in self._pressed_keys:
+            if key in self.MODIFIER_KEYS.get('ctrl', set()):
+                types.add('ctrl')
+            elif key in self.MODIFIER_KEYS.get('alt', set()):
+                types.add('alt')
+            elif key in self.MODIFIER_KEYS.get('shift', set()):
+                types.add('shift')
+            elif key in self.MODIFIER_KEYS.get('cmd', set()):
+                types.add('cmd')
+        return types
+    
+    def _is_target_key(self, key) -> bool:
+        """检查是否是目标主键"""
+        if key == self.target_key:
+            return True
+        try:
+            if hasattr(key, 'char') and key.char:
+                return key.char.lower() == str(self.target_key).replace("'", "")
+        except:
+            pass
+        return False
+    
     def _on_press(self, key):
-        """按键按下处理"""
-        # 跟踪修饰键
-        if key in self.MODIFIER_MAP.values():
-            self._pressed_modifiers.add(key)
+        """按键按下"""
+        self._pressed_keys.add(key)
         
-        # 检查是否匹配热键
         if not self._hotkey_active:
-            key_match = (key == self.target_key)
-            if not key_match:
-                # 尝试字符匹配
-                try:
-                    if hasattr(key, 'char') and key.char:
-                        key_match = (key.char.lower() == str(self.target_key).lower())
-                except:
-                    pass
-            
-            modifiers_match = self.required_modifiers.issubset(self._pressed_modifiers)
-            
-            if key_match and modifiers_match:
+            pressed_types = self._get_pressed_modifier_types()
+            if pressed_types == self.required_modifier_types and self._is_target_key(key):
                 self._hotkey_active = True
                 try:
                     self.on_press_callback()
                 except Exception as e:
-                    print(f"热键回调错误: {e}")
+                    print(f"热键按下回调错误: {e}")
     
     def _on_release(self, key):
-        """按键释放处理"""
-        # 更新修饰键状态
-        if key in self.MODIFIER_MAP.values():
-            self._pressed_modifiers.discard(key)
+        """按键释放"""
+        self._pressed_keys.discard(key)
         
-        # 检查热键释放
-        if self._hotkey_active:
-            key_match = (key == self.target_key)
-            if not key_match:
-                try:
-                    if hasattr(key, 'char') and key.char:
-                        key_match = (key.char.lower() == str(self.target_key).lower())
-                except:
-                    pass
-            
-            if key_match:
-                self._hotkey_active = False
-                try:
-                    self.on_release_callback()
-                except Exception as e:
-                    print(f"热键释放回调错误: {e}")
+        if self._hotkey_active and self._is_target_key(key):
+            self._hotkey_active = False
+            try:
+                self.on_release_callback()
+            except Exception as e:
+                print(f"热键释放回调错误: {e}")
     
     def start(self):
         """开始监听"""
@@ -152,62 +149,52 @@ class VoiceTyperController:
     
     def __init__(self, config: AppConfig):
         self.config = config
-        
-        # 组件（延迟初始化）
         self._recognizer: Optional[SpeechRecognizer] = None
         self._recorder: Optional[AudioRecorder] = None
-        self._indicator = None  # 延迟到主线程初始化
+        self._indicator = None
         self._hotkey_listener: Optional[HotkeyListener] = None
-        self._streaming_session: Optional[StreamingSession] = None
-        
-        # 状态
         self._recording = False
-        self._start_time: Optional[float] = None
-        self._is_streaming_mode = False
-        self._streaming_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
-        self._initialized = False
         
-        # 回调
         self.on_status_change: Optional[Callable[[str], None]] = None
     
-    def initialize(self, progress_callback: Optional[Callable[[str], None]] = None):
-        """初始化所有组件（在后台线程调用，UI 组件除外）"""
-        callback = progress_callback or (lambda x: print(x))
+    def initialize(self, callback: Optional[Callable[[str], None]] = None):
+        """初始化"""
+        log = callback or print
+        total_start = time.time()
+        
+        # 初始化录音器
+        log("初始化录音设备...")
+        t0 = time.time()
+        self._recorder = AudioRecorder()
+        log(f"  录音设备就绪，耗时 {time.time() - t0:.1f}s")
         
         # 初始化识别器
-        callback("初始化语音识别引擎...")
+        log("初始化语音识别引擎...")
         hotwords = get_hotwords_string(self.config.hotwords)
         self._recognizer = SpeechRecognizer(
             model_name=self.config.model.name,
-            streaming_model_name=self.config.model.streaming_name,
             punc_model=self.config.model.punc_model,
             device=self.config.model.device,
             hotwords=hotwords,
         )
-        self._recognizer.initialize(callback=callback)
-        
-        # 初始化录音器
-        callback("初始化录音设备...")
-        self._recorder = AudioRecorder()
-        
-        # 注意: indicator 将在 start() 中初始化（主线程）
-        callback("准备 UI 组件...")
+        self._recognizer.initialize(callback=log)
         
         # 初始化热键监听
-        callback("初始化热键监听...")
+        log("初始化热键监听...")
+        t0 = time.time()
         self._hotkey_listener = HotkeyListener(
             modifiers=self.config.hotkey.modifiers,
             key=self.config.hotkey.key,
             on_press=self._on_hotkey_press,
             on_release=self._on_hotkey_release,
         )
+        log(f"  热键监听就绪，耗时 {time.time() - t0:.1f}s")
         
-        self._initialized = True
-        callback("初始化完成！")
+        log(f"初始化完成！总耗时 {time.time() - total_start:.1f}s")
     
     def _ensure_indicator(self):
-        """确保 indicator 已初始化（在主线程调用）"""
+        """确保 indicator 已创建"""
         if self._indicator is None:
             self._indicator = get_indicator(
                 width=self.config.ui.width,
@@ -216,16 +203,14 @@ class VoiceTyperController:
             )
     
     def start(self):
-        """启动服务（在主线程调用）"""
-        # 在主线程初始化 indicator
+        """启动"""
         self._ensure_indicator()
-        
         if self._hotkey_listener:
             self._hotkey_listener.start()
             self._update_status("就绪")
     
     def stop(self):
-        """停止服务"""
+        """停止"""
         if self._hotkey_listener:
             self._hotkey_listener.stop()
         if self._indicator:
@@ -239,101 +224,29 @@ class VoiceTyperController:
             self.on_status_change(status)
     
     def _on_hotkey_press(self):
-        """热键按下处理"""
+        """热键按下 - 开始录音"""
         with self._lock:
             if self._recording:
                 return
-            
             self._recording = True
-            self._start_time = time.time()
-            self._is_streaming_mode = False
         
-        # 显示提示窗口
         self._ensure_indicator()
         if self._indicator:
             self._indicator.show()
         
-        # 开始录音
         if self._recorder:
             self._recorder.start()
+        
         self._update_status("录音中...")
-        
-        # 启动流式检查线程
-        self._streaming_thread = threading.Thread(
-            target=self._check_streaming_switch,
-            daemon=True
-        )
-        self._streaming_thread.start()
-    
-    def _check_streaming_switch(self):
-        """检查是否需要切换到流式模式"""
-        threshold = self.config.streaming.threshold_seconds
-        
-        while self._recording and not self._is_streaming_mode:
-            if self._start_time:
-                elapsed = time.time() - self._start_time
-                if elapsed >= threshold:
-                    self._switch_to_streaming_mode()
-                    break
-            
-            time.sleep(0.1)
-    
-    def _switch_to_streaming_mode(self):
-        """切换到流式识别模式"""
-        with self._lock:
-            if self._is_streaming_mode:
-                return
-            self._is_streaming_mode = True
-        
-        self._update_status("流式识别中...")
-        
-        if self._indicator:
-            self._indicator.set_streaming(True)
-        
-        # 创建流式会话
-        if self._recognizer:
-            self._streaming_session = StreamingSession(
-                recognizer=self._recognizer,
-                chunk_size=self.config.streaming.chunk_size,
-                on_result=self._on_streaming_result,
-            )
-        
-        # 启动流式识别线程
-        streaming_worker = threading.Thread(
-            target=self._streaming_worker,
-            daemon=True
-        )
-        streaming_worker.start()
-    
-    def _streaming_worker(self):
-        """流式识别工作线程"""
-        while self._recording and self._is_streaming_mode:
-            if self._recorder:
-                chunk = self._recorder.get_chunk(timeout=0.1)
-                if chunk is not None and self._streaming_session:
-                    try:
-                        self._streaming_session.feed(chunk)
-                    except Exception as e:
-                        print(f"流式识别错误: {e}")
-    
-    def _on_streaming_result(self, text: str):
-        """流式识别结果回调"""
-        if text:
-            # 实时插入识别到的文字
-            try:
-                insert_text(text, fast=False)
-            except Exception as e:
-                print(f"文本插入错误: {e}")
     
     def _on_hotkey_release(self):
-        """热键释放处理"""
+        """热键释放 - 停止录音并识别"""
         with self._lock:
             if not self._recording:
                 return
             self._recording = False
-            was_streaming = self._is_streaming_mode
         
-        # 隐藏提示窗口
+        # 隐藏提示
         if self._indicator:
             self._indicator.hide()
         
@@ -342,61 +255,29 @@ class VoiceTyperController:
         if self._recorder:
             audio = self._recorder.stop()
         
-        if was_streaming:
-            # 流式模式：结束会话，处理剩余音频
-            self._update_status("完成流式识别...")
-            if self._streaming_session:
-                try:
-                    final_text = self._streaming_session.finalize()
-                    if final_text:
-                        insert_text(final_text, fast=False)
-                except Exception as e:
-                    print(f"流式识别结束错误: {e}")
-                self._streaming_session = None
-        else:
-            # 非流式模式：一次性识别整段音频
+        # 识别
+        if audio is not None and len(audio) > 0:
             self._update_status("识别中...")
-            if audio is not None and len(audio) > 0 and self._recognizer:
+            
+            # 在后台线程识别，避免阻塞
+            def do_recognize():
                 try:
                     text = self._recognizer.recognize(audio)
                     if text:
-                        insert_text(text, fast=True)
-                        self._update_status(f"已输入: {text[:20]}...")
+                        insert_text(text)
+                        self._update_status(f"已输入 ({len(text)}字)")
                     else:
                         self._update_status("未识别到文字")
                 except Exception as e:
                     self._update_status(f"识别失败: {e}")
                     print(f"识别错误: {e}")
-            else:
-                self._update_status("录音为空")
-        
-        # 重置状态
-        with self._lock:
-            self._is_streaming_mode = False
-            self._streaming_session = None
-        
-        self._update_status("就绪")
-
-
-if __name__ == "__main__":
-    # 简单测试
-    from config import load_config
-    
-    config = load_config()
-    controller = VoiceTyperController(config)
-    controller.on_status_change = print
-    
-    print("正在初始化...")
-    controller.initialize(progress_callback=print)
-    
-    print(f"\n按 {'+'.join(config.hotkey.modifiers)}+{config.hotkey.key} 开始录音")
-    print("按 Ctrl+C 退出\n")
-    
-    controller.start()
-    
-    try:
-        while True:
+                
+                # 延迟后恢复状态
+                time.sleep(1.5)
+                self._update_status("就绪")
+            
+            threading.Thread(target=do_recognize, daemon=True).start()
+        else:
+            self._update_status("录音为空")
             time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n正在退出...")
-        controller.stop()
+            self._update_status("就绪")
