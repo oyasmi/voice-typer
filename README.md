@@ -37,16 +37,21 @@
 
 ## 常见问题
 Q: 热键没反应？
+
 确保已授予辅助功能权限，并在菜单中启用了语音输入。
 
 Q: 识别不准确？
+
 确保麦克风正常工作
 添加专业术语到 hotwords 配置
 尝试更换模型（如 SenseVoiceSmall）
+
 Q: 中文标点不正确？
+
 确保配置了 punc_model: "ct-punc"。
 
 Q: Apple Silicon 上运行慢？
+
 确保 device 设置为 "mps" 以使用 GPU 加速。
 
 ## 开发
@@ -69,6 +74,7 @@ python controller.py
 ```
 
 ## 致谢
-FunASR - 阿里达摩院开源的语音识别工具包
-rumps - macOS 菜单栏应用框架
-pynput - 键盘鼠标监听库
+- FunASR - 阿里达摩院开源的语音识别工具包
+- rumps - macOS 菜单栏应用框架
+- pynput - 键盘鼠标监听库
+- 
