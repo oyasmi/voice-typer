@@ -205,8 +205,8 @@ model:
 # 支持的按键: space, tab, a-z, 0-9, f1-f12 等
 hotkey:
   modifiers:
-    - "ctrl"
-  key: "tab"
+    - "cmd"
+  key: "space"
 
 # 用户自定义词库文件
 # 支持多个文件，每个文件每行一个词
