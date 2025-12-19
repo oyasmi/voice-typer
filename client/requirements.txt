@@ -16,3 +16,6 @@ pyobjc-framework-Cocoa>=10.0
 
 # 配置
 PyYAML>=6.0
+
+# 打包
+pyinstaller>=6.0

@@ -159,7 +159,7 @@ def save_default_config(path: Path):
 server:
   host: "127.0.0.1"
   port: 6008
-  timeout: 30.0
+  timeout: 60.0
 
 # 热键配置
 hotkey:

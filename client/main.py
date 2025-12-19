@@ -41,7 +41,7 @@ class VoiceTyperApp(rumps.App):
             rumps.MenuItem("打开配置文件", callback=self.open_config),
             rumps.MenuItem("打开词库文件", callback=self.open_hotwords),
             rumps.MenuItem("打开配置目录", callback=self.open_config_dir),
-            rumps.MenuItem("重新加载配置", callback=self.reload_config),
+            # rumps.MenuItem("重新加载配置", callback=self.reload_config),
             None,
             rumps.MenuItem("关于", callback=self.show_about),
             rumps.MenuItem("退出", callback=self.quit_app),

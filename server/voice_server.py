@@ -31,6 +31,10 @@ class HealthHandler(tornado.web.RequestHandler):
 
 class RecognizeHandler(tornado.web.RequestHandler):
     """语音识别接口 - 支持 multipart/form-data"""
+
+    def set_default_headers(self):
+        """设置默认响应头"""
+        self.set_header("Content-Type", "application/json; charset=utf-8")
     
     def post(self):
         try:
@@ -85,7 +89,7 @@ def main():
     parser.add_argument("--port", type=int, default=6008, help="监听端口")
     parser.add_argument("--model", default="paraformer-zh", help="ASR 模型")
     parser.add_argument("--punc-model", default="ct-punc", help="标点模型 (none 禁用)")
-    parser.add_argument("--device", default="mps", help="设备: mps, cpu")
+    parser.add_argument("--device", default="cpu", help="设备: mps, cpu")
     args = parser.parse_args()
     
     print("=" * 50)
