@@ -1,0 +1,14 @@
+# 语音识别
+funasr>=1.2.0
+modelscope
+
+# PyTorch
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Web 服务
+tornado>=6.0
+
+# 其他
+numpy>=1.23,<2.0
+PyYAML>=6.0

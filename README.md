@@ -1,6 +1,6 @@
-# VoiceTyper - macOS 本地语音输入工具
+# VoiceTyper - macOS 本地语音输入
 
-基于 FunASR 的离线语音识别，所有处理均在本地完成，保护隐私。
+基于 FunASR 的离线语音识别，支持客户端/服务端分离部署。
 
 ## 功能
 
@@ -15,62 +15,59 @@
 - Python 3.9+（推荐 3.12）
 - Apple Silicon (M1/M2/M3/M4) 推荐，Intel 也支持
 
-## 安装
+## 架构设计
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    VoiceTyper 系统架构                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────────┐      HTTP      ┌───────────────────┐
+│  │   macOS 客户端       │  ──────────▶  │   语音识别服务     │
+│  │   (VoiceTyper.app)  │  ◀──────────  │   (voice_server)  │
+│  │                     │    JSON        │                   │
+│  │  - 热键监听          │               │  - FunASR 模型    │
+│  │  - 录音             │               │  - 标点恢复        │
+│  │  - UI 提示          │               │  - 热词支持        │
+│  │  - 文本插入          │               │                   │
+│  └─────────────────────┘               └───────────────────┘
+│                                                             │
+│  配置: ~/.config/voice_typer/          端口: 127.0.0.1:6008 │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### 1. 安装应用
-从 Releases 下载 VoiceTyper-x.x.x-macOS.zip，解压后将 VoiceTyper.app 拖到「应用程序」文件夹。
+## 快速开始
 
-### 2. 授权
-首次运行需要在「系统设置 → 隐私与安全性」中授权：
-
-辅助功能：用于监听热键和模拟键盘输入
-麦克风：用于录音
-使用方法
-启动应用后，菜单栏会出现 🎤 图标
-按住 Ctrl+Tab（默认热键）开始说话
-松开后自动识别并输入文字
-配置
-配置目录：~/.config/voice_typer/
-
-配置文件
-编辑 ~/.config/voice_typer/config.yaml：
-
-## 常见问题
-Q: 热键没反应？
-
-确保已授予辅助功能权限，并在菜单中启用了语音输入。
-
-Q: 识别不准确？
-
-确保麦克风正常工作
-添加专业术语到 hotwords 配置
-尝试更换模型（如 SenseVoiceSmall）
-
-Q: 中文标点不正确？
-
-确保配置了 punc_model: "ct-punc"。
-
-Q: Apple Silicon 上运行慢？
-
-确保 device 设置为 "mps" 以使用 GPU 加速。
-
-## 开发
+### 1. 启动服务端
 
 ```bash
-# 单独测试录音
-python recorder.py
+cd server
+pip install -r requirements.txt
+./run.sh
+```
 
-# 单独测试识别
-python recognizer.py
+### 2. 启动客户端
+```bash
+cd client
+pip install -r requirements.txt
+python main.py
+```
 
-# 单独测试文本输入
-python text_inserter.py
+### 3. 使用
+按住 Cmd+Space 说话
+松开自动识别并输入
+配置
+配置文件：~/.config/voice_typer/config.yaml
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 6008
 
-# 单独测试提示窗口
-python indicator.py
+hotkey:
+  modifiers: ["cmd"]
+  key: "space"
 
-# 测试控制器（无菜单栏）
-python controller.py
+hotword_files:
+  - "hotwords.txt"
 ```
 
 ## 致谢

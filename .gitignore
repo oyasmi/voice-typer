@@ -202,9 +202,9 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-# FunASR model files and cache
+# FunASR model files and cache (server-side)
 .funasr_cache/
-models/
+server/models/
 ~/.modelscope/
 *.onnx
 *.pth
@@ -216,25 +216,40 @@ models/
 *.flac
 temp_audio/
 recordings/
+server/temp_audio/
+server/recordings/
 
 # Configuration files with sensitive data
 config_local.yaml
+server/config_local.yaml
+client/config_local.yaml
 *.env
 .env.local
 .secrets
+client/.secrets
+server/.secrets
 
 # Log files
 *.log
 logs/
+client/logs/
+server/logs/
 
-# Py2app build artifacts
+# Py2app build artifacts (client-side)
 *.app
 *.dmg
 build/
+client/build/
+client/dist/
+
+# Tornado server artifacts
+server/.tornado_cache/
 
 # Temporary runtime files
 *.tmp
 *.temp
 .cache/
+client/.cache/
+server/.cache/
 
 CLAUDE.md

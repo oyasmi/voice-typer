@@ -1,0 +1,18 @@
+# HTTP 客户端
+tornado>=6.0
+
+# 音频
+sounddevice>=0.4.6
+numpy>=1.23,<2.0
+
+# 热键和文本输入
+pynput>=1.7.6
+
+# macOS 菜单栏
+rumps>=0.4.0
+
+# macOS 原生 UI
+pyobjc-framework-Cocoa>=10.0
+
+# 配置
+PyYAML>=6.0
