@@ -23,7 +23,7 @@ class VoiceTyperApp(rumps.App):
     """菜单栏应用"""
     
     def __init__(self):
-        super().__init__(name=APP_NAME, title="⚪", quit_button=None)
+        super().__init__(name=APP_NAME, title="⏸️", quit_button=None)
         
         self.config: AppConfig = None
         self.controller: VoiceTyperController = None
@@ -100,13 +100,13 @@ class VoiceTyperApp(rumps.App):
         self._status_item.title = f"状态: {status}"
         
         if "录音" in status:
-            self.title = "🔴"
+            self.title = "🟢"
         elif "识别" in status:
             self.title = "🟡"
         elif self._enabled:
             self.title = "🎤"
         else:
-            self.title = "⚪"
+            self.title = "⏸️"
     
     def _on_status(self, status: str):
         self._update_status(status)
