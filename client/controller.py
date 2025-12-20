@@ -148,6 +148,7 @@ class VoiceTyperController:
             host=self.config.server.host,
             port=self.config.server.port,
             timeout=self.config.server.timeout,
+            api_key=self.config.server.api_key,
         )
         
         # 检查服务状态

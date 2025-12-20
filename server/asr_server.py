@@ -15,13 +15,15 @@ import tornado.web
 import tornado.httpserver
 
 from recognizer import SpeechRecognizer
+from auth import BaseAuthenticatedHandler
 
 recognizer: SpeechRecognizer = None
 
 
-class HealthHandler(tornado.web.RequestHandler):
+class HealthHandler(BaseAuthenticatedHandler):
     """健康检查"""
-    
+
+    @tornado.web.authenticated
     def get(self):
         self.write({
             "status": "ok",
@@ -29,13 +31,10 @@ class HealthHandler(tornado.web.RequestHandler):
         })
 
 
-class RecognizeHandler(tornado.web.RequestHandler):
+class RecognizeHandler(BaseAuthenticatedHandler):
     """语音识别接口 - 支持 multipart/form-data"""
 
-    def set_default_headers(self):
-        """设置默认响应头"""
-        self.set_header("Content-Type", "application/json; charset=utf-8")
-    
+    @tornado.web.authenticated
     def post(self):
         try:
             # 获取音频文件
@@ -76,11 +75,34 @@ class RecognizeHandler(tornado.web.RequestHandler):
             self.write({"error": str(e)})
 
 
-def make_app():
-    return tornado.web.Application([
+def make_app(api_keys=None, server_host="127.0.0.1"):
+    """创建Tornado应用
+
+    Args:
+        api_keys: API key列表
+        server_host: 服务器监听地址
+    """
+    app = tornado.web.Application([
         (r"/health", HealthHandler),
         (r"/recognize", RecognizeHandler),
     ])
+
+    # 将配置存储到应用设置中
+    app.settings['api_keys'] = api_keys or []
+    app.settings['server_host'] = server_host
+
+    return app
+
+
+def load_api_keys(args):
+    """从命令行参数和环境变量加载API keys"""
+    api_keys = []
+
+    # 优先使用命令行参数
+    if args.api_keys:
+        api_keys = [key.strip() for key in args.api_keys.split(',') if key.strip()]
+
+    return api_keys
 
 
 def main():
@@ -90,8 +112,16 @@ def main():
     parser.add_argument("--model", default="paraformer-zh", help="ASR 模型")
     parser.add_argument("--punc-model", default="ct-punc", help="标点模型 (none 禁用)")
     parser.add_argument("--device", default="cpu", help="设备: mps, cpu")
+    parser.add_argument("--api-keys", help="API 密钥（逗号分隔多个密钥）")
     args = parser.parse_args()
     
+    # 处理API keys
+    api_keys = load_api_keys(args)
+    if api_keys:
+        print(f"API 密钥: 已配置 {len(api_keys)} 个密钥")
+    elif args.host != "127.0.0.1":
+        print("警告: 远程访问未配置API密钥，建议使用 --api-keys 参数")
+
     print("=" * 50)
     print("VoiceTyper 语音识别服务")
     print("=" * 50)
@@ -100,6 +130,10 @@ def main():
     print(f"模型: {args.model}")
     print(f"标点: {args.punc_model}")
     print(f"设备: {args.device}")
+    if args.host == "127.0.0.1":
+        print("鉴权: 本地地址，已跳过")
+    else:
+        print(f"鉴权: {'已启用' if api_keys else '未启用（不安全）'}")
     print()
     
     global recognizer
@@ -115,7 +149,7 @@ def main():
     recognizer.initialize(log=print)
     print(f"\n初始化完成，耗时 {time.time() - t0:.1f}s\n")
     
-    app = make_app()
+    app = make_app(api_keys=api_keys, server_host=args.host)
     server = tornado.httpserver.HTTPServer(app, max_buffer_size=100*1024*1024)  # 100MB
     server.listen(args.port, args.host)
     
@@ -126,6 +160,8 @@ def main():
     def shutdown(signum, frame):
         print("\n停止服务...")
         tornado.ioloop.IOLoop.current().stop()
+        import sys
+        sys.exit(0)
     
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

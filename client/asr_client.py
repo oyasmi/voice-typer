@@ -10,18 +10,30 @@ from tornado.httpclient import HTTPClient, HTTPError
 
 class ASRClient:
     """语音识别服务客户端"""
-    
-    def __init__(self, host: str = "127.0.0.1", port: int = 6008, timeout: float = 30.0):
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 6008, timeout: float = 30.0, api_key: Optional[str] = None):
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
+        self.api_key = api_key
+        self.host = host
         self._client = HTTPClient()
     
+    def _get_auth_headers(self) -> dict:
+        """获取鉴权请求头"""
+        headers = {}
+        # 只有在非本地地址且有API key时才添加鉴权头
+        if self.host != "127.0.0.1" and self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
     def health_check(self) -> bool:
         """检查服务是否可用"""
         try:
+            headers = self._get_auth_headers()
             response = self._client.fetch(
                 f"{self.base_url}/health",
                 method="GET",
+                headers=headers,
                 request_timeout=5.0,
             )
             data = json.loads(response.body.decode('utf-8'))
@@ -58,12 +70,13 @@ class ASRClient:
             body = b'\r\n'.join(body_parts)
             
             # 发送请求
+            headers = self._get_auth_headers()
+            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
             response = self._client.fetch(
                 f"{self.base_url}/recognize",
                 method="POST",
-                headers={
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                },
+                headers=headers,
                 body=body,
                 request_timeout=self.timeout,
             )
