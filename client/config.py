@@ -8,7 +8,7 @@ from typing import List, Optional
 from pathlib import Path
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 CONFIG_DIR_NAME = "voice_typer"
 
 
