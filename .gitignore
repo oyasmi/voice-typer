@@ -251,5 +251,6 @@ server/.tornado_cache/
 .cache/
 client/.cache/
 server/.cache/
+nohup.out
 
 CLAUDE.md
