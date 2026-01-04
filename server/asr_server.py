@@ -54,8 +54,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             
             # 获取参数
             hotwords = self.get_argument("hotwords", "")
-            llm_recorrect = self.get_argument("llm_recorrect", "true").lower() == "true"
-            print("llm_recorrect:", llm_recorrect)
+            llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
             
             # 检查服务状态
             if not recognizer or not recognizer.is_ready:

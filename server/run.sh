@@ -1,5 +1,9 @@
 #!/bin/bash
 # VoiceTyper 语音识别服务启动脚本
+# 命令示例：$HOME/projects/voice-typer/server/run.sh --host 127.0.0.1 --api-keys a_super_key \
+#    --llm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 \
+#    --llm-api-key sk-xxx \
+#    --llm-model qwen-flash-2025-07-28
 
 cd "$(dirname "$0")"
 
