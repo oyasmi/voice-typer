@@ -11,11 +11,12 @@ from tornado.httpclient import HTTPClient, HTTPError
 class ASRClient:
     """语音识别服务客户端"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 6008, timeout: float = 30.0, api_key: Optional[str] = None):
+    def __init__(self, host: str = "127.0.0.1", port: int = 6008, timeout: float = 30.0, api_key: Optional[str] = None, llm_recorrect: bool = False):
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
         self.api_key = api_key
         self.host = host
+        self.llm_recorrect = llm_recorrect
         self._client = HTTPClient()
     
     def _get_auth_headers(self) -> dict:
@@ -62,6 +63,12 @@ class ASRClient:
                 body_parts.append(b'Content-Disposition: form-data; name="hotwords"')
                 body_parts.append(b'')
                 body_parts.append(hotwords.encode('utf-8'))
+            
+            # LLM 修正参数
+            body_parts.append(f"--{boundary}".encode())
+            body_parts.append(b'Content-Disposition: form-data; name="llm_recorrect"')
+            body_parts.append(b'')
+            body_parts.append(b'true' if self.llm_recorrect else b'false')
             
             # 结束
             body_parts.append(f"--{boundary}--".encode())

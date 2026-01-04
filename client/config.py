@@ -8,7 +8,7 @@ from typing import List, Optional
 from pathlib import Path
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 CONFIG_DIR_NAME = "voice_typer"
 
 
@@ -18,6 +18,7 @@ class ServerConfig:
     port: int = 6008
     timeout: float = 30.0
     api_key: Optional[str] = None
+    llm_recorrect: bool = False  # 是否启用 LLM 修正
 
 
 @dataclass
@@ -126,6 +127,7 @@ def load_config() -> AppConfig:
             port=s.get('port', config.server.port),
             timeout=s.get('timeout', config.server.timeout),
             api_key=s.get('api_key', config.server.api_key),
+            llm_recorrect=s.get('llm_recorrect', config.server.llm_recorrect),
         )
     
     if 'hotkey' in data:
@@ -162,7 +164,8 @@ server:
   host: "127.0.0.1"
   port: 6008
   timeout: 60.0
-  api_key: null  # 设置API密钥用于连接远程服务器，本地连接可留空
+  api_key: ""  # 设置API密钥用于连接远程服务器，本地连接可留空
+  llm_recorrect: false  # 是否启用 LLM 修正识别错误（需要服务端支持）
 
 # 热键配置
 hotkey:

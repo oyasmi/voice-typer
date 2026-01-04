@@ -149,11 +149,13 @@ class VoiceTyperController:
             port=self.config.server.port,
             timeout=self.config.server.timeout,
             api_key=self.config.server.api_key,
+            llm_recorrect=self.config.server.llm_recorrect,
         )
         
         # 检查服务状态
         if self._asr_client.health_check():
-            log("语音识别服务已连接")
+            llm_status = "（LLM修正: 已启用）" if self.config.server.llm_recorrect else ""
+            log(f"语音识别服务已连接 {llm_status}")
         else:
             log("警告: 语音识别服务未就绪")
         
