@@ -7,6 +7,7 @@
 - 🎤 按住热键语音输入，松开自动识别
 - 🔒 完全本地离线，无需联网
 - ⚙️ 支持自定义热键、词库
+- 🤖 支持 LLM 智能纠错
 - 🚀 支持 Apple Silicon GPU 加速
 
 ## 系统要求
@@ -37,6 +38,16 @@
 
 ## 快速开始
 
+### 0. (可选) 配置 LLM 纠错
+
+服务端启动时添加 LLM 参数：
+
+```bash
+./run.sh --llm-base-url https://api.openai.com/v1 \
+         --llm-api-key sk-xxx \
+         --llm-model gpt-4o-mini
+```
+
 ### 1. 启动服务端
 
 ```bash
@@ -61,6 +72,7 @@ python main.py
 server:
   host: "127.0.0.1"
   port: 6008
+  llm_recorrect: false  # 启用 LLM 智能纠错（需服务端配置 LLM）
 
 hotkey:
   modifiers: ["cmd"]
@@ -69,6 +81,12 @@ hotkey:
 hotword_files:
   - "hotwords.txt"
 ```
+
+## LLM 智能纠错
+
+可选功能，使用 LLM 自动修正识别错误（同音字、口语词、标点等）。
+
+服务端配置 LLM API，客户端设置 `llm_recorrect: true` 即可启用。
 
 ## 致谢
 - FunASR - 阿里达摩院开源的语音识别工具包
