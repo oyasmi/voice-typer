@@ -96,8 +96,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': 'VoiceTyper',
         'CFBundleDisplayName': 'VoiceTyper',
-        'CFBundleVersion': '1.1.0',
-        'CFBundleShortVersionString': '1.1.0',
+        'CFBundleVersion': '1.2.0',
+        'CFBundleShortVersionString': '1.2.0',
         'LSMinimumSystemVersion': '14.0',
         'LSUIElement': True,
         'NSHighResolutionCapable': True,
