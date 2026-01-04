@@ -44,3 +44,4 @@ class BaseAuthenticatedHandler(tornado.web.RequestHandler):
         api_keys = self.application.settings.get('api_keys', [])
 
         return token if token in api_keys else None
+        

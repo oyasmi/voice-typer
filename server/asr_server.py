@@ -16,8 +16,10 @@ import tornado.httpserver
 
 from recognizer import SpeechRecognizer
 from auth import BaseAuthenticatedHandler
+from llm_client import LLMClient
 
 recognizer: SpeechRecognizer = None
+llm_client: LLMClient = None
 
 
 class HealthHandler(BaseAuthenticatedHandler):
@@ -28,6 +30,7 @@ class HealthHandler(BaseAuthenticatedHandler):
         self.write({
             "status": "ok",
             "ready": recognizer.is_ready if recognizer else False,
+            "llm_enabled": llm_client is not None,
         })
 
 
@@ -35,7 +38,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
     """语音识别接口 - 支持 multipart/form-data"""
 
     @tornado.web.authenticated
-    def post(self):
+    async def post(self):
         try:
             # 获取音频文件
             if "audio" not in self.request.files:
@@ -49,8 +52,10 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             # 转换为 numpy 数组 (float32, 16kHz)
             audio = np.frombuffer(audio_bytes, dtype=np.float32)
             
-            # 获取热词（从表单字段）
+            # 获取参数
             hotwords = self.get_argument("hotwords", "")
+            llm_recorrect = self.get_argument("llm_recorrect", "true").lower() == "true"
+            print("llm_recorrect:", llm_recorrect)
             
             # 检查服务状态
             if not recognizer or not recognizer.is_ready:
@@ -63,12 +68,41 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             text = recognizer.recognize(audio, hotwords)
             elapsed = time.time() - t0
             
+            # LLM 修正
+            llm_elapsed = None
+            if llm_recorrect and llm_client and text.strip():
+                try:
+                    t1 = time.time()
+                    original_text = text
+                    text = await llm_client.correct_text(text)
+                    llm_elapsed = round(time.time() - t1, 3)
+                    
+                    # 输出修正前后对比
+                    if original_text != text:
+                        print("=" * 60)
+                        print(f"LLM 修正 (耗时: {llm_elapsed}s)")
+                        print(f"修正前: {original_text}")
+                        print(f"修正后: {text}")
+                        print("=" * 60)
+                    else:
+                        print(f"LLM 修正: 无需修改 (耗时: {llm_elapsed}s)")
+                        
+                except Exception as e:
+                    print(f"LLM 修正失败: {e}")
+                    # 继续返回原始识别结果
+                    pass
+            
             # 返回结果
-            self.write({
+            result = {
                 "text": text,
                 "duration": round(len(audio) / 16000, 2),
                 "elapsed": round(elapsed, 3),
-            })
+            }
+            
+            if llm_elapsed is not None:
+                result["llmElapsed"] = llm_elapsed
+            
+            self.write(result)
             
         except Exception as e:
             self.set_status(500)
@@ -113,6 +147,14 @@ def main():
     parser.add_argument("--punc-model", default="ct-punc", help="标点模型 (none 禁用)")
     parser.add_argument("--device", default="cpu", help="设备: mps, cpu")
     parser.add_argument("--api-keys", help="API 密钥（逗号分隔多个密钥）")
+    
+    # LLM 相关参数
+    parser.add_argument("--llm-base-url", help="LLM API 基础URL (如 https://api.openai.com/v1)")
+    parser.add_argument("--llm-api-key", help="LLM API 密钥")
+    parser.add_argument("--llm-model", default="gpt-4o-mini", help="LLM 模型名称")
+    parser.add_argument("--llm-temperature", type=float, default=0.3, help="LLM 温度参数 (0-2)")
+    parser.add_argument("--llm-max-tokens", type=int, default=600, help="LLM 最大生成token数")
+    
     args = parser.parse_args()
     
     # 处理API keys
@@ -134,6 +176,21 @@ def main():
         print("鉴权: 本地地址，已跳过")
     else:
         print(f"鉴权: {'已启用' if api_keys else '未启用（不安全）'}")
+    
+    # 初始化 LLM 客户端
+    global llm_client
+    if args.llm_base_url and args.llm_api_key:
+        print(f"LLM: 已启用 ({args.llm_model})")
+        llm_client = LLMClient(
+            base_url=args.llm_base_url,
+            api_key=args.llm_api_key,
+            model=args.llm_model,
+            temperature=args.llm_temperature,
+            max_tokens=args.llm_max_tokens,
+        )
+    else:
+        print("LLM: 未启用")
+    
     print()
     
     global recognizer
