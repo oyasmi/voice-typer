@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VoiceTyper
+Comment=Offline speech-to-text input tool
+Comment[zh_CN]=离线语音输入工具
+Exec=voicetyper
+Icon=voicetyper
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=speech;voice;recognition;input;text;
+StartupNotify=false

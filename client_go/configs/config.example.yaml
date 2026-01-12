@@ -1,0 +1,31 @@
+# VoiceTyper 客户端配置示例
+# 文件位置：~/.config/voice-typer/config.yaml
+
+# 服务器配置
+servers:
+  - name: local
+    host: "127.0.0.1"
+    port: 6008
+    timeout: 30.0
+    api_key: ""  # 本地连接可留空
+    llm_recorrect: false  # 启用LLM智能纠错（需服务端配置）
+
+# 热键配置
+hotkey:
+  modifiers:
+    - "cmd"   # macOS使用cmd，Windows/Linux使用ctrl
+  key: "space"
+
+# 用户词库文件（相对于配置目录）
+hotword_files:
+  - "hotwords.txt"
+
+# UI配置
+ui:
+  opacity: 0.85    # 录音指示器透明度 (0.0-1.0)
+  width: 240       # 录音指示器宽度（像素）
+  height: 70       # 录音指示器高度（像素）
+
+# 输入配置
+input:
+  method: "clipboard"  # 文本输入方法（当前仅支持clipboard）

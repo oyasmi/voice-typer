@@ -1,0 +1,31 @@
+# VoiceTyper - Windows Icon Configuration
+# Resource file for Windows executable
+
+1 VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "VoiceTyper"
+            VALUE "FileDescription", "VoiceTyper - Offline Speech-to-Text Input Tool"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "voicetyper"
+            VALUE "LegalCopyright", "Copyright (c) 2025"
+            VALUE "OriginalFilename", "voicetyper.exe"
+            VALUE "ProductName", "VoiceTyper"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
