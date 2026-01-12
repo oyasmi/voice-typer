@@ -4,32 +4,56 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/go-vgo/robotgo"
+	hook "github.com/robotn/gohook"
 )
 
 // Listener 热键监听器
 type Listener struct {
-	modifiers *Modifiers
-	keyCode   KeyCode
+	keyCombo []string // 热键组合，如 ["ctrl", "shift", "f1"]
 
 	onPress   func()
 	onRelease func()
 
-	mutex     sync.Mutex
-	running   bool
-	pressed   bool // 当前热键是否被按下
+	mutex   sync.Mutex
+	running bool
+	pressed bool // 当前热键是否被按下
 }
 
 // NewListener 创建热键监听器
-func NewListener(modifiers *Modifiers, keyCode KeyCode, onPress, onRelease func()) *Listener {
+func NewListener(modifiers *Modifiers, keyName string, onPress, onRelease func()) *Listener {
+	// 构建热键组合字符串数组
+	keyCombo := buildKeyCombo(modifiers, keyName)
+
 	return &Listener{
-		modifiers: modifiers,
-		keyCode:   keyCode,
+		keyCombo:  keyCombo,
 		onPress:   onPress,
 		onRelease: onRelease,
 		running:   false,
 		pressed:   false,
 	}
+}
+
+// buildKeyCombo 构建热键组合字符串数组
+func buildKeyCombo(modifiers *Modifiers, keyName string) []string {
+	combo := []string{}
+
+	if modifiers.Ctrl {
+		combo = append(combo, "ctrl")
+	}
+	if modifiers.Alt {
+		combo = append(combo, "alt")
+	}
+	if modifiers.Shift {
+		combo = append(combo, "shift")
+	}
+	if modifiers.Cmd {
+		combo = append(combo, "cmd")
+	}
+
+	// 添加主键
+	combo = append(combo, keyName)
+
+	return combo
 }
 
 // Start 启动监听
@@ -42,8 +66,8 @@ func (l *Listener) Start() error {
 	l.running = true
 	l.mutex.Unlock()
 
-	// 注册KeyDown事件
-	robotgo.EventHook(robotgo.KeyDown, []string{}, func(e robotgo.Event) {
+	// 注册KeyDown事件 - hook.Register 会自动处理修饰键组合
+	hook.Register(hook.KeyDown, l.keyCombo, func(e hook.Event) {
 		l.mutex.Lock()
 		defer l.mutex.Unlock()
 
@@ -51,8 +75,8 @@ func (l *Listener) Start() error {
 			return
 		}
 
-		// 检查是否匹配热键
-		if !l.pressed && Match(e, l.modifiers, l.keyCode) {
+		// 热键被按下
+		if !l.pressed {
 			l.pressed = true
 			if l.onPress != nil {
 				go l.onPress() // 异步调用，避免阻塞事件循环
@@ -61,7 +85,7 @@ func (l *Listener) Start() error {
 	})
 
 	// 注册KeyUp事件
-	robotgo.EventHook(robotgo.KeyUp, []string{}, func(e robotgo.Event) {
+	hook.Register(hook.KeyUp, l.keyCombo, func(e hook.Event) {
 		l.mutex.Lock()
 		defer l.mutex.Unlock()
 
@@ -69,8 +93,8 @@ func (l *Listener) Start() error {
 			return
 		}
 
-		// 检查是否是热键释放
-		if l.pressed && e.Keycode == uint16(l.keyCode) {
+		// 热键被释放
+		if l.pressed {
 			l.pressed = false
 			if l.onRelease != nil {
 				go l.onRelease()
@@ -78,8 +102,11 @@ func (l *Listener) Start() error {
 		}
 	})
 
-	// 启动事件循环（阻塞）
-	go robotgo.EventStart()
+	// 启动事件循环
+	go func() {
+		s := hook.Start()
+		<-hook.Process(s)
+	}()
 
 	return nil
 }
@@ -97,7 +124,7 @@ func (l *Listener) Stop() error {
 	l.pressed = false
 
 	// 停止事件循环
-	robotgo.EventEnd()
+	hook.End()
 
 	return nil
 }

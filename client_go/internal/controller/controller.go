@@ -11,7 +11,6 @@ import (
 	"github.com/yourusername/voice-typer/internal/config"
 	"github.com/yourusername/voice-typer/internal/hotkey"
 	"github.com/yourusername/voice-typer/internal/input"
-	"github.com/yourusername/voice-typer/internal/ui"
 )
 
 // Controller 核心控制器
@@ -80,7 +79,7 @@ func (c *Controller) Initialize(onStatusChange func(string)) error {
 
 	// 4. 解析热键
 	c.updateStatus("Setting up hotkey...")
-	mods, keyCode, err := hotkey.ParseHotkey(c.config.Hotkey.Modifiers, c.config.Hotkey.Key)
+	mods, keyName, err := hotkey.ParseHotkey(c.config.Hotkey.Modifiers, c.config.Hotkey.Key)
 	if err != nil {
 		return fmt.Errorf("parse hotkey: %w", err)
 	}
@@ -88,7 +87,7 @@ func (c *Controller) Initialize(onStatusChange func(string)) error {
 	// 5. 初始化热键监听器
 	c.listener = hotkey.NewListener(
 		mods,
-		keyCode,
+		keyName,
 		c.onHotkeyPress,
 		c.onHotkeyRelease,
 	)

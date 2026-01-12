@@ -30,8 +30,9 @@ func main() {
 		log.Fatalf("Failed to create controller: %v", err)
 	}
 
-	// 3. 创建托盘应用
-	tray := ui.NewTrayApp("VoiceTyper",
+	// 3. 创建托盘应用（先声明变量）
+	var tray *ui.TrayApp
+	tray = ui.NewTrayApp("VoiceTyper",
 		func() { // onToggle
 			if ctrl.IsEnabled() {
 				if err := ctrl.Stop(); err != nil {
@@ -81,21 +82,20 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// 7. 启动应用（在goroutine中）
+	// 7. 在后台goroutine中监听信号
 	go func() {
-		tray.Run()
+		<-sigChan
+		fmt.Println("\nShutting down...")
+		// 清理资源
+		if err := ctrl.Close(); err != nil {
+			log.Printf("Error closing controller: %v", err)
+		}
+		tray.Quit()
 	}()
 
-	// 8. 等待退出信号
-	<-sigChan
-	fmt.Println("\nShutting down...")
+	// 8. 启动应用（在主线程中，阻塞运行）
+	tray.Run()
 
-	// 清理资源
-	if err := ctrl.Close(); err != nil {
-		log.Printf("Error closing controller: %v", err)
-	}
-
-	tray.Quit()
 	fmt.Println("Goodbye!")
 }
 

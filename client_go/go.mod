@@ -2,7 +2,7 @@ module github.com/yourusername/voice-typer
 
 go 1.24.0
 
-toolchain go1.24.9
+toolchain go1.24.4
 
 require (
 	fyne.io/fyne/v2 v2.7.2
@@ -10,6 +10,7 @@ require (
 	github.com/gen2brain/malgo v0.11.24
 	github.com/go-resty/resty/v2 v2.17.1
 	github.com/go-vgo/robotgo v1.0.0
+	github.com/robotn/gohook v0.42.3
 	golang.design/x/clipboard v0.7.1
 	gopkg.in/yaml.v3 v3.0.1
 )

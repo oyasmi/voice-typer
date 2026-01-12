@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 
+	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
 )
@@ -22,6 +23,11 @@ type TrayApp struct {
 // NewTrayApp 创建托盘应用
 func NewTrayApp(appName string, onToggle, onQuit func()) *TrayApp {
 	a := app.NewWithID("com.voicetyper.app")
+
+	// 设置应用图标
+	if resource, err := fyne.LoadResourceFromPath("./assets/icon.png"); err == nil {
+		a.SetIcon(resource)
+	}
 
 	tray := &TrayApp{
 		app:      a,
@@ -85,21 +91,27 @@ func (t *TrayApp) Run() {
 
 // UpdateStatus 更新状态文本
 func (t *TrayApp) UpdateStatus(status string) {
-	t.statusItem.Label = fmt.Sprintf("Status: %s", status)
-	t.menu.Refresh()
+	fyne.Do(func() {
+		t.statusItem.Label = fmt.Sprintf("Status: %s", status)
+		t.menu.Refresh()
+	})
 }
 
 // SetToggleState 设置启用/禁用状态
 func (t *TrayApp) SetToggleState(enabled bool, hotkey string) {
-	if enabled {
-		t.toggleItem.Label = fmt.Sprintf("Disable (%s)", hotkey)
-	} else {
-		t.toggleItem.Label = fmt.Sprintf("Enable (%s)", hotkey)
-	}
-	t.menu.Refresh()
+	fyne.Do(func() {
+		if enabled {
+			t.toggleItem.Label = fmt.Sprintf("Disable (%s)", hotkey)
+		} else {
+			t.toggleItem.Label = fmt.Sprintf("Enable (%s)", hotkey)
+		}
+		t.menu.Refresh()
+	})
 }
 
 // Quit 退出应用
 func (t *TrayApp) Quit() {
-	t.app.Quit()
+	fyne.Do(func() {
+		t.app.Quit()
+	})
 }
