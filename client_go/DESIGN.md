@@ -1839,4 +1839,854 @@ func (c *Controller) Initialize(onStatusChange func(string)) error {
     c.updateStatus("Connecting to ASR service...")
     
     availableServer, idx := c.config.GetFirstAvailableServer(func(srv config.ServerConfig) bool {
-        client := api.NewClient(srv.Host, srv.Port, srv.Timeout
+        client := api.NewClient(srv.Host, srv.Port, srv.Timeout, srv.APIKey, srv.LLMRecorrect)
+        ready, err := client.HealthCheck()
+        if err != nil {
+            fmt.Printf("Server %s:%d health check failed: %v\n", srv.Host, srv.Port, err)
+            return false
+        }
+        return ready
+    })
+    
+    if availableServer == nil {
+        return fmt.Errorf("no available ASR server found")
+    }
+    
+    fmt.Printf("Using ASR server: %s:%d (index %d)\n", 
+        availableServer.Host, availableServer.Port, idx)
+    
+    c.apiClient = api.NewClient(
+        availableServer.Host,
+        availableServer.Port,
+        availableServer.Timeout,
+        availableServer.APIKey,
+        availableServer.LLMRecorrect,
+    )
+    
+    llmStatus := ""
+    if availableServer.LLMRecorrect {
+        llmStatus = " (LLM correction enabled)"
+    }
+    c.updateStatus(fmt.Sprintf("Connected to ASR%s", llmStatus))
+    
+    // 2. 初始化录音器
+    c.updateStatus("Initializing audio recorder...")
+    var err error
+    c.recorder, err = audio.NewRecorder()
+    if err != nil {
+        return fmt.Errorf("init recorder: %w", err)
+    }
+    
+    // 3. 初始化热键监听器
+    c.updateStatus("Initializing hotkey listener...")
+    mods, keyCode, err := hotkey.ParseHotkey(c.config.Hotkey.Modifiers, c.config.Hotkey.Key)
+    if err != nil {
+        return fmt.Errorf("parse hotkey: %w", err)
+    }
+    
+    c.listener = hotkey.NewListener(mods, keyCode, c.onHotkeyPress, c.onHotkeyRelease)
+    
+    // 4. 初始化输入管理器
+    c.updateStatus("Initializing input manager...")
+    c.inputMgr, err = input.NewManager(
+        input.InsertMethod(c.config.Input.Method),
+        c.config.Input.FallbackToClipboard,
+    )
+    if err != nil {
+        return fmt.Errorf("init input manager: %w", err)
+    }
+    
+    // 5. 初始化UI提示窗口
+    c.indicator = ui.NewIndicator(
+        c.config.UI.Width,
+        c.config.UI.Height,
+        c.config.UI.Opacity,
+    )
+    
+    // 6. 加载词库
+    c.updateStatus("Loading hotwords...")
+    c.hotwords, err = c.config.GetHotwordsString()
+    if err != nil {
+        fmt.Printf("Warning: load hotwords failed: %v\n", err)
+        c.hotwords = ""
+    }
+    
+    c.updateStatus("Initialized")
+    return nil
+}
+
+// Enable 启用语音输入
+// 逻辑：
+//   1. 检查是否已启用
+//   2. 启动热键监听
+//   3. 更新状态
+func (c *Controller) Enable() error {
+    c.mutex.Lock()
+    defer c.mutex.Unlock()
+    
+    if c.enabled {
+        return nil
+    }
+    
+    if err := c.listener.Start(); err != nil {
+        return fmt.Errorf("start listener: %w", err)
+    }
+    
+    c.enabled = true
+    c.updateStatus("Ready")
+    
+    // 显示通知
+    hotkeyStr := c.getHotkeyString()
+    ui.Notify("VoiceTyper", fmt.Sprintf("Press %s to start voice input", hotkeyStr))
+    
+    return nil
+}
+
+// Disable 禁用语音输入
+func (c *Controller) Disable() error {
+    c.mutex.Lock()
+    defer c.mutex.Unlock()
+    
+    if !c.enabled {
+        return nil
+    }
+    
+    // 如果正在录音，先停止
+    if c.recording {
+        c.recorder.Stop()
+        c.indicator.Hide()
+        c.recording = false
+    }
+    
+    if err := c.listener.Stop(); err != nil {
+        return fmt.Errorf("stop listener: %w", err)
+    }
+    
+    c.enabled = false
+    c.updateStatus("Disabled")
+    
+    return nil
+}
+
+// IsEnabled 检查是否已启用
+func (c *Controller) IsEnabled() bool {
+    c.mutex.Lock()
+    defer c.mutex.Unlock()
+    return c.enabled
+}
+
+// onHotkeyPress 热键按下回调
+// 逻辑：
+//   1. 检查是否已在录音
+//   2. 显示提示窗口
+//   3. 开始录音
+//   4. 更新状态
+func (c *Controller) onHotkeyPress() {
+    c.mutex.Lock()
+    if c.recording {
+        c.mutex.Unlock()
+        return
+    }
+    c.recording = true
+    c.mutex.Unlock()
+    
+    // 显示提示
+    c.indicator.Show()
+    
+    // 开始录音
+    if err := c.recorder.Start(); err != nil {
+        fmt.Printf("Failed to start recording: %v\n", err)
+        c.indicator.Hide()
+        c.mutex.Lock()
+        c.recording = false
+        c.mutex.Unlock()
+        return
+    }
+    
+    c.updateStatus("Recording...")
+}
+
+// onHotkeyRelease 热键释放回调
+// 逻辑：
+//   1. 检查是否在录音
+//   2. 停止录音
+//   3. 隐藏提示窗口
+//   4. 异步处理音频（识别+输入）
+func (c *Controller) onHotkeyRelease() {
+    c.mutex.Lock()
+    if !c.recording {
+        c.mutex.Unlock()
+        return
+    }
+    c.recording = false
+    c.mutex.Unlock()
+    
+    // 停止录音
+    audioData, err := c.recorder.Stop()
+    if err != nil {
+        fmt.Printf("Failed to stop recording: %v\n", err)
+        c.indicator.Hide()
+        c.updateStatus("Recording failed")
+        time.AfterFunc(1*time.Second, func() {
+            c.updateStatus("Ready")
+        })
+        return
+    }
+    
+    // 隐藏提示
+    c.indicator.Hide()
+    
+    // 异步处理音频
+    go c.processAudio(audioData)
+}
+
+// processAudio 处理录音数据
+// 参数：
+//   - audioData: 音频数据
+// 逻辑：
+//   1. 检查音频长度
+//   2. 调用ASR API识别
+//   3. 如果识别成功，插入文本
+//   4. 更新状态
+func (c *Controller) processAudio(audioData []byte) {
+    if len(audioData) == 0 {
+        c.updateStatus("Empty audio")
+        time.Sleep(1 * time.Second)
+        c.updateStatus("Ready")
+        return
+    }
+    
+    c.updateStatus("Recognizing...")
+    
+    // 调用ASR API
+    text, err := c.apiClient.Recognize(audioData, c.hotwords)
+    if err != nil {
+        fmt.Printf("Recognition failed: %v\n", err)
+        c.updateStatus("Recognition failed")
+        time.Sleep(1500 * time.Millisecond)
+        c.updateStatus("Ready")
+        return
+    }
+    
+    if text == "" {
+        c.updateStatus("No text recognized")
+        time.Sleep(1 * time.Second)
+        c.updateStatus("Ready")
+        return
+    }
+    
+    // 插入文本
+    c.updateStatus("Inserting text...")
+    if err := c.inputMgr.Insert(text); err != nil {
+        fmt.Printf("Insert text failed: %v\n", err)
+        c.updateStatus("Insert failed")
+    } else {
+        c.updateStatus(fmt.Sprintf("Inserted (%d chars)", len(text)))
+    }
+    
+    time.Sleep(1500 * time.Millisecond)
+    c.updateStatus("Ready")
+}
+
+// updateStatus 更新状态（触发回调）
+func (c *Controller) updateStatus(status string) {
+    if c.onStatusChange != nil {
+        c.onStatusChange(status)
+    }
+}
+
+// getHotkeyString 获取热键字符串表示
+func (c *Controller) getHotkeyString() string {
+    mods := c.config.Hotkey.Modifiers
+    key := c.config.Hotkey.Key
+    
+    parts := make([]string, len(mods)+1)
+    for i, mod := range mods {
+        parts[i] = strings.ToUpper(mod)
+    }
+    parts[len(mods)] = strings.ToUpper(key)
+    
+    return strings.Join(parts, "+")
+}
+
+// Close 关闭控制器，释放所有资源
+func (c *Controller) Close() error {
+    c.Disable()
+    
+    if c.recorder != nil {
+        c.recorder.Close()
+    }
+    
+    if c.indicator != nil {
+        c.indicator.Close()
+    }
+    
+    return nil
+}
+```
+
+---
+
+### 4.8 平台检测模块 (pkg/platform/)
+
+**文件：platform.go**
+
+```go
+package platform
+
+import (
+    "os"
+    "runtime"
+)
+
+// Platform 平台类型
+type Platform string
+
+const (
+    MacOS   Platform = "darwin"
+    Windows Platform = "windows"
+    Linux   Platform = "linux"
+)
+
+// GetPlatform 获取当前平台
+func GetPlatform() Platform {
+    return Platform(runtime.GOOS)
+}
+
+// IsWayland 检查Linux是否运行在Wayland下
+func IsWayland() bool {
+    if runtime.GOOS != "linux" {
+        return false
+    }
+    return os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+// IsX11 检查Linux是否运行在X11下
+func IsX11() bool {
+    if runtime.GOOS != "linux" {
+        return false
+    }
+    return os.Getenv("DISPLAY") != "" && !IsWayland()
+}
+```
+
+平台特定实现文件（darwin.go, windows.go, linux.go）可用于处理各平台的特殊逻辑，当前主要逻辑已通过robotgo等跨平台库处理，这些文件可暂时留空或用于未来扩展。
+
+---
+
+### 4.9 主程序入口 (main.go)
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/signal"
+    "syscall"
+    
+    "voice-typer/internal/config"
+    "voice-typer/internal/controller"
+    "voice-typer/internal/ui"
+)
+
+const (
+    AppName    = "VoiceTyper"
+    AppVersion = "1.0.0"
+)
+
+func main() {
+    fmt.Printf("===========================================\n")
+    fmt.Printf("%s v%s\n", AppName, AppVersion)
+    fmt.Printf("===========================================\n\n")
+    
+    // 确保配置目录存在
+    if err := config.EnsureConfigDir(); err != nil {
+        fmt.Printf("Failed to create config dir: %v\n", err)
+        os.Exit(1)
+    }
+    
+    // 创建默认词库文件
+    if err := config.CreateDefaultHotwordsFile(); err != nil {
+        fmt.Printf("Warning: failed to create default hotwords file: %v\n", err)
+    }
+    
+    configDir, _ := config.GetConfigDir()
+    fmt.Printf("Config directory: %s\n\n", configDir)
+    
+    // 加载配置
+    cfg, err := config.Load("")
+    if err != nil {
+        fmt.Printf("Failed to load config: %v\n", err)
+        os.Exit(1)
+    }
+    
+    // 创建控制器
+    ctrl, err := controller.NewController(cfg)
+    if err != nil {
+        fmt.Printf("Failed to create controller: %v\n", err)
+        os.Exit(1)
+    }
+    defer ctrl.Close()
+    
+    // 创建托盘应用
+    var trayApp *ui.TrayApp
+    var enabled bool = false
+    
+    hotkeyStr := getHotkeyString(cfg)
+    
+    trayApp = ui.NewTrayApp(
+        AppName,
+        func() {
+            // 切换启用/禁用
+            if enabled {
+                ctrl.Disable()
+                enabled = false
+                trayApp.SetToggleState(false, hotkeyStr)
+            } else {
+                if err := ctrl.Enable(); err != nil {
+                    fmt.Printf("Failed to enable: %v\n", err)
+                    return
+                }
+                enabled = true
+                trayApp.SetToggleState(true, hotkeyStr)
+            }
+        },
+        func() {
+            // 退出
+            fmt.Println("Exiting...")
+            ctrl.Close()
+        },
+    )
+    
+    // 异步初始化控制器
+    go func() {
+        err := ctrl.Initialize(func(status string) {
+            trayApp.UpdateStatus(status)
+        })
+        
+        if err != nil {
+            fmt.Printf("Initialization failed: %v\n", err)
+            trayApp.UpdateStatus(fmt.Sprintf("Init failed: %v", err))
+            return
+        }
+        
+        // 自动启用
+        if err := ctrl.Enable(); err != nil {
+            fmt.Printf("Failed to enable: %v\n", err)
+            return
+        }
+        enabled = true
+        trayApp.SetToggleState(true, hotkeyStr)
+        
+        fmt.Println("Initialization complete")
+        fmt.Printf("Press %s to start voice input\n", hotkeyStr)
+    }()
+    
+    // 处理系统信号
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+    
+    go func() {
+        <-sigChan
+        fmt.Println("\nReceived interrupt signal, exiting...")
+        ctrl.Close()
+        os.Exit(0)
+    }()
+    
+    // 运行托盘应用（阻塞）
+    trayApp.Run()
+}
+
+func getHotkeyString(cfg *config.Config) string {
+    parts := make([]string, 0, len(cfg.Hotkey.Modifiers)+1)
+    for _, mod := range cfg.Hotkey.Modifiers {
+        parts = append(parts, strings.ToUpper(mod))
+    }
+    parts = append(parts, strings.ToUpper(cfg.Hotkey.Key))
+    return strings.Join(parts, "+")
+}
+```
+
+---
+
+## 五、配置文件示例
+
+**configs/config.example.yaml**
+
+```yaml
+# VoiceTyper Configuration File
+
+# ASR servers list (will try in order and use the first available one)
+servers:
+  - name: "local"
+    host: "127.0.0.1"
+    port: 6008
+    timeout: 30.0
+    api_key: ""
+    llm_recorrect: false
+  
+  - name: "remote"
+    host: "192.168.1.100"
+    port: 6008
+    timeout: 60.0
+    api_key: "your_api_key_here"
+    llm_recorrect: true
+
+# Hotkey configuration
+# Supported modifiers: ctrl, alt/option, shift, cmd/command
+# Supported keys: space, tab, a-z, 0-9, f1-f12, etc.
+hotkey:
+  modifiers:
+    - "cmd"   # Use "ctrl" for Windows/Linux
+  key: "space"
+
+# Custom hotword files
+# Supports multiple files, one word per line
+# Supports absolute path or relative path (relative to config directory)
+hotword_files:
+  - "hotwords.txt"
+
+# Input configuration
+input:
+  method: "simulate"           # "simulate" or "clipboard"
+  fallback_to_clipboard: true  # Fallback to clipboard if simulate fails
+
+# UI configuration
+ui:
+  opacity: 0.85  # Window opacity (0.0-1.0)
+  width: 240     # Window width in pixels
+  height: 70     # Window height in pixels
+```
+
+---
+
+## 六、构建与打包
+
+### 6.1 构建脚本
+
+**build/build.sh**
+
+```bash
+#!/bin/bash
+
+# VoiceTyper Build Script
+
+set -e
+
+VERSION="1.0.0"
+APP_NAME="voice-typer"
+BUILD_DIR="dist"
+
+echo "Building VoiceTyper v${VERSION}..."
+
+# Clean build directory
+rm -rf ${BUILD_DIR}
+mkdir -p ${BUILD_DIR}
+
+# Build flags
+LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
+
+# Build for current platform
+echo "Building for current platform..."
+go build -ldflags="${LDFLAGS}" -o ${BUILD_DIR}/${APP_NAME}
+
+# Cross-compile for other platforms
+echo "Building for macOS (amd64)..."
+GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ${BUILD_DIR}/${APP_NAME}-darwin-amd64
+
+echo "Building for macOS (arm64)..."
+GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o ${BUILD_DIR}/${APP_NAME}-darwin-arm64
+
+echo "Building for Windows (amd64)..."
+GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ${BUILD_DIR}/${APP_NAME}-windows-amd64.exe
+
+echo "Building for Linux (amd64)..."
+GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o ${BUILD_DIR}/${APP_NAME}-linux-amd64
+
+echo "Build complete! Binaries are in ${BUILD_DIR}/"
+```
+
+### 6.2 打包脚本
+
+**build/package.sh**
+
+```bash
+#!/bin/bash
+
+# Package script for different platforms
+
+set -e
+
+VERSION="1.0.0"
+BUILD_DIR="dist"
+PACKAGE_DIR="packages"
+
+mkdir -p ${PACKAGE_DIR}
+
+# macOS: Create .app bundle
+echo "Packaging for macOS..."
+# (Implementation details omitted, involves creating Info.plist, etc.)
+
+# Windows: Create installer
+echo "Packaging for Windows..."
+# (Can use tools like NSIS or Inno Setup)
+
+# Linux: Create .deb and .rpm packages
+echo "Packaging for Linux..."
+# (Use fpm or native packaging tools)
+
+echo "Packaging complete!"
+```
+
+---
+
+## 七、平台特殊处理
+
+### 7.1 macOS
+
+**权限配置**：
+- 需要在Info.plist中声明麦克风权限：
+  ```xml
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VoiceTyper needs microphone access for voice input</string>
+  ```
+
+**辅助功能权限**：
+- 热键监听和文本输入需要辅助功能权限
+- 用户首次运行时系统会提示授权
+
+### 7.2 Windows
+
+**管理员权限**：
+- 全局热键监听可能需要管理员权限
+- 可在manifest中声明：
+  ```xml
+  <requestedExecutionLevel level="requireAdministrator" />
+  ```
+
+**防火墙**：
+- 如连接远程ASR服务，可能触发防火墙提示
+
+### 7.3 Linux
+
+**X11 vs Wayland**：
+- X11：robotgo原生支持
+- Wayland：需要额外工具（如ydotool）
+  - 安装：`sudo apt install ydotool`
+  - 配置权限：添加用户到input/uinput组
+
+**权限配置**：
+```bash
+# Add user to input groups
+sudo usermod -aG input $USER
+sudo usermod -aG uinput $USER
+
+# Configure udev rules
+echo 'KERNEL=="uinput", MODE="0660", GROUP="uinput"' | \
+  sudo tee /etc/udev/rules.d/99-uinput.rules
+
+# Reload rules
+sudo udevadm control --reload-rules
+```
+
+**桌面文件**（~/.local/share/applications/voice-typer.desktop）：
+```desktop
+[Desktop Entry]
+Name=VoiceTyper
+Comment=Voice input tool
+Exec=/path/to/voice-typer
+Icon=/path/to/icon.png
+Terminal=false
+Type=Application
+Categories=Utility;
+```
+
+---
+
+## 八、错误处理与日志
+
+### 8.1 错误处理原则
+
+1. **所有外部调用都应有错误处理**：录音、网络请求、文件IO
+2. **用户友好的错误提示**：通过托盘状态和系统通知
+3. **不崩溃原则**：关键流程错误不应导致程序退出
+4. **降级方案**：如模拟输入失败自动回退到剪贴板
+
+### 8.2 日志系统（可选扩展）
+
+可使用标准库`log`或第三方库如`logrus`、`zap`：
+
+```go
+// 简单日志封装
+package logger
+
+import (
+    "log"
+    "os"
+    "path/filepath"
+)
+
+var (
+    infoLogger  *log.Logger
+    errorLogger *log.Logger
+)
+
+func Init() {
+    configDir, _ := config.GetConfigDir()
+    logFile := filepath.Join(configDir, "voice-typer.log")
+    
+    f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+        log.Printf("Failed to open log file: %v", err)
+        return
+    }
+    
+    infoLogger = log.New(f, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+    errorLogger = log.New(f, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+}
+
+func Info(format string, v ...interface{}) {
+    if infoLogger != nil {
+        infoLogger.Printf(format, v...)
+    }
+}
+
+func Error(format string, v ...interface{}) {
+    if errorLogger != nil {
+        errorLogger.Printf(format, v...)
+    }
+}
+```
+
+---
+
+## 九、测试策略
+
+### 9.1 单元测试
+
+每个模块应有对应测试文件：
+- `config/config_test.go`
+- `audio/recorder_test.go`
+- `hotkey/parser_test.go`
+- `api/client_test.go`
+
+### 9.2 集成测试
+
+测试完整流程：
+1. 配置加载
+2. 服务器连接
+3. 录音->识别->输入
+
+### 9.3 平台兼容性测试
+
+在三个平台上分别测试：
+- 热键监听是否正常
+- 录音是否正常
+- 文本输入是否正常
+- UI显示是否正常
+
+---
+
+## 十、未来扩展方向
+
+1. **语音指令**：支持语音命令控制（如"删除"、"换行"）
+2. **多语言支持**：UI多语言
+3. **更多输入方法**：如直接粘贴到特定应用
+4. **统计功能**：记录使用次数、识别准确率
+5. **云同步**：配置和词库云端同步
+6. **插件系统**：支持第三方扩展
+
+---
+
+## 十一、关键实现提示
+
+### 11.1 robotgo事件循环注意事项
+
+`robotgo.EventStart()` 是阻塞调用，必须在goroutine中运行，且整个程序生命周期中只能调用一次。停止监听使用 `robotgo.EventEnd()`。
+
+### 11.2 音频格式
+
+ASR服务接受的格式是：
+- 采样率：16000 Hz
+- 通道数：1（单声道）
+- 格式：S16（16位有符号整数）
+- 字节序：小端（Little Endian）
+
+malgo录制的数据已是此格式，可直接发送。
+
+### 11.3 热键匹配的跨平台差异
+
+robotgo在不同平台上的键码和修饰键处理有差异，建议：
+1. 使用Rawcode而非Keycode进行匹配
+2. 针对不同平台测试并调整匹配逻辑
+3. 修饰键状态可能需要通过额外的按键状态跟踪
+
+### 11.4 文本输入的平台差异
+
+- **macOS**：robotgo.TypeStr 支持良好
+- **Windows**：robotgo.TypeStr 支持良好
+- **Linux X11**：robotgo.TypeStr 支持良好
+- **Linux Wayland**：robotgo不直接支持，需检测Wayland并调用ydotool
+
+检测Wayland后的处理：
+```go
+if platform.IsWayland() {
+    // 使用ydotool
+    cmd := exec.Command("ydotool", "type", text)
+    return cmd.Run()
+}
+```
+
+### 11.5 Fyne窗口置顶
+
+Fyne的窗口置顶在某些平台上支持有限，可能需要平台特定API：
+- macOS: NSWindow.setLevel
+- Windows: SetWindowPos with HWND_TOPMOST
+- Linux: _NET_WM_STATE_ABOVE
+
+### 11.6 配置文件热重载（可选）
+
+可使用文件监听库如`fsnotify`实现配置文件变更自动重载，但需注意：
+- 重载时需重新初始化相关模块
+- 避免重载过程中的竞态条件
+
+---
+
+## 十二、总结
+
+本设计文档详细定义了VoiceTyper跨平台语音输入工具的完整架构，包括：
+
+1. **模块化设计**：7个核心模块，职责清晰
+2. **跨平台支持**：通过成熟的Go库实现三大平台支持
+3. **配置灵活**：支持多服务器、热键自定义、词库管理
+4. **用户体验**：系统托盘、视觉提示、状态反馈
+5. **健壮性**：完善的错误处理和降级方案
+6. **可扩展性**：模块化设计便于后续功能扩展
+
+### 实现优先级建议
+
+**第一阶段（MVP）**：
+1. config模块（配置加载）
+2. audio模块（录音功能）
+3. api模块（ASR通信）
+4. input/simulator模块（文本输入）
+5. 简单的命令行版本测试
+
+**第二阶段（完善）**：
+6. hotkey模块（热键监听）
+7. controller模块（核心控制器）
+8. input/manager模块（输入管理）
+
+**第三阶段（UI）**：
+9. ui/tray模块（系统托盘）
+10. ui/indicator模块（录音提示）
+11. ui/notification模块（系统通知）
+
+**第四阶段（优化）**：
+12. 平台特定优化
+13. 错误处理完善
+14. 性能优化
+15. 打包与分发
+
+每个函数的实现都应遵循文档中的签名和逻辑说明，特别注意平台差异和错误处理。
