@@ -1,16 +1,15 @@
 """
 录音指示器 (Linux Wayland)
-使用 GTK4 + gtk-layer-shell 实现浮动窗口
+使用 GTK4 实现浮动窗口
 """
 import threading
 import time
+from typing import Optional
 import gi
 
 gi.require_version('Gtk', '4.0')
-gi.require_version('GtkLayerShell', '1.0')
 
 from gi.repository import Gtk, GLib, Gdk
-from gi.repository import GtkLayerShell as LayerShell
 
 
 class RecordingIndicator:
@@ -48,23 +47,6 @@ class RecordingIndicator:
         self.window.set_default_size(self.width, self.height)
         self.window.set_decorated(False)  # 无标题栏
         self.window.set_resizable(False)
-
-        # 检查并初始化 Layer Shell (Wayland 特性)
-        if LayerShell.is_supported():
-            LayerShell.init_for_window(self.window)
-            LayerShell.set_layer(self.window, LayerShell.Layer.OVERLAY)
-            # 锚定到顶部
-            LayerShell.set_anchor(self.window, LayerShell.Edge.TOP, True)
-            LayerShell.set_anchor(self.window, LayerShell.Edge.BOTTOM, False)
-            LayerShell.set_anchor(self.window, LayerShell.Edge.LEFT, False)
-            LayerShell.set_anchor(self.window, LayerShell.Edge.RIGHT, False)
-            # 设置边距以居中
-            LayerShell.set_margin(self.window, LayerShell.Edge.TOP, 100)
-            # 键盘交互模式
-            LayerShell.set_keyboard_mode(
-                self.window,
-                LayerShell.KeyboardMode.ON_DEMAND
-            )
 
         # 设置透明度
         self.window.set_opacity(self.opacity)

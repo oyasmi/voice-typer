@@ -30,8 +30,7 @@ sudo apt update
 sudo apt install -y python3 python3-pip python3-dev build-essential
 
 # GTK4 和 Layer Shell
-sudo apt install -y gir1.2-gtk-4.0 libgtk-4-1 \
-    gir1.2-gtklayershell-1.0 libgtk-layer-shell-1.0
+sudo apt install -y gir1.2-gtk-4.0 libgtk-4-1 gir1.2-gtklayershell-0.1 libgtk-layer-shell0
 
 # AppIndicator (系统托盘)
 sudo apt install -y gir1.2-ayatanaappindicator3-0.1 libayatana-appindicator3-1
