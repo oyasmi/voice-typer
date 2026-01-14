@@ -141,7 +141,7 @@ class RecordingIndicator:
         self._create_window()
         if self.window:
             self.status_label.set_label("🎤 录音中...")
-            self.time_label.set_label("0.0s")
+            self.time_label.set_label("0s")
             self.window.present()
 
     def hide(self):
@@ -169,10 +169,10 @@ class RecordingIndicator:
             if start and self.time_label:
                 elapsed = time.time() - start
                 GLib.idle_add(
-                    lambda: self.time_label.set_label(f"{elapsed:.1f}s")
+                    lambda: self.time_label.set_label(f"{int(elapsed)}s")
                 )
 
-            time.sleep(0.1)  # 每 100ms 更新一次
+            time.sleep(1.0)  # 每 1 秒更新一次
 
     def destroy(self):
         """销毁窗口并清理资源"""

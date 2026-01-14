@@ -92,9 +92,7 @@ class VoiceTyperController:
         def update_recording_time():
             if self._recording and self._recording_start_time:
                 elapsed = int(time.time() - self._recording_start_time)
-                minutes = elapsed // 60
-                seconds = elapsed % 60
-                self._update_status(f"录音中... ({minutes:02d}:{seconds:02d})")
+                self._update_status(f"录音中... ({elapsed}s)")
 
                 # 继续下一次更新
                 self._status_update_timer = threading.Timer(1.0, update_recording_time)
@@ -120,7 +118,7 @@ class VoiceTyperController:
 
         self._recording_start_time = time.time()
         self._recorder.start()
-        self._update_status("录音中... (00:00)")
+        self._update_status("录音中... (0s)")
         self._start_recording_timer()
 
     def _on_hotkey_release(self):

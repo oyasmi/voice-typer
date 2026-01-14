@@ -97,7 +97,7 @@ class RecordingIndicator:
         self._label.setTextColor_(NSColor.whiteColor())
         
         self._time_label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 8, self.width, 20))
-        self._time_label.setStringValue_("0.0s")
+        self._time_label.setStringValue_("0s")
         self._time_label.setBezeled_(False)
         self._time_label.setDrawsBackground_(False)
         self._time_label.setEditable_(False)
@@ -119,11 +119,11 @@ class RecordingIndicator:
                 start = self._start_time
             
             if start and self._time_label:
-                text = f"{time.time() - start:.1f}s"
+                text = f"{int(time.time() - start)}s"
                 label = self._time_label
                 run_on_main_thread(lambda: label.setStringValue_(text), wait=False)
-            
-            time.sleep(0.1)
+
+            time.sleep(1.0)
     
     def show(self):
         if not HAS_PYOBJC:
@@ -140,7 +140,7 @@ class RecordingIndicator:
             self._create_window()
             if self._window:
                 self._label.setStringValue_("🎤 录音中...")
-                self._time_label.setStringValue_("0.0s")
+                self._time_label.setStringValue_("0s")
                 self._window.orderFront_(None)
         
         run_on_main_thread(_show, wait=True)
