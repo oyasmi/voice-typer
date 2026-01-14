@@ -1,0 +1,10 @@
+# Windows dependencies for VoiceTyper client
+pynput>=1.7.6              # Global hotkeys & keyboard control
+sounddevice>=0.4.6         # Audio recording
+numpy>=1.23,<2.0           # Audio data processing
+tornado>=6.0               # HTTP client
+PyYAML>=6.0                # Configuration
+pyinstaller>=6.0           # Application packaging
+pystray                    # System tray (replaces rumps)
+pyperclip                  # Clipboard handling
+Pillow                     # Required by pystray for icon handling

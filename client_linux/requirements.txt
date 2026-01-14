@@ -1,0 +1,11 @@
+# VoiceTyper Linux Client - Python Dependencies
+
+# Core dependencies
+tornado>=6.0
+sounddevice>=0.4.6
+numpy>=1.23,<2.0
+PyYAML>=6.0
+
+# Linux-specific dependencies
+evdev>=1.6.0
+PyGObject>=3.50.0

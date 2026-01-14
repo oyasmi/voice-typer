@@ -1,0 +1,12 @@
+# VoiceTyper udev rules
+# 安装到 /etc/udev/rules.d/
+# 运行: sudo cp 99-voicetyper-input.rules /etc/udev/rules.d/
+# 重载: sudo udevadm control --reload-rules
+# 添加用户到 input 组: sudo usermod -aG input $USER
+# 注销并重新登录以使组权限生效
+
+# 允许 input 组访问所有输入设备
+KERNEL=="event*", SUBSYSTEM=="input", GROUP="input", MODE="0660"
+
+# 允许 input 组创建虚拟输入设备
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
