@@ -21,7 +21,7 @@ class TextInserter:
             try:
                 # 创建虚拟键盘设备
                 self._uinput = UInput(
-                    device_name='voicetyper-vkbd',
+                    name='voicetyper-vkbd',
                     events={
                         ecodes.EV_KEY: [
                             ecodes.KEY_LEFTCTRL,
