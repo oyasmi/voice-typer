@@ -94,7 +94,10 @@ class VoiceTyperApp:
         """启动应用程序"""
         logger.info("启动 VoiceTyper...")
         self.controller.start()
-        logger.info("VoiceTyper 已就绪，按 Ctrl+Space 开始录音")
+        # 从配置中读取热键并显示
+        key = self.config.hotkey.key.upper()
+        mods = '+'.join(m.title() for m in self.config.hotkey.modifiers)
+        logger.info(f"VoiceTyper 已就绪，按 {mods}+{key} 开始录音")
 
     def quit(self):
         """退出应用程序"""

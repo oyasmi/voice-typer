@@ -52,8 +52,6 @@ check-deps:
 	@command -v pip3 >/dev/null 2>&1 && echo "✓ pip3 is installed" || echo "✗ pip3 is NOT installed"
 	@command -v wl-copy >/dev/null 2>&1 && echo "✓ wl-clipboard is installed" || echo "✗ wl-clipboard is NOT installed (install with: sudo apt install wl-clipboard)"
 	@dpkg -l | grep -q gir1.2-gtk-4.0 && echo "✓ GTK4 Python bindings are installed" || echo "✗ GTK4 Python bindings are NOT installed (install with: sudo apt install gir1.2-gtk-4.0)"
-	@dpkg -l | grep -q gir1.2-gtklayershell-1.0 && echo "✓ gtk-layer-shell is installed" || echo "✗ gtk-layer-shell is NOT installed (install with: sudo apt install gir1.2-gtklayershell-1.0)"
-	@dpkg -l | grep -q gir1.2-ayatanaappindicator3-0.1 && echo "✓ AppIndicator is installed" || echo "✗ AppIndicator is NOT installed (install with: sudo apt install gir1.2-ayatanaappindicator3-0.1)"
 	@echo ""
 	@groups | grep -q input && echo "✓ User is in 'input' group" || echo "✗ User is NOT in 'input' group (run: make install-udev)"
 	@echo ""
