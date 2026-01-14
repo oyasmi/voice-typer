@@ -74,6 +74,10 @@ class VoiceTyperController:
             on_release=self._on_hotkey_release,
         )
 
+        # 预初始化文本插入器（创建 UInput 设备）
+        log("初始化虚拟键盘设备...")
+        from text_inserter import initialize
+        initialize()
         log("初始化完成")
 
     def _ensure_indicator(self):

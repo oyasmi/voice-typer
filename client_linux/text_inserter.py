@@ -30,6 +30,8 @@ class TextInserter:
                         ]
                     }
                 )
+                # 等待设备被系统识别
+                time.sleep(0.05)
             except PermissionError:
                 print("警告: 无法创建虚拟键盘设备，请检查 uinput 权限")
                 print("运行: sudo usermod -aG input $USER")
@@ -48,26 +50,27 @@ class TextInserter:
             return
 
         try:
-            # 步骤 1: 使用 wl-copy 写入剪贴板
-            process = subprocess.run(
+            # 步骤 1: 异步执行 wl-copy 写入剪贴板
+            process = subprocess.Popen(
                 ['wl-copy'],
-                input=text.encode('utf-8'),
-                check=True,
-                capture_output=True
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
             )
+            # 在后台线程发送数据，不阻塞主流程
+            process.stdin.write(text.encode('utf-8'))
+            process.stdin.close()
+            # 不等待进程完成，让它在后台运行
 
             # 步骤 2: 短暂等待剪贴板就绪
-            time.sleep(0.05)
+            time.sleep(0.08)
 
             # 步骤 3: 模拟 Ctrl+V 粘贴
             self._simulate_ctrl_v()
 
             # 步骤 4: 等待粘贴完成
-            time.sleep(0.05)
+            time.sleep(0.03)
 
-        except subprocess.CalledProcessError as e:
-            print(f"剪贴板操作失败: {e}")
-            print("提示: 请确保已安装 wl-clipboard (sudo apt install wl-clipboard)")
         except FileNotFoundError:
             print("错误: 未找到 wl-copy 命令")
             print("请安装: sudo apt install wl-clipboard")
@@ -83,20 +86,15 @@ class TextInserter:
             self._uinput.write(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1)
             self._uinput.syn()
 
-            # 短暂延迟确保按键顺序
-            time.sleep(0.01)
-
             # 按下 V
             self._uinput.write(ecodes.EV_KEY, ecodes.KEY_V, 1)
             self._uinput.syn()
 
             # 释放 V
-            time.sleep(0.01)
             self._uinput.write(ecodes.EV_KEY, ecodes.KEY_V, 0)
             self._uinput.syn()
 
             # 释放 Ctrl
-            time.sleep(0.01)
             self._uinput.write(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 0)
             self._uinput.syn()
 
@@ -115,6 +113,14 @@ class TextInserter:
 
 # 全局单例
 _inserter: Optional[TextInserter] = None
+
+
+def initialize():
+    """预初始化文本插入器（创建 UInput 设备）"""
+    global _inserter
+    if _inserter is None:
+        _inserter = TextInserter()
+        _inserter._ensure_uinput()
 
 
 def insert_text(text: str):
