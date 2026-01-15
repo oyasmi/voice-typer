@@ -13,6 +13,7 @@ rumps>=0.4.0
 
 # macOS 原生 UI
 pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0
 
 # 配置
 PyYAML>=6.0

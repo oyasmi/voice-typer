@@ -56,6 +56,13 @@ class VoiceTyperApp(rumps.App):
                 self.controller.stop()
             except:
                 pass
+
+        # 清理文本插入器资源
+        try:
+            from text_inserter import cleanup
+            cleanup()
+        except Exception as e:
+            print(f"清理文本插入器资源失败: {e}")
     
     def _async_init(self):
         try:
