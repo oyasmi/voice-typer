@@ -4,6 +4,7 @@
 """
 import time
 import threading
+import logging
 from typing import Optional, Callable
 
 from config import AppConfig, get_hotwords_string
@@ -12,6 +13,8 @@ from asr_client import ASRClient
 from hotkey_listener import HotkeyListener
 from text_inserter import insert_text
 from indicator import get_indicator
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class VoiceTyperController:
@@ -118,7 +121,7 @@ class VoiceTyperController:
             try:
                 self.on_status_change(status)
             except Exception as e:
-                print(f"状态更新回调错误: {e}")
+                logger.error(f"状态更新回调错误: {e}")
 
     def _on_hotkey_press(self):
         """热键按下处理"""
@@ -150,10 +153,12 @@ class VoiceTyperController:
                     text = self._asr_client.recognize(audio, self._hotwords)
                     if text:
                         insert_text(text)
+                        logger.info(f"识别: {text}")
                         self._update_status(f"已输入 ({len(text)}字)")
                     else:
                         self._update_status("未识别到文字")
                 except Exception as e:
+                    logger.error(f"识别失败: {e}")
                     self._update_status(f"识别失败: {e}")
 
                 time.sleep(1.5)

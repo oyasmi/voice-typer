@@ -3,7 +3,10 @@
 """
 import threading
 import time
+import logging
 from typing import Optional, Callable
+
+logger = logging.getLogger('VoiceTyper')
 
 try:
     import objc
@@ -127,7 +130,7 @@ class RecordingIndicator:
     
     def show(self):
         if not HAS_PYOBJC:
-            print("🎤 录音中...")
+            logger.info("🎤 录音中...")
             return
         
         with self._lock:

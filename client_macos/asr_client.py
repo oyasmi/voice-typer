@@ -3,9 +3,12 @@ ASR 服务客户端
 """
 import json
 import uuid
+import logging
 import numpy as np
 from typing import Optional
 from tornado.httpclient import HTTPClient, HTTPError
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class ASRClient:
@@ -93,10 +96,10 @@ class ASRClient:
             return data.get("text", "")
             
         except HTTPError as e:
-            print(f"ASR 请求失败: HTTP {e.code}")
+            logger.error(f"ASR 请求失败: HTTP {e.code}")
             return None
         except Exception as e:
-            print(f"ASR 请求错误: {e}")
+            logger.error(f"ASR 请求错误: {e}")
             return None
     
     def close(self):

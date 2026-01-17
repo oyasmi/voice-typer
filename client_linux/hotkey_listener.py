@@ -4,10 +4,13 @@
 """
 import glob
 import threading
+import logging
 from select import select
 from typing import Callable, Set, List, Optional
 
 from evdev import InputDevice, list_devices, ecodes, categorize
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class HotkeyListener:
@@ -172,7 +175,7 @@ class HotkeyListener:
                     try:
                         self.on_press_callback()
                     except Exception as e:
-                        print(f"热键回调错误: {e}")
+                        logger.error(f"热键回调错误: {e}")
 
             elif value == 0:  # 释放
                 if self._hotkey_active:
@@ -180,7 +183,7 @@ class HotkeyListener:
                     try:
                         self.on_release_callback()
                     except Exception as e:
-                        print(f"热键释放错误: {e}")
+                        logger.error(f"热键释放错误: {e}")
 
     def _event_loop(self):
         """事件循环 - 在独立线程中运行"""
@@ -188,15 +191,15 @@ class HotkeyListener:
         self._devices = self._find_keyboard_devices()
 
         if not self._devices:
-            print("警告: 未检测到键盘设备，请检查 udev 权限配置")
-            print("运行: sudo usermod -aG input $USER")
-            print("然后注销并重新登录")
+            logger.error("未检测到键盘设备，请检查 udev 权限配置")
+            logger.error("运行: sudo usermod -aG input $USER")
+            logger.error("然后注销并重新登录")
             return
 
         # 将设备文件描述符设置为非阻塞模式
         device_fds = [device.fd for device in self._devices]
 
-        print(f"热键监听已启动，检测到 {len(self._devices)} 个键盘设备")
+        logger.info(f"热键监听已启动，检测到 {len(self._devices)} 个键盘设备")
 
         while self._running:
             # 使用 select 等待设备可读

@@ -4,9 +4,12 @@
 """
 import subprocess
 import time
+import logging
 from typing import Optional
 
 from evdev import UInput, ecodes
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class TextInserter:
@@ -33,8 +36,8 @@ class TextInserter:
                 # 等待设备被系统识别
                 time.sleep(0.05)
             except PermissionError:
-                print("警告: 无法创建虚拟键盘设备，请检查 uinput 权限")
-                print("运行: sudo usermod -aG input $USER")
+                logger.error("无法创建虚拟键盘设备，请检查 uinput 权限")
+                logger.error("运行: sudo usermod -aG input $USER")
                 raise
 
     def insert(self, text: str):
@@ -72,10 +75,10 @@ class TextInserter:
             time.sleep(0.03)
 
         except FileNotFoundError:
-            print("错误: 未找到 wl-copy 命令")
-            print("请安装: sudo apt install wl-clipboard")
+            logger.error("未找到 wl-copy 命令")
+            logger.error("请安装: sudo apt install wl-clipboard")
         except Exception as e:
-            print(f"文本插入失败: {e}")
+            logger.error(f"文本插入失败: {e}")
 
     def _simulate_ctrl_v(self):
         """模拟 Ctrl+V 按键序列"""
@@ -99,7 +102,7 @@ class TextInserter:
             self._uinput.syn()
 
         except Exception as e:
-            print(f"虚拟键盘模拟失败: {e}")
+            logger.error(f"虚拟键盘模拟失败: {e}")
 
     def close(self):
         """清理资源"""

@@ -19,26 +19,12 @@ from controller import VoiceTyperController
 
 
 # 配置日志
-def setup_logging():
-    """配置日志系统"""
-    log_dir = get_config_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    log_file = log_dir / "app.log"
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-
-    return logging.getLogger(__name__)
-
-
-logger = setup_logging()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger('VoiceTyper')
 
 
 class VoiceTyperApp:
@@ -64,7 +50,6 @@ class VoiceTyperApp:
         logger.info("加载配置...")
         ensure_config_dir()
         self.config = load_config()
-        logger.info(f"配置已加载: {self.config}")
 
     def _init_controller(self):
         """初始化控制器"""
@@ -81,30 +66,27 @@ class VoiceTyperApp:
 
     def _signal_handler(self, signum, frame):
         """信号处理器"""
-        logger.info(f"收到信号 {signum}，正在退出...")
+        logger.info("正在退出...")
         self.quit()
         if self.loop:
             self.loop.quit()
 
     def _on_status_change(self, status: str):
         """状态变化回调"""
-        logger.info(f"状态: {status}")
+        # 不记录状态变化，太啰嗦
+        pass
 
     def start(self):
         """启动应用程序"""
-        logger.info("启动 VoiceTyper...")
         self.controller.start()
-        # 从配置中读取热键并显示
         key = self.config.hotkey.key.upper()
         mods = '+'.join(m.title() for m in self.config.hotkey.modifiers)
-        logger.info(f"VoiceTyper 已就绪，按 {mods}+{key} 开始录音")
+        logger.info(f"按 {mods}+{key} 开始录音")
 
     def quit(self):
         """退出应用程序"""
-        logger.info("正在停止 VoiceTyper...")
         if self.controller:
             self.controller.stop()
-        logger.info("VoiceTyper 已退出")
 
     def run(self):
         """运行主循环"""
@@ -119,22 +101,19 @@ def main():
     xdg_session = os.environ.get('XDG_SESSION_TYPE', '')
 
     if session_type != 'wayland' and xdg_session != 'wayland':
-        logger.warning("警告: 当前环境可能不是 Wayland，某些功能可能无法正常工作")
+        logger.warning("当前环境可能不是 Wayland，某些功能可能无法正常工作")
 
     # 创建应用程序
     try:
         app = VoiceTyperApp()
         app.start()
-
-        # 运行 GTK 主循环
-        logger.info("进入 GTK 主循环...")
         app.run()
 
     except KeyboardInterrupt:
-        logger.info("收到中断信号，正在退出...")
+        logger.info("正在退出...")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"应用程序错误: {e}", exc_info=True)
+        logger.error(f"应用程序错误: {e}")
         sys.exit(1)
 
 

@@ -3,7 +3,10 @@
 """
 import time
 import subprocess
+import logging
 from pynput.keyboard import Controller, Key
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class TextInserter:
@@ -38,9 +41,9 @@ class TextInserter:
             self._keyboard.release(Key.cmd)
             
             time.sleep(0.05)
-            
+
         except Exception as e:
-            print(f"文本插入失败: {e}")
+            logger.error(f"文本插入失败: {e}")
 
 
 _inserter = None

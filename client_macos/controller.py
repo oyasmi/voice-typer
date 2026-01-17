@@ -3,6 +3,7 @@
 """
 import time
 import threading
+import logging
 from typing import Optional, Callable, Set
 from pynput import keyboard
 
@@ -11,6 +12,8 @@ from recorder import AudioRecorder
 from asr_client import ASRClient
 from text_inserter import insert_text
 from indicator import get_indicator
+
+logger = logging.getLogger('VoiceTyper')
 
 
 class HotkeyListener:
@@ -97,7 +100,7 @@ class HotkeyListener:
                 try:
                     self.on_press_callback()
                 except Exception as e:
-                    print(f"热键回调错误: {e}")
+                    logger.error(f"热键回调错误: {e}")
     
     def _on_release(self, key):
         if self._stopped:
@@ -109,7 +112,7 @@ class HotkeyListener:
             try:
                 self.on_release_callback()
             except Exception as e:
-                print(f"热键释放错误: {e}")
+                logger.error(f"热键释放错误: {e}")
     
     def start(self):
         self._stopped = False
@@ -222,21 +225,23 @@ class VoiceTyperController:
         
         if len(audio) > 0:
             self._update_status("识别中...")
-            
+
             def do_recognize():
                 try:
                     text = self._asr_client.recognize(audio, self._hotwords)
                     if text:
                         insert_text(text)
+                        logger.info(f"识别: {text}")
                         self._update_status(f"已输入 ({len(text)}字)")
                     else:
                         self._update_status("未识别到文字")
                 except Exception as e:
+                    logger.error(f"识别失败: {e}")
                     self._update_status(f"识别失败: {e}")
-                
+
                 time.sleep(1.5)
                 self._update_status("就绪")
-            
+
             threading.Thread(target=do_recognize, daemon=True).start()
         else:
             self._update_status("录音为空")

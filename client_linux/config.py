@@ -3,12 +3,15 @@
 """
 import os
 import yaml
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
 
+logger = logging.getLogger('VoiceTyper')
+
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 CONFIG_DIR_NAME = "voice_typer"
 
 
@@ -66,14 +69,14 @@ def ensure_default_files():
     config_dir = ensure_config_dir()
     config_path = get_config_path()
     hotwords_path = get_default_hotwords_path()
-    
+
     if not config_path.exists():
         save_default_config(config_path)
-        print(f"已创建配置文件: {config_path}")
-    
+        logger.info(f"已创建配置文件: {config_path}")
+
     if not hotwords_path.exists():
         create_default_hotwords_file(hotwords_path)
-        print(f"已创建词库文件: {hotwords_path}")
+        logger.info(f"已创建词库文件: {hotwords_path}")
 
 
 def load_hotwords_from_file(file_path: Path) -> List[str]:
@@ -88,7 +91,7 @@ def load_hotwords_from_file(file_path: Path) -> List[str]:
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"警告: 加载词库失败 {file_path}: {e}")
+        logger.warning(f"加载词库失败 {file_path}: {e}")
     return words
 
 

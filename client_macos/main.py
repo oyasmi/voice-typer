@@ -8,6 +8,7 @@ import threading
 import subprocess
 import signal
 import atexit
+import logging
 
 import rumps
 
@@ -195,7 +196,7 @@ _app = None
 
 
 def signal_handler(signum, frame):
-    print("\n正在退出...")
+    logging.getLogger('VoiceTyper').info("正在退出...")
     if _app:
         _app._cleanup()
     sys.exit(0)
@@ -203,18 +204,23 @@ def signal_handler(signum, frame):
 
 def main():
     global _app
-    
+
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    logger = logging.getLogger('VoiceTyper')
+
     ensure_default_files()
-    
-    print("=" * 50)
-    print(f"{APP_NAME} v{APP_VERSION}")
-    print("=" * 50)
-    print(f"配置目录: {get_config_dir()}")
-    print()
-    
+
+    logger.info(f"{APP_NAME} v{APP_VERSION}")
+    logger.info(f"配置目录: {get_config_dir()}")
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
     _app = VoiceTyperApp()
     _app.run()
 
