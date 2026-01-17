@@ -10,7 +10,7 @@ type Modifiers struct {
 	Ctrl  bool
 	Alt   bool
 	Shift bool
-	Cmd   bool // macOS Command / Windows Windows键
+	Win   bool // Windows 键
 }
 
 // ParseHotkey 解析热键配置
@@ -23,12 +23,12 @@ func ParseHotkey(modifiers []string, key string) (*Modifiers, string, error) {
 		switch mod {
 		case "ctrl", "control":
 			mods.Ctrl = true
-		case "alt", "option":
+		case "alt":
 			mods.Alt = true
 		case "shift":
 			mods.Shift = true
-		case "cmd", "command":
-			mods.Cmd = true
+		case "win", "windows":
+			mods.Win = true
 		default:
 			return nil, "", fmt.Errorf("unknown modifier: %s", mod)
 		}

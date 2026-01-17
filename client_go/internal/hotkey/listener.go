@@ -46,8 +46,8 @@ func buildKeyCombo(modifiers *Modifiers, keyName string) []string {
 	if modifiers.Shift {
 		combo = append(combo, "shift")
 	}
-	if modifiers.Cmd {
-		combo = append(combo, "cmd")
+	if modifiers.Win {
+		combo = append(combo, "win")
 	}
 
 	// 添加主键

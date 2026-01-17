@@ -1,5 +1,5 @@
-# VoiceTyper 客户端配置示例
-# 文件位置：~/.config/voice-typer/config.yaml
+# VoiceTyper Windows 客户端配置示例
+# 文件位置：%APPDATA%\voice-typer\config.yaml
 
 # 服务器配置
 servers:
@@ -13,7 +13,7 @@ servers:
 # 热键配置
 hotkey:
   modifiers:
-    - "cmd"   # macOS使用cmd，Windows/Linux使用ctrl
+    - "ctrl"   # Windows 修饰键：ctrl, alt, shift, win
   key: "space"
 
 # 用户词库文件（相对于配置目录）

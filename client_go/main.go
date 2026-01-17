@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
 	"github.com/yourusername/voice-typer/internal/config"
 	"github.com/yourusername/voice-typer/internal/controller"
@@ -13,6 +11,11 @@ import (
 )
 
 func main() {
+	fmt.Println("==========================================")
+	fmt.Println("VoiceTyper v1.0.0")
+	fmt.Println("==========================================")
+	fmt.Println()
+
 	// 1. 加载配置
 	cfg, err := config.Load("")
 	if err != nil {
@@ -24,15 +27,21 @@ func main() {
 		log.Printf("Warning: failed to create default hotwords file: %v", err)
 	}
 
+	configDir, _ := config.GetConfigDir()
+	fmt.Printf("Config directory: %s\n", configDir)
+	fmt.Println()
+
 	// 2. 初始化控制器
 	ctrl, err := controller.NewController(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create controller: %v", err)
 	}
+	defer ctrl.Close()
 
-	// 3. 创建托盘应用（先声明变量）
+	// 3. 创建托盘应用
 	var tray *ui.TrayApp
-	tray = ui.NewTrayApp("VoiceTyper",
+	tray = ui.NewTrayApp(
+		"VoiceTyper",
 		func() { // onToggle
 			if ctrl.IsEnabled() {
 				if err := ctrl.Stop(); err != nil {
@@ -55,6 +64,7 @@ func main() {
 			if err := ctrl.Close(); err != nil {
 				log.Printf("Error closing controller: %v", err)
 			}
+			tray.Quit()
 		},
 	)
 
@@ -66,7 +76,6 @@ func main() {
 
 	if err != nil {
 		log.Fatalf("Failed to initialize controller: %v", err)
-		os.Exit(1)
 	}
 
 	// 5. 自动启用
@@ -78,32 +87,17 @@ func main() {
 		ui.Notify("VoiceTyper", "Voice input enabled")
 	}
 
-	// 6. 设置信号处理
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	fmt.Println("Ready! Press Ctrl+Space to start voice input.")
 
-	// 7. 在后台goroutine中监听信号
-	go func() {
-		<-sigChan
-		fmt.Println("\nShutting down...")
-		// 清理资源
-		if err := ctrl.Close(); err != nil {
-			log.Printf("Error closing controller: %v", err)
-		}
-		tray.Quit()
-	}()
-
-	// 8. 启动应用（在主线程中，阻塞运行）
+	// 6. 运行托盘应用（阻塞）
 	tray.Run()
-
-	fmt.Println("Goodbye!")
 }
 
 // getHotkeyString 获取热键字符串用于显示
 func getHotkeyString(cfg *config.Config) string {
 	mods := ""
 	for _, m := range cfg.Hotkey.Modifiers {
-		mods += m + "+"
+		mods += strings.ToUpper(m) + "+"
 	}
-	return mods + cfg.Hotkey.Key
+	return mods + strings.ToUpper(cfg.Hotkey.Key)
 }

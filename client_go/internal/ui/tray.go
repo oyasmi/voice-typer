@@ -24,10 +24,11 @@ type TrayApp struct {
 func NewTrayApp(appName string, onToggle, onQuit func()) *TrayApp {
 	a := app.NewWithID("com.voicetyper.app")
 
-	// 设置应用图标
-	if resource, err := fyne.LoadResourceFromPath("./assets/icon.png"); err == nil {
-		a.SetIcon(resource)
-	}
+	// 设置应用图标（可选）
+	// 图标文件应与可执行文件在同一目录
+	// if resource, err := fyne.LoadResourceFromPath("icon.png"); err == nil {
+	// 	a.SetIcon(resource)
+	// }
 
 	tray := &TrayApp{
 		app:      a,
@@ -51,16 +52,6 @@ func (t *TrayApp) setupMenu() {
 		}
 	})
 
-	configItem := fyne.NewMenuItem("Open Config", func() {
-		// 打开配置文件
-		// TODO: 实现配置文件打开逻辑
-	})
-
-	aboutItem := fyne.NewMenuItem("About", func() {
-		// 显示关于对话框
-		// TODO: 实现关于对话框
-	})
-
 	quitItem := fyne.NewMenuItem("Quit", func() {
 		if t.onQuit != nil {
 			t.onQuit()
@@ -72,9 +63,6 @@ func (t *TrayApp) setupMenu() {
 		t.statusItem,
 		fyne.NewMenuItemSeparator(),
 		t.toggleItem,
-		fyne.NewMenuItemSeparator(),
-		configItem,
-		aboutItem,
 		fyne.NewMenuItemSeparator(),
 		quitItem,
 	)

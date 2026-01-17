@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/yourusername/voice-typer/pkg/platform"
 )
 
 // GetDefaultConfig 获取默认配置
@@ -22,7 +20,7 @@ func GetDefaultConfig() *Config {
 			},
 		},
 		Hotkey: HotkeyConfig{
-			Modifiers: []string{"cmd"},
+			Modifiers: []string{"ctrl"},
 			Key:       "space",
 		},
 		UI: UIConfig{
@@ -39,7 +37,7 @@ func GetDefaultConfig() *Config {
 
 // CreateDefaultHotwordsFile 创建默认词库文件
 func CreateDefaultHotwordsFile() error {
-	configDir, err := platform.GetConfigDir()
+	configDir, err := GetConfigDir()
 	if err != nil {
 		return err
 	}

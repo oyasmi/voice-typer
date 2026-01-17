@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yourusername/voice-typer/pkg/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,9 +46,14 @@ type InputConfig struct {
 	Method string `yaml:"method"`
 }
 
-// GetConfigDir 获取配置目录路径
+// GetConfigDir 获取配置目录路径 (Windows: %APPDATA%\voice-typer)
 func GetConfigDir() (string, error) {
-	return platform.GetConfigDir()
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return "", fmt.Errorf("APPDATA environment variable not set")
+	}
+	configDir := filepath.Join(appData, "voice-typer")
+	return configDir, nil
 }
 
 // GetConfigPath 获取配置文件路径
