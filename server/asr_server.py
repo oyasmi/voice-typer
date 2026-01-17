@@ -8,6 +8,7 @@ import json
 import time
 import signal
 import argparse
+import logging
 import numpy as np
 
 import tornado.ioloop
@@ -17,6 +18,15 @@ import tornado.httpserver
 from recognizer import SpeechRecognizer
 from auth import BaseAuthenticatedHandler
 from llm_client import LLMClient
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout
+)
+logger = logging.getLogger("VoiceTyper")
 
 recognizer: SpeechRecognizer = None
 llm_client: LLMClient = None
@@ -75,19 +85,17 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                     original_text = text
                     text = await llm_client.correct_text(text)
                     llm_elapsed = round(time.time() - t1, 3)
-                    
+
                     # 输出修正前后对比
                     if original_text != text:
-                        print("=" * 60)
-                        print(f"LLM 修正 (耗时: {llm_elapsed}s)")
-                        print(f"修正前: {original_text}")
-                        print(f"修正后: {text}")
-                        print("=" * 60)
+                        logger.info(f"LLM修正耗时: {llm_elapsed}s")
+                        logger.info(f"  修正前: {original_text}")
+                        logger.info(f"  修正后: {text}")
                     else:
-                        print(f"LLM 修正: 无需修改 (耗时: {llm_elapsed}s)")
-                        
+                        logger.info(f"LLM修正: 无需修改 (耗时:{llm_elapsed}s)")
+
                 except Exception as e:
-                    print(f"LLM 修正失败: {e}")
+                    logger.warning(f"LLM修正失败: {e}")
                     # 继续返回原始识别结果
                     pass
             
@@ -159,27 +167,26 @@ def main():
     # 处理API keys
     api_keys = load_api_keys(args)
     if api_keys:
-        print(f"API 密钥: 已配置 {len(api_keys)} 个密钥")
+        logger.info(f"API密钥: 已配置 {len(api_keys)} 个")
     elif args.host != "127.0.0.1":
-        print("警告: 远程访问未配置API密钥，建议使用 --api-keys 参数")
+        logger.warning("远程访问未配置API密钥，建议使用 --api-keys 参数")
 
-    print("=" * 50)
-    print("VoiceTyper 语音识别服务")
-    print("=" * 50)
-    print()
-    print(f"地址: http://{args.host}:{args.port}")
-    print(f"模型: {args.model}")
-    print(f"标点: {args.punc_model}")
-    print(f"设备: {args.device}")
+    logger.info("=" * 50)
+    logger.info("VoiceTyper 语音识别服务")
+    logger.info("=" * 50)
+    logger.info(f"地址: http://{args.host}:{args.port}")
+    logger.info(f"模型: {args.model}")
+    logger.info(f"标点: {args.punc_model}")
+    logger.info(f"设备: {args.device}")
     if args.host == "127.0.0.1":
-        print("鉴权: 本地地址，已跳过")
+        logger.info("鉴权: 本地地址，已跳过")
     else:
-        print(f"鉴权: {'已启用' if api_keys else '未启用（不安全）'}")
-    
+        logger.info(f"鉴权: {'已启用' if api_keys else '未启用（不安全）'}")
+
     # 初始化 LLM 客户端
     global llm_client
     if args.llm_base_url and args.llm_api_key:
-        print(f"LLM: 已启用 ({args.llm_model})")
+        logger.info(f"LLM: 已启用 ({args.llm_model})")
         llm_client = LLMClient(
             base_url=args.llm_base_url,
             api_key=args.llm_api_key,
@@ -188,9 +195,7 @@ def main():
             max_tokens=args.llm_max_tokens,
         )
     else:
-        print("LLM: 未启用")
-    
-    print()
+        logger.info("LLM: 未启用")
     
     global recognizer
     punc = args.punc_model if args.punc_model != "none" else None
@@ -200,21 +205,21 @@ def main():
         device=args.device,
     )
     
-    print("初始化模型...")
+    logger.info("初始化模型...")
     t0 = time.time()
-    recognizer.initialize(log=print)
-    print(f"\n初始化完成，耗时 {time.time() - t0:.1f}s\n")
-    
+    recognizer.initialize()
+    elapsed = time.time() - t0
+    logger.info(f"初始化完成，耗时 {elapsed:.1f}s")
+
     app = make_app(api_keys=api_keys, server_host=args.host)
     server = tornado.httpserver.HTTPServer(app, max_buffer_size=100*1024*1024)  # 100MB
     server.listen(args.port, args.host)
-    
-    print(f"服务已启动: http://{args.host}:{args.port}")
-    print("Ctrl+C 停止")
-    print()
-    
+
+    logger.info(f"服务已启动: http://{args.host}:{args.port}")
+    logger.info("按 Ctrl+C 停止服务")
+
     def shutdown(signum, frame):
-        print("\n停止服务...")
+        logger.info("停止服务...")
         tornado.ioloop.IOLoop.current().stop()
         import sys
         sys.exit(0)

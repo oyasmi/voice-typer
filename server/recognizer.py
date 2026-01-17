@@ -3,10 +3,12 @@ FunASR 语音识别封装
 """
 import time
 import warnings
+import logging
 import numpy as np
-from typing import Optional, Callable
+from typing import Optional
 
 warnings.filterwarnings('ignore')
+logger = logging.getLogger("VoiceTyper")
 
 
 class SpeechRecognizer:
@@ -26,25 +28,23 @@ class SpeechRecognizer:
         self._punc_model = None
         self._initialized = False
     
-    def initialize(self, log: Optional[Callable[[str], None]] = None):
+    def initialize(self):
         """初始化模型"""
-        log = log or print
-        
         from funasr import AutoModel
-        
+
         # 加载主模型
-        log(f"[1/2] 加载语音识别模型: {self.model_name}")
+        logger.info(f"[1/2] 加载语音识别模型: {self.model_name}")
         t0 = time.time()
         self._model = AutoModel(
             model=self.model_name,
             device=self.device,
             disable_update=True,
         )
-        log(f"      完成，耗时 {time.time() - t0:.1f}s")
-        
+        logger.info(f"      完成，耗时 {time.time() - t0:.1f}s")
+
         # 加载标点模型
         if self.punc_model_name:
-            log(f"[2/2] 加载标点恢复模型: {self.punc_model_name}")
+            logger.info(f"[2/2] 加载标点恢复模型: {self.punc_model_name}")
             t0 = time.time()
             try:
                 self._punc_model = AutoModel(
@@ -52,13 +52,13 @@ class SpeechRecognizer:
                     device=self.device,
                     disable_update=True,
                 )
-                log(f"      完成，耗时 {time.time() - t0:.1f}s")
+                logger.info(f"      完成，耗时 {time.time() - t0:.1f}s")
             except Exception as e:
-                log(f"      标点模型加载失败: {e}")
+                logger.warning(f"      标点模型加载失败: {e}")
                 self._punc_model = None
         else:
-            log("[2/2] 标点恢复模型: 已禁用")
-        
+            logger.info("[2/2] 标点恢复模型: 已禁用")
+
         self._initialized = True
     
     @property

@@ -3,7 +3,10 @@
 简单的 OpenAI 兼容 LLM 客户端
 """
 import json
+import logging
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest, HTTPError
+
+logger = logging.getLogger("VoiceTyper")
 
 
 class LLMClient:
@@ -164,7 +167,9 @@ class LLMClient:
             
         except HTTPError as e:
             error_body = e.response.body.decode('utf-8') if e.response else str(e)
+            logger.error(f"LLM API 错误 ({e.code}): {error_body}")
             raise Exception(f"LLM API 错误 ({e.code}): {error_body}")
         except Exception as e:
+            logger.error(f"LLM 调用失败: {str(e)}")
             raise Exception(f"LLM 调用失败: {str(e)}")
             

@@ -1,7 +1,10 @@
 """
 鉴权基类模块 - 使用Tornado原生鉴权机制
 """
+import logging
 import tornado.web
+
+logger = logging.getLogger("VoiceTyper")
 
 
 def is_localhost(host: str) -> bool:
@@ -38,10 +41,15 @@ class BaseAuthenticatedHandler(tornado.web.RequestHandler):
         # 提取Bearer token
         auth_header = self.request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
+            logger.warning(f"鉴权失败: 缺少或无效的Authorization头 | {self.request.remote_ip}")
             return None
 
         token = auth_header[7:]  # 移除"Bearer "前缀
         api_keys = self.application.settings.get('api_keys', [])
 
-        return token if token in api_keys else None
+        if token not in api_keys:
+            logger.warning(f"鉴权失败: 无效的API密钥 | {self.request.remote_ip}")
+            return None
+
+        return token
         
