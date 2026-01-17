@@ -28,15 +28,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("VoiceTyper")
 
-recognizer: SpeechRecognizer = None
-llm_client: LLMClient = None
-
 
 class HealthHandler(BaseAuthenticatedHandler):
     """健康检查"""
 
     @tornado.web.authenticated
     def get(self):
+        recognizer = self.application.settings.get('recognizer')
+        llm_client = self.application.settings.get('llm_client')
         self.write({
             "status": "ok",
             "ready": recognizer.is_ready if recognizer else False,
@@ -49,6 +48,9 @@ class RecognizeHandler(BaseAuthenticatedHandler):
 
     @tornado.web.authenticated
     async def post(self):
+        recognizer = self.application.settings.get('recognizer')
+        llm_client = self.application.settings.get('llm_client')
+
         try:
             # 获取音频文件
             if "audio" not in self.request.files:
@@ -58,9 +60,27 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             
             audio_file = self.request.files["audio"][0]
             audio_bytes = audio_file["body"]
-            
-            # 转换为 numpy 数组 (float32, 16kHz)
-            audio = np.frombuffer(audio_bytes, dtype=np.float32)
+
+            # 验证数据大小 (50MB 限制)
+            if len(audio_bytes) > 50 * 1024 * 1024:
+                self.set_status(413)
+                self.write({"error": "音频文件过大，最大支持 50MB"})
+                return
+
+            # 验证格式并转换为 numpy 数组 (float32, 16kHz)
+            try:
+                audio = np.frombuffer(audio_bytes, dtype=np.float32)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"音频格式无效: {e}")
+                self.set_status(400)
+                self.write({"error": "音频格式无效，需要 float32 格式"})
+                return
+
+            # 验证数据长度
+            if len(audio) == 0:
+                self.set_status(400)
+                self.write({"error": "音频数据为空"})
+                return
             
             # 获取参数
             hotwords = self.get_argument("hotwords", "")
@@ -116,12 +136,14 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             self.write({"error": str(e)})
 
 
-def make_app(api_keys=None, server_host="127.0.0.1"):
+def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client=None):
     """创建Tornado应用
 
     Args:
         api_keys: API key列表
         server_host: 服务器监听地址
+        recognizer: 语音识别器实例
+        llm_client: LLM 客户端实例
     """
     app = tornado.web.Application([
         (r"/health", HealthHandler),
@@ -131,6 +153,8 @@ def make_app(api_keys=None, server_host="127.0.0.1"):
     # 将配置存储到应用设置中
     app.settings['api_keys'] = api_keys or []
     app.settings['server_host'] = server_host
+    app.settings['recognizer'] = recognizer
+    app.settings['llm_client'] = llm_client
 
     return app
 
@@ -154,16 +178,16 @@ def main():
     parser.add_argument("--punc-model", default="ct-punc", help="标点模型 (none 禁用)")
     parser.add_argument("--device", default="cpu", help="设备: mps, cpu")
     parser.add_argument("--api-keys", help="API 密钥（逗号分隔多个密钥）")
-    
+
     # LLM 相关参数
     parser.add_argument("--llm-base-url", help="LLM API 基础URL (如 https://api.openai.com/v1)")
     parser.add_argument("--llm-api-key", help="LLM API 密钥")
     parser.add_argument("--llm-model", default="gpt-4o-mini", help="LLM 模型名称")
     parser.add_argument("--llm-temperature", type=float, default=0.3, help="LLM 温度参数 (0-2)")
     parser.add_argument("--llm-max-tokens", type=int, default=600, help="LLM 最大生成token数")
-    
+
     args = parser.parse_args()
-    
+
     # 处理API keys
     api_keys = load_api_keys(args)
     if api_keys:
@@ -184,7 +208,7 @@ def main():
         logger.info(f"鉴权: {'已启用' if api_keys else '未启用（不安全）'}")
 
     # 初始化 LLM 客户端
-    global llm_client
+    llm_client = None
     if args.llm_base_url and args.llm_api_key:
         logger.info(f"LLM: 已启用 ({args.llm_model})")
         llm_client = LLMClient(
@@ -196,22 +220,28 @@ def main():
         )
     else:
         logger.info("LLM: 未启用")
-    
-    global recognizer
+
+    # 初始化识别器
     punc = args.punc_model if args.punc_model != "none" else None
     recognizer = SpeechRecognizer(
         model_name=args.model,
         punc_model=punc,
         device=args.device,
     )
-    
+
     logger.info("初始化模型...")
     t0 = time.time()
     recognizer.initialize()
     elapsed = time.time() - t0
     logger.info(f"初始化完成，耗时 {elapsed:.1f}s")
 
-    app = make_app(api_keys=api_keys, server_host=args.host)
+    # 创建应用并传递识别器和LLM客户端
+    app = make_app(
+        api_keys=api_keys,
+        server_host=args.host,
+        recognizer=recognizer,
+        llm_client=llm_client
+    )
     server = tornado.httpserver.HTTPServer(app, max_buffer_size=100*1024*1024)  # 100MB
     server.listen(args.port, args.host)
 
@@ -220,13 +250,15 @@ def main():
 
     def shutdown(signum, frame):
         logger.info("停止服务...")
+        # 清理资源
+        if llm_client:
+            llm_client.close()
         tornado.ioloop.IOLoop.current().stop()
-        import sys
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    
+
     tornado.ioloop.IOLoop.current().start()
 
 

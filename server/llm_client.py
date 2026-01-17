@@ -172,4 +172,10 @@ class LLMClient:
         except Exception as e:
             logger.error(f"LLM 调用失败: {str(e)}")
             raise Exception(f"LLM 调用失败: {str(e)}")
+
+    def close(self):
+        """关闭 HTTP 客户端，释放资源"""
+        if self.http_client:
+            self.http_client.close()
+            self.http_client = None
             
