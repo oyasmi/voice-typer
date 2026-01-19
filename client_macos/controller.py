@@ -140,6 +140,9 @@ class VoiceTyperController:
         self._hotwords = get_hotwords_string(config.hotwords)
         
         self.on_status_change: Optional[Callable[[str], None]] = None
+        self._input_count = 0
+        self._char_count = 0
+        self.on_stats_change: Optional[Callable[[], None]] = None
     
     def initialize(self, callback: Optional[Callable[[str], None]] = None):
         """初始化"""
@@ -202,6 +205,15 @@ class VoiceTyperController:
     def _update_status(self, status: str):
         if self.on_status_change:
             self.on_status_change(status)
+
+    def get_stats_display(self) -> str:
+        """Get formatted stats for display"""
+        chars = self._char_count
+        if chars >= 10000:
+            chars_str = f"{chars/10000:.1f}万字"
+        else:
+            chars_str = f"{chars}字"
+        return f"已输入: {chars_str}（{self._input_count}次）"
     
     def _on_hotkey_press(self):
         with self._lock:
@@ -232,6 +244,13 @@ class VoiceTyperController:
                     if text:
                         insert_text(text)
                         logger.info(f"识别: {text}")
+
+                        # Track statistics
+                        self._input_count += 1
+                        self._char_count += len(text)
+                        if self.on_stats_change:
+                            self.on_stats_change()
+
                         self._update_status(f"已输入 ({len(text)}字)")
                     else:
                         self._update_status("未识别到文字")

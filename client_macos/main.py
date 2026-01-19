@@ -33,11 +33,14 @@ class VoiceTyperApp(rumps.App):
         
         self._status_item = rumps.MenuItem("状态: 初始化中...", callback=None)
         self._toggle_item = rumps.MenuItem("启用语音输入", callback=self.toggle_enabled)
+        self._stats_item = rumps.MenuItem("已输入: 0字（0次）", callback=None)
         
         self.menu = [
             self._status_item,
             None,
             self._toggle_item,
+            None,
+            self._stats_item,
             None,
             rumps.MenuItem("打开配置文件", callback=self.open_config),
             rumps.MenuItem("打开词库文件", callback=self.open_hotwords),
@@ -68,14 +71,16 @@ class VoiceTyperApp(rumps.App):
             self._update_status("初始化...")
             self.controller = VoiceTyperController(self.config)
             self.controller.on_status_change = self._on_status
+            self.controller.on_stats_change = self._on_stats_change
             self.controller.initialize(callback=self._log)
             
             self._initialized = True
             
             hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
             self._toggle_item.title = f"禁用语音输入 ({hotkey})"
-            
+
             self._auto_enable()
+            self._on_stats_change()  # Initialize stats display
             self._log(f"启动完成，耗时 {time.time() - t0:.1f}s")
             
         except Exception as e:
@@ -111,6 +116,11 @@ class VoiceTyperApp(rumps.App):
     
     def _on_status(self, status: str):
         self._update_status(status)
+
+    def _on_stats_change(self):
+        """Update stats display when statistics change"""
+        if self.controller:
+            self._stats_item.title = self.controller.get_stats_display()
     
     def toggle_enabled(self, sender):
         if not self._initialized:
