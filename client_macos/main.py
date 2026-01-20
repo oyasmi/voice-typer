@@ -11,6 +11,7 @@ import atexit
 import logging
 
 import rumps
+from Foundation import NSOperationQueue
 
 from config import (
     load_config, get_config_path, get_config_dir,
@@ -33,8 +34,6 @@ class VoiceTyperApp(rumps.App):
 
         self._status_item = rumps.MenuItem("", callback=None)
         self._stats_item = rumps.MenuItem("已输入：0字（0次）", callback=None)
-        self._recent_menu = rumps.MenuItem("📝 最近转换", callback=None)
-        self._recent_items: list[rumps.MenuItem] = []
 
         self._prefs_item = rumps.MenuItem("🔧 偏好设置...", callback=self.open_config_dir)
         self._about_item = rumps.MenuItem("ℹ️ 关于", callback=self.show_about)
@@ -45,10 +44,6 @@ class VoiceTyperApp(rumps.App):
             None,
             self._stats_item,
             None,
-            None,  # 分隔线
-            self._recent_menu,
-            None,
-            None,  # 分隔线
             self._prefs_item,
             self._about_item,
             self._quit_item,
@@ -75,7 +70,6 @@ class VoiceTyperApp(rumps.App):
             self.controller = VoiceTyperController(self.config)
             self.controller.on_status_change = self._on_status
             self.controller.on_stats_change = self._on_stats_change
-            self.controller.on_recent_texts_change = self._update_recent_menu
             self.controller.initialize(callback=self._log)
 
             self._initialized = True
@@ -96,7 +90,11 @@ class VoiceTyperApp(rumps.App):
         self._update_status("就绪")
 
         hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
-        rumps.notification(APP_NAME, "", f"按住 {hotkey} 开始语音输入")
+        try:
+            rumps.notification(APP_NAME, "", f"按住 {hotkey} 开始语音输入")
+        except RuntimeError as e:
+            # 开发模式下直接运行 Python 脚本时，没有 app bundle，通知功能不可用
+            self._log(f"按住 {hotkey} 开始语音输入")
     
     def _log(self, msg: str):
         print(f"[{APP_NAME}] {msg}")
@@ -130,39 +128,16 @@ class VoiceTyperApp(rumps.App):
             self._status_item.title = f"⚪ {status}"
     
     def _on_status(self, status: str):
-        self._update_status(status)
+        # Schedule UI update on main thread
+        NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: self._update_status(status))
 
     def _on_stats_change(self):
         """Update stats display when statistics change"""
-        if self.controller:
-            self._stats_item.title = self.controller.get_stats_display()
-
-    def _update_recent_menu(self):
-        """更新最近转换菜单项"""
-        if not self.controller:
-            return
-
-        recent_texts = self.controller.get_recent_texts_display()
-
-        # 移除旧的菜单项
-        for item in self._recent_items:
-            try:
-                self._recent_menu.remove(item)
-            except:
-                pass
-        self._recent_items.clear()
-
-        # 添加新的菜单项
-        for text in recent_texts:
-            item = rumps.MenuItem(f"  {text}", callback=None)
-            self._recent_menu.add(item)
-            self._recent_items.append(item)
-
-        # 如果没有最近记录，显示提示
-        if not recent_texts:
-            item = rumps.MenuItem("  暂无记录", callback=None)
-            self._recent_menu.add(item)
-            self._recent_items.append(item)
+        # Schedule UI update on main thread
+        def update():
+            if self.controller:
+                self._stats_item.title = self.controller.get_stats_display()
+        NSOperationQueue.mainQueue().addOperationWithBlock_(update)
 
     def open_config_dir(self, _):
         ensure_default_files()

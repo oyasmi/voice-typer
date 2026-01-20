@@ -11,7 +11,7 @@ from pathlib import Path
 logger = logging.getLogger('VoiceTyper')
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 CONFIG_DIR_NAME = "voice_typer"
 
 
