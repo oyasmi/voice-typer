@@ -3,7 +3,7 @@
 .PHONY: install run clean help install-udev check-deps
 
 APP_NAME = VoiceTyper
-VERSION = 1.3.0
+VERSION = 1.3.1
 
 # Default target
 help:

@@ -8,13 +8,15 @@ import sys
 import os
 import gi
 import logging
+import threading
+import time
 from pathlib import Path
 
 gi.require_version('Gtk', '4.0')
 
 from gi.repository import Gtk, GLib
 
-from config import load_config, get_config_dir, ensure_config_dir
+from config import load_config, get_config_dir, ensure_config_dir, APP_VERSION
 from controller import VoiceTyperController
 
 
@@ -35,27 +37,54 @@ class VoiceTyperApp:
         self.config = None
         self.controller = None
         self.loop = None
+        self._initialized = False
 
-        # 初始化配置
-        self._init_config()
-
-        # 初始化控制器
-        self._init_controller()
-
-        # 设置信号处理
+        # Start async initialization
+        threading.Thread(target=self._async_init, daemon=True).start()
         self._setup_signal_handlers()
 
-    def _init_config(self):
-        """初始化配置"""
-        logger.info("加载配置...")
-        ensure_config_dir()
-        self.config = load_config()
+    def _async_init(self):
+        """Asynchronous initialization (background thread)"""
+        try:
+            t0 = time.time()
 
-    def _init_controller(self):
-        """初始化控制器"""
-        logger.info("初始化控制器...")
-        self.controller = VoiceTyperController(self.config)
-        self.controller.initialize(callback=self._on_status_change)
+            self._update_status("加载配置...")
+            ensure_config_dir()
+            self.config = load_config()
+
+            self._update_status("初始化...")
+            self.controller = VoiceTyperController(self.config)
+            self.controller.on_status_change = self._on_status_change
+            self.controller.on_stats_change = self._on_stats_change
+            self.controller.initialize(callback=self._log)
+
+            self._initialized = True
+            self.start()
+
+            self._log(f"启动完成，耗时 {time.time() - t0:.1f}s")
+
+        except Exception as e:
+            self._update_status(f"初始化失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _update_status(self, status: str):
+        """Update status display"""
+        logger.info(status)
+
+    def _on_status_change(self, status: str):
+        """Status change callback"""
+        # Linux console doesn't need per-status updates
+        pass
+
+    def _on_stats_change(self):
+        """Statistics change callback"""
+        # Could log stats periodically if desired
+        pass
+
+    def _log(self, msg: str):
+        """Log message"""
+        logger.info(msg)
 
     def _setup_signal_handlers(self):
         """设置信号处理器"""
@@ -71,13 +100,8 @@ class VoiceTyperApp:
         if self.loop:
             self.loop.quit()
 
-    def _on_status_change(self, status: str):
-        """状态变化回调"""
-        # 不记录状态变化，太啰嗦
-        pass
-
     def start(self):
-        """启动应用程序"""
+        """Start after initialization"""
         self.controller.start()
         key = self.config.hotkey.key.upper()
         mods = '+'.join(m.title() for m in self.config.hotkey.modifiers)
