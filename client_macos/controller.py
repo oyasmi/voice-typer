@@ -143,6 +143,8 @@ class VoiceTyperController:
         self._input_count = 0
         self._char_count = 0
         self.on_stats_change: Optional[Callable[[], None]] = None
+        self.on_recent_texts_change: Optional[Callable[[], None]] = None
+        self._recent_texts: list[str] = []  # 最近的识别文本列表
     
     def initialize(self, callback: Optional[Callable[[str], None]] = None):
         """初始化"""
@@ -213,7 +215,35 @@ class VoiceTyperController:
             chars_str = f"{chars/10000:.1f}万字"
         else:
             chars_str = f"{chars}字"
-        return f"已输入: {chars_str}（{self._input_count}次）"
+        return f"已输入：{chars_str}（{self._input_count}次）"
+
+    def _add_recent_text(self, text: str):
+        """添加最近识别的文本，最多保留3条
+
+        添加后会触发 on_recent_texts_change 回调通知 UI 更新
+        """
+        with self._lock:
+            self._recent_texts.insert(0, text)
+            if len(self._recent_texts) > 3:
+                self._recent_texts.pop()
+        # 在锁外触发回调，避免死锁
+        if self.on_recent_texts_change:
+            self.on_recent_texts_change()
+
+    def get_recent_texts_display(self) -> list[str]:
+        """获取最近转换的文本列表用于显示（截断长文本）
+
+        使用锁保护，避免在迭代时列表被其他线程修改
+        """
+        MAX_DISPLAY_LENGTH = 20
+        results = []
+        with self._lock:  # 添加锁保护
+            for text in self._recent_texts:
+                if len(text) > MAX_DISPLAY_LENGTH:
+                    results.append(f'"{text[:MAX_DISPLAY_LENGTH]}..."')
+                else:
+                    results.append(f'"{text}"')
+        return results
     
     def _on_hotkey_press(self):
         with self._lock:
@@ -241,9 +271,13 @@ class VoiceTyperController:
             def do_recognize():
                 try:
                     text = self._asr_client.recognize(audio, self._hotwords)
-                    if text:
+                    # 检查文本非空且非纯空格
+                    if text and text.strip():
                         insert_text(text)
                         logger.info(f"识别: {text}")
+
+                        # 追踪最近的文本
+                        self._add_recent_text(text)
 
                         # Track statistics
                         self._input_count += 1

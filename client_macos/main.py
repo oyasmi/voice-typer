@@ -30,25 +30,28 @@ class VoiceTyperApp(rumps.App):
         self.controller: VoiceTyperController = None
         self._initialized = False
         self._enabled = False
-        
-        self._status_item = rumps.MenuItem("状态: 初始化中...", callback=None)
-        self._toggle_item = rumps.MenuItem("启用语音输入", callback=self.toggle_enabled)
-        self._stats_item = rumps.MenuItem("已输入: 0字（0次）", callback=None)
-        
+
+        self._status_item = rumps.MenuItem("", callback=None)
+        self._stats_item = rumps.MenuItem("已输入：0字（0次）", callback=None)
+        self._recent_menu = rumps.MenuItem("📝 最近转换", callback=None)
+        self._recent_items: list[rumps.MenuItem] = []
+
+        self._prefs_item = rumps.MenuItem("🔧 偏好设置...", callback=self.open_config_dir)
+        self._about_item = rumps.MenuItem("ℹ️ 关于", callback=self.show_about)
+        self._quit_item = rumps.MenuItem("🚪 退出", callback=self.quit_app)
+
         self.menu = [
             self._status_item,
             None,
-            self._toggle_item,
-            None,
             self._stats_item,
             None,
-            rumps.MenuItem("打开配置文件", callback=self.open_config),
-            rumps.MenuItem("打开词库文件", callback=self.open_hotwords),
-            rumps.MenuItem("打开配置目录", callback=self.open_config_dir),
-            # rumps.MenuItem("重新加载配置", callback=self.reload_config),
+            None,  # 分隔线
+            self._recent_menu,
             None,
-            rumps.MenuItem("关于", callback=self.show_about),
-            rumps.MenuItem("退出", callback=self.quit_app),
+            None,  # 分隔线
+            self._prefs_item,
+            self._about_item,
+            self._quit_item,
         ]
         
         atexit.register(self._cleanup)
@@ -64,25 +67,23 @@ class VoiceTyperApp(rumps.App):
     def _async_init(self):
         try:
             t0 = time.time()
-            
+
             self._update_status("加载配置...")
             self.config = load_config()
-            
+
             self._update_status("初始化...")
             self.controller = VoiceTyperController(self.config)
             self.controller.on_status_change = self._on_status
             self.controller.on_stats_change = self._on_stats_change
+            self.controller.on_recent_texts_change = self._update_recent_menu
             self.controller.initialize(callback=self._log)
-            
+
             self._initialized = True
-            
-            hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
-            self._toggle_item.title = f"禁用语音输入 ({hotkey})"
 
             self._auto_enable()
             self._on_stats_change()  # Initialize stats display
             self._log(f"启动完成，耗时 {time.time() - t0:.1f}s")
-            
+
         except Exception as e:
             self._update_status(f"初始化失败: {e}")
             import traceback
@@ -90,11 +91,10 @@ class VoiceTyperApp(rumps.App):
     
     def _auto_enable(self):
         self._enabled = True
-        self._toggle_item.state = True
         self.controller.start()
         self.title = "🎤"
         self._update_status("就绪")
-        
+
         hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
         rumps.notification(APP_NAME, "", f"按住 {hotkey} 开始语音输入")
     
@@ -103,16 +103,31 @@ class VoiceTyperApp(rumps.App):
         self._update_status(msg)
     
     def _update_status(self, status: str):
-        self._status_item.title = f"状态: {status}"
-        
+        # 根据状态确定托盘图标和菜单显示
         if "录音" in status:
+            # 托盘图标：绿色圆点
             self.title = "🟢"
+            # 菜单状态项：同样显示绿色圆点图标
+            self._status_item.title = f"🟢 {status}"
         elif "识别" in status:
+            # 托盘图标：黄色圆点
             self.title = "🟡"
+            # 菜单状态项：同样显示黄色圆点图标
+            self._status_item.title = f"🟡 {status}"
         elif self._enabled:
+            # 托盘图标：麦克风（就绪状态）
             self.title = "🎤"
+            # 菜单状态项：显示绿色圆点图标 + 热键提示（仅在配置加载完成后）
+            if self.config:
+                hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
+                self._status_item.title = f"🟢 {status}  ({hotkey} 开始录音)"
+            else:
+                self._status_item.title = f"🟢 {status}"
         else:
+            # 托盘图标：暂停符号（已禁用）
             self.title = "⏸️"
+            # 菜单状态项：显示白色圆点图标
+            self._status_item.title = f"⚪ {status}"
     
     def _on_status(self, status: str):
         self._update_status(status)
@@ -121,69 +136,38 @@ class VoiceTyperApp(rumps.App):
         """Update stats display when statistics change"""
         if self.controller:
             self._stats_item.title = self.controller.get_stats_display()
-    
-    def toggle_enabled(self, sender):
-        if not self._initialized:
-            rumps.notification(APP_NAME, "", "请等待初始化完成")
+
+    def _update_recent_menu(self):
+        """更新最近转换菜单项"""
+        if not self.controller:
             return
-        
-        hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
-        
-        if self._enabled:
-            self._enabled = False
-            self.controller.stop()
-            sender.state = False
-            sender.title = f"启用语音输入 ({hotkey})"
-            self.title = "⚪"
-            self._update_status("已禁用")
-        else:
-            self._enabled = True
-            self.controller.start()
-            sender.state = True
-            sender.title = f"禁用语音输入 ({hotkey})"
-            self.title = "🎤"
-            self._update_status("就绪")
-            rumps.notification(APP_NAME, "", f"按住 {hotkey} 开始语音输入")
-    
-    def open_config(self, _):
-        ensure_default_files()
-        subprocess.run(["open", str(get_config_path())])
-    
-    def open_hotwords(self, _):
-        ensure_default_files()
-        subprocess.run(["open", str(get_default_hotwords_path())])
-    
+
+        recent_texts = self.controller.get_recent_texts_display()
+
+        # 移除旧的菜单项
+        for item in self._recent_items:
+            try:
+                self._recent_menu.remove(item)
+            except:
+                pass
+        self._recent_items.clear()
+
+        # 添加新的菜单项
+        for text in recent_texts:
+            item = rumps.MenuItem(f"  {text}", callback=None)
+            self._recent_menu.add(item)
+            self._recent_items.append(item)
+
+        # 如果没有最近记录，显示提示
+        if not recent_texts:
+            item = rumps.MenuItem("  暂无记录", callback=None)
+            self._recent_menu.add(item)
+            self._recent_items.append(item)
+
     def open_config_dir(self, _):
         ensure_default_files()
         subprocess.run(["open", str(get_config_dir())])
-    
-    def reload_config(self, _):
-        if not self._initialized:
-            return
-        
-        if self._enabled:
-            self._enabled = False
-            self.controller.stop()
-            self._toggle_item.state = False
-        
-        self._update_status("重新加载...")
-        
-        def _reload():
-            try:
-                self.config = load_config()
-                self.controller = VoiceTyperController(self.config)
-                self.controller.on_status_change = self._on_status
-                self.controller.initialize(callback=self._log)
-                self._auto_enable()
-                
-                hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
-                self._toggle_item.title = f"禁用语音输入 ({hotkey})"
-                rumps.notification(APP_NAME, "", "配置已重新加载")
-            except Exception as e:
-                self._update_status(f"重载失败: {e}")
-        
-        threading.Thread(target=_reload, daemon=True).start()
-    
+
     def show_about(self, _):
         server = f"{self.config.server.host}:{self.config.server.port}" if self.config else "未配置"
         rumps.alert(
@@ -196,11 +180,10 @@ class VoiceTyperApp(rumps.App):
             ),
             ok="确定",
         )
-    
+
     def quit_app(self, _):
         self._cleanup()
         rumps.quit_application()
-
 
 _app = None
 
