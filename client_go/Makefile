@@ -22,7 +22,7 @@ GOMOD = $(GOCMD) mod
 GOINSTALL = $(GOCMD) install
 
 # 构建标志
-LDFLAGS = -s -w -X main.version=$(VERSION)
+LDFLAGS = -s -w -H=windowsgui -X main.version=$(VERSION)
 
 # 默认目标
 all: deps build
@@ -30,33 +30,30 @@ all: deps build
 # 安装依赖
 deps:
 	@echo "Installing dependencies..."
-	$(GOGET) fyne.io/fyne/v2
 	$(GOGET) github.com/gen2brain/beeep
 	$(GOGET) github.com/gen2brain/malgo
+	$(GOGET) github.com/getlantern/systray
 	$(GOGET) github.com/go-resty/resty/v2
 	$(GOGET) github.com/go-vgo/robotgo
 	$(GOGET) golang.design/x/clipboard
+	$(GOGET) golang.org/x/sys/windows
 	$(GOGET) gopkg.in/yaml.v3
 	$(GOMOD) tidy
 	@echo "Dependencies installed successfully"
 
-# 构建当前平台
+# 构建当前平台 (强制Windows)
 build:
-	@echo "Building for current platform..."
-	$(GOBUILD) -ldflags="$(LDFLAGS)" -o $(BINARY_NAME)
-	@echo "Build completed: $(BINARY_NAME)"
+	@echo "Building for Windows..."
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags="$(LDFLAGS)" -o $(BINARY_NAME).exe
+	@echo "Build completed: $(BINARY_NAME).exe"
 
-# 跨平台构建
-build-all:
-	@echo "Building for all platforms..."
-	@chmod +x $(BUILD_DIR)/build.sh
-	@$(BUILD_DIR)/build.sh
-
-# 打包
-package: build-all
-	@echo "Creating release packages..."
-	@chmod +x $(BUILD_DIR)/package.sh
-	@$(BUILD_DIR)/package.sh
+# 打包 (仅Windows)
+package: build
+	@echo "Packaging for Release..."
+	@if not exist $(RELEASE_DIR) mkdir $(RELEASE_DIR)
+	@copy $(BINARY_NAME).exe $(RELEASE_DIR)\
+	@copy README.md $(RELEASE_DIR)\
+	@echo "Package created in $(RELEASE_DIR)"
 
 # 清理构建文件
 clean:

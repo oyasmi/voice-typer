@@ -75,17 +75,7 @@ func (c *ClipboardInserter) simulatePaste() error {
 
 // simulateKeyPress 模拟按键组合
 func (c *ClipboardInserter) simulateKeyPress(modifier, key string) error {
-	// 检测Wayland环境
-	if platform.IsWayland() {
-		// 尝试使用ydotool
-		if platform.CheckYdotool() {
-			return c.simulateKeyPressYdotool(modifier, key)
-		}
-		// ydotool不可用，回退到robotgo（可能失败）
-		fmt.Println("Warning: ydotool not found on Wayland, paste may not work")
-	}
-
-	// 使用robotgo模拟按键（X11, macOS, Windows）
+	// 直接使用robotgo模拟按键（Windows）
 	return c.simulateKeyPressRobotgo(modifier, key)
 }
 
@@ -94,15 +84,4 @@ func (c *ClipboardInserter) simulateKeyPressRobotgo(modifier, key string) error 
 	// robotgo.KeyTap会自动处理修饰键
 	// 格式：KeyTap("key", "modifier")
 	return robotgo.KeyTap(key, modifier)
-}
-
-// simulateKeyPressYdotool 使用ydotool模拟按键（Wayland）
-func (c *ClipboardInserter) simulateKeyPressYdotool(modifier, key string) error {
-	// ydotool的按键格式：key+modifier
-	// 例如：ctrl+v
-	keyCombo := fmt.Sprintf("%s+%s", modifier, key)
-
-	// 执行ydotool命令
-	cmd := exec.Command("ydotool", "key", keyCombo)
-	return cmd.Run()
 }

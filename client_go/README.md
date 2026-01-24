@@ -13,7 +13,7 @@
 - 🔒 **完全离线** - 无需联网，本地处理
 - 🚀 **毫秒级启动** - Go编译，快速启动
 - 📦 **单文件可执行** - 无需依赖，开箱即用
-- 🌍 **跨平台** - macOS、Windows、Linux (X11 + Wayland)
+- 🌍 **跨平台** - Windows
 - ⚙️ **可配置** - 自定义热键、词库
 - 🤖 **LLM纠错** - 可选的智能纠错功能
 - 🎨 **系统托盘** - 最小化到托盘，不占用任务栏
@@ -36,10 +36,7 @@
 
 | 平台 | 下载 | 状态 |
 |------|------|------|
-| **macOS (Apple Silicon)** | [voicetyper-mac-arm64.zip](../../releases) | ✅ 完全支持 |
-| **macOS (Intel)** | [voicetyper-mac-amd64.zip](../../releases) | ✅ 完全支持 |
 | **Windows (64位)** | [voicetyper-win.zip](../../releases) | ✅ 完全支持 |
-| **Linux (64位)** | [voicetyper-linux.tar.gz](../../releases) | ✅ 完全支持 |
 
 ## 🚀 快速开始
 
@@ -48,10 +45,7 @@
 ```bash
 # 1. 下载对应平台的二进制文件
 
-# 2. 赋予执行权限（Linux/macOS）
-chmod +x voicetyper
-
-# 3. 运行
+# 2. 运行
 ./voicetyper
 ```
 
@@ -67,50 +61,9 @@ chmod +x voicetyper
 
 ## 💻 系统要求
 
-### 通用要求
-- Go 1.21+
-- 语音识别服务端（FunASR服务器）
-
-### Linux (X11)
-
-**系统依赖**：
-```bash
-# Ubuntu/Debian
-sudo apt-get install libgl1-mesa-dev xorg-dev libxtst-dev libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev
-
-# Fedora/RHEL
-sudo dnf install mesa-libGL-devel libXtst-devel libXinerama-devel libXcursor-devel libXrandr-devel libXi-devel
-
-# Arch Linux
-sudo pacman -S mesa xorg-libxtst xorg-xinerama xorg-xcursor xorg-randr xorg-xi
-```
-
-### Linux (Wayland)
-
-**额外依赖**：
-```bash
-# ydotool（用于键盘模拟）
-sudo apt-get install ydotool  # Ubuntu/Debian
-sudo dnf install ydotool      # Fedora/RHEL
-```
-
-**注意**：Wayland支持需要ydotool。如果未安装，程序会显示提示。
-
-### macOS
-
-**系统要求**：
-- macOS 10.15 (Catalina) 或更高版本
-- Xcode Command Line Tools
-
-```bash
-xcode-select --install
-```
-
-### Windows
-
-**系统要求**：
-- Windows 10/11
-- MinGW-w64 或 MSYS2（用于编译）
+- **操作系统**: Windows 10/11 (因为使用了 Native Win32 API)
+- **Go**: 1.24+
+- **语音识别服务端**: FunASR 服务器
 
 ## 构建说明
 
@@ -126,23 +79,26 @@ cd client_go
 go mod download
 ```
 
-### 编译
+### 编译 (Windows)
+
+由于本项目使用了 `syscall` 调用 `user32.dll` 以及 `malgo` (CGO)，**必须在 Windows 环境下编译**，或在 Linux/macOS 下使用 MinGW 交叉编译。
+
+**推荐方式 (在 Windows PowerShell/cmd 中):**
+
+```powershell
+# 1. 设置环境变量
+$env:GOOS="windows"
+$env:GOARCH="amd64"
+$env:CGO_ENABLED="1"
+
+# 2. 编译 (隐藏控制台窗口)
+go build -ldflags="-s -w -H=windowsgui" -o VoiceTyper.exe
+```
+
+**或者使用 Makefile (需要 make 工具):**
 
 ```bash
-# 当前平台
-go build -o voicetyper
-
-# macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o voicetyper-mac-arm64
-
-# macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -o voicetyper-mac-amd64
-
-# Windows
-GOOS=windows GOARCH=amd64 go build -o voicetyper.exe
-
-# Linux
-GOOS=linux GOARCH=amd64 go build -o voicetyper-linux
+make build
 ```
 
 ## 运行
@@ -161,12 +117,11 @@ cd ../server
 ```
 
 首次运行会自动创建配置文件：
-- Linux/macOS: `~/.config/voice-typer/config.yaml`
 - Windows: `%APPDATA%\voice-typer\config.yaml`
 
 ## 配置
 
-配置文件示例（`~/.config/voice-typer/config.yaml`）：
+配置文件示例（`%APPDATA%\voice-typer\config.yaml`）：
 
 ```yaml
 servers:
@@ -179,7 +134,7 @@ servers:
 
 hotkey:
   modifiers:
-    - "cmd"  # macOS使用cmd，Windows/Linux使用ctrl
+    - "ctrl"  # Windows使用ctrl
   key: "space"
 
 hotword_files:
@@ -197,7 +152,7 @@ input:
 ## 使用方法
 
 1. **启用语音输入**：程序启动后会自动启用
-2. **录音**：按住热键（默认：Cmd+Space on macOS, Ctrl+Space on Win/Linux）
+2. **录音**：按住热键（默认：Ctrl+Space）
 3. **释放**：松开热键，自动识别并插入文本
 4. **禁用**：通过托盘菜单禁用
 
@@ -207,21 +162,18 @@ input:
 - ✅ **离线识别**：完全本地处理，无需联网
 - ✅ **自定义词库**：支持热词文件
 - ✅ **LLM纠错**：可选的智能纠错功能
-- ✅ **跨平台**：macOS、Windows、Linux (X11 + Wayland)
+- ✅ **跨平台**：Windows
 - ✅ **系统托盘**：最小化到托盘
 - ✅ **视觉反馈**：录音状态显示
 
 ## 故障排除
 
-### Linux: X11相关错误
+### 权限问题
 
-```
-fatal error: X11/extensions/XTest.h: No such file or directory
-```
+**Windows**：首次运行需要授予以下权限：
+- 麦克风权限
 
-**解决方案**：安装X11开发库（见上文系统依赖）
-
-### Linux: OpenGL相关错误
+### 热键不工作
 
 ```
 Package gl was not found in the pkg-config search path
@@ -231,12 +183,8 @@ Package gl was not found in the pkg-config search path
 
 ### 权限问题
 
-**macOS**：首次运行需要授予以下权限：
+**Windows**：首次运行需要授予以下权限：
 - 麦克风权限
-- 辅助功能权限（用于热键监听）
-- 自动化权限（用于键盘控制）
-
-**Linux**：确保用户有音频设备访问权限
 
 ### 热键不工作
 
@@ -268,21 +216,11 @@ voice-typer/
 └── pkg/platform/        # 平台相关代码
 ```
 
-### 运行测试
-
-```bash
-# 单元测试（需要添加）
-go test ./...
-
-# 手动测试
-go run main.go
-```
 
 ## 已知问题
 
-1. **Wayland支持**：需要ydotool，部分功能可能受限
-2. **文本输入**：使用剪贴板方法，会临时覆盖剪贴板内容
-3. **robotgo**：在某些配置下可能不稳定
+1. **文本输入**：使用剪贴板方法，会临时覆盖剪贴板内容
+2. **robotgo**：在某些配置下可能不稳定
 
 ## 许可证
 
@@ -291,6 +229,5 @@ go run main.go
 ## 致谢
 
 - [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 语音识别
-- [Fyne](https://fyne.io/) - 跨平台GUI框架
 - [robotgo](https://github.com/go-vgo/robotgo) - 键盘鼠标控制
 - [malgo](https://github.com/gen2brain/malgo) - 音频录制

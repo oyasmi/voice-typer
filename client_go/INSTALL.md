@@ -23,16 +23,7 @@
 - VoiceTyper语音识别服务端（FunASR）
 - 麦克风
 
-### 各平台要求
-
-#### Linux
-- **X11**：libxtst, libxinerama, libgl (OpenGL)
-- **Wayland**：ydotool（可选，用于键盘模拟）
-
-#### macOS
-- macOS 10.15 (Catalina) 或更高版本
-- Xcode Command Line Tools
-
+### 平台要求
 #### Windows
 - Windows 10 或 11
 - MinGW-w64 或 MSYS2（仅从源码构建时需要）
@@ -70,171 +61,55 @@ docker run -d --device /dev/snd voicetyper
 
 ## 详细安装说明
 
-### Linux
-
-#### 1. 安装系统依赖
-
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-    libgl1-mesa-dev \
-    xorg-dev \
-    libxtst-dev \
-    libxinerama-dev \
-    libxcursor-dev \
-    libxrandr-dev \
-    libxi-dev
-```
-
-**Fedora/RHEL/CentOS:**
-```bash
-sudo dnf install -y \
-    mesa-libGL-devel \
-    libXtst-devel \
-    libXinerama-devel \
-    libXcursor-devel \
-    libXrandr-devel \
-    libXi-devel
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S --needed \
-    mesa \
-    xorg-libxtst \
-    xorg-xinerama \
-    xorg-xcursor \
-    xorg-randr \
-    xorg-xi
-```
-
-#### 2. Wayland支持（可选）
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install ydotool
-
-# Fedora
-sudo dnf install ydotool
-
-# Arch Linux (AUR)
-yay -S ydotool
-```
-
-**配置ydotool权限**：
-```bash
-# 创建udev规则
-sudo tee /etc/udev/rules.d/99-ydotool.rules <<EOF
-KERNEL=="uinput", MODE="0660", OPTIONS+="static_node=uinput"
-ENV{ID_INPUT_JOYSTICK}=="?*", RUN+="/usr/bin/ydotool"
-EOF
-
-# 重新加载udev规则
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-# 将用户添加到input组
-sudo usermod -aG input $USER
-
-# 重新登录以生效
-```
-
-#### 3. 从源码构建
-
-```bash
-# 克隆仓库
-git clone https://github.com/yourusername/voice-typer.git
-cd voice-typer/client_go
-
-# 使用Makefile
-make deps
-make build
-
-# 或使用脚本
-chmod +x build/build.sh
-./build/build.sh
-```
-
-### macOS
-
-#### 1. 安装Xcode Command Line Tools
-
-```bash
-xcode-select --install
-```
-
-#### 2. 安装Homebrew（可选，用于依赖管理）
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-#### 3. 从源码构建
-
-```bash
-# 克隆仓库
-git clone https://github.com/yourusername/voice-typer.git
-cd voice-typer/client_go
-
-# 使用Makefile
-make deps
-make build
-
-# 或使用脚本
-chmod +x build/build.sh
-./build/build.sh
-```
-
-#### 4. 代码签名（可选，用于分发）
-
-```bash
-# 创建自签名证书（仅用于开发）
-security create-keychain -p "" voicetyper.keychain
-security import voicetyper.p12 -k ~/Library/Keychains/voicetyper.keychain
-
-# 签名二进制
-codesign --keychain ~/Library/Keychains/voicetyper.keychain \
-         --sign "VoiceTyper" \
-         --deep --force voicetyper-mac-arm64
-```
-
 ### Windows
 
-#### 1. 安装Go
+由于本客户端深度集成了 Win32 API 以获得轻量级和原生体验，**仅支持在 Windows 上运行**（或通过兼容层，但不保证稳定性）。
 
-从 [Go官网](https://golang.org/dl/) 下载并安装Go 1.21+。
+#### 1. 环境准备
 
-#### 2. 安装MinGW-w64或MSYS2
+需要安装以下工具：
 
-**MSYS2（推荐）:**
-1. 从 [msys2.org](https://www.msys2.org/) 下载并安装
-2. 在MSYS2终端中安装所需工具：
-```bash
-pacman -S mingw-w64-x86_64-go mingw-w64-x86_64-gcc
-```
+1.  **Go 1.24+**: [下载链接](https://golang.org/dl/)
+2.  **GCC 编译器**: 用于编译 CGO 代码 (malgo)。推荐使用 [MinGW-w64](https://www.mingw-w64.org/) 或 [MSYS2](https://www.msys2.org/)。
 
-#### 3. 从源码构建
+**MSYS2 安装步骤 (推荐):**
+1. 下载并安装 MSYS2。
+2. 打开 MSYS2 MINGW64 终端。
+3. 运行: `pacman -S mingw-w64-x86_64-gcc`
+
+#### 2. 从源码构建
+
+**使用 PowerShell:**
 
 ```powershell
-# 使用PowerShell
+# 1. 克隆代码
 git clone https://github.com/yourusername/voice-typer.git
 cd voice-typer\client_go
 
-# 设置环境变量
+# 2. 从 go.mod 安装依赖
+go mod download
+
+# 3. 设置环境变量并编译
 $env:GOOS="windows"
 $env:GOARCH="amd64"
 $env:CGO_ENABLED="1"
 
-# 构建
-go build -ldflags="-s -w" -o voicetyper.exe
+# -H=windowsgui 隐藏黑色命令行窗口
+go build -ldflags="-s -w -H=windowsgui" -o VoiceTyper.exe main.go
 ```
 
-**或使用Git Bash:**
+**使用 Makefile (Git Bash / MSYS2):**
+
 ```bash
-make deps
 make build
 ```
+
+#### 3. 运行
+
+双击生成的 `VoiceTyper.exe` 即可运行。程序会出现在系统托盘中。
+
+---
+
 
 ## 从源码构建
 
@@ -280,24 +155,15 @@ export LDFLAGS="-s -w -X main.version=$VERSION"
 # 构建当前平台
 go build -ldflags="$LDFLAGS" -o voicetyper
 
-# macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o voicetyper-mac-arm64
-
-# macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o voicetyper-mac-amd64
-
 # Windows
 GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="$LDFLAGS" -o voicetyper.exe
 
-# Linux
-GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o voicetyper-linux
 ```
 
 ## 配置
 
 ### 配置文件位置
 
-- **Linux/macOS**: `~/.config/voice-typer/config.yaml`
 - **Windows**: `%APPDATA%\voice-typer\config.yaml`
 
 ### 首次运行
@@ -321,7 +187,7 @@ servers:
 
 hotkey:
   modifiers:
-    - "cmd"   # macOS: cmd, Windows/Linux: ctrl
+    - "ctrl"   # Windows/Linux: ctrl
   key: "space"
 
 hotword_files:
@@ -338,7 +204,7 @@ input:
 
 ### 自定义词库
 
-编辑 `~/.config/voice-typer/hotwords.txt`：
+编辑 `%APPDATA%\voice-typer\hotwords.txt`：
 
 ```
 # 自定义词汇，每行一个
@@ -369,7 +235,7 @@ cd ../server
 ### 3. 使用语音输入
 
 1. 客户端会自动启用（托盘图标显示"Enabled"）
-2. 按住热键（默认：Cmd+Space on macOS, Ctrl+Space on Win/Linux）
+2. 按住热键（默认：Ctrl+Space）
 3. 说话
 4. 松开热键
 5. 识别的文本自动插入到光标位置
@@ -381,52 +247,6 @@ cd ../server
 - **Open Config**: 打开配置文件
 - **About**: 关于信息
 - **Quit**: 退出程序
-
-## 故障排除
-
-### Linux常见问题
-
-#### X11相关错误
-
-**错误**: `fatal error: X11/extensions/XTest.h: No such file or directory`
-
-**解决方案**:
-```bash
-sudo apt-get install libxtst-dev xorg-dev
-```
-
-#### OpenGL相关错误
-
-**错误**: `Package gl was not found`
-
-**解决方案**:
-```bash
-sudo apt-get install libgl1-mesa-dev
-```
-
-#### 权限问题
-
-**错误**: 热键不工作
-
-**解决方案**: 检查辅助功能权限
-
-```bash
-# Ubuntu
-sudo apt-get install at-spi2-core
-```
-
-### macOS常见问题
-
-#### 权限被拒绝
-
-**错误**: 程序无法启动或热键不工作
-
-**解决方案**:
-1. 系统偏好设置 → 安全性与隐私 → 隐私
-2. 授予以下权限：
-   - 麦克风
-   - 辅助功能
-   - 自动化
 
 ### Windows常见问题
 
@@ -443,19 +263,11 @@ sudo apt-get install at-spi2-core
 
 2. **检查配置文件**:
    ```bash
-   # Linux/macOS
-   cat ~/.config/voice-typer/config.yaml
-
-   # Windows
    type %APPDATA%\voice-typer\config.yaml
    ```
 
 3. **查看日志**:
    ```bash
-   # Linux/macOS
-   tail -50 ~/.config/voice-typer/app.log
-
-   # Windows
    type %APPDATA%\voice-typer\app.log
    ```
 
@@ -499,12 +311,6 @@ servers:
 支持多种热键组合：
 
 ```yaml
-# macOS
-hotkey:
-  modifiers: ["cmd", "shift"]
-  key: "v"
-
-# Windows/Linux
 hotkey:
   modifiers: ["ctrl", "alt"]
   key: "r"
@@ -566,72 +372,6 @@ make vet
 
 # 或使用golangci-lint（需要安装）
 golangci-lint run
-```
-
-## 性能优化
-
-### 减小二进制大小
-
-```bash
-# 使用UPX压缩
-upx --best --lzma voicetyper
-
-# 或在构建时使用更多优化标志
-go build -ldflags="-s -w -extldflags=-static" -o voicetyper
-```
-
-### 启动时间优化
-
-- 当前启动时间：~500ms
-- 目标：<200ms
-
-优化方向：
-- 延迟加载模块
-- 减少初始化操作
-
-## 卸载
-
-### Linux
-
-```bash
-# 删除二进制
-sudo rm /usr/local/bin/voicetyper
-
-# 删除配置（可选）
-rm -rf ~/.config/voice-typer
-```
-
-### macOS
-
-```bash
-# 删除二进制
-sudo rm /usr/local/bin/voicetyper
-
-# 删除配置
-rm -rf ~/.config/voice-typer
-```
-
-### Windows
-
-```bash
-# 删除二进制
-del C:\Program Files\VoiceTyper\voicetyper.exe
-
-# 删除配置
-rmdir /s %APPDATA%\voice-typer
-```
-
-## 更新
-
-### 检查更新
-
-```bash
-# 查看当前版本
-voicetyper --version
-
-# 从源码更新
-git pull
-make build
 ```
 
 ### 无缝升级

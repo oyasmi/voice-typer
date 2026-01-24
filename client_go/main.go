@@ -24,76 +24,93 @@ func main() {
 		log.Printf("Warning: failed to create default hotwords file: %v", err)
 	}
 
-	// 2. 初始化控制器
-	ctrl, err := controller.NewController(cfg)
-	if err != nil {
-		log.Fatalf("Failed to create controller: %v", err)
+	// 提前声明变量以用于闭包
+	var ctrl *controller.Controller
+	var tray *ui.TrayApp
+
+	// 2. 定义回调
+	onToggle := func() {
+		if ctrl == nil {
+			return
+		}
+		if ctrl.IsEnabled() {
+			if err := ctrl.Stop(); err != nil {
+				log.Printf("Error stopping controller: %v", err)
+			}
+			tray.UpdateStatus("Disabled")
+			tray.SetToggleState(false, getHotkeyString(cfg))
+		} else {
+			if err := ctrl.Start(); err != nil {
+				log.Printf("Error starting controller: %v", err)
+				ui.ShowMessageBox("Start Error", err.Error())
+			} else {
+				tray.UpdateStatus("Enabled")
+				tray.SetToggleState(true, getHotkeyString(cfg))
+			}
+		}
 	}
 
-	// 3. 创建托盘应用（先声明变量）
-	var tray *ui.TrayApp
-	tray = ui.NewTrayApp("VoiceTyper",
-		func() { // onToggle
-			if ctrl.IsEnabled() {
-				if err := ctrl.Stop(); err != nil {
-					log.Printf("Error stopping controller: %v", err)
-				}
-				tray.UpdateStatus("Disabled")
-				tray.SetToggleState(false, getHotkeyString(cfg))
-			} else {
-				if err := ctrl.Start(); err != nil {
-					log.Printf("Error starting controller: %v", err)
-					ui.Notify("Start Error", err.Error())
-				} else {
-					tray.UpdateStatus("Enabled")
-					tray.SetToggleState(true, getHotkeyString(cfg))
-				}
-			}
-		},
-		func() { // onQuit
-			log.Println("Quitting...")
+	onQuit := func() {
+		log.Println("Quitting...")
+		if ctrl != nil {
 			if err := ctrl.Close(); err != nil {
 				log.Printf("Error closing controller: %v", err)
 			}
-		},
-	)
-
-	// 4. 初始化控制器（带状态回调）
-	err = ctrl.Initialize(func(status string) {
-		tray.UpdateStatus(status)
-		log.Printf("Status: %s", status)
-	})
-
-	if err != nil {
-		log.Fatalf("Failed to initialize controller: %v", err)
-		os.Exit(1)
+		}
 	}
 
-	// 5. 自动启用
-	if err := ctrl.Start(); err != nil {
-		log.Printf("Warning: auto-start failed: %v", err)
-		ui.Notify("Start Error", err.Error())
-	} else {
-		tray.SetToggleState(true, getHotkeyString(cfg))
-		ui.Notify("VoiceTyper", "Voice input enabled")
+	// 3. 定义初始化逻辑 (在托盘就绪后运行)
+	onReady := func() {
+		go func() {
+			var err error
+			ctrl, err = controller.NewController(cfg)
+			if err != nil {
+				log.Fatalf("Failed to create controller: %v", err)
+			}
+
+			// 初始化控制器
+			// 状态变更时同时也更新统计数据
+			err = ctrl.Initialize(func(status string) {
+				tray.UpdateStatus(status)
+				
+				// 更新统计
+				in, ch := ctrl.GetStats()
+				tray.UpdateStats(in, ch)
+				
+				log.Printf("Status: %s", status)
+			})
+
+			if err != nil {
+				log.Printf("Failed to initialize controller: %v", err)
+				ui.ShowMessageBox("Init Error", fmt.Sprintf("Failed to initialize: %v", err))
+				os.Exit(1)
+			}
+
+			// 自动启用
+			if err := ctrl.Start(); err != nil {
+				log.Printf("Warning: auto-start failed: %v", err)
+				ui.ShowMessageBox("Start Error", err.Error())
+			} else {
+				tray.SetToggleState(true, getHotkeyString(cfg))
+				// tray.UpdateStatus("Ready") // Initialize already sets Ready
+			}
+		}()
 	}
 
-	// 6. 设置信号处理
+	// 4. 创建托盘应用
+	tray = ui.NewTrayApp("VoiceTyper", onToggle, onQuit, onReady)
+
+	// 5. 设置信号处理
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// 7. 在后台goroutine中监听信号
 	go func() {
 		<-sigChan
 		fmt.Println("\nShutting down...")
-		// 清理资源
-		if err := ctrl.Close(); err != nil {
-			log.Printf("Error closing controller: %v", err)
-		}
-		tray.Quit()
+		tray.Quit() // 这会通过 channel 停止 systray 循环，触发 OnExit -> onQuit
 	}()
 
-	// 8. 启动应用（在主线程中，阻塞运行）
+	// 6. 运行应用 (阻塞)
 	tray.Run()
 
 	fmt.Println("Goodbye!")

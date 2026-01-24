@@ -12,9 +12,7 @@
 - **交互友好**：系统托盘图标，视觉提示，状态反馈
 
 ### 1.3 支持平台
-- macOS 10.15+
-- Windows 10/11
-- Linux (X11 + Wayland)
+- Windows 10/11 (x64)
 
 ## 二、技术栈选型
 
@@ -22,15 +20,16 @@
 // go.mod
 module github.com/yourusername/voice-typer
 
-go 1.21
+go 1.24
 
 require (
-    fyne.io/fyne/v2 v2.4.0              // GUI框架+系统托盘
-    github.com/gen2brain/beeep v0.0.0   // 系统通知
-    github.com/go-vgo/robotgo v0.100.10 // 热键监听+文本输入
-    github.com/gen2brain/malgo v0.11.10 // 音频录制
-    github.com/go-resty/resty/v2 v2.11.0 // HTTP客户端
-    gopkg.in/yaml.v3 v3.0.1             // 配置文件解析
+    github.com/getlantern/systray v1.2.2    // 系统托盘
+    github.com/gen2brain/beeep v0.11.2      // 系统通知
+    github.com/go-vgo/robotgo v1.0.0        // 文本输入
+    github.com/gen2brain/malgo v0.11.24     // 音频录制
+    github.com/go-resty/resty/v2 v2.17.1    // HTTP客户端
+    gopkg.in/yaml.v3 v3.0.1                 // 配置文件解析
+    golang.org/x/sys v0.38.0                // Win32 API调用
 )
 ```
 
@@ -54,8 +53,7 @@ voice-typer/
 │   │   └── buffer.go       # 音频缓冲区管理
 │   │
 │   ├── hotkey/
-│   │   ├── hotkey.go       # 热键监听接口定义
-│   │   ├── listener.go     # 跨平台热键监听实现
+│   │   ├── listener.go     # 热键监听
 │   │   └── parser.go       # 热键字符串解析
 │   │
 │   ├── api/
@@ -64,35 +62,29 @@ voice-typer/
 │   │
 │   ├── input/
 │   │   ├── input.go        # 文本输入接口定义
-│   │   ├── simulator.go    # 文本模拟输入（优先方案）
-│   │   └── clipboard.go    # 剪贴板粘贴（备选方案）
+│   │   └── clipboard.go    # 剪贴板粘贴
 │   │
 │   ├── ui/
-│   │   ├── tray.go         # 系统托盘界面
-│   │   ├── indicator.go    # 录音提示窗口
-│   │   └── notification.go # 系统通知封装
+│   │   ├── tray.go         # 系统托盘界面 (systray)
+│   │   ├── indicator.go    # 录音提示窗口 (Win32 API)
+│   │   └── notification.go # 系统通知
 │   │
 │   └── controller/
-│       └── controller.go   # 核心控制器（协调各模块）
+│       └── controller.go   # 核心控制器
 │
 ├── pkg/
 │   └── platform/
 │       ├── platform.go     # 平台检测
-│       ├── darwin.go       # macOS特定实现
-│       ├── windows.go      # Windows特定实现
-│       └── linux.go        # Linux特定实现
+│       └── windows.go      # Windows特定实现
 │
 ├── assets/
-│   ├── icon.png           # 应用图标
 │   └── icon.ico           # Windows图标
 │
 ├── configs/
 │   ├── config.example.yaml # 配置文件示例
 │   └── hotwords.example.txt # 词库示例
 │
-└── build/
-    ├── build.sh           # 构建脚本
-    └── package.sh         # 打包脚本
+└── Makefile               # 构建脚本
 ```
 
 ## 四、核心模块详细设计

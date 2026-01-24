@@ -11,6 +11,7 @@ import (
 	"github.com/yourusername/voice-typer/internal/config"
 	"github.com/yourusername/voice-typer/internal/hotkey"
 	"github.com/yourusername/voice-typer/internal/input"
+	"github.com/yourusername/voice-typer/internal/ui"
 )
 
 // Controller 核心控制器
@@ -20,11 +21,16 @@ type Controller struct {
 	listener  *hotkey.Listener
 	apiClient *api.Client
 	inputMgr  input.Inserter
+	indicator *ui.Indicator
 
 	// 状态
 	enabled   bool
 	recording bool
 	mutex     sync.Mutex
+
+	// 统计
+	InputCount int
+	CharCount  int
 
 	// 回调
 	onStatusChange func(string)
@@ -49,7 +55,8 @@ func (c *Controller) Initialize(onStatusChange func(string)) error {
 	c.updateStatus("Connecting to ASR service...")
 
 	availableServer, idx := c.config.GetFirstAvailableServer(func(srv config.ServerConfig) bool {
-		client := api.NewClient(srv.Host, srv.Port, srv.Timeout, srv.APIKey, srv.LLMRecorrect)
+		// 快速建联检查，减少超时等待
+		client := api.NewClient(srv.Host, srv.Port, 3.0, srv.APIKey, srv.LLMRecorrect)
 		ready, _ := client.HealthCheck()
 		return ready
 	})
@@ -94,7 +101,10 @@ func (c *Controller) Initialize(onStatusChange func(string)) error {
 
 	// 6. 初始化输入管理器
 	c.updateStatus("Initializing input manager...")
-	c.inputMgr = input.NewClipboardInserter()
+	c.inputMgr = input.NewInserter()
+
+	// 7. 初始化UI指示器
+	c.indicator = ui.NewIndicator(c.config.UI.Width, c.config.UI.Height, c.config.UI.Opacity)
 
 	c.updateStatus("Ready")
 	return nil
@@ -133,6 +143,10 @@ func (c *Controller) Stop() error {
 		log.Printf("Warning: stop listener failed: %v", err)
 	}
 
+	if c.indicator != nil {
+		c.indicator.Hide()
+	}
+
 	c.enabled = false
 	c.updateStatus("Disabled")
 	log.Println("Controller stopped")
@@ -145,6 +159,13 @@ func (c *Controller) IsEnabled() bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.enabled
+}
+
+// GetStats 获取统计信息
+func (c *Controller) GetStats() (int, int) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.InputCount, c.CharCount
 }
 
 // onHotkeyPress 热键按下处理
@@ -167,6 +188,12 @@ func (c *Controller) onHotkeyPress() {
 		return
 	}
 
+	// 显示指示器
+	if c.indicator != nil {
+		c.indicator.SetStatus("🎤 Recording...")
+		c.indicator.Show()
+	}
+
 	c.updateStatus("Recording...")
 }
 
@@ -181,6 +208,11 @@ func (c *Controller) onHotkeyRelease() {
 
 	c.recording = false
 	log.Println("Hotkey released - stopping recording")
+
+	// 隐藏指示器
+	if c.indicator != nil {
+		c.indicator.Hide()
+	}
 
 	// 停止录音
 	audioData, err := c.recorder.Stop()
@@ -224,6 +256,12 @@ func (c *Controller) doRecognize(audioData []byte) {
 	log.Printf("Recognized text: %s", text)
 	c.updateStatus(fmt.Sprintf("Inserting: %d chars", len(text)))
 
+	// 更新统计
+	c.mutex.Lock()
+	c.InputCount++
+	c.CharCount += len([]rune(text)) // 使用rune计算字符数，更准确
+	c.mutex.Unlock()
+
 	// 插入文本
 	if err := c.inputMgr.Insert(text); err != nil {
 		log.Printf("Insert failed: %v", err)
@@ -231,7 +269,7 @@ func (c *Controller) doRecognize(audioData []byte) {
 		return
 	}
 
-	c.updateStatus(fmt.Sprintf("Inserted: %d chars", len(text)))
+	c.updateStatus(fmt.Sprintf("Inserted: %d chars", len([]rune(text))))
 
 	// 延迟后返回就绪状态
 	time.Sleep(1500 * time.Millisecond)
@@ -240,6 +278,13 @@ func (c *Controller) doRecognize(audioData []byte) {
 
 // updateStatus 更新状态
 func (c *Controller) updateStatus(status string) {
+	if c.indicator != nil {
+		// 可选：更新指示器状态（如果它显示的话）
+		// c.indicator.SetStatus(status) 
+		// 指示器主要用于录音时，但在doRecognize时它已经隐藏了
+		// 如果想显示识别状态，需要重新Show，但通常overlay只在录音时显示
+	}
+
 	if c.onStatusChange != nil {
 		c.onStatusChange(status)
 	}
@@ -249,6 +294,10 @@ func (c *Controller) updateStatus(status string) {
 func (c *Controller) Close() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.indicator != nil {
+		c.indicator.Close()
+	}
 
 	if c.recorder != nil {
 		return c.recorder.Close()
