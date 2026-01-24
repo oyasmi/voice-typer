@@ -2,7 +2,6 @@ package input
 
 import (
 	"fmt"
-	"os/exec"
 	"time"
 
 	"github.com/go-vgo/robotgo"
