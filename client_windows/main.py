@@ -38,12 +38,18 @@ class VoiceTyperApp:
 
         # 创建系统托盘图标
         self.icon = self._create_icon()
+        
+        # 修复状态栏更新问题：使用 lambda 动态获取文本
+        # 注意: pystray 的 Text 属性不直接支持 lambda，但我们可以通过 update_menu 来刷新
+        # 或者使用 checked 属性来作为状态指示，但 title 更直观。
+        # 实际上 pystray.MenuItem 的 text 参数如果传入 callable，它会在显示时调用
+        
         self.tray_icon = pystray.Icon(
             name=APP_NAME,
             icon=self.icon,
             title=APP_NAME,
             menu=pystray.Menu(
-                pystray.MenuItem("状态: 初始化中...", lambda _: None, enabled=False),
+                pystray.MenuItem(lambda item: f"状态: {self._current_status}", lambda _: None, enabled=False),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("启用语音输入", self.toggle_enabled, checked=lambda item: self._enabled),
                 pystray.Menu.SEPARATOR,
