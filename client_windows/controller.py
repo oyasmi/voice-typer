@@ -9,6 +9,8 @@ from config import AppConfig, get_hotwords_string
 from recorder import AudioRecorder
 from asr_client import ASRClient
 from indicator import get_indicator
+from text_inserter import insert_text
+from hotkey_listener import HotkeyListener
 
 class VoiceTyperController:
     """语音输入控制器"""
