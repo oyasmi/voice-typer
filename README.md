@@ -10,7 +10,7 @@
 - 🤖 **LLM 智能纠错** - 可选的大语言模型智能纠错
 - 🚀 **GPU 加速** - 支持 Apple Silicon (MPS) 和 NVIDIA (CUDA)
 - 🌍 **多语言** - 支持中文、英文语音识别
-- 🖥️ **多平台** - 支持 macOS 和 Linux (Wayland)
+- 🖥️ **多平台** - 支持 macOS、Windows 和 Linux (Wayland)
 
 ## 系统架构
 
@@ -35,12 +35,11 @@
 
 ## 支持平台
 
-| 平台 | 支持状态 | 实现方式 |
-|------|---------|---------|
 | **macOS** | ✅ 完全支持 | Python + PyObjC + rumps |
+| **Windows** | ✅ 完全支持 | Python + pystray + pynput |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
 
-> **注意**: Windows 版本和 Go 实现版本正在开发中，暂未包含。
+> **注意**: 核心 ASR 服务由 Python 实现，支持跨平台运行。
 
 ## 快速开始
 
@@ -96,8 +95,8 @@ server:
   llm_recorrect: false  # 启用 LLM 智能纠错
 
 hotkey:
-  modifiers: ["cmd"]    # cmd, ctrl, option, shift
-  key: "space"          # 默认 Cmd+Space
+  modifiers: ["ctrl"]    # cmd, ctrl, option, shift
+  key: "f2"             # 默认 Ctrl+F2
 
 hotword_files:
   - "hotwords.txt"
@@ -111,7 +110,7 @@ ui:
 ### 使用方法
 
 1. 启动应用后，菜单栏会出现 VoiceTyper 图标
-2. **按住 Cmd+Space** 开始录音
+2. **按住 Ctrl+F2** 开始录音
 3. **松开** 自动识别并插入文本到当前光标位置
 
 ### 权限要求
@@ -119,6 +118,55 @@ ui:
 首次运行需要授予以下权限：
 - **辅助功能** - 全局热键和文本输入
 - **麦克风** - 录音权限
+
+---
+
+## Windows 客户端
+
+### 系统要求
+
+- Windows 10/11
+- Python 3.8+
+
+### 安装步骤
+
+```bash
+cd client_windows
+pip install -r requirements.txt
+python main.py
+```
+
+### 构建应用
+
+```bash
+pyinstaller voicetyper.spec
+# 生成的 .exe 文件在 dist/ 目录
+```
+
+### 配置
+
+配置文件位置: `%APPDATA%\voice_typer\config.yaml`
+
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 6008
+  timeout: 60.0
+  llm_recorrect: true  # 启用 LLM 智能纠错
+
+hotkey:
+  modifiers: ["ctrl"]    # ctrl, alt, shift, win_l, win_r
+  key: "f2"             # 默认 Ctrl + F2
+
+hotword_files:
+  - "hotwords.txt"
+```
+
+### 使用方法
+
+1. 启动应用后，系统托盘会出现 VoiceTyper 图标
+2. **按住 Ctrl+F2** 开始录音
+3. **松开** 自动识别并插入文本
 
 ---
 
@@ -434,6 +482,3 @@ voice-typer/
 - [PyGObject](https://pygobject.readthedocs.io/) - Python GTK 绑定
 - [evdev](https://python-evdev.readthedocs.io/) - Linux 输入设备处理
 
-## 许可证
-
-GPLv3

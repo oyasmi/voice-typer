@@ -120,7 +120,7 @@ server:
   port: 6008
   timeout: 60.0
   api_key: ""  # API 密钥（远程服务器需要）
-  llm_recorrect: false  # 是否启用 LLM 修正
+  llm_recorrect: true  # 是否启用 LLM 修正
 
 # 热键配置
 hotkey:
@@ -255,10 +255,6 @@ client_linux/
 ├── Makefile                 # 构建脚本
 └── README.md                # 本文档
 ```
-
-## 许可证
-
-GPLv3
 
 ## 相关链接
 
