@@ -49,8 +49,8 @@ class RecordingIndicator:
             self._canvas.pack(fill='both', expand=True)
 
             # 绘制背景和图标
-            # 圆角矩形背景 (深色)
-            self._draw_rounded_rect(0, 0, self._width, self._height, radius=40, fill='#333333')
+            # 圆角矩形背景 (深色) - 增加圆角半径
+            self._draw_rounded_rect(0, 0, self._width, self._height, radius=60, fill='#333333')
             
             # Icon and text scaling based on height (rough heuristic)
             scale = self._height / 120.0
