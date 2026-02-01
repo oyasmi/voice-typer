@@ -7,6 +7,7 @@ import time
 import threading
 import subprocess
 import os
+import logging
 from pathlib import Path
 
 import pystray
@@ -24,6 +25,7 @@ class VoiceTyperApp:
     """系统托盘应用"""
 
     def __init__(self):
+        self.logger = logging.getLogger(APP_NAME)
         self.config: AppConfig = None
         self.controller: VoiceTyperController = None
         self._initialized = False
@@ -78,7 +80,7 @@ class VoiceTyperApp:
             try:
                 return Image.open(str(icon_path))
             except Exception as e:
-                print(f"Error loading icon: {e}")
+                self.logger.error(f"Error loading icon: {e}")
 
         # 降级：创建一个简单的图标
         width = 64
@@ -166,7 +168,7 @@ class VoiceTyperApp:
 
     def _log(self, msg: str):
         """日志输出"""
-        print(f"[{APP_NAME}] {msg}")
+        self.logger.info(msg)
         self._update_status(msg)
 
     def _on_status(self, status: str):
@@ -236,13 +238,21 @@ class VoiceTyperApp:
 
 def main():
     """主函数"""
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    logger = logging.getLogger(APP_NAME)
+
     ensure_default_files()
 
-    print("=" * 50)
-    print(f"{APP_NAME} v{APP_VERSION}")
-    print("=" * 50)
-    print(f"配置目录: {get_config_dir()}")
-    print()
+    logger.info("=" * 50)
+    logger.info(f"{APP_NAME} v{APP_VERSION}")
+    logger.info("=" * 50)
+    logger.info(f"配置目录: {get_config_dir()}")
+    logger.info("")
 
     app = VoiceTyperApp()
     app.run()

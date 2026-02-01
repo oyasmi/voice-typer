@@ -3,6 +3,7 @@
 """
 import time
 import threading
+import logging
 from typing import Optional, Callable
 
 from config import AppConfig, get_hotwords_string
@@ -11,6 +12,9 @@ from asr_client import ASRClient
 from indicator import get_indicator
 from text_inserter import insert_text
 from hotkey_listener import HotkeyListener
+
+logger = logging.getLogger("VoiceTyper")
+
 
 class VoiceTyperController:
     """语音输入控制器"""
@@ -30,9 +34,10 @@ class VoiceTyperController:
         # 状态更新回调 - 由系统托盘UI设置
         self.on_status_change: Optional[Callable[[str], None]] = None
 
+
     def initialize(self, callback: Optional[Callable[[str], None]] = None):
         """初始化"""
-        log = callback or print
+        log = callback or logger.info
 
         # 初始化 ASR 客户端
         log("连接语音识别服务...")
@@ -163,27 +168,29 @@ class VoiceTyperController:
         # 4. 异步处理识别
         if len(audio) > 0:
             self._update_status("识别中...") # 异步更新
-
-            def do_recognize():
-                try:
-                    text = self._asr_client.recognize(audio, self._hotwords)
-                    if text:
-                        insert_text(text)
-                        self._update_status(f"已输入 ({len(text)}字)")
-                    else:
-                        self._update_status("未识别到文字")
-                except Exception as e:
-                    self._update_status(f"识别失败: {e}")
-
-                # 1.5秒后恢复就绪状态
-                time.sleep(1.5)
-                self._update_status("就绪")
-
-            threading.Thread(target=do_recognize, daemon=True).start()
+            threading.Thread(target=self._handle_recognition, args=(audio,), daemon=True).start()
         else:
             self._update_status("录音为空") # 异步更新
-            
-            def reset_status():
-                time.sleep(1)
-                self._update_status("就绪")
-            threading.Thread(target=reset_status, daemon=True).start()
+            threading.Thread(target=self._reset_status_delayed, args=(1.0,), daemon=True).start()
+
+    def _handle_recognition(self, audio: np.ndarray):
+        """处理语音识别"""
+        try:
+            text = self._asr_client.recognize(audio, self._hotwords)
+            if text:
+                insert_text(text)
+                logger.info(f"识别: {text}")
+                self._update_status(f"已输入 ({len(text)}字)")
+            else:
+                self._update_status("未识别到文字")
+        except Exception as e:
+            self._update_status(f"识别失败: {e}")
+            logger.error(f"识别失败: {e}")
+
+        # 1.5秒后恢复就绪状态
+        self._reset_status_delayed(1.5)
+
+    def _reset_status_delayed(self, delay: float):
+        """延迟重置状态"""
+        time.sleep(delay)
+        self._update_status("就绪")

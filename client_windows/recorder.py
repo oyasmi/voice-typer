@@ -4,7 +4,10 @@
 import numpy as np
 import sounddevice as sd
 import threading
+import logging
 from typing import Optional
+
+logger = logging.getLogger("VoiceTyper")
 
 
 class AudioRecorder:
@@ -37,12 +40,12 @@ class AudioRecorder:
                 latency='low', 
             )
         except Exception as e:
-            print(f"Error initializing audio stream: {e}")
+            logger.error(f"Error initializing audio stream: {e}")
             self._stream = None
 
     def _callback(self, indata, frames, time_info, status):
-        if status:
-            print(f"Audio status: {status}")
+        # if status:
+        #     logger.warning(f"Audio status: {status}")
         if self._recording:
             with self._lock:
                 self._audio_buffer.append(indata[:, 0].copy())
@@ -66,7 +69,7 @@ class AudioRecorder:
                 try:
                     self._stream.start()
                 except Exception as e:
-                    print(f"Error starting stream: {e}")
+                    logger.error(f"Error starting stream: {e}")
                     # 尝试重建
                     self._init_stream()
                     if self._stream:
@@ -86,7 +89,7 @@ class AudioRecorder:
                 # 如果长时间不使用，可以考虑关闭，但为了响应速度，保持开启
                 self._stream.stop()
             except Exception as e:
-                print(f"Error stopping stream: {e}")
+                logger.error(f"Error stopping stream: {e}")
                 
         
         with self._lock:

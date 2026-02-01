@@ -3,8 +3,11 @@
 支持 Windows 键 (Win_L/Win_R)
 """
 from typing import Optional, Callable, Set
+import logging
 from pynput import keyboard
 
+
+logger = logging.getLogger("VoiceTyper")
 
 class HotkeyListener:
     """热键监听器"""
@@ -146,7 +149,7 @@ class HotkeyListener:
                 try:
                     self.on_press_callback()
                 except Exception as e:
-                    print(f"热键回调错误: {e}")
+                    logger.error(f"热键回调错误: {e}")
 
     def _on_release(self, key):
         """按键释放事件"""
@@ -159,7 +162,7 @@ class HotkeyListener:
             try:
                 self.on_release_callback()
             except Exception as e:
-                print(f"热键释放错误: {e}")
+                logger.error(f"热键释放错误: {e}")
 
     def start(self):
         """启动热键监听"""
