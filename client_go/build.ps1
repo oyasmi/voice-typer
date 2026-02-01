@@ -10,10 +10,10 @@ $ErrorActionPreference = "Stop"
 Write-Host "正在检查构建环境..." -ForegroundColor Cyan
 
 # 1. 检查 GCC (CGO 需要)
-if (Get-Command gcc -ErrorAction SilentlyContinue) {
+if (Get-Command gcc --version) {
     Write-Host "[OK] 检测到 GCC" -ForegroundColor Green
 } else {
-    Write-Host "[ERROR] 未找到 GCC！'robotgo' 和 'malgo' 需要 C 编译器。" -ForegroundColor Red
+    Write-Host "[ERROR] 未找到 GCC！robotgo 和 malgo 需要 C 编译器。" -ForegroundColor Red
     Write-Host "请安装 MinGW-w64 或 MSYS2 并将其添加到 PATH。"
     Write-Host "下载地址: https://www.mingw-w64.org/downloads/"
     exit 1

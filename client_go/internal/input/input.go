@@ -1,8 +1,6 @@
 package input
 
 import (
-	"fmt"
-	"runtime"
 
 	"github.com/go-vgo/robotgo"
 )
