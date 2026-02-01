@@ -89,25 +89,27 @@ class VoiceTyperController:
 
     def _start_recording_timer(self):
         """启动录音时长更新定时器"""
-        def update_recording_time():
-            if self._recording and self._recording_start_time:
-                elapsed = int(time.time() - self._recording_start_time)
-                self._update_status(f"录音中... ({elapsed}s)")
-
-                # 继续下一次更新
-                self._status_update_timer = threading.Timer(1.0, update_recording_time)
-                self._status_update_timer.daemon = True
-                self._status_update_timer.start()
-
-        self._status_update_timer = threading.Timer(1.0, update_recording_time)
-        self._status_update_timer.daemon = True
+        self._status_update_timer = threading.Thread(target=self._run_timer_loop, daemon=True)
         self._status_update_timer.start()
+
+    def _run_timer_loop(self):
+        """定时器循环"""
+        while self._recording and self._recording_start_time:
+            elapsed = int(time.time() - self._recording_start_time)
+            self._update_status(f"录音中... ({elapsed}s)")
+            
+            # 使用简单的 sleep，每秒更新一次
+            # 这里的精度不需要太高
+            for _ in range(10): # Check every 0.1s to allow fast exit
+                if not self._recording:
+                    return
+                time.sleep(0.1)
 
     def _stop_recording_timer(self):
         """停止录音时长更新定时器"""
-        if self._status_update_timer:
-            self._status_update_timer.cancel()
-            self._status_update_timer = None
+        # 由于我们使用 daemon 线程并检查 self._recording，
+        # 这里不需要手动 cancel，只需要标记 recording 为 False (已经在 _on_hotkey_release 中做了)
+        self._status_update_timer = None
 
     def _on_hotkey_press(self):
         """热键按下 - 开始录音"""

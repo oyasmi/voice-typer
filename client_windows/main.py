@@ -30,6 +30,12 @@ class VoiceTyperApp:
         self._enabled = False
         self._current_status = "初始化中..."
 
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass  # Fail gracefully on older Windows versions
+
         # 创建系统托盘图标
         self.icon = self._create_icon()
         self.tray_icon = pystray.Icon(
@@ -54,8 +60,21 @@ class VoiceTyperApp:
         threading.Thread(target=self._async_init, daemon=True).start()
 
     def _create_icon(self):
-        """创建简单的托盘图标"""
-        # 创建一个简单的图标
+        """创建托盘图标"""
+        # 尝试加载自定义图标
+        icon_path = Path("assets/icon.ico")
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 打包后，资源在临时目录
+             basedir = sys._MEIPASS
+             icon_path = Path(basedir) / "assets" / "icon.ico"
+        
+        if icon_path.exists():
+            try:
+                return Image.open(str(icon_path))
+            except Exception as e:
+                print(f"Error loading icon: {e}")
+
+        # 降级：创建一个简单的图标
         width = 64
         height = 64
         image = Image.new('RGB', (width, height), color=(0, 120, 215))

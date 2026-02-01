@@ -6,7 +6,9 @@ import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # 收集sounddevice的PortAudio依赖
-datas = []
+datas = [
+    ('assets', 'assets'),
+]
 datas += collect_data_files('sounddevice')
 
 block_cipher = None
