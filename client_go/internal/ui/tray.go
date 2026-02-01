@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"time"
+
 
 	"github.com/getlantern/systray"
 	"github.com/yourusername/voice-typer/internal/config"
