@@ -12,7 +12,6 @@ from tornado.httpclient import HTTPClient, HTTPError
 logger = logging.getLogger("VoiceTyper")
 
 
-
 class ASRClient:
     """语音识别服务客户端"""
 

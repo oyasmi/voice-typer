@@ -144,5 +144,5 @@ func (t *TrayApp) openConfig() {
 
 func (t *TrayApp) showAbout() {
 	// 使用 MessageBox (Win32)
-	ShowMessageBox("VoiceTyper", "Voice Input Client v1.3.1\n\nGo Implementation for Windows")
+	ShowMessageBox("VoiceTyper", "Voice Input Client v1.3.6\n\nGo Implementation for Windows")
 }

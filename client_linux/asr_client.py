@@ -8,7 +8,8 @@ import numpy as np
 from typing import Optional
 from tornado.httpclient import HTTPClient, HTTPError
 
-logger = logging.getLogger('VoiceTyper')
+
+logger = logging.getLogger("VoiceTyper")
 
 
 class ASRClient:
@@ -42,7 +43,7 @@ class ASRClient:
             )
             data = json.loads(response.body.decode('utf-8'))
             return data.get("ready", False)
-        except Exception:
+        except (json.JSONDecodeError, Exception):
             return False
     
     def recognize(self, audio: np.ndarray, hotwords: str = "") -> Optional[str]:
@@ -96,7 +97,10 @@ class ASRClient:
             return data.get("text", "")
             
         except HTTPError as e:
-            logger.error(f"ASR 请求失败: HTTP {e.code}")
+            logger.warning(f"ASR 请求失败: HTTP {e.code}")
+            return None
+        except json.JSONDecodeError:
+            logger.error("ASR 响应解析失败")
             return None
         except Exception as e:
             logger.error(f"ASR 请求错误: {e}")

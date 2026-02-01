@@ -2,32 +2,33 @@
 配置管理模块
 """
 import os
+import platform
 import yaml
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
 
-logger = logging.getLogger('VoiceTyper')
-
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.6"
 CONFIG_DIR_NAME = "voice_typer"
+
+logger = logging.getLogger(APP_NAME)
 
 
 @dataclass
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 6008
-    timeout: float = 30.0
+    timeout: float = 60.0
     api_key: Optional[str] = None
-    llm_recorrect: bool = False  # 是否启用 LLM 修正
+    llm_recorrect: bool = True  # 是否启用 LLM 修正
 
 
 @dataclass
 class HotkeyConfig:
     modifiers: List[str] = field(default_factory=lambda: ["ctrl"])
-    key: str = "space"
+    key: str = "f2"
 
 
 @dataclass
@@ -47,7 +48,14 @@ class AppConfig:
 
 
 def get_config_dir() -> Path:
-    return Path.home() / ".config" / CONFIG_DIR_NAME
+    """获取配置目录"""
+    if platform.system() == 'Windows':
+        # Windows: %APPDATA%\voice_typer
+        appdata = os.environ.get('APPDATA', r'~\AppData\Roaming')
+        return Path(appdata) / CONFIG_DIR_NAME
+    else:
+        # macOS/Linux: ~/.config/voice_typer
+        return Path.home() / ".config" / CONFIG_DIR_NAME
 
 
 def get_config_path() -> Path:
@@ -91,7 +99,7 @@ def load_hotwords_from_file(file_path: Path) -> List[str]:
     except FileNotFoundError:
         pass
     except Exception as e:
-        logger.warning(f"加载词库失败 {file_path}: {e}")
+        logger.warning(f"警告: 加载词库失败 {file_path}: {e}")
     return words
 
 
@@ -99,30 +107,30 @@ def load_all_hotwords(file_paths: List[str], base_dir: Path) -> List[str]:
     """加载所有热词文件"""
     all_words = []
     seen = set()
-    
+
     for file_path in file_paths:
         path = Path(os.path.expanduser(file_path))
         if not path.is_absolute():
             path = base_dir / path
-        
+
         for word in load_hotwords_from_file(path):
             if word not in seen:
                 seen.add(word)
                 all_words.append(word)
-    
+
     return all_words
 
 
 def load_config() -> AppConfig:
     """加载配置"""
     ensure_default_files()
-    
+
     config_path = get_config_path()
     with open(config_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
-    
+
     config = AppConfig()
-    
+
     if 'server' in data:
         s = data['server']
         config.server = ServerConfig(
@@ -132,17 +140,17 @@ def load_config() -> AppConfig:
             api_key=s.get('api_key', config.server.api_key),
             llm_recorrect=s.get('llm_recorrect', config.server.llm_recorrect),
         )
-    
+
     if 'hotkey' in data:
         h = data['hotkey']
         config.hotkey = HotkeyConfig(
             modifiers=h.get('modifiers', config.hotkey.modifiers),
             key=h.get('key', config.hotkey.key),
         )
-    
+
     if 'hotword_files' in data:
         config.hotword_files = data['hotword_files'] or []
-    
+
     if 'ui' in data:
         u = data['ui']
         config.ui = UIConfig(
@@ -150,11 +158,11 @@ def load_config() -> AppConfig:
             width=u.get('width', config.ui.width),
             height=u.get('height', config.ui.height),
         )
-    
+
     # 加载热词
     if config.hotword_files:
         config.hotwords = load_all_hotwords(config.hotword_files, get_config_dir())
-    
+
     return config
 
 
@@ -168,15 +176,16 @@ server:
   port: 6008
   timeout: 60.0
   api_key: ""  # 设置API密钥用于连接远程服务器，本地连接可留空
-  llm_recorrect: false  # 是否启用 LLM 修正识别错误（需要服务端支持）
+  llm_recorrect: true  # 是否启用 LLM 修正识别错误（需要服务端支持）
 
 # 热键配置
+# 支持的修饰键: ctrl, alt, shift, cmd (macOS), win_l/win_r (Windows左/右Win键)
 hotkey:
   modifiers:
-    - "cmd"
-  key: "space"
+    - "ctrl"
+  key: "f2"
 
-# 用户词库文件（相对于 ~/.config/voice_typer/）
+# 用户词库文件（相对于配置目录）
 hotword_files:
   - "hotwords.txt"
 

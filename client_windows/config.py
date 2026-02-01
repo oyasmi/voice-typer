@@ -1,5 +1,5 @@
 """
-配置管理模块 - Windows版本
+配置管理模块
 """
 import os
 import platform
@@ -10,7 +10,7 @@ from typing import List, Optional
 from pathlib import Path
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.6"
 CONFIG_DIR_NAME = "voice_typer"
 
 logger = logging.getLogger(APP_NAME)
@@ -20,21 +20,19 @@ logger = logging.getLogger(APP_NAME)
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 6008
-    timeout: float = 30.0
+    timeout: float = 60.0
     api_key: Optional[str] = None
-    llm_recorrect: bool = False  # 是否启用 LLM 修正
+    llm_recorrect: bool = True  # 是否启用 LLM 修正
 
 
 @dataclass
 class HotkeyConfig:
-    # Windows default: Win+Space
-    modifiers: List[str] = field(default_factory=lambda: ["win_l"])
-    key: str = "space"
+    modifiers: List[str] = field(default_factory=lambda: ["ctrl"])
+    key: str = "f2"
 
 
 @dataclass
 class UIConfig:
-    # Not used on Windows (system tray only), but kept for config compatibility
     opacity: float = 0.85
     width: int = 240
     height: int = 70
@@ -50,7 +48,7 @@ class AppConfig:
 
 
 def get_config_dir() -> Path:
-    """获取配置目录，Windows使用APPDATA"""
+    """获取配置目录"""
     if platform.system() == 'Windows':
         # Windows: %APPDATA%\voice_typer
         appdata = os.environ.get('APPDATA', r'~\AppData\Roaming')
@@ -170,12 +168,7 @@ def load_config() -> AppConfig:
 
 def save_default_config(path: Path):
     """保存默认配置"""
-    # Detect if Windows for default hotkey
-    is_windows = platform.system() == 'Windows'
-    default_modifiers = 'win_l' if is_windows else 'cmd'
-    default_hotkey_comment = '# Windows默认使用Win+Space' if is_windows else '# macOS默认使用Cmd+Space'
-
-    content = f"""# VoiceTyper 客户端配置
+    content = """# VoiceTyper 客户端配置
 
 # 语音识别服务地址
 server:
@@ -189,8 +182,8 @@ server:
 # 支持的修饰键: ctrl, alt, shift, cmd (macOS), win_l/win_r (Windows左/右Win键)
 hotkey:
   modifiers:
-    - "{default_modifiers}"  {default_hotkey_comment}
-  key: "space"
+    - "ctrl"
+  key: "f2"
 
 # 用户词库文件（相对于配置目录）
 hotword_files:
