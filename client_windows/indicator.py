@@ -7,9 +7,10 @@ import threading
 from typing import Optional
 
 class RecordingIndicator:
-    def __init__(self, width=200, height=60):
+    def __init__(self, width=400, height=120, opacity=0.7):
         self._width = width
         self._height = height
+        self._opacity = opacity
         self._root: Optional[tk.Tk] = None
         self._canvas: Optional[tk.Canvas] = None
         self._stop_event = threading.Event()
@@ -24,7 +25,7 @@ class RecordingIndicator:
             # 设置窗口属性: 无边框, 顶层, 透明背景
             self._root.overrideredirect(True)
             self._root.attributes('-topmost', True)
-            self._root.attributes('-alpha', 0.9)
+            self._root.attributes('-alpha', self._opacity)  # 使用配置的透明度
             # Windows特定: 设置透明色
             self._root.wm_attributes('-transparentcolor', 'white')
 
@@ -32,7 +33,7 @@ class RecordingIndicator:
             screen_width = self._root.winfo_screenwidth()
             screen_height = self._root.winfo_screenheight()
             x = (screen_width - self._width) // 2
-            y = screen_height - self._height - 100  # 距离底部 100px
+            y = screen_height - self._height - 150  # 距离底部 150px
             self._root.geometry(f"{self._width}x{self._height}+{x}+{y}")
 
             # 创建画布
@@ -47,22 +48,26 @@ class RecordingIndicator:
 
             # 绘制背景和图标
             # 圆角矩形背景 (深色)
-            self._draw_rounded_rect(0, 0, self._width, self._height, radius=20, fill='#333333')
+            self._draw_rounded_rect(0, 0, self._width, self._height, radius=40, fill='#333333')
+            
+            # Icon and text scaling based on height (rough heuristic)
+            scale = self._height / 120.0
             
             # 麦克风图标 (简单的红色圆点 + 文字)
-            # 录音状态：红色圆点闪烁效果由 update 循环处理
+            dot_size = 40 * scale
             self._dot = self._canvas.create_oval(
-                20, 20, 40, 40, 
+                dot_size, dot_size, dot_size * 2, dot_size * 2, 
                 fill='#ff4444', outline=''
             )
             
             # 文字提示
+            font_size = int(24 * scale)
             self._text = self._canvas.create_text(
-                60, 30, 
+                dot_size * 3, dot_size * 1.5, 
                 text="正在听...", 
                 fill='#ffffff', 
                 anchor='w',
-                font=('Microsoft YaHei UI', 12, 'bold')
+                font=('Microsoft YaHei UI', font_size, 'bold')
             )
 
             # 如果初始不可见，则隐藏
@@ -128,9 +133,9 @@ class RecordingIndicator:
 
 _indicator = None
 
-def get_indicator():
+def get_indicator(width=400, height=120, opacity=0.7):
     global _indicator
     if _indicator is None:
-        _indicator = RecordingIndicator()
+        _indicator = RecordingIndicator(width, height, opacity)
         _indicator.start()
     return _indicator

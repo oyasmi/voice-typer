@@ -180,7 +180,7 @@ server:
   port: 6008
   timeout: 60.0
   api_key: ""  # 设置API密钥用于连接远程服务器，本地连接可留空
-  llm_recorrect: false  # 是否启用 LLM 修正识别错误（需要服务端支持）
+  llm_recorrect: true  # 是否启用 LLM 修正识别错误（需要服务端支持）
 
 # 热键配置
 # 支持的修饰键: ctrl, alt, shift, cmd (macOS), win_l/win_r (Windows左/右Win键)

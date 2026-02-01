@@ -57,7 +57,11 @@ class VoiceTyperController:
 
         # 初始化指示器
         log("初始化UI...")
-        self._indicator = get_indicator()
+        self._indicator = get_indicator(
+            width=self.config.ui.width,
+            height=self.config.ui.height,
+            opacity=self.config.ui.opacity
+        )
 
         # 初始化热键
         log("初始化热键监听...")
