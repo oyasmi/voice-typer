@@ -15,7 +15,9 @@ class RecordingIndicator:
         self._canvas: Optional[tk.Canvas] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._thread: Optional[threading.Thread] = None
         self._visible = False
+        self._current_text = "正在听..."
 
     def _create_window(self):
         """在单独的线程中创建窗口"""
@@ -64,7 +66,7 @@ class RecordingIndicator:
             font_size = int(24 * scale)
             self._text = self._canvas.create_text(
                 dot_size * 3, dot_size * 1.5, 
-                text="正在听...", 
+                text=self._current_text, 
                 fill='#ffffff', 
                 anchor='w',
                 font=('Microsoft YaHei UI', font_size, 'bold')
@@ -124,6 +126,12 @@ class RecordingIndicator:
         self._visible = False
         if self._root:
             self._root.after(0, self._root.withdraw)
+
+    def set_text(self, text: str):
+        """更新提示文字"""
+        self._current_text = text
+        if self._root and self._canvas:
+            self._root.after(0, lambda: self._canvas.itemconfig(self._text, text=text))
 
     def destroy(self):
         """销毁指示器"""

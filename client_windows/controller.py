@@ -33,7 +33,13 @@ class VoiceTyperController:
         self._status_update_timer = None
 
         # 状态更新回调 - 由系统托盘UI设置
+        # 状态更新回调 - 由系统托盘UI设置
         self.on_status_change: Optional[Callable[[str], None]] = None
+
+        # 统计数据
+        self._input_count = 0
+        self._char_count = 0
+        self.on_stats_change: Optional[Callable[[], None]] = None
 
 
     def initialize(self, callback: Optional[Callable[[str], None]] = None):
@@ -121,6 +127,15 @@ class VoiceTyperController:
             # 放入线程池或异步执行，避免阻塞录音线程
             threading.Thread(target=self.on_status_change, args=(status,), daemon=True).start()
 
+    def get_stats_display(self) -> str:
+        """获取格式化的统计信息"""
+        chars = self._char_count
+        if chars >= 10000:
+            chars_str = f"{chars/10000:.1f}万字"
+        else:
+            chars_str = f"{chars}字"
+        return f"已输入：{chars_str}（{self._input_count}次）"
+
     def _start_recording_timer(self):
         """启动录音时长更新定时器"""
         self._status_update_timer = threading.Thread(target=self._run_timer_loop, daemon=True)
@@ -130,8 +145,9 @@ class VoiceTyperController:
         """定时器循环"""
         while self._recording and self._recording_start_time:
             elapsed = int(time.time() - self._recording_start_time)
-            # 这里的状态更新会触发UI刷新，频率不宜过高
-            self._update_status(f"录音中... ({elapsed}s)")
+            # 这里的状态更新只更新UI提示，避免频繁刷新托盘
+            if self._indicator:
+                self._indicator.set_text(f"录音中... ({elapsed}s)")
             
             # 使用简单的 sleep，每秒更新一次
             for _ in range(10): # Check every 0.1s to allow fast exit
@@ -158,6 +174,7 @@ class VoiceTyperController:
         
         # 3. 显示 UI (稍微延后，不阻塞录音)
         if self._indicator:
+            self._indicator.set_text("正在听...")
             self._indicator.show()
             
         # 4. 更新托盘状态和定时器 (放在最后/异步)
@@ -195,6 +212,13 @@ class VoiceTyperController:
             if text:
                 insert_text(text)
                 logger.info(f"识别: {text}")
+
+                # 更新统计
+                self._input_count += 1
+                self._char_count += len(text)
+                if self.on_stats_change:
+                    self.on_stats_change()
+
                 self._update_status(f"已输入 ({len(text)}字)")
             else:
                 self._update_status("未识别到文字")

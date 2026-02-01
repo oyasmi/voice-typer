@@ -50,18 +50,7 @@ class VoiceTyperApp:
             name=APP_NAME,
             icon=self.icon,
             title=APP_NAME,
-            menu=pystray.Menu(
-                pystray.MenuItem(lambda item: f"状态: {self._current_status}", lambda _: None, enabled=False),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("启用语音输入", self.toggle_enabled, checked=lambda item: self._enabled),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("打开配置文件", self.open_config),
-                pystray.MenuItem("打开词库文件", self.open_hotwords),
-                pystray.MenuItem("打开配置目录", self.open_config_dir),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("关于", self.show_about),
-                pystray.MenuItem("退出", self.quit_app),
-            )
+            menu=self._build_menu()
         )
 
         # 启动异步初始化
@@ -129,6 +118,9 @@ class VoiceTyperApp:
             self.tray_icon.icon = self._create_recording_icon()
         else:
             self.tray_icon.icon = self._create_icon()
+            
+        # Rebuild menu to update status text
+        self.tray_icon.menu = self._build_menu()
 
     def _async_init(self):
         """异步初始化"""
@@ -141,6 +133,7 @@ class VoiceTyperApp:
             self._log("初始化...")
             self.controller = VoiceTyperController(self.config)
             self.controller.on_status_change = self._on_status
+            self.controller.on_stats_change = self._on_stats_change
             self.controller.initialize(callback=self._log)
 
             self._initialized = True
@@ -175,6 +168,31 @@ class VoiceTyperApp:
     def _on_status(self, status: str):
         """状态变化回调"""
         self._update_status(status)
+
+    def _build_menu(self):
+        """构建菜单"""
+        stats_text = self.controller.get_stats_display() if self.controller else "已输入：0字（0次）"
+        
+        return pystray.Menu(
+            pystray.MenuItem(f"状态: {self._current_status}", lambda _: None, enabled=False),
+            pystray.MenuItem(stats_text, lambda _: None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("启用语音输入", self.toggle_enabled, checked=lambda item: self._enabled),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("打开配置文件", self.open_config),
+            pystray.MenuItem("打开词库文件", self.open_hotwords),
+            pystray.MenuItem("打开配置目录", self.open_config_dir),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("关于", self.show_about),
+            pystray.MenuItem("退出", self.quit_app),
+        )
+
+    def _on_stats_change(self):
+        """统计数据变化回调"""
+        # Rebuild menu to update stats text
+        self.tray_icon.menu = self._build_menu()
+
+
 
     def toggle_enabled(self, icon, item):
         """切换启用/禁用状态"""
