@@ -114,6 +114,7 @@ class VoiceTyperApp:
 
     def _update_status(self, status: str):
         """更新状态"""
+        self.logger.info(f"Status update: {status}")
         self._current_status = status
 
         # 更新托盘提示文字

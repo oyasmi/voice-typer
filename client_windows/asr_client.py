@@ -34,6 +34,7 @@ class ASRClient:
     def health_check(self) -> bool:
         """检查服务是否可用"""
         try:
+            logger.info(f"Checking health at {self.base_url}/health")
             headers = self._get_auth_headers()
             response = self._client.fetch(
                 f"{self.base_url}/health",
@@ -42,8 +43,11 @@ class ASRClient:
                 request_timeout=5.0,
             )
             data = json.loads(response.body.decode('utf-8'))
-            return data.get("ready", False)
-        except (json.JSONDecodeError, Exception):
+            ready = data.get("ready", False)
+            logger.info(f"Health check result: {ready}")
+            return ready
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Health check failed: {e}")
             return False
     
     def recognize(self, audio: np.ndarray, hotwords: str = "") -> Optional[str]:

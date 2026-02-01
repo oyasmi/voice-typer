@@ -4,6 +4,7 @@
 import time
 import threading
 import logging
+import numpy as np
 from typing import Optional, Callable
 
 from config import AppConfig, get_hotwords_string
@@ -49,33 +50,47 @@ class VoiceTyperController:
             llm_recorrect=self.config.server.llm_recorrect,
         )
 
-        # 检查服务状态
-        if self._asr_client.health_check():
-            llm_status = "（LLM修正: 已启用）" if self.config.server.llm_recorrect else ""
-            log(f"语音识别服务已连接 {llm_status}")
-        else:
-            log("警告: 语音识别服务未就绪")
-
+        llm_status = "（LLM修正: 已启用）" if self.config.server.llm_recorrect else ""
+        try:
+            if self._asr_client.health_check():
+                log(f"语音识别服务已连接 {llm_status}")
+            else:
+                log("警告: 语音识别服务未就绪")
+        except Exception as e:
+                log(f"服务检查出错: {e}")
+        
         # 初始化录音器
         log("初始化录音设备...")
-        self._recorder = AudioRecorder()
+        try:
+            self._recorder = AudioRecorder()
+        except Exception as e:
+            log(f"录音设备初始化失败: {e}")
+            logger.error(f"录音设备初始化失败: {e}")
 
         # 初始化指示器
         log("初始化UI...")
-        self._indicator = get_indicator(
-            width=self.config.ui.width,
-            height=self.config.ui.height,
-            opacity=self.config.ui.opacity
-        )
+        try:
+            self._indicator = get_indicator(
+                width=self.config.ui.width,
+                height=self.config.ui.height,
+                opacity=self.config.ui.opacity
+            )
+        except Exception as e:
+            log(f"UI初始化失败: {e}")
+            logger.error(f"UI初始化失败: {e}")
 
         # 初始化热键
         log("初始化热键监听...")
-        self._hotkey_listener = HotkeyListener(
-            modifiers=self.config.hotkey.modifiers,
-            key=self.config.hotkey.key,
-            on_press=self._on_hotkey_press,
-            on_release=self._on_hotkey_release,
-        )
+        try:
+            self._hotkey_listener = HotkeyListener(
+                modifiers=self.config.hotkey.modifiers,
+                key=self.config.hotkey.key,
+                on_press=self._on_hotkey_press,
+                on_release=self._on_hotkey_release,
+            )
+        except Exception as e:
+            log(f"热键初始化失败: {e}")
+            logger.error(f"热键初始化失败: {e}")
 
         log("初始化完成")
 
