@@ -10,6 +10,8 @@ import signal
 import argparse
 import logging
 import numpy as np
+import concurrent.futures
+import asyncio
 
 import tornado.ioloop
 import tornado.web
@@ -92,9 +94,16 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                 self.write({"error": "服务未就绪"})
                 return
             
-            # 识别
+            # 识别 (使用单线程池避免阻塞 Tornado 主事件循环，并发请求将排队执行)
+            executor = self.application.settings.get('executor')
+            loop = asyncio.get_event_loop()
             t0 = time.time()
-            text = recognizer.recognize(audio, hotwords)
+            text = await loop.run_in_executor(
+                executor,
+                recognizer.recognize,
+                audio,
+                hotwords
+            )
             elapsed = time.time() - t0
             
             # LLM 修正
@@ -136,7 +145,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             self.write({"error": str(e)})
 
 
-def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client=None):
+def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client=None, executor=None):
     """创建Tornado应用
 
     Args:
@@ -144,6 +153,7 @@ def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client
         server_host: 服务器监听地址
         recognizer: 语音识别器实例
         llm_client: LLM 客户端实例
+        executor: 识别任务线程池
     """
     app = tornado.web.Application([
         (r"/health", HealthHandler),
@@ -155,6 +165,7 @@ def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client
     app.settings['server_host'] = server_host
     app.settings['recognizer'] = recognizer
     app.settings['llm_client'] = llm_client
+    app.settings['executor'] = executor
 
     return app
 
@@ -234,13 +245,17 @@ def main():
     recognizer.initialize()
     elapsed = time.time() - t0
     logger.info(f"初始化完成，耗时 {elapsed:.1f}s")
+    
+    # 创建全局线程池用于识别任务 (限制最大 worker 为 1，使请求排队处理，防止并发撑爆本地显存/内存)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     # 创建应用并传递识别器和LLM客户端
     app = make_app(
         api_keys=api_keys,
         server_host=args.host,
         recognizer=recognizer,
-        llm_client=llm_client
+        llm_client=llm_client,
+        executor=executor
     )
     server = tornado.httpserver.HTTPServer(app, max_buffer_size=100*1024*1024)  # 100MB
     server.listen(args.port, args.host)
@@ -253,6 +268,7 @@ def main():
         # 清理资源
         if llm_client:
             llm_client.close()
+        executor.shutdown(wait=False)
         tornado.ioloop.IOLoop.current().stop()
         sys.exit(0)
 
