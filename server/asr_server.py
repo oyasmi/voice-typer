@@ -63,10 +63,10 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             audio_file = self.request.files["audio"][0]
             audio_bytes = audio_file["body"]
 
-            # 验证数据大小 (50MB 限制)
-            if len(audio_bytes) > 50 * 1024 * 1024:
+            # 验证数据大小 (64MB 限制)
+            if len(audio_bytes) > 64 * 1024 * 1024:
                 self.set_status(413)
-                self.write({"error": "音频文件过大，最大支持 50MB"})
+                self.write({"error": "音频文件过大，最大支持 64MB"})
                 return
 
             # 验证格式并转换为 numpy 数组 (float32, 16kHz)
@@ -257,7 +257,7 @@ def main():
         llm_client=llm_client,
         executor=executor
     )
-    server = tornado.httpserver.HTTPServer(app, max_buffer_size=100*1024*1024)  # 100MB
+    server = tornado.httpserver.HTTPServer(app, max_buffer_size=64*1024*1024)  # 64MB
     server.listen(args.port, args.host)
 
     logger.info(f"服务已启动: http://{args.host}:{args.port}")
