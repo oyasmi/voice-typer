@@ -86,7 +86,7 @@ class VoiceTyperApp(rumps.App):
     def _get_hotkey_display(self) -> str:
         """获取热键显示字符串"""
         if self.config.hotkey.key.lower() == 'fn':
-            return 'FN (🌐)'
+            return 'Fn🌐'
         parts = self.config.hotkey.modifiers + [self.config.hotkey.key]
         return '+'.join(parts).upper()
 
