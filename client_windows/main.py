@@ -118,9 +118,6 @@ class VoiceTyperApp:
             self.tray_icon.icon = self._create_recording_icon()
         else:
             self.tray_icon.icon = self._create_icon()
-            
-        # Rebuild menu to update status text
-        self.tray_icon.menu = self._build_menu()
 
     def _async_init(self):
         """异步初始化"""
@@ -171,11 +168,9 @@ class VoiceTyperApp:
 
     def _build_menu(self):
         """构建菜单"""
-        stats_text = self.controller.get_stats_display() if self.controller else "已输入：0字（0次）"
-        
         return pystray.Menu(
-            pystray.MenuItem(f"状态: {self._current_status}", lambda _: None, enabled=False),
-            pystray.MenuItem(stats_text, lambda _: None, enabled=False),
+            pystray.MenuItem(lambda item: f"状态: {self._current_status}", lambda _: None, enabled=False),
+            pystray.MenuItem(lambda item: (self.controller.get_stats_display() if self.controller else "已输入：0字（0次）"), lambda _: None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("启用语音输入", self.toggle_enabled, checked=lambda item: self._enabled),
             pystray.Menu.SEPARATOR,
@@ -189,8 +184,8 @@ class VoiceTyperApp:
 
     def _on_stats_change(self):
         """统计数据变化回调"""
-        # Rebuild menu to update stats text
-        self.tray_icon.menu = self._build_menu()
+        # 已改为动态文本渲染，无需重新构建菜单
+        pass
 
 
 

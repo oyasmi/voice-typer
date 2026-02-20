@@ -53,17 +53,21 @@ class TextInserter:
             return
 
         try:
-            # 步骤 1: 异步执行 wl-copy 写入剪贴板
-            process = subprocess.Popen(
+            # 步骤 1: 执行 wl-copy 写入剪贴板，设置超时并检查完成
+            result = subprocess.run(
                 ['wl-copy'],
-                stdin=subprocess.PIPE,
+                input=text.encode('utf-8'),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                timeout=2.0
             )
-            # 在后台线程发送数据，不阻塞主流程
-            process.stdin.write(text.encode('utf-8'))
-            process.stdin.close()
-            # 不等待进程完成，让它在后台运行
+
+            # 检查写入是否成功
+            if result.returncode != 0:
+                logger.error(f"写入剪贴板失败，错误码: {result.returncode}")
+                if result.stderr:
+                    logger.error(f"wl-copy 错误: {result.stderr.decode('utf-8', errors='ignore').strip()}")
+                return
 
             # 步骤 2: 短暂等待剪贴板就绪
             time.sleep(0.08)
@@ -74,6 +78,8 @@ class TextInserter:
             # 步骤 4: 等待粘贴完成
             time.sleep(0.03)
 
+        except subprocess.TimeoutExpired:
+            logger.error("写入剪贴板超时")
         except FileNotFoundError:
             logger.error("未找到 wl-copy 命令")
             logger.error("请安装: sudo apt install wl-clipboard")

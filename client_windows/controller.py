@@ -198,11 +198,14 @@ class VoiceTyperController:
         self._stop_recording_timer()
 
         # 4. 异步处理识别
-        if len(audio) > 0:
+        if len(audio) > 4800:
             self._update_status("识别中...") # 异步更新
             threading.Thread(target=self._handle_recognition, args=(audio,), daemon=True).start()
         else:
-            self._update_status("录音为空") # 异步更新
+            if len(audio) > 0:
+                self._update_status("录音过短") # 异步更新
+            else:
+                self._update_status("录音为空") # 异步更新
             threading.Thread(target=self._reset_status_delayed, args=(1.0,), daemon=True).start()
 
     def _handle_recognition(self, audio: np.ndarray):

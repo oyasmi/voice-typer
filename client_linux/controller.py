@@ -158,7 +158,7 @@ class VoiceTyperController:
         self._indicator.hide()
         audio = self._recorder.stop()
 
-        if len(audio) > 0:
+        if len(audio) > 4800:
             self._update_status("识别中...")
 
             def do_recognize():
@@ -186,6 +186,11 @@ class VoiceTyperController:
 
             threading.Thread(target=do_recognize, daemon=True).start()
         else:
-            self._update_status("录音为空")
-            time.sleep(1)
-            self._update_status("就绪")
+            def reset_status():
+                if len(audio) > 0:
+                    self._update_status("录音过短")
+                else:
+                    self._update_status("录音为空")
+                time.sleep(1)
+                self._update_status("就绪")
+            threading.Thread(target=reset_status, daemon=True).start()
