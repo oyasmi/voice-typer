@@ -11,7 +11,8 @@ model:
 
 # 热键配置
 # 支持的修饰键: ctrl, alt/option, shift, cmd/command
-# 支持的按键: space, tab, a-z, 0-9, f1-f12 等
+# 支持的按键: space, tab, a-z, 0-9, f1-f12, fn (macOS Fn/地球仪键) 等
+# 使用 fn 键时 modifiers 应为空列表
 hotkey:
   modifiers:
     - "cmd"

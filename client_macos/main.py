@@ -83,13 +83,20 @@ class VoiceTyperApp(rumps.App):
             import traceback
             traceback.print_exc()
     
+    def _get_hotkey_display(self) -> str:
+        """获取热键显示字符串"""
+        if self.config.hotkey.key.lower() == 'fn':
+            return 'FN (🌐)'
+        parts = self.config.hotkey.modifiers + [self.config.hotkey.key]
+        return '+'.join(parts).upper()
+
     def _auto_enable(self):
         self._enabled = True
         self.controller.start()
         self.title = "🎤"
         self._update_status("就绪")
 
-        hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
+        hotkey = self._get_hotkey_display()
         try:
             rumps.notification(APP_NAME, "", f"按住 {hotkey} 开始语音输入")
         except RuntimeError as e:
@@ -117,7 +124,7 @@ class VoiceTyperApp(rumps.App):
             self.title = "🎤"
             # 菜单状态项：显示绿色圆点图标 + 热键提示（仅在配置加载完成后）
             if self.config:
-                hotkey = f"{'+'.join(self.config.hotkey.modifiers)}+{self.config.hotkey.key}".upper()
+                hotkey = self._get_hotkey_display()
                 self._status_item.title = f"🟢 {status}  ({hotkey} 开始录音)"
             else:
                 self._status_item.title = f"🟢 {status}"

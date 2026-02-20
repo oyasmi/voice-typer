@@ -57,6 +57,9 @@ hotkey:
   modifiers:
     - "ctrl"
   key: "f2"
+  # 或使用 Fn(地球仪) 键:
+  # modifiers: []
+  # key: "fn"
 
 ui:
   opacity: 0.85

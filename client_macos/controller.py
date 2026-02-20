@@ -4,8 +4,13 @@
 import time
 import threading
 import logging
-from typing import Optional, Callable, Set
+from typing import Optional, Callable, Set, Any
 from pynput import keyboard
+
+try:
+    import Quartz
+except ImportError:
+    Quartz = None
 
 from config import AppConfig, get_hotwords_string
 from recorder import AudioRecorder
@@ -126,6 +131,85 @@ class HotkeyListener:
             self._listener = None
 
 
+class FnKeyListener:
+    """Fn键监听器 (监听长按地球仪/Fn键)"""
+    
+    def __init__(self, on_press: Callable, on_release: Callable):
+        self.on_press_callback = on_press
+        self.on_release_callback = on_release
+        
+        self._hotkey_active = False
+        self._stopped = False
+        self._tap = None
+        self._runLoopSource = None
+        self._runLoop = None
+        self._lock = threading.Lock()
+        
+    def _event_tap_callback(self, proxy, event_type, event, refcon):
+        if self._stopped:
+            return event
+            
+        if Quartz and event_type == Quartz.kCGEventFlagsChanged:
+            flags = Quartz.CGEventGetFlags(event)
+            is_fn = bool(flags & Quartz.kCGEventFlagMaskSecondaryFn)
+            
+            with self._lock:
+                if is_fn and not self._hotkey_active:
+                    self._hotkey_active = True
+                    try:
+                        self.on_press_callback()
+                    except Exception as e:
+                        logger.error(f"Fn热键回调错误: {e}")
+                elif not is_fn and self._hotkey_active:
+                    self._hotkey_active = False
+                    try:
+                        self.on_release_callback()
+                    except Exception as e:
+                        logger.error(f"Fn热键释放错误: {e}")
+        return event
+        
+    def _run_listener(self):
+        if not Quartz:
+            logger.error("未安装 Quartz，无法监听Fn键！")
+            return
+
+        self._tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged),
+            self._event_tap_callback,
+            None
+        )
+        
+        if not self._tap:
+            logger.error("无法监听Fn键：请在'系统偏好设置 -> 隐私与安全性 -> 辅助功能'中授予权限")
+            return
+            
+        self._runLoopSource = Quartz.CFMachPortCreateRunLoopSource(None, self._tap, 0)
+        self._runLoop = Quartz.CFRunLoopGetCurrent()
+        
+        Quartz.CFRunLoopAddSource(self._runLoop, self._runLoopSource, Quartz.kCFRunLoopCommonModes)
+        Quartz.CGEventTapEnable(self._tap, True)
+        
+        Quartz.CFRunLoopRun()
+        
+    def start(self):
+        self._stopped = False
+        threading.Thread(target=self._run_listener, daemon=True).start()
+        
+    def stop(self):
+        self._stopped = True
+        if Quartz:
+            if self._tap:
+                Quartz.CGEventTapEnable(self._tap, False)
+            if self._runLoop:
+                try:
+                    Quartz.CFRunLoopStop(self._runLoop)
+                except Exception:
+                    pass
+
+
 class VoiceTyperController:
     """语音输入控制器"""
     
@@ -134,7 +218,7 @@ class VoiceTyperController:
         self._asr_client: Optional[ASRClient] = None
         self._recorder: Optional[AudioRecorder] = None
         self._indicator = None
-        self._hotkey_listener: Optional[HotkeyListener] = None
+        self._hotkey_listener: Optional[Any] = None
         self._recording = False
         self._lock = threading.Lock()
         self._hotwords = get_hotwords_string(config.hotwords)
@@ -171,12 +255,18 @@ class VoiceTyperController:
         
         # 初始化热键
         log("初始化热键监听...")
-        self._hotkey_listener = HotkeyListener(
-            modifiers=self.config.hotkey.modifiers,
-            key=self.config.hotkey.key,
-            on_press=self._on_hotkey_press,
-            on_release=self._on_hotkey_release,
-        )
+        if self.config.hotkey.key.lower() == 'fn':
+            self._hotkey_listener = FnKeyListener(
+                on_press=self._on_hotkey_press,
+                on_release=self._on_hotkey_release,
+            )
+        else:
+            self._hotkey_listener = HotkeyListener(
+                modifiers=self.config.hotkey.modifiers,
+                key=self.config.hotkey.key,
+                on_press=self._on_hotkey_press,
+                on_release=self._on_hotkey_release,
+            )
         
         log("初始化完成")
     

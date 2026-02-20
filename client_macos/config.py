@@ -180,6 +180,8 @@ server:
 
 # 热键配置
 # 支持的修饰键: ctrl, alt, shift, cmd (macOS), win_l/win_r (Windows左/右Win键)
+# 支持的按键: 字母 a-z, 数字 0-9, f1-f12, space, tab, fn (macOS Fn/地球仪键)
+# 当 key 设为 "fn" 时, modifiers 应为空列表
 hotkey:
   modifiers:
     - "ctrl"
