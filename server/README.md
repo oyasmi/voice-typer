@@ -1,0 +1,92 @@
+# VoiceTyper 服务器 (ASR + LLM)
+
+这是 VoiceTyper 应用程序的后端服务器组件。它提供了一个基于 Tornado 的 HTTP 接口，用于接收语音输入流并返回转换后的文本。
+
+该服务集成了以下能力：
+- **ASR (自动语音识别)**: 默认使用 `paraformer-zh` 模型将语音转成文本。
+- **PUNC (标点恢复)**: 默认使用 `ct-punc` 模型为识别后的文本自动添加标点。
+- **LLM (大语言模型)**: 可选配置，支持调用大模型对识别后文本进行二次纠错和润色（例如，使用预设的 Prompt 修复同音字或术语错误）。
+
+## 部署与运行方式
+
+我们提供了多种方式来启动该服务器，您可以根据您的使用场景选择最适合的一种。
+
+### 方式 1: 直接使用 Python 运行 (适合开发/调试)
+
+如果您希望手动管理 Python 的运行环境并直接启动服务。
+
+1. **安装依赖:**
+   在 `server` 目录下，使用您的 Python 环境 (建议 Python 3.10+) 执行：
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **启动服务:**
+   ```bash
+   python asr_server.py --host 0.0.0.0 --port 6008
+   ```
+   您可以通过 `python asr_server.py --help` 查看完整参数列表，例如配置 LLM 的 `--llm-base-url` 和 `--llm-api-key`。
+
+### 方式 2: 使用 Shell 脚本运行 (推荐 Linux/macOS 用户)
+
+我们提供了 `setup.sh` 和 `run.sh` 脚本来简化虚拟环境的创建和服务的启动流程。
+
+1. **初始化环境与安装依赖:**
+   该命令将在 `~/.venvs/voice-typer` 创建一个虚拟环境，并安装必要的依赖库。
+   ```bash
+   ./setup.sh --install-lib
+   ```
+   
+2. **启动服务:**
+   ```bash
+   ./setup.sh --start-server
+   ```
+   运行后，脚本会提示您输入 `LLM API Key`。如果您希望开启 LLM 纠错功能，请粘贴您的 Key 并回车；如果不需要，直接按回车即可禁用。
+
+   *注：`run.sh` 也可以被独立执行，它是底层的启动包装脚本，支持所有 `asr_server.py` 支持的类似 `--host`、`--port`、`--llm-*` 等长参数。*
+
+### 方式 3: 使用 Docker 部署 (推荐生产/服务器环境)
+
+使用 Docker 进行部署可以完全隔离环境，避免系统依赖冲突问题。
+
+1. **构建 Docker 镜像:**
+   在 `server` 目录下执行：
+   ```bash
+   docker build -t voice-typer-server:latest .
+   ```
+
+2. **运行 Docker 容器:**
+   
+   **最简运行 (不使用 LLM 纠错):**
+   ```bash
+   docker run -d -p 6008:6008 --name voice-typer voice-typer-server:latest
+   ```
+
+   **完整运行 (启用接口鉴权及 LLM 纠错):**
+   ```bash
+   docker run -d -p 6008:6008 \
+     --name voice-typer \
+     -e API_KEYS="my_secret_key_1" \
+     -e LLM_BASE_URL="https://api.openai.com/v1" \
+     -e LLM_API_KEY="sk-xxxxxx" \
+     -e LLM_MODEL="gpt-4o-mini" \
+     voice-typer-server:latest
+   ```
+   （更多可用环境变量映射参见 `Dockerfile`）
+
+## 接口说明
+
+服务启动后，默认在 `6008` 端口提供服务。
+
+- `GET /health`：服务健康检查接口
+- `POST /recognize`：语音识别核心接口，支持 `multipart/form-data` 上传音频文件 (字段名 `audio`)，以及支持表单字段 `hotwords` （热词）和 `llm_recorrect` (`true`/`false`，指明是否由大语言模型执行文本后处理修正）。
+
+## 源码文件说明
+
+- `asr_server.py`: 服务器的主入口文件，包含基于 Tornado 框架的 HTTP 服务路由、参数解析以及服务生命周期管理。
+- `auth.py`: 提供了鉴权中间件支持，主要实现基于 API Key 的访问控制拦截（`BaseAuthenticatedHandler`）。
+- `llm_client.py`: 封装了与大语言模型 (如 OpenAI 兼容接口) 的通信客户端模块，负责在 ASR 识别后调用模型进行文本纠错和重排润色。
+- `recognizer.py`: 封装了底层语音识别逻辑的库，内部使用 `FunASR` 及其 `paraformer-zh` 等模型来实现音频到文本的核心转换。
+- `requirements.txt`: Python 依赖库清单文件，列出了运行服务必需的最佳兼容依赖版本。
+- `Dockerfile`: 用于构建独立镜像的脚本文件，以便支持该后端服务的容器化部署。
+- `run.sh` / `setup.sh`: Linux 和 MacOS 系统下的依赖安装与服务快速启动便捷脚本。
+- `run.bat`: Windows 系统环境下的服务端启动包装脚本。
