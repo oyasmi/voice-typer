@@ -221,6 +221,7 @@ class VoiceTyperController:
         self._hotkey_listener: Optional[Any] = None
         self._recording = False
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()  # 统计变量专用锁
         self._hotwords = get_hotwords_string(config.hotwords)
         
         self.on_status_change: Optional[Callable[[str], None]] = None
@@ -311,10 +312,17 @@ class VoiceTyperController:
                 return
             self._recording = True
         
-        self._ensure_indicator()
-        self._indicator.show()
-        self._recorder.start()
-        self._update_status("录音中...")
+        try:
+            self._ensure_indicator()
+            self._indicator.show()
+            self._recorder.start()
+            self._update_status("录音中...")
+        except Exception as e:
+            # 出错时重置状态
+            with self._lock:
+                self._recording = False
+            logger.error(f"开始录音失败: {e}")
+            self._update_status(f"录音失败: {e}")
     
     def _on_hotkey_release(self):
         with self._lock:
@@ -336,9 +344,10 @@ class VoiceTyperController:
                         insert_text(text)
                         logger.info(f"识别: {text}")
 
-                        # Track statistics
-                        self._input_count += 1
-                        self._char_count += len(text)
+                        # Track statistics with lock protection
+                        with self._stats_lock:
+                            self._input_count += 1
+                            self._char_count += len(text)
                         if self.on_stats_change:
                             self.on_stats_change()
 

@@ -28,6 +28,7 @@ class VoiceTyperController:
         self._hotkey_listener: Optional[HotkeyListener] = None
         self._recording = False
         self._lock = threading.Lock()
+        self._stats_lock = threading.Lock()  # 统计变量专用锁
         self._hotwords = get_hotwords_string(config.hotwords)
         self._recording_start_time = None
         self._status_update_timer = None
@@ -167,18 +168,25 @@ class VoiceTyperController:
                 return
             self._recording = True
         
-        self._recording_start_time = time.time()
-        
-        # 2. 立即启动录音 (recorder 内部已经预初始化了 stream，start 很快)
-        self._recorder.start()
-        
-        # 3. 显示 UI (稍微延后，不阻塞录音)
-        if self._indicator:
-            self._indicator.set_text("正在听...")
-            self._indicator.show()
+        try:
+            self._recording_start_time = time.time()
             
-        # 4. 更新托盘状态和定时器 (放在最后/异步)
-        self._start_recording_timer()
+            # 2. 立即启动录音 (recorder 内部已经预初始化了 stream，start 很快)
+            self._recorder.start()
+            
+            # 3. 显示 UI (稍微延后，不阻塞录音)
+            if self._indicator:
+                self._indicator.set_text("正在听...")
+                self._indicator.show()
+                
+            # 4. 更新托盘状态和定时器 (放在最后/异步)
+            self._start_recording_timer()
+        except Exception as e:
+            # 出错时重置状态
+            with self._lock:
+                self._recording = False
+            logger.error(f"开始录音失败: {e}")
+            self._update_status(f"录音失败: {e}")
 
     def _on_hotkey_release(self):
         """热键释放 - 停止录音并识别"""
@@ -216,9 +224,10 @@ class VoiceTyperController:
                 insert_text(text)
                 logger.info(f"识别: {text}")
 
-                # 更新统计
-                self._input_count += 1
-                self._char_count += len(text)
+                # 更新统计 with lock protection
+                with self._stats_lock:
+                    self._input_count += 1
+                    self._char_count += len(text)
                 if self.on_stats_change:
                     self.on_stats_change()
 
