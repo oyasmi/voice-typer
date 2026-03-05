@@ -3,6 +3,7 @@
 使用剪贴板 + Ctrl+V 模拟粘贴
 """
 import time
+import threading
 import pyperclip
 from pynput.keyboard import Controller, Key
 
@@ -17,6 +18,12 @@ class TextInserter:
         """插入文本到当前光标位置"""
         if not text:
             return
+
+        # 备份当前剪贴板
+        try:
+            old_clipboard = pyperclip.paste()
+        except Exception:
+            old_clipboard = ""
 
         try:
             # 使用 pyperclip 写入剪贴板 (自动处理UTF-8)
@@ -35,6 +42,14 @@ class TextInserter:
 
         except Exception as e:
             print(f"文本插入失败: {e}")
+        finally:
+            # 延迟恢复剪贴板
+            def restore_clipboard():
+                try:
+                    pyperclip.copy(old_clipboard)
+                except Exception:
+                    pass
+            threading.Timer(0.5, restore_clipboard).start()
 
 
 _inserter = None

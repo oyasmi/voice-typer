@@ -3,6 +3,7 @@
 使用 wl-clipboard + evdev uinput 实现文本插入
 """
 import subprocess
+import threading
 import time
 import logging
 from typing import Optional
@@ -40,17 +41,50 @@ class TextInserter:
                 logger.error("运行: sudo usermod -aG input $USER")
                 raise
 
+    def _get_clipboard(self) -> str:
+        """获取当前剪贴板内容"""
+        try:
+            result = subprocess.run(
+                ['wl-paste'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2.0
+            )
+            if result.returncode == 0:
+                return result.stdout.decode('utf-8')
+        except Exception:
+            pass
+        return ""
+    
+    def _set_clipboard(self, text: str):
+        """设置剪贴板内容"""
+        try:
+            subprocess.run(
+                ['wl-copy'],
+                input=text.encode('utf-8'),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2.0
+            )
+        except Exception:
+            pass
+    
     def insert(self, text: str):
         """
         插入文本到当前光标位置
 
         方法：
-        1. 使用 wl-copy 将文本复制到剪贴板
-        2. 等待剪贴板就绪
-        3. 使用 uinput 模拟 Ctrl+V 粘贴
+        1. 备份当前剪贴板内容
+        2. 使用 wl-copy 将文本复制到剪贴板
+        3. 等待剪贴板就绪
+        4. 使用 uinput 模拟 Ctrl+V 粘贴
+        5. 延迟恢复剪贴板
         """
         if not text:
             return
+
+        # 备份当前剪贴板
+        old_clipboard = self._get_clipboard()
 
         try:
             # 步骤 1: 执行 wl-copy 写入剪贴板，设置超时并检查完成
@@ -85,6 +119,9 @@ class TextInserter:
             logger.error("请安装: sudo apt install wl-clipboard")
         except Exception as e:
             logger.error(f"文本插入失败: {e}")
+        finally:
+            # 步骤 5: 延迟恢复剪贴板
+            threading.Timer(0.5, lambda: self._set_clipboard(old_clipboard)).start()
 
     def _simulate_ctrl_v(self):
         """模拟 Ctrl+V 按键序列"""
