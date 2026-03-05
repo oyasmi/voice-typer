@@ -2,14 +2,35 @@
 鉴权基类模块 - 使用Tornado原生鉴权机制
 """
 import logging
+from typing import Optional
 import tornado.web
 
 logger = logging.getLogger("VoiceTyper")
 
 
 def is_localhost(host: str) -> bool:
-    """检查是否为IPv4本地地址127.0.0.1"""
-    return host == "127.0.0.1"
+    """检查是否为本地地址 (IPv4 或 IPv6)"""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def is_local_request(remote_ip: Optional[str]) -> bool:
+    """检查请求是否来自本地地址
+    
+    Args:
+        remote_ip: 请求的远程IP地址
+        
+    Returns:
+        bool: 如果是本地请求返回True
+    """
+    if not remote_ip:
+        return False
+    # 支持 IPv4 本地地址
+    if remote_ip == "127.0.0.1":
+        return True
+    # 支持 IPv6 本地地址
+    if remote_ip == "::1":
+        return True
+    return False
 
 
 class BaseAuthenticatedHandler(tornado.web.RequestHandler):
@@ -33,9 +54,8 @@ class BaseAuthenticatedHandler(tornado.web.RequestHandler):
         Returns:
             str | bool | None: API key字符串，True（本地跳过），或None（验证失败）
         """
-        # 检查是否为本地地址
-        server_host = self.application.settings.get('server_host', '-')
-        if is_localhost(server_host):
+        # 检查请求来源是否为本地地址
+        if is_local_request(self.request.remote_ip):
             return True
 
         # 提取Bearer token
