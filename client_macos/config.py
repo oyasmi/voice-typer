@@ -23,6 +23,17 @@ class ServerConfig:
     timeout: float = 60.0
     api_key: Optional[str] = None
     llm_recorrect: bool = True  # 是否启用 LLM 修正
+    
+    def __post_init__(self):
+        """验证配置值的有效性"""
+        if not (1 <= self.port <= 65535):
+            raise ValueError(f"端口必须在 1-65535 之间，当前值: {self.port}")
+        if self.timeout <= 0:
+            raise ValueError(f"超时时间必须为正数，当前值: {self.timeout}")
+        if self.host not in ('localhost', '127.0.0.1'):
+            # 简单的主机格式检查
+            if not self.host or '..' in self.host or self.host.startswith('.') or self.host.endswith('.'):
+                raise ValueError(f"主机地址格式无效: {self.host}")
 
 
 @dataclass
@@ -36,6 +47,15 @@ class UIConfig:
     opacity: float = 0.85
     width: int = 240
     height: int = 70
+    
+    def __post_init__(self):
+        """验证 UI 配置值的有效性"""
+        if not (0.0 <= self.opacity <= 1.0):
+            raise ValueError(f"透明度必须在 0.0-1.0 之间，当前值: {self.opacity}")
+        if self.width <= 0:
+            raise ValueError(f"宽度必须为正数，当前值: {self.width}")
+        if self.height <= 0:
+            raise ValueError(f"高度必须为正数，当前值: {self.height}")
 
 
 @dataclass
@@ -51,7 +71,11 @@ def get_config_dir() -> Path:
     """获取配置目录"""
     if platform.system() == 'Windows':
         # Windows: %APPDATA%\voice_typer
-        appdata = os.environ.get('APPDATA', r'~\AppData\Roaming')
+        appdata = os.environ.get('APPDATA')
+        if not appdata:
+            # 后备到用户目录
+            userprofile = os.environ.get('USERPROFILE', os.path.expanduser('~'))
+            appdata = os.path.join(userprofile, 'AppData', 'Roaming')
         return Path(appdata) / CONFIG_DIR_NAME
     else:
         # macOS/Linux: ~/.config/voice_typer
