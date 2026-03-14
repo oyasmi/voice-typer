@@ -4,7 +4,7 @@
 set -e
 
 APP_NAME="VoiceTyper"
-VERSION="1.3.9"
+VERSION="1.4.1"
 
 echo "========================================"
 echo "  $APP_NAME 客户端打包"

@@ -1,5 +1,5 @@
 APP_NAME = VoiceTyper
-VERSION = 1.3.6
+VERSION = 1.4.1
 
 .PHONY: install run build clean dist test log help
 
