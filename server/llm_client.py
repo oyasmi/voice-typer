@@ -13,7 +13,7 @@ logger = logging.getLogger("VoiceTyper")
 class LLMClient:
     """OpenAI 兼容的 LLM 客户端"""
     
-    def __init__(self, base_url, api_key, model, temperature=0.3, max_tokens=500):
+    def __init__(self, base_url, api_key, model, temperature=0.3, max_tokens=800):
         """
         初始化 LLM 客户端
         
@@ -76,7 +76,7 @@ class LLMClient:
                 method='POST',
                 headers=headers,
                 body=json.dumps(payload),
-                request_timeout=4.0
+                request_timeout=8.0
             )
             
             response = await self.http_client.fetch(request)
