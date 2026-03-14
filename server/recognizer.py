@@ -70,14 +70,14 @@ class SpeechRecognizer:
         """将 device 参数转换为 funasr-onnx 所需的 device_id"""
         device = (self.device or "cpu").lower()
         if device == "cpu":
-            return "-1"
+            return -1
         if device.startswith("cuda:"):
             return int(device.split(":", 1)[1])
         if device == "cuda":
             return 0
 
         logger.warning(f"ONNX 后端暂不支持 device={self.device}，已回退到 CPU")
-        return "-1"
+        return -1
 
     def _load_onnx_classes(self) -> Tuple[Type[object], Type[object]]:
         """绕过 funasr_onnx 包级导入里的 SenseVoice/torch 依赖"""
