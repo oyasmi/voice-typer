@@ -10,6 +10,7 @@ set MODEL=paraformer-zh
 set PUNC_MODEL=ct-punc
 set DEVICE=cpu
 set ASR_API_KEYS=
+set ONNX_THREADS=4
 
 :: LLM 相关参数
 set LLM_BASE_URL=
@@ -47,6 +48,12 @@ if "%~1"=="--punc-model" (
 )
 if "%~1"=="--device" (
     set DEVICE=%~2
+    shift
+    shift
+    goto parse_loop
+)
+if "%~1"=="--onnx-threads" (
+    set ONNX_THREADS=%~2
     shift
     shift
     goto parse_loop
@@ -104,7 +111,8 @@ echo   --host HOST           监听地址 (默认: 127.0.0.1)
 echo   --port PORT           监听端口 (默认: 6008)
 echo   --model MODEL         ASR 模型 (默认: paraformer-zh)
 echo   --punc-model M        标点模型 (默认: ct-punc, 设为 none 禁用)
-echo   --device DEVICE       计算设备 (默认: cpu, 其他 mps)
+echo   --device DEVICE       计算设备 (默认: cpu，可选: cuda 或 cuda:N)
+echo   --onnx-threads N      ONNX 后端 intra-op 线程数 (默认: 4)
 echo   --api-keys K          API 密钥（逗号分隔多个密钥）
 echo.
 echo LLM 选项:
@@ -118,7 +126,7 @@ exit /b 0
 
 :start_server
 :: 构造基本的参数
-set ARGS=--host !HOST! --port !PORT! --model !MODEL! --punc-model !PUNC_MODEL! --device !DEVICE!
+set ARGS=--host !HOST! --port !PORT! --model !MODEL! --punc-model !PUNC_MODEL! --device !DEVICE! --onnx-threads !ONNX_THREADS!
 
 :: 只有当ASR_API_KEYS不为空时才添加
 if not "!ASR_API_KEYS!"=="" (

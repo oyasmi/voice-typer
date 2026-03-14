@@ -201,8 +201,9 @@ def main():
     parser.add_argument("--port", type=int, default=6008, help="监听端口")
     parser.add_argument("--model", default="paraformer-zh", help="ASR 模型")
     parser.add_argument("--punc-model", default="ct-punc", help="标点模型 (none 禁用)")
-    parser.add_argument("--device", default="cpu", help="设备: mps, cpu")
+    parser.add_argument("--device", default="cpu", help="设备: ONNX 后端支持 cpu/cuda")
     parser.add_argument("--api-keys", help="API 密钥（逗号分隔多个密钥）")
+    parser.add_argument("--onnx-threads", type=int, default=4, help="ONNX 后端 intra-op 线程数")
 
     # LLM 相关参数
     parser.add_argument("--llm-base-url", help="LLM API 基础URL (如 https://api.openai.com/v1)")
@@ -224,6 +225,7 @@ def main():
     logger.info("VoiceTyper 语音识别服务")
     logger.info("=" * 50)
     logger.info(f"地址: http://{args.host}:{args.port}")
+    logger.info("后端: onnx")
     logger.info(f"模型: {args.model}")
     logger.info(f"标点: {args.punc_model}")
     logger.info(f"设备: {args.device}")
@@ -252,6 +254,7 @@ def main():
         model_name=args.model,
         punc_model=punc,
         device=args.device,
+        intra_op_num_threads=args.onnx_threads,
     )
 
     logger.info("初始化模型...")

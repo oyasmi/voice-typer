@@ -24,6 +24,7 @@ ENV PORT=6008
 ENV MODEL=paraformer-zh
 ENV PUNC_MODEL=ct-punc
 ENV DEVICE=cpu
+ENV ONNX_THREADS=4
 
 # 可选环境变量 (留空表示不启用)
 # ENV API_KEYS=
@@ -43,6 +44,7 @@ CMD ["sh", "-c", "python asr_server.py \
     --model \"$MODEL\" \
     --punc-model \"$PUNC_MODEL\" \
     --device \"$DEVICE\" \
+    --onnx-threads \"$ONNX_THREADS\" \
     ${API_KEYS:+--api-keys \"$API_KEYS\"} \
     ${LLM_BASE_URL:+--llm-base-url \"$LLM_BASE_URL\"} \
     ${LLM_API_KEY:+--llm-api-key \"$LLM_API_KEY\"} \

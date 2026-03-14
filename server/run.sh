@@ -14,6 +14,7 @@ MODEL="paraformer-zh"
 PUNC_MODEL="ct-punc"
 DEVICE="cpu"
 ASR_API_KEYS=""
+ONNX_THREADS="4"
 
 # LLM 相关参数
 LLM_BASE_URL=""
@@ -43,6 +44,10 @@ while [ $# -gt 0 ]; do
             ;;
         --device)
             DEVICE="$2"
+            shift 2
+            ;;
+        --onnx-threads)
+            ONNX_THREADS="$2"
             shift 2
             ;;
         --api-keys)
@@ -79,7 +84,8 @@ while [ $# -gt 0 ]; do
             echo "  --port PORT           监听端口 (默认: 6008)"
             echo "  --model MODEL         ASR 模型 (默认: paraformer-zh)"
             echo "  --punc-model M        标点模型 (默认: ct-punc, 设为 none 禁用)"
-            echo "  --device DEVICE       计算设备 (默认: cpu, 其他 mps)"
+            echo "  --device DEVICE       计算设备 (默认: cpu，可选: cuda 或 cuda:N)"
+            echo "  --onnx-threads N      ONNX 后端 intra-op 线程数 (默认: 4)"
             echo "  --api-keys K          API 密钥（逗号分隔多个密钥）"
             echo ""
             echo "LLM 选项:"
@@ -107,6 +113,10 @@ ARGS=(
     --punc-model "$PUNC_MODEL"
     --device "$DEVICE"
 )
+
+if [ -n "$ONNX_THREADS" ]; then
+    ARGS+=(--onnx-threads "$ONNX_THREADS")
+fi
 
 # 只有当ASR_API_KEYS不为空时才添加--api-keys参数
 if [ -n "$ASR_API_KEYS" ]; then
