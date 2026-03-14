@@ -10,7 +10,7 @@
 - 🌐 **Fn 键支持** - macOS 支持绑定 Fn（地球仪）键作为热键
 - ⏱️ **短录音过滤** - 自动丢弃 0.3 秒以下的误触录音
 - 🤖 **LLM 智能纠错** - 可选的大语言模型智能纠错
-- 🚀 **GPU 加速** - 支持 Apple Silicon (MPS) 和 NVIDIA (CUDA)
+- 🚀 **硬件加速** - 服务端当前支持 CPU 与 NVIDIA CUDA
 - 🌍 **多语言** - 支持中文、英文语音识别
 - 🖥️ **多平台** - 支持 macOS、Windows 和 Linux (Wayland)
 
@@ -51,8 +51,8 @@
 
 ```bash
 cd server
-pip install -r requirements.txt
-./run.sh
+pip install .
+python -m voice_typer_server
 ```
 
 服务端默认监听 `127.0.0.1:6008`。
@@ -299,15 +299,15 @@ sudo apt install wl-clipboard
 
 ```bash
 cd server
-./run.sh --host 0.0.0.0 --port 6008 --model paraformer-zh --device mps
+voice-typer-server --host 0.0.0.0 --port 6008 --model paraformer-zh --device cpu
 ```
 
 **参数说明**：
 - `--host HOST` - 监听地址（默认: 127.0.0.1）
 - `--port PORT` - 监听端口（默认: 6008）
-- `--model MODEL` - 识别模型（paraformer-zh, paraformer-en, SenseVoiceSmall）
+- `--model MODEL` - 识别模型（默认: paraformer-zh）
 - `--punc-model MODEL` - 标点恢复模型（ct-punc 或 "none" 禁用）
-- `--device DEVICE` - 处理设备（cpu, mps, cuda）
+- `--device DEVICE` - 处理设备（cpu, cuda, cuda:N）
 - `--api-keys KEYS` - API 密钥认证（逗号分隔）
 
 ### LLM 智能纠错
@@ -315,9 +315,9 @@ cd server
 使用大语言模型自动修正识别错误（同音字、口语词、标点等）：
 
 ```bash
-./run.sh --llm-base-url https://api.openai.com/v1 \
-         --llm-api-key sk-xxx \
-         --llm-model gpt-4o-mini
+voice-typer-server --llm-base-url https://api.openai.com/v1 \
+                   --llm-api-key sk-xxx \
+                   --llm-model gpt-4o-mini
 ```
 
 **LLM 参数**：
@@ -332,14 +332,14 @@ cd server
 ### 组合示例
 
 ```bash
-# 使用英文模型 + MPS 加速 + LLM 纠错 + API 认证
-./run.sh --host 0.0.0.0 --port 6008 \
-         --model paraformer-en --device mps \
-         --punc-model ct-punc \
-         --llm-base-url https://api.openai.com/v1 \
-         --llm-api-key sk-xxx \
-         --llm-model gpt-4o-mini \
-         --api-keys "super_secret_key"
+# 使用 CPU + LLM 纠错 + API 认证
+voice-typer-server --host 0.0.0.0 --port 6008 \
+                   --model paraformer-zh --device cpu \
+                   --punc-model ct-punc \
+                   --llm-base-url https://api.openai.com/v1 \
+                   --llm-api-key sk-xxx \
+                   --llm-model gpt-4o-mini \
+                   --api-keys "super_secret_key"
 ```
 
 ## 自定义词库
@@ -363,18 +363,22 @@ GitHub
 
 - `POST /recognize` - 提交音频进行识别
 - `GET /health` - 检查服务状态
-- `GET /models` - 列出可用模型
 
 ### 请求示例
 
 ```bash
-# 识别音频
+# 推荐方式：上传 16kHz float32 原始音频字节
+curl -X POST "http://127.0.0.1:6008/recognize?llm_recorrect=false" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @test.float32
+
+# 兼容旧版 multipart/form-data
 curl -X POST http://127.0.0.1:6008/recognize \
      -F "audio=@test.wav"
 
 # 带认证的请求
 curl -X POST http://127.0.0.1:6008/recognize \
-     -H "X-API-Key: your-api-key" \
+     -H "Authorization: Bearer your-api-key" \
      -F "audio=@test.wav"
 ```
 
@@ -399,8 +403,8 @@ curl -X POST http://127.0.0.1:6008/recognize \
 ### 通信协议
 
 客户端通过 HTTP 与服务端通信：
-- 请求：multipart/form-data 上传 WAV 音频
-- 响应：JSON 格式的识别结果和纠错文本
+- 请求：推荐 `application/octet-stream` 上传 16kHz `float32` 原始音频字节；兼容 `multipart/form-data`
+- 响应：JSON 格式的识别结果
 
 ## 项目结构
 
@@ -424,20 +428,25 @@ voice-typer/
 │   ├── asr_client.py      # 服务端通信
 │   └── config.py          # 配置管理
 └── server/                # 语音识别服务
-    ├── asr_server.py      # Tornado 服务器
-    ├── recognizer.py      # FunASR 集成
-    ├── auth.py            # API 认证
-    └── llm_client.py      # LLM 纠错
+    ├── pyproject.toml     # Python package 定义
+    ├── voice_typer_server/
+    │   ├── cli.py         # CLI 入口
+    │   ├── app.py         # Tornado 服务装配
+    │   ├── recognizer.py  # FunASR 集成
+    │   ├── auth.py        # API 认证
+    │   └── llm_client.py  # LLM 纠错
+    └── scripts/
+        └── voice_typer_server.sh
 ```
 
 ## 性能优化
 
 ### Apple Silicon (M1/M2/M3/M4)
 
-使用 MPS 加速可显著提升识别速度：
+当前服务端不提供 MPS 后端，Apple Silicon 上建议直接使用 CPU：
 
 ```bash
-./run.sh --device mps
+voice-typer-server --device cpu
 ```
 
 ### NVIDIA GPU
@@ -445,16 +454,16 @@ voice-typer/
 使用 CUDA 加速：
 
 ```bash
-./run.sh --device cuda
+voice-typer-server --device cuda
 ```
 
 ### 内存优化
 
-使用较小模型可降低内存占用：
+关闭标点模型可降低部分资源占用：
 
 ```bash
-# SenseVoice 模型更轻量
-./run.sh --model SenseVoiceSmall
+# 关闭标点模型可降低部分资源占用
+voice-typer-server --punc-model none
 ```
 
 ## 常见问题
@@ -487,4 +496,3 @@ voice-typer/
 - [pynput](https://github.com/moses-palmer/pynput) - 跨平台输入控制库
 - [PyGObject](https://pygobject.readthedocs.io/) - Python GTK 绑定
 - [evdev](https://python-evdev.readthedocs.io/) - Linux 输入设备处理
-

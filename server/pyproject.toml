@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-typer-server"
+dynamic = ["version"]
+description = "VoiceTyper speech recognition server based on FunASR ONNX and Tornado."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  {name = "VoiceTyper Contributors"},
+]
+dependencies = [
+  "funasr-onnx>=0.4.1",
+  "modelscope",
+  "onnxruntime>=1.24.0",
+  "tornado>=6.0",
+  "jieba",
+  "numpy>=1.23,<2.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Environment :: Console",
+]
+
+[project.urls]
+Homepage = "https://github.com/oyasmi/voice-typer"
+Repository = "https://github.com/oyasmi/voice-typer"
+
+[project.scripts]
+voice-typer-server = "voice_typer_server.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "voice_typer_server.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["voice_typer_server*"]
+
+[tool.setuptools.package-data]
+voice_typer_server = ["prompts/*.md"]

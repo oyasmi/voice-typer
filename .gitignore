@@ -25,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+PKG-INFO
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -121,6 +122,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv*/
 env/
 venv/
 ENV/
@@ -225,6 +227,8 @@ server/config_local.yaml
 client/config_local.yaml
 *.env
 .env.local
+.pypirc
+server/.pypirc
 .secrets
 client/.secrets
 server/.secrets
@@ -252,6 +256,11 @@ server/.tornado_cache/
 client/.cache/
 server/.cache/
 nohup.out
+server/.venv*/
+server/dist/
+server/build/
+server/.pytest_cache/
+server/.mypy_cache/
 
 CLAUDE.md
 

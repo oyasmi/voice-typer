@@ -1,12 +1,2 @@
-# 语音识别
-funasr-onnx>=0.4.1
-modelscope
-onnxruntime>=1.24.0
-
-# Web 服务
-tornado>=6.0
-
-# 其他
-jieba
-numpy>=1.23,<2.0
-PyYAML>=6.0
+# 兼容旧用法；推荐改用 `pip install .` 或 `pip install -e .`
+-e .

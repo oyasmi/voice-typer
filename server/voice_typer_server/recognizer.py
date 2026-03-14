@@ -5,10 +5,11 @@ import importlib
 import importlib.machinery
 import logging
 from pathlib import Path
-import numpy as np
 import sys
 import types
 from typing import Optional, Tuple, Type, Union
+
+import numpy as np
 
 logger = logging.getLogger("VoiceTyper")
 
@@ -98,14 +99,14 @@ class SpeechRecognizer:
 
     def initialize(self):
         """初始化 ONNX 模型"""
-        Paraformer, CT_Transformer = self._load_onnx_classes()
+        paraformer_class, punc_class = self._load_onnx_classes()
 
         device_id = self._resolve_device_id()
         asr_model_dir, asr_quantized = self._prepare_model_dir(self.model_name)
         punc_model_dir, punc_quantized = self._prepare_model_dir(self.punc_model_name)
 
         logger.info(f"[1/2] 加载 ONNX 语音识别模型: {asr_model_dir}")
-        self._model = Paraformer(
+        self._model = paraformer_class(
             asr_model_dir,
             batch_size=1,
             device_id=device_id,
@@ -116,14 +117,14 @@ class SpeechRecognizer:
         if punc_model_dir:
             logger.info(f"[2/2] 加载 ONNX 标点恢复模型: {punc_model_dir}")
             try:
-                self._punc_model = CT_Transformer(
+                self._punc_model = punc_class(
                     punc_model_dir,
                     device_id=device_id,
                     quantize=punc_quantized,
                     intra_op_num_threads=self.intra_op_num_threads,
                 )
-            except Exception as e:
-                logger.warning(f"      ONNX 标点模型加载失败: {e}")
+            except Exception as exc:
+                logger.warning(f"ONNX 标点模型加载失败: {exc}")
                 self._punc_model = None
         else:
             logger.info("[2/2] ONNX 标点恢复模型: 已禁用")
@@ -208,7 +209,7 @@ class SpeechRecognizer:
                 normalized_text = self._extract_punc_text(punc_result)
                 if normalized_text:
                     text = normalized_text
-            except Exception as e:
-                logger.warning(f"ONNX 标点恢复失败: {e}")
+            except Exception as exc:
+                logger.warning(f"ONNX 标点恢复失败: {exc}")
 
         return text
