@@ -12,6 +12,7 @@ import logging
 import numpy as np
 import concurrent.futures
 import asyncio
+from urllib.parse import unquote
 
 import tornado.ioloop
 import tornado.web
@@ -46,7 +47,28 @@ class HealthHandler(BaseAuthenticatedHandler):
 
 
 class RecognizeHandler(BaseAuthenticatedHandler):
-    """语音识别接口 - 支持 multipart/form-data"""
+    """语音识别接口 - 优先支持 octet-stream，兼容 multipart/form-data"""
+
+    def _parse_audio_request(self):
+        """解析请求中的音频和附加参数"""
+        content_type = self.request.headers.get("Content-Type", "").lower()
+
+        # 新协议：原始音频字节直接放在请求体中，减少表单解析开销
+        if content_type.startswith("application/octet-stream"):
+            audio_bytes = self.request.body
+            hotwords = unquote(self.request.headers.get("X-Hotwords", ""))
+            llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
+            return audio_bytes, hotwords, llm_recorrect
+
+        # 兼容旧客户端：继续支持 multipart/form-data 上传
+        if "audio" not in self.request.files:
+            raise tornado.web.HTTPError(400, reason="缺少 audio 文件")
+
+        audio_file = self.request.files["audio"][0]
+        audio_bytes = audio_file["body"]
+        hotwords = self.get_argument("hotwords", "")
+        llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
+        return audio_bytes, hotwords, llm_recorrect
 
     @tornado.web.authenticated
     async def post(self):
@@ -54,14 +76,8 @@ class RecognizeHandler(BaseAuthenticatedHandler):
         llm_client = self.application.settings.get('llm_client')
 
         try:
-            # 获取音频文件
-            if "audio" not in self.request.files:
-                self.set_status(400)
-                self.write({"error": "缺少 audio 文件"})
-                return
-            
-            audio_file = self.request.files["audio"][0]
-            audio_bytes = audio_file["body"]
+            # 解析请求
+            audio_bytes, hotwords, llm_recorrect = self._parse_audio_request()
 
             # 验证数据大小 (64MB 限制)
             if len(audio_bytes) > 64 * 1024 * 1024:
@@ -83,11 +99,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                 self.set_status(400)
                 self.write({"error": "音频数据为空"})
                 return
-            
-            # 获取参数
-            hotwords = self.get_argument("hotwords", "")
-            llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
-            
+
             # 检查服务状态
             if not recognizer or not recognizer.is_ready:
                 self.set_status(503)
@@ -139,7 +151,9 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                 result["llmElapsed"] = llm_elapsed
             
             self.write(result)
-            
+        except tornado.web.HTTPError as e:
+            self.set_status(e.status_code)
+            self.write({"error": e.reason or str(e)})
         except Exception as e:
             self.set_status(500)
             self.write({"error": str(e)})

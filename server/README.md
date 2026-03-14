@@ -78,7 +78,7 @@
 服务启动后，默认在 `6008` 端口提供服务。
 
 - `GET /health`：服务健康检查接口
-- `POST /recognize`：语音识别核心接口，支持 `multipart/form-data` 上传音频文件 (字段名 `audio`)，以及支持表单字段 `hotwords` （热词）和 `llm_recorrect` (`true`/`false`，指明是否由大语言模型执行文本后处理修正）。
+- `POST /recognize`：语音识别核心接口。推荐使用 `application/octet-stream` 直接上传 `float32` 音频字节，并通过请求头 `X-Hotwords` 和查询参数 `llm_recorrect=true|false` 传递附加参数；同时兼容旧版 `multipart/form-data` 上传方式（字段名 `audio`，以及表单字段 `hotwords`、`llm_recorrect`）。
 
 ## 源码文件说明
 
