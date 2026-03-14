@@ -1,10 +1,14 @@
 """
 FunASR ONNXRuntime 语音识别封装
 """
+import importlib
+import importlib.machinery
 import logging
 from pathlib import Path
 import numpy as np
-from typing import Optional, Union
+import sys
+import types
+from typing import Optional, Tuple, Type, Union
 
 logger = logging.getLogger("VoiceTyper")
 
@@ -75,9 +79,26 @@ class SpeechRecognizer:
         logger.warning(f"ONNX 后端暂不支持 device={self.device}，已回退到 CPU")
         return "-1"
 
+    def _load_onnx_classes(self) -> Tuple[Type[object], Type[object]]:
+        """绕过 funasr_onnx 包级导入里的 SenseVoice/torch 依赖"""
+        package_name = "funasr_onnx"
+        if package_name not in sys.modules:
+            spec = importlib.machinery.PathFinder.find_spec(package_name, sys.path)
+            if spec is None or spec.submodule_search_locations is None:
+                raise ImportError("未找到 funasr_onnx 包")
+
+            package = types.ModuleType(package_name)
+            package.__path__ = list(spec.submodule_search_locations)
+            package.__spec__ = spec
+            sys.modules[package_name] = package
+
+        paraformer_module = importlib.import_module("funasr_onnx.paraformer_bin")
+        punc_module = importlib.import_module("funasr_onnx.punc_bin")
+        return paraformer_module.Paraformer, punc_module.CT_Transformer
+
     def initialize(self):
         """初始化 ONNX 模型"""
-        from funasr_onnx import CT_Transformer, Paraformer
+        Paraformer, CT_Transformer = self._load_onnx_classes()
 
         device_id = self._resolve_device_id()
         asr_model_dir, asr_quantized = self._prepare_model_dir(self.model_name)
