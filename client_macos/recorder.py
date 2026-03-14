@@ -38,7 +38,7 @@ class AudioRecorder:
             channels=self.CHANNELS,
             dtype=self.DTYPE,
             callback=callback,
-            blocksize=int(self.SAMPLE_RATE * 0.1),
+            blocksize=int(self.SAMPLE_RATE * 0.05),
         )
         self._stream.start()
     
