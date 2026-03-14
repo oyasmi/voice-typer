@@ -35,7 +35,7 @@ class AudioRecorder:
                 channels=self.CHANNELS,
                 dtype=self.DTYPE,
                 callback=self._callback,
-                blocksize=int(self.SAMPLE_RATE * 0.1),
+                blocksize=int(self.SAMPLE_RATE * 0.05),
                 # 增加延迟容忍度，避免 xrun 警告
                 latency='low', 
             )

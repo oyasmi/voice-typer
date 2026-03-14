@@ -10,7 +10,7 @@ from typing import List, Optional
 from pathlib import Path
 
 APP_NAME = "VoiceTyper"
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.4.1"
 CONFIG_DIR_NAME = "voice_typer"
 
 logger = logging.getLogger(APP_NAME)

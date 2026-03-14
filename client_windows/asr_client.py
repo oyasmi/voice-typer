@@ -2,10 +2,10 @@
 ASR 服务客户端
 """
 import json
-import uuid
 import logging
 import numpy as np
 from typing import Optional
+from urllib.parse import quote
 from tornado.httpclient import HTTPClient, HTTPError
 
 
@@ -53,46 +53,17 @@ class ASRClient:
     def recognize(self, audio: np.ndarray, hotwords: str = "") -> Optional[str]:
         """识别音频"""
         try:
-            # 构建 multipart/form-data
-            boundary = f"----VoiceTyper{uuid.uuid4().hex}"
-            
-            body_parts = []
-            
-            # 音频文件
-            body_parts.append(f"--{boundary}".encode())
-            body_parts.append(b'Content-Disposition: form-data; name="audio"; filename="audio.raw"')
-            body_parts.append(b'Content-Type: application/octet-stream')
-            body_parts.append(b'')
-            body_parts.append(audio.tobytes())
-            
-            # 热词
-            if hotwords:
-                body_parts.append(f"--{boundary}".encode())
-                body_parts.append(b'Content-Disposition: form-data; name="hotwords"')
-                body_parts.append(b'')
-                body_parts.append(hotwords.encode('utf-8'))
-            
-            # LLM 修正参数
-            body_parts.append(f"--{boundary}".encode())
-            body_parts.append(b'Content-Disposition: form-data; name="llm_recorrect"')
-            body_parts.append(b'')
-            body_parts.append(b'true' if self.llm_recorrect else b'false')
-            
-            # 结束
-            body_parts.append(f"--{boundary}--".encode())
-            body_parts.append(b'')
-            
-            body = b'\r\n'.join(body_parts)
-            
             # 发送请求
             headers = self._get_auth_headers()
-            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+            headers["Content-Type"] = "application/octet-stream"
+            if hotwords:
+                headers["X-Hotwords"] = quote(hotwords, safe="")
 
             response = self._client.fetch(
-                f"{self.base_url}/recognize",
+                f"{self.base_url}/recognize?llm_recorrect={'true' if self.llm_recorrect else 'false'}",
                 method="POST",
                 headers=headers,
-                body=body,
+                body=audio.tobytes(),
                 request_timeout=self.timeout,
             )
             
