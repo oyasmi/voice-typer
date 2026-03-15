@@ -1,13 +1,11 @@
 # VoiceTyper 服务器 (ASR + LLM)
 
-这是 VoiceTyper 的服务端实现，现已整理为标准 Python package，可直接通过模块或命令行工具启动。
+VoiceTyper 的服务端实现，可直接通过模块或命令行工具启动。
 
 ## Python 版本
 
 - 最低支持：Python 3.9
-- 推荐版本：Python 3.12
-
-保留 Python 3.9 兼容性，是为了兼容当前 macOS 自带 Python 的直接使用场景。
+- 推荐版本：Python 3.12+
 
 ## 安装与运行
 
@@ -120,7 +118,7 @@ voice-typer-server \
 
 ## ONNX 部署说明
 
-- 服务端仅保留 `funasr-onnx + onnxruntime` 路线
+- 服务端使用 onnxruntime 运行模型
 - 默认模型短名映射：
   - `paraformer-zh` → `damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx`
   - `ct-punc` → `damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx`
