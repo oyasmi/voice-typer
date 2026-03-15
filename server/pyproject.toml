@@ -9,7 +9,7 @@ description = "VoiceTyper speech recognition server based on FunASR ONNX and Tor
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
-  {name = "VoiceTyper Contributors"},
+  {name = "oyasmi", email = "oyasmi@yeah.net"},
 ]
 dependencies = [
   "funasr-onnx>=0.4.1",
