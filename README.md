@@ -50,24 +50,12 @@
 
 服务端是所有客户端共享的，只需安装一次：
 
-```bash
-cd server
-./scripts/voice_typer_server.sh setup
-./scripts/voice_typer_server.sh run
-```
-
-默认启动参数：
-
-- `--host 127.0.0.1`
-- `--port 6008`
-- `--device cpu`
-
-也可以直接使用 Python 包启动：
+#### 使用脚本安装并启动
 
 ```bash
-cd server
-pip install .
-python -m voice_typer_server --host 127.0.0.1 --port 6008
+curl -O https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/scripts/voice_typer_server.sh
+bash ./voice_typer_server.sh setup
+bash ./voice_typer_server.sh run
 ```
 
 ### 2. 选择并安装客户端
@@ -451,14 +439,6 @@ voice-typer/
 ```
 
 ## 性能优化
-
-### Apple Silicon (M1/M2/M3/M4)
-
-当前服务端只支持 `cpu` / `cuda` / `cuda:N`，不提供 MPS 后端。Apple Silicon 上建议直接使用 CPU：
-
-```bash
-voice-typer-server --device cpu
-```
 
 ### NVIDIA GPU
 
