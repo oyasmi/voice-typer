@@ -1,6 +1,6 @@
 # VoiceTyper - 本地语音输入工具
 
-基于 FunASR 的离线语音识别应用，支持 macOS 和 Linux 平台，采用客户端/服务端分离架构。
+基于 FunASR 的离线语音识别应用，支持 macOS、Windows 和 Linux 平台，采用客户端/服务端分离架构。
 
 ## 功能特性
 
@@ -37,6 +37,8 @@
 
 ## 支持平台
 
+| 平台 | 支持状态 | 客户端技术栈 |
+| --- | --- | --- |
 | **macOS** | ✅ 完全支持 | Python + PyObjC + rumps |
 | **Windows** | ✅ 完全支持 | Python + pystray + pynput |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
