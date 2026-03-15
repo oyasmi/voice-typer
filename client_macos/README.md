@@ -39,7 +39,7 @@ python main.py
 
 ## 使用方法
 
-1. **开始录音**：按住热键（默认 `Ctrl + F2`，也可配置为 Fn 键）
+1. **开始录音**：按住热键（默认 `Fn` / 地球仪键，也可配置为其他按键）
 2. **说话**：对着麦克风说话
 3. **结束并识别**：松开热键（录音不足 0.3 秒将被自动忽略）
 4. **自动输入**：识别结果将自动插入到当前活跃的文本框光标处
@@ -56,18 +56,20 @@ server:
   llm_recorrect: true  # 开启 LLM 纠错项
 
 hotkey:
-  modifiers:
-    - "ctrl"
-  key: "f2"
-  # 或使用 Fn(地球仪) 键:
-  # modifiers: []
-  # key: "fn"
+  modifiers: []
+  key: "fn"
+  # 或改成其他组合键:
+  # modifiers:
+  #   - "ctrl"
+  # key: "space"
 
 ui:
   opacity: 0.85
   width: 240
   height: 70
 ```
+
+> 说明：macOS 客户端不配置本地 `device`；运行设备由服务端决定，当前支持 `cpu` / `cuda` / `cuda:N`。
 
 ## 构建发布版
 

@@ -51,11 +51,23 @@
 
 ```bash
 cd server
-pip install .
-python -m voice_typer_server
+./scripts/voice_typer_server.sh setup
+./scripts/voice_typer_server.sh run
 ```
 
-服务端默认监听 `127.0.0.1:6008`。
+默认启动参数：
+
+- `--host 127.0.0.1`
+- `--port 6008`
+- `--device cpu`
+
+也可以直接使用 Python 包启动：
+
+```bash
+cd server
+pip install .
+python -m voice_typer_server --host 127.0.0.1 --port 6008
+```
 
 ### 2. 选择并安装客户端
 
@@ -97,11 +109,12 @@ server:
   llm_recorrect: false  # 启用 LLM 智能纠错
 
 hotkey:
-  modifiers: ["ctrl"]    # cmd, ctrl, option, shift
-  key: "f2"             # 默认 Ctrl+F2
-  # 或使用 Fn(地球仪) 键:
-  # modifiers: []
-  # key: "fn"
+  modifiers: []         # 默认单 Fn（地球仪）键
+  key: "fn"
+  # 或改成其他组合键:
+  # modifiers:
+  #   - "ctrl"
+  # key: "space"
 
 hotword_files:
   - "hotwords.txt"
@@ -115,7 +128,7 @@ ui:
 ### 使用方法
 
 1. 启动应用后，菜单栏会出现 VoiceTyper 图标
-2. **按住热键**（默认 Ctrl+F2，可配置为 Fn 键）开始录音
+2. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
 3. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
 
 ### 权限要求
@@ -305,10 +318,11 @@ voice-typer-server --host 0.0.0.0 --port 6008 --model paraformer-zh --device cpu
 **参数说明**：
 - `--host HOST` - 监听地址（默认: 127.0.0.1）
 - `--port PORT` - 监听端口（默认: 6008）
+- `--device DEVICE` - 处理设备（cpu, cuda, cuda:N）
 - `--model MODEL` - 识别模型（默认: paraformer-zh）
 - `--punc-model MODEL` - 标点恢复模型（ct-punc 或 "none" 禁用）
-- `--device DEVICE` - 处理设备（cpu, cuda, cuda:N）
 - `--api-keys KEYS` - API 密钥认证（逗号分隔）
+- `--onnx-threads N` - ONNX Runtime 线程数（默认: 4）
 
 ### LLM 智能纠错
 
@@ -382,6 +396,12 @@ curl -X POST http://127.0.0.1:6008/recognize \
      -F "audio=@test.wav"
 ```
 
+说明：
+- 推荐使用 `application/octet-stream` 直接上传 16kHz `float32` 原始音频字节
+- 可通过请求头 `X-Hotwords` 传递热词
+- 可通过查询参数 `llm_recorrect=true|false` 控制是否启用 LLM 纠错
+- 同时兼容旧版 `multipart/form-data` 上传方式
+
 ## 架构设计
 
 ### 客户端职责
@@ -443,7 +463,7 @@ voice-typer/
 
 ### Apple Silicon (M1/M2/M3/M4)
 
-当前服务端不提供 MPS 后端，Apple Silicon 上建议直接使用 CPU：
+当前服务端只支持 `cpu` / `cuda` / `cuda:N`，不提供 MPS 后端。Apple Silicon 上建议直接使用 CPU：
 
 ```bash
 voice-typer-server --device cpu

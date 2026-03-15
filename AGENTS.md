@@ -15,7 +15,7 @@ VoiceTyper is a multi-platform speech-to-text application using FunASR (Alibaba'
 cd server
 pip install -r requirements.txt
 ./run.sh                    # Start server (default: 127.0.0.1:6008)
-./run.sh --device mps       # Use Apple Silicon GPU
+./run.sh --device cpu       # Default runtime device
 ./run.sh --help             # View all options
 ```
 
@@ -51,7 +51,7 @@ pyinstaller voicetyper.spec  # Build .exe
 **No formal test suite exists.** Manual testing workflow:
 1. Start server: `cd server && ./run.sh`
 2. Start client in dev mode: `cd client_<platform> && make run` (or `python main.py`)
-3. Press hotkey (default: Ctrl+F2), speak, release to test recognition
+3. Press and hold the hotkey (macOS default: Fn), speak, then release to test recognition
 4. Check logs: `make log` (macOS/Linux) or console output
 
 ## Code Style Guidelines

@@ -1,22 +1,21 @@
-# VoiceTyper 配置文件
+# VoiceTyper macOS 客户端配置示例
 
-# 模型配置
-model:
-  # 模型名称：paraformer-zh (中文), paraformer-en (英文), SenseVoiceSmall (多语言)
-  name: "paraformer-zh"
-  # 标点恢复模型 (设为 null 禁用，可加快启动)
-  punc_model: "ct-punc"
-  # 设备: mps (Apple Silicon GPU), cpu
-  device: "cpu"
+# 语音识别服务地址
+# device 由服务端决定；当前服务端运行时支持 cpu / cuda / cuda:N
+server:
+  host: "127.0.0.1"
+  port: 6008
+  timeout: 60.0
+  api_key: ""  # 设置 API 密钥用于连接远程服务器，本地连接可留空
+  llm_recorrect: true  # 是否启用 LLM 修正识别错误（需要服务端支持）
 
 # 热键配置
 # 支持的修饰键: ctrl, alt/option, shift, cmd/command
 # 支持的按键: space, tab, a-z, 0-9, f1-f12, fn (macOS Fn/地球仪键) 等
-# 使用 fn 键时 modifiers 应为空列表
+# 默认使用单 Fn 键长按录音；使用 fn 键时 modifiers 应为空列表
 hotkey:
-  modifiers:
-    - "cmd"
-  key: "space"
+  modifiers: []
+  key: "fn"
 
 # 用户自定义词库 (热词，提高特定词汇识别率)
 # 支持多个文件，每个文件每行一个词
