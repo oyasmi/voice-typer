@@ -35,7 +35,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## 支持平台
+## 客户端支持平台
 
 | 平台 | 支持状态 | 客户端技术栈 |
 | --- | --- | --- |
@@ -43,7 +43,6 @@
 | **Windows** | ✅ 完全支持 | Python + pystray + pynput |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
 
-> **注意**: 核心 ASR 服务由 Python 实现，支持跨平台运行。
 
 ## 快速开始
 
@@ -83,15 +82,9 @@ python -m voice_typer_server --host 127.0.0.1 --port 6008
 
 - macOS 14.0 (Sonoma) 或更高版本
 - Python 3.9+（推荐 3.12）
-- Apple Silicon (M1/M2/M3/M4) 推荐，Intel 也支持
 
 ### 安装步骤
-
-```bash
-cd client_macos
-pip install -r requirements.txt
-python main.py
-```
+从 release 下载，解压 .app 文件，双击运行。
 
 ### 构建应用
 
@@ -147,15 +140,11 @@ ui:
 ### 系统要求
 
 - Windows 10/11
-- Python 3.8+
+- Python 3.9+
 
 ### 安装步骤
 
-```bash
-cd client_windows
-pip install -r requirements.txt
-python main.py
-```
+从 release 下载，解压 .exe 文件，双击运行。
 
 ### 构建应用
 
