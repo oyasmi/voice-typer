@@ -15,7 +15,7 @@ Linux Wayland 语音输入客户端，使用 FunASR 进行离线语音识别。
 
 - **操作系统**: Linux (Wayland 会话)
 - **桌面环境**: GNOME (推荐) 或其他支持 Wayland 的桌面环境
-- **Python**: 3.9 或更高版本
+- **Python**: 3.10 或更高版本
 - **依赖**: GTK4, wl-clipboard
 
 ## 安装

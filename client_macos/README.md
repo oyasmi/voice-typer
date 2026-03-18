@@ -15,7 +15,7 @@ macOS 菜单栏语音输入客户端，提供基于 FunASR 的离线语音识别
 ## 系统要求
 
 - macOS 14.0 (Sonoma) 或更高版本
-- Python 3.9+ (推荐 3.12)
+- Python 3.10+ (推荐 3.12)
 - Apple Silicon (M1/M2/M3/M4) 系列芯片效果最佳
 
 ## 安装步骤

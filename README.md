@@ -53,7 +53,7 @@
 #### 使用脚本安装并启动
 
 ```bash
-curl -O https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/scripts/voice_typer_server.sh
+curl -O -L https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/scripts/voice_typer_server.sh
 bash ./voice_typer_server.sh setup
 bash ./voice_typer_server.sh run
 ```
@@ -69,7 +69,7 @@ bash ./voice_typer_server.sh run
 ### 系统要求
 
 - macOS 14.0 (Sonoma) 或更高版本
-- Python 3.9+（推荐 3.12）
+- Python 3.10+（推荐 3.12）
 
 ### 安装步骤
 从 release 下载，解压 .app 文件，双击运行。
@@ -128,7 +128,7 @@ ui:
 ### 系统要求
 
 - Windows 10/11
-- Python 3.9+
+- Python 3.10+
 
 ### 安装步骤
 
@@ -174,7 +174,7 @@ hotword_files:
 
 - Linux (Wayland 会话)
 - GNOME 桌面环境（推荐）
-- Python 3.9+
+- Python 3.10+
 
 ### 安装步骤
 
