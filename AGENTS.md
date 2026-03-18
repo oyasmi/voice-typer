@@ -1,41 +1,31 @@
 # VoiceTyper - Agent Instructions
 
-## Project Overview
+## 项目概述
+VoiceTyper 是一个基于 ONNX 模型的跨平台语音输入工具，采用 HTTP/JSON 客户端-服务端架构。
+- **Server** (`server/`)：Python ASR 服务，基于 `onnxruntime`。
+- **Clients**：macOS (`client_macos/`)、Linux (`client_linux/`)、Windows (`client_windows/`) 以及规划中的 Go 重写 (`client_go/`)。
 
-VoiceTyper is a multi-platform speech-to-text application using FunASR (Alibaba's speech recognition toolkit). It follows a client-server architecture with HTTP/JSON communication.
-
-**Architecture:**
-- **Server** (`server/`): Python Tornado-based ASR service with FunASR models
-- **Clients**: macOS (`client_macos/`), Linux (`client_linux/`), Windows (`client_windows/`), Go rewrite planned (`client_go/`)
-
-## Build Commands
+## 安装与运行
 
 ### Server (Python)
+推荐通过脚本安装与运行服务端（默认监听 `127.0.0.1:6008`）：
 ```bash
 cd server
-pip install -r requirements.txt
-./run.sh                    # Start server (default: 127.0.0.1:6008)
-./run.sh --device cpu       # Default runtime device
-./run.sh --help             # View all options
+./scripts/voice_typer_server.sh setup  # 按提示建立环境并安装依赖
+./scripts/voice_typer_server.sh run    # 启动服务
 ```
+或直接通过 Python 包运行：`voice-typer-server --help`
 
 ### macOS Client
 ```bash
 cd client_macos
-make install    # Install dependencies
-make run        # Development mode
-make build      # Build .app bundle
-make dist       # Create release zip
-make log        # View logs (~/.config/voice_typer/app.log)
+make install && make run
 ```
 
 ### Linux Client (Wayland)
 ```bash
 cd client_linux
-make install      # Install Python deps
-make install-udev # Setup input device permissions
-make run          # Start application
-make check-deps   # Verify system dependencies
+make install && make install-udev && make run
 ```
 
 ### Windows Client
@@ -43,128 +33,21 @@ make check-deps   # Verify system dependencies
 cd client_windows
 pip install -r requirements.txt
 python main.py
-pyinstaller voicetyper.spec  # Build .exe
 ```
 
-## Testing
+## 测试流程
+1. 启动服务端：`cd server && ./scripts/voice_typer_server.sh run`
+2. 启动客户端开发模式（`make run` 或 `python main.py`）。
+3. 长按快捷键说话，松开后查看识别结果是否自动输入。
+4. 查看日志（macOS/Linux 可使用 `make log`）。
 
-**No formal test suite exists.** Manual testing workflow:
-1. Start server: `cd server && ./run.sh`
-2. Start client in dev mode: `cd client_<platform> && make run` (or `python main.py`)
-3. Press and hold the hotkey (macOS default: Fn), speak, then release to test recognition
-4. Check logs: `make log` (macOS/Linux) or console output
+## 代码规范与约定
+- **Python**：使用 4 个空格缩进，函数/变量 `snake_case`，类 `PascalCase`，强制使用类型提示（`typing`）。
+- **语言**：代码注释和文档使用**中文**。
+- **错误处理**：避免静默忽略异常，统一使用 `logging`（格式：`%(asctime)s - %(levelname)s - %(message)s`）。
+- **音频流**：客户端录音格式为 **16kHz float32** 单声道，随 HTTP POST 发至 `/recognize` 接口。
+- **文本输入机制**：通过剪贴板 + 键盘模拟（macOS: pbcopy; Linux: wl-copy; Windows: pyperclip）。
 
-## Code Style Guidelines
-
-### Python
-
-**Imports:**
-- Group: stdlib → third-party → local modules
-- Use `from typing import Optional, List, Callable` for type hints
-- Example:
-```python
-import os
-import sys
-import logging
-from typing import Optional, List
-
-import numpy as np
-import tornado.web
-
-from config import AppConfig
-```
-
-**Formatting:**
-- 4-space indentation
-- Line length: ~100 characters (soft limit)
-- Use double quotes for strings, single quotes acceptable for dict keys
-
-**Type Hints:**
-- Use type hints on function signatures and class attributes
-- Use `Optional[Type]` for nullable values
-- Use `@dataclass` for configuration classes
-- Example:
-```python
-class VoiceTyperController:
-    def __init__(self, config: AppConfig):
-        self._asr_client: Optional[ASRClient] = None
-
-    def get_stats_display(self) -> str:
-        ...
-```
-
-**Naming Conventions:**
-- `snake_case` for functions, variables, modules
-- `PascalCase` for classes
-- `_prefix` for private methods/attributes
-- `UPPER_CASE` for module-level constants (e.g., `APP_NAME = "VoiceTyper"`)
-
-**Error Handling:**
-- Log errors with `logger.error()` or `logger.warning()`
-- Use try/except with specific exception types
-- For async/threading: catch exceptions and update status via callbacks
-- Never suppress exceptions silently
-
-**Logging:**
-- Use module-level logger: `logger = logging.getLogger("VoiceTyper")`
-- Log format: `%(asctime)s - %(levelname)s - %(message)s` (server)
-- Log user-facing messages via controller callbacks for UI display
-
-**Documentation:**
-- Module docstrings at top of file
-- Class and method docstrings for public APIs
-- Comments in **Chinese** (project convention)
-- Example:
-```python
-"""
-核心控制器
-协调录音、识别、文本插入等组件
-"""
-```
-
-**State Management:**
-- Use `threading.Lock()` for thread safety in hotkey/audio handling
-- Controller pattern: central coordinator for components
-- Observer pattern: callbacks for status updates (`on_status_change`)
-
-**Configuration:**
-- YAML config at `~/.config/voice_typer/config.yaml`
-- Use dataclasses with defaults
-- Environment-aware paths (APPDATA on Windows, ~/.config on Unix)
-
-**Platform-Specific Code:**
-- macOS: `rumps` for menu bar, `PyObjC` for native UI
-- Linux: `evdev` for hotkeys, GTK4 for indicator, `wl-clipboard` for paste
-- Windows: `pystray` for system tray, `pynput` for input
-
-### Go (client_go/)
-
-- Planned rewrite, currently design phase only
-- Target: Single binary, cross-platform, fast startup
-- See `client_go/DESIGN.md` for architecture plans
-
-## Key Implementation Patterns
-
-**Audio Flow:**
-1. Hotkey press → Start recording (16kHz, float32)
-2. Hotkey release → Stop, send to server via HTTP POST
-3. Server: FunASR → Punctuation → Optional LLM correction
-4. Client: Insert via clipboard + Ctrl+V simulation
-
-**Text Insertion:**
-- macOS: `pbcopy` + `pynput.keyboard.Controller`
-- Linux: `wl-copy` + `uinput` for keyboard simulation
-- Windows: `pyperclip` + `pynput`
-
-**Version Management:**
-- Keep version in sync across:
-  - `client_<platform>/Makefile`: `VERSION = x.x.x`
-  - `client_<platform>/config.py`: `APP_VERSION = "x.x.x"`
-  - `voicetyper.spec` (PyInstaller): `CFBundleVersion`
-
-## Important Notes
-
-- **Never use `as any` or `@ts-ignore`** (not applicable but good discipline)
-- Server uses single-threaded executor (`max_workers=1`) to prevent GPU memory issues
-- Short recordings (<0.3s) are filtered as accidental triggers
-- LLM correction is optional; gracefully degrade if unavailable
+> **注意**：
+> - 服务端已移除 GPU OOM 隐患，建议使用 `cpu` 运行推理，可选配 LLM 纠错（详情参考 `server/README.md`）。
+> - 添加或修改客户端时，确保与 `host` 及 `api_key` 鉴权相关逻辑一致。
