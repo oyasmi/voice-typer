@@ -203,6 +203,26 @@ curl -X POST http://127.0.0.1:6008/recognize \
 
 如果模型目录中只有 `model_quant.onnx`，服务端会自动使用量化模型。
 
+## 性能优化
+
+### NVIDIA GPU 加速
+
+使用 CUDA 加速识别：
+
+```bash
+voice-typer-server --device cuda
+# 多卡指定：
+voice-typer-server --device cuda:1
+```
+
+### 内存优化
+
+关闭标点模型可降低部分资源占用：
+
+```bash
+voice-typer-server --punc-model none
+```
+
 ## 常见问题
 
 ### 服务启动了，但客户端连不上

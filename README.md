@@ -43,7 +43,6 @@
 | **Windows** | ✅ 完全支持 | Python + pystray + pynput |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
 
-
 ## 快速开始
 
 ### 1. 安装服务端
@@ -58,6 +57,39 @@ bash ./voice_typer_server.sh setup
 bash ./voice_typer_server.sh run
 ```
 
+#### 🤖 让 AI Agent 帮你安装
+
+将以下说明复制给你常用的 AI Agent（如 Claude Code、Cursor 等），它会自动完成安装：
+
+```
+请帮我安装 VoiceTyper 语音识别服务端（voice-typer-server）。步骤如下：
+
+1. 找到可用的 Python 3.10+ 解释器：
+   - 先检查 python3 的版本，如果 >= 3.10 则直接使用
+   - 如果 python3 版本 <= 3.9，依次检查 python3.10、python3.11、python3.12、python3.13、python3.14、python3.15 可执行文件是否存在于 PATH 环境变量中
+   - 如果都找不到，报错告知用户需要安装 Python 3.10+，并给出安装 Python 的建议
+
+2. 检查虚拟环境 ~/.venvs/voice-typer 是否已存在：
+   - 如果已存在，检查其中的 Python 版本是否 >= 3.10
+     - 如果 >= 3.10，询问用户是否复用已有环境（默认复用），若复用则跳到第 3 步
+     - 如果 < 3.10，提示用户需要重建环境，删除后重新创建
+   - 如果不存在，用找到的 Python 创建：<找到的python> -m venv ~/.venvs/voice-typer
+
+3. 在虚拟环境中安装：
+   ~/.venvs/voice-typer/bin/pip install --upgrade pip setuptools wheel
+   ~/.venvs/voice-typer/bin/pip install --upgrade voice-typer-server
+
+4. 安装完成后告知用户，并给出以下启动命令供用户自行使用：
+   - 前台启动：~/.venvs/voice-typer/bin/voice-typer-server --host 127.0.0.1 --port 6008 --device cpu
+   - 后台启动：nohup ~/.venvs/voice-typer/bin/voice-typer-server --host 127.0.0.1 --port 6008 --device cpu &
+
+5. 询问用户是否需要现在就帮忙启动服务：
+   - 如果启动，先询问用户是否需要配置 LLM 纠错功能（需要 --llm-base-url、--llm-api-key、--llm-model 三个参数）
+   - 如果用户不提供 LLM 参数，则禁用纠错功能，直接以默认参数启动
+```
+
+> 📖 服务端的完整参数说明、API 端点、使用场景等，请参阅 [server/README.md](server/README.md)。
+
 ### 2. 选择并安装客户端
 
 根据您的平台选择对应的客户端：
@@ -69,19 +101,26 @@ bash ./voice_typer_server.sh run
 ### 系统要求
 
 - macOS 14.0 (Sonoma) 或更高版本
-- Python 3.10+（推荐 3.12）
 
-### 安装步骤
+### 下载应用
+
 从 release 下载，解压 .app 文件，双击运行。
 
-### 构建应用
+### 授予权限
 
-```bash
-./build.sh
-# 生成的 .app 文件在 dist/ 目录
-```
+由于 macOS 的安全机制，首次使用需要授予以下权限：
+- **隐私与安全性 → 辅助功能 (Accessibility)**: 用于监听全局热键和模拟键盘输入。
+- **隐私与安全性 → 输入监控 (Input Monitoring)**: 用于监听 Fn 等按键事件。
+- **隐私与安全性 → 麦克风 (Microphone)**: 用于采集音频。
 
-### 配置
+### 开始使用
+
+1. 启动应用后，菜单栏会出现 VoiceTyper 图标
+2. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
+3. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
+
+
+### 配置文件示例
 
 配置文件位置: `~/.config/voice_typer/config.yaml`
 
@@ -89,7 +128,7 @@ bash ./voice_typer_server.sh run
 server:
   host: "127.0.0.1"
   port: 6008
-  llm_recorrect: false  # 启用 LLM 智能纠错
+  llm_recorrect: true  # 启用 LLM 智能纠错，需要服务端配置 LLM 参数
 
 hotkey:
   modifiers: []         # 默认单 Fn（地球仪）键
@@ -108,204 +147,31 @@ ui:
   height: 70
 ```
 
-### 使用方法
-
-1. 启动应用后，菜单栏会出现 VoiceTyper 图标
-2. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
-3. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
-
-### 权限要求
-
-由于 macOS 的安全机制，首次使用需要授予以下权限：
-- **隐私与安全性 → 辅助功能 (Accessibility)**: 用于监听全局热键和模拟键盘输入。
-- **隐私与安全性 → 输入监控 (Input Monitoring)**: 用于监听 Fn 等按键事件。
-- **隐私与安全性 → 麦克风 (Microphone)**: 用于采集音频。
-
 ---
 
 ## Windows 客户端
 
-### 系统要求
+👉 详细安装和使用说明请参阅 [client_windows/README.md](client_windows/README.md)。
 
-- Windows 10/11
-- Python 3.10+
-
-### 安装步骤
-
-从 release 下载，解压 .exe 文件，双击运行。
-
-### 构建应用
-
-```bash
-pyinstaller voicetyper.spec
-# 生成的 .exe 文件在 dist/ 目录
-```
-
-### 配置
-
-配置文件位置: `%APPDATA%\voice_typer\config.yaml`
-
-```yaml
-server:
-  host: "127.0.0.1"
-  port: 6008
-  timeout: 60.0
-  llm_recorrect: true  # 启用 LLM 智能纠错
-
-hotkey:
-  modifiers: ["ctrl"]    # ctrl, alt, shift, win_l, win_r
-  key: "f2"             # 默认 Ctrl + F2
-
-hotword_files:
-  - "hotwords.txt"
-```
-
-### 使用方法
-
-1. 启动应用后，系统托盘会出现 VoiceTyper 图标
-2. **按住 Ctrl+F2** 开始录音
-3. **松开** 自动识别并插入文本（录音不足 0.3 秒将被忽略）
+从 release 下载 `VoiceTyper.exe`，双击即可运行。默认热键 `Ctrl+F2`，按住录音，松开识别。
 
 ---
 
 ## Linux 客户端
 
-### 系统要求
+👉 详细安装和使用说明请参阅 [client_linux/README.md](client_linux/README.md)。
 
-- Linux (Wayland 会话)
-- GNOME 桌面环境（推荐）
-- Python 3.10+
-
-### 安装步骤
-
-#### Ubuntu / Debian
-
-```bash
-# 安装系统依赖
-sudo apt update
-sudo apt install -y python3 python3-pip python3-dev build-essential
-sudo apt install -y gir1.2-gtk-4.0 libgtk-4-1 wl-clipboard libportaudio2 portaudio19-dev
-
-# 安装 Python 依赖
-cd client_linux
-pip3 install -r requirements.txt
-
-# 配置设备权限
-make install-udev
-```
-
-#### Fedora / RHEL
-
-```bash
-sudo dnf install python3 python3-devel python3-pip \
-    gtk4 wl-clipboard portaudio-devel
-
-cd client_linux
-pip3 install -r requirements.txt
-make install-udev
-```
-
-#### Arch Linux
-
-```bash
-sudo pacman -S python python-pip gtk4 wl-clipboard portaudio
-
-cd client_linux
-pip3 install -r requirements.txt
-make install-udev
-```
-
-**重要**: 配置设备权限后需要**注销并重新登录**以使组权限生效。
-
-### 运行
-
-```bash
-cd client_linux
-make run
-# 或直接运行
-python3 main.py
-```
-
-### 配置
-
-配置文件位置: `~/.config/voice_typer/config.yaml`
-
-```yaml
-server:
-  host: "127.0.0.1"
-  port: 6008
-  timeout: 60.0
-  api_key: ""          # API 密钥（远程服务器需要）
-  llm_recorrect: false # 启用 LLM 智能纠错
-
-hotkey:
-  modifiers:
-    - "ctrl"           # ctrl, alt, shift, super
-  key: "f2"            # 默认 Ctrl+F2
-
-hotword_files:
-  - "hotwords.txt"
-
-ui:
-  opacity: 0.85
-  width: 240
-  height: 70
-```
-
-### 使用方法
-
-1. **按住 Ctrl+F2** 开始录音
-2. **松开** 自动识别并插入文本（录音不足 0.3 秒将被忽略）
-
-### 故障排除
-
-#### "未检测到键盘设备"
-
-```bash
-# 确认 udev 规则已安装
-ls -l /etc/udev/rules.d/99-voicetyper-input.rules
-
-# 确认用户在 input 组
-groups $USER | grep input
-
-# 重新安装权限
-make install-udev
-# 注销并重新登录
-```
-
-#### 文本插入失败
-
-```bash
-# 检查是否在 Wayland 会话
-echo $XDG_SESSION_TYPE  # 应该输出 "wayland"
-
-# 安装 wl-clipboard
-sudo apt install wl-clipboard
-```
+支持 Wayland + GNOME 环境，使用 evdev 监听热键、GTK4 指示器、wl-clipboard 插入文本。默认热键 `Ctrl+F2`。
 
 ---
 
-## 服务端高级配置
+## LLM 智能纠错
 
-### 基础选项
+VoiceTyper 支持接入 OpenAI 兼容的大语言模型，对识别结果进行二次纠错（同音字、口语词、标点等）。
 
-```bash
-cd server
-voice-typer-server --host 0.0.0.0 --port 6008 --model paraformer-zh --device cpu
-```
+### 服务端配置
 
-**参数说明**：
-- `--host HOST` - 监听地址（默认: 127.0.0.1）
-- `--port PORT` - 监听端口（默认: 6008）
-- `--device DEVICE` - 处理设备（cpu, cuda, cuda:N）
-- `--model MODEL` - 识别模型（默认: paraformer-zh）
-- `--punc-model MODEL` - 标点恢复模型（ct-punc 或 "none" 禁用）
-- `--api-keys KEYS` - API 密钥认证（逗号分隔）
-- `--onnx-threads N` - ONNX Runtime 线程数（默认: 4）
-
-### LLM 智能纠错
-
-使用大语言模型自动修正识别错误（同音字、口语词、标点等）：
+启动服务端时传入 LLM 相关参数：
 
 ```bash
 voice-typer-server --llm-base-url https://api.openai.com/v1 \
@@ -320,19 +186,13 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 - `--llm-temperature T` - 温度参数（默认: 0.3）
 - `--llm-max-tokens N` - 最大 token 数（默认: 600）
 
-启用 LLM 后，在客户端配置中设置 `llm_recorrect: true` 即可使用。
+### 客户端配置
 
-### 组合示例
+在客户端的 `config.yaml` 中启用：
 
-```bash
-# 使用 CPU + LLM 纠错 + API 认证
-voice-typer-server --host 0.0.0.0 --port 6008 \
-                   --model paraformer-zh --device cpu \
-                   --punc-model ct-punc \
-                   --llm-base-url https://api.openai.com/v1 \
-                   --llm-api-key sk-xxx \
-                   --llm-model gpt-4o-mini \
-                   --api-keys "super_secret_key"
+```yaml
+server:
+  llm_recorrect: true
 ```
 
 ## 自定义词库
@@ -349,136 +209,6 @@ GitHub
 你的名字
 公司名称
 ```
-
-## API 端点
-
-服务端提供 REST API：
-
-- `POST /recognize` - 提交音频进行识别
-- `GET /health` - 检查服务状态
-
-### 请求示例
-
-```bash
-# 推荐方式：上传 16kHz float32 原始音频字节
-curl -X POST "http://127.0.0.1:6008/recognize?llm_recorrect=false" \
-     -H "Content-Type: application/octet-stream" \
-     --data-binary @test.float32
-
-# 兼容旧版 multipart/form-data
-curl -X POST http://127.0.0.1:6008/recognize \
-     -F "audio=@test.wav"
-
-# 带认证的请求
-curl -X POST http://127.0.0.1:6008/recognize \
-     -H "Authorization: Bearer your-api-key" \
-     -F "audio=@test.wav"
-```
-
-说明：
-- 推荐使用 `application/octet-stream` 直接上传 16kHz `float32` 原始音频字节
-- 可通过请求头 `X-Hotwords` 传递热词
-- 可通过查询参数 `llm_recorrect=true|false` 控制是否启用 LLM 纠错
-- 同时兼容旧版 `multipart/form-data` 上传方式
-
-## 架构设计
-
-### 客户端职责
-
-- 热键监听（全局快捷键）
-- 音频录制（16kHz, mono, 16-bit）
-- UI 指示器（录音状态提示）
-- 文本插入（模拟键盘输入）
-- 服务端通信（HTTP 客户端）
-
-### 服务端职责
-
-- 语音识别（FunASR 模型推理）
-- 标点恢复
-- 热词支持
-- LLM 智能纠错
-- API 认证
-
-### 通信协议
-
-客户端通过 HTTP 与服务端通信：
-- 请求：推荐 `application/octet-stream` 上传 16kHz `float32` 原始音频字节；兼容 `multipart/form-data`
-- 响应：JSON 格式的识别结果
-
-## 项目结构
-
-```
-voice-typer/
-├── client_macos/          # macOS 客户端
-│   ├── main.py            # 入口程序
-│   ├── controller.py      # 核心控制器
-│   ├── recorder.py        # 音频录制
-│   ├── text_inserter.py   # 文本插入
-│   ├── indicator.py       # UI 指示器
-│   ├── asr_client.py      # 服务端通信
-│   └── config.py          # 配置管理
-├── client_linux/          # Linux 客户端
-│   ├── main.py            # 入口程序
-│   ├── controller.py      # 核心控制器
-│   ├── recorder.py        # 音频录制
-│   ├── text_inserter.py   # 文本插入
-│   ├── indicator.py       # UI 指示器
-│   ├── hotkey_listener.py # 热键监听
-│   ├── asr_client.py      # 服务端通信
-│   └── config.py          # 配置管理
-└── server/                # 语音识别服务
-    ├── pyproject.toml     # Python package 定义
-    ├── voice_typer_server/
-    │   ├── cli.py         # CLI 入口
-    │   ├── app.py         # Tornado 服务装配
-    │   ├── recognizer.py  # FunASR 集成
-    │   ├── auth.py        # API 认证
-    │   └── llm_client.py  # LLM 纠错
-    └── scripts/
-        └── voice_typer_server.sh
-```
-
-## 性能优化
-
-### NVIDIA GPU
-
-使用 CUDA 加速：
-
-```bash
-voice-typer-server --device cuda
-```
-
-### 内存优化
-
-关闭标点模型可降低部分资源占用：
-
-```bash
-# 关闭标点模型可降低部分资源占用
-voice-typer-server --punc-model none
-```
-
-## 常见问题
-
-### 1. 客户端无法连接服务端
-
-- 确认服务端已启动：`curl http://127.0.0.1:6008/health`
-- 检查配置文件中的 host 和 port 是否正确
-
-### 2. 识别结果不准确
-
-- 使用自定义词库添加专业术语
-- 启用标点恢复：`--punc-model ct-punc`
-- 启用 LLM 纠错
-
-### 3. 录音无声音
-
-- 检查麦克风权限
-- 确认系统麦克风输入已选择正确设备
-
-### 4. 文本插入位置错误
-
-- macOS: 确保已授予辅助功能权限
-- Linux: 确认在 Wayland 会话中运行
 
 ## 致谢
 
