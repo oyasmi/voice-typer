@@ -254,13 +254,13 @@ voice-typer-server --punc-model none
 
 如果你要修改代码或发布包，请查看：
 
-- [RELEASING.md](/home/oyasmi/projects/voice-typer/server/RELEASING.md)
-- [CHANGELOG.md](/home/oyasmi/projects/voice-typer/server/CHANGELOG.md)
+- [RELEASING.md](./RELEASING.md)
+- [CHANGELOG.md](./CHANGELOG.md)
 
 主要代码位置：
 
-- [voice_typer_server/cli.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/cli.py)
-- [voice_typer_server/app.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/app.py)
-- [voice_typer_server/recognizer.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/recognizer.py)
-- [voice_typer_server/llm_client.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/llm_client.py)
-- [voice_typer_server/auth.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/auth.py)
+- [voice_typer_server/cli.py](voice_typer_server/cli.py)
+- [voice_typer_server/app.py](voice_typer_server/app.py)
+- [voice_typer_server/recognizer.py](voice_typer_server/recognizer.py)
+- [voice_typer_server/llm_client.py](voice_typer_server/llm_client.py)
+- [voice_typer_server/auth.py](voice_typer_server/auth.py)

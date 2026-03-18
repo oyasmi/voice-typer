@@ -23,7 +23,7 @@
 │                                                             │
 │  ┌─────────────────────┐      HTTP      ┌───────────────────┐
 │  │   客户端             │  ──────────▶  │   语音识别服务     │
-│  │   (macOS/Linux)     │  ◀──────────  │   (Tornado)       │
+│  │   (macOS/Win/Linux) │  ◀──────────  │   (Tornado)       │
 │  │                     │    JSON        │                   │
 │  │  - 热键监听          │               │  - FunASR 模型    │
 │  │  - 录音             │               │  - 标点恢复        │
@@ -47,7 +47,7 @@
 
 ### 1. 安装服务端
 
-服务端是所有客户端共享的，只需安装一次：
+服务端提供语音识别服务，可以本地部署，也可以部署在服务器上，供多客户端共享使用。
 
 #### 使用脚本安装并启动
 
@@ -57,9 +57,9 @@ bash ./voice_typer_server.sh setup
 bash ./voice_typer_server.sh run
 ```
 
-#### 🤖 让 AI Agent 帮你安装
+#### 或者让 🤖 AI Agent 帮你安装
 
-将以下说明复制给你常用的 AI Agent（如 Claude Code、Cursor 等），它会自动完成安装：
+将以下说明复制给你常用的 AI Agent（如 Claude Code、OpenCode 等），它会自动完成安装：
 
 ```
 请帮我安装 VoiceTyper 语音识别服务端（voice-typer-server）。步骤如下：
@@ -80,8 +80,8 @@ bash ./voice_typer_server.sh run
    ~/.venvs/voice-typer/bin/pip install --upgrade voice-typer-server
 
 4. 安装完成后告知用户，并给出以下启动命令供用户自行使用：
-   - 前台启动：~/.venvs/voice-typer/bin/voice-typer-server --host 127.0.0.1 --port 6008 --device cpu
-   - 后台启动：nohup ~/.venvs/voice-typer/bin/voice-typer-server --host 127.0.0.1 --port 6008 --device cpu &
+   - 前台启动：~/.venvs/voice-typer/bin/voice-typer-server
+   - 后台启动：nohup ~/.venvs/voice-typer/bin/voice-typer-server &
 
 5. 询问用户是否需要现在就帮忙启动服务：
    - 如果启动，先询问用户是否需要配置 LLM 纠错功能（需要 --llm-base-url、--llm-api-key、--llm-model 三个参数）
@@ -104,7 +104,7 @@ bash ./voice_typer_server.sh run
 
 ### 下载应用
 
-从 release 下载，解压 .app 文件，双击运行。
+从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载，解压 .app 文件，双击运行。
 
 ### 授予权限
 
@@ -128,7 +128,7 @@ bash ./voice_typer_server.sh run
 server:
   host: "127.0.0.1"
   port: 6008
-  llm_recorrect: true  # 启用 LLM 智能纠错，需要服务端配置 LLM 参数
+  llm_recorrect: true   # 启用 LLM 智能纠错，需要服务端配置 LLM 参数
 
 hotkey:
   modifiers: []         # 默认单 Fn（地球仪）键

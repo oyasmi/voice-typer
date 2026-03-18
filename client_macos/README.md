@@ -2,6 +2,10 @@
 
 macOS 菜单栏语音输入客户端，提供基于 FunASR 的离线语音识别功能。
 
+👉 **如果您正在寻找完整的项目说明、服务端介绍以及其他平台客户端，请参阅 [VoiceTyper 主项目](../README.md)。**
+
+由于 macOS 是本产品的主要支持平台之一，因此大部分的核心使用教程（如下载、授权、快捷键配置）都已包含在主项目的文档中。
+
 ## 功能特性
 
 - 🎤 **菜单栏应用** - 简洁的菜单栏图标，显示实时工作状态
@@ -18,50 +22,64 @@ macOS 菜单栏语音输入客户端，提供基于 FunASR 的离线语音识别
 - Python 3.10+ (推荐 3.12)
 - Apple Silicon (M1/M2/M3/M4) 系列芯片效果最佳
 
-## 安装步骤
+## 安装步骤与常规使用
 
-1. **克隆仓库并安装依赖**
+关于如何下载、安装运行及首次配置说明（如系统权限的授予），请参考主目录的 [macOS 客户端说明](../README.md#macos-客户端)。
+
+## 开发与构建指南
+
+以下内容主要面向希望自行编译或进行二次开发的开发者：
+
+### 1. 克隆仓库并安装依赖
 
 ```bash
 cd client_macos
 pip install -r requirements.txt
 ```
 
-2. **配置服务端**
+### 2. 本地运行调测
 
-确保 VoiceTyper 服务端已启动。默认连接地址为 `127.0.0.1:6008`。
+确保主项目的 VoiceTyper 服务端已启动。默认连接地址为 `127.0.0.1:6008`。
 
-3. **运行程序**
+执行以下命令直接在 Python 环境下运行：
 
 ```bash
 python main.py
+# 或使用 Makefile 封装命令
+make run
 ```
 
-## 使用方法
+### 3. 构建发布版
 
-1. **开始录音**：按住热键（默认 `Fn` / 地球仪键，也可配置为其他按键）
-2. **说话**：对着麦克风说话
-3. **结束并识别**：松开热键（录音不足 0.3 秒将被自动忽略）
-4. **自动输入**：识别结果将自动插入到当前活跃的文本框光标处
+使用 `PyInstaller` 脚本构建独立的 `.app` 文件（无需用户环境中安装 Python）：
 
-## 配置
+```bash
+./build.sh
+```
 
-配置文件路径：`~/.config/voice_typer/config.yaml`
+构建完成后，在程序的 `dist` 目录下可以找到打包好的 `VoiceTyper.app`，可以直接双击执行或分发给其他用户。
+
+## 配置参考（开发环境）
+
+配置文件默认位于：`~/.config/voice_typer/config.yaml`。启动程序后会自动生成，如果您需要手工创建：
 
 ```yaml
 server:
   host: "127.0.0.1"
   port: 6008
   timeout: 60.0
-  llm_recorrect: true  # 开启 LLM 纠错项
+  llm_recorrect: true   # 开启 LLM 纠错选项，需服务端配合启用配置
 
 hotkey:
-  modifiers: []
+  modifiers: []         # 默认单 Fn（地球仪）键
   key: "fn"
   # 或改成其他组合键:
   # modifiers:
   #   - "ctrl"
   # key: "space"
+
+hotword_files:
+  - "hotwords.txt"
 
 ui:
   opacity: 0.85
@@ -69,21 +87,4 @@ ui:
   height: 70
 ```
 
-> 说明：macOS 客户端不配置本地 `device`；运行设备由服务端决定，当前支持 `cpu` / `cuda` / `cuda:N`。
-
-## 构建发布版
-
-使用 `PyInstaller` 构建 `.app` 文件：
-
-```bash
-./build.sh
-```
-
-构建完成后，在 `dist` 目录下可以找到 `VoiceTyper.app`。
-
-## 权限说明
-
-由于 macOS 的安全机制，首次使用需要授予以下权限：
-- **隐私与安全性 → 辅助功能 (Accessibility)**: 用于监听全局热键和模拟键盘输入。
-- **隐私与安全性 → 输入监控 (Input Monitoring)**: 用于监听 Fn 等按键事件。
-- **隐私与安全性 → 麦克风 (Microphone)**: 用于采集音频。
+> 说明：macOS 客户端不配置本地 `device`；运行设备由服务端决定，当前支持 `cpu` / `cuda` / `cuda:N` 等。
