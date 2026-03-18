@@ -41,6 +41,18 @@ exit /b 1
     "%PYTHON_BIN%" -m venv "%VENV_DIR%"
     "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip setuptools wheel
 
+    rem 检查是否为 --local 模式
+    if "%~1"=="--local" (
+        shift
+        if "%~1"=="" (
+            set "TARGET=%~dp0.."
+        ) else (
+            set "TARGET=%~1"
+        )
+        "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade --no-build-isolation "!TARGET!"
+        exit /b %errorlevel%
+    )
+
     rem 收集剩余参数
     set "ARGS="
     :setup_args
@@ -50,24 +62,6 @@ exit /b 1
     goto :setup_args
 
     :setup_do
-    set "ARGS=!ARGS: =!"
-    if "!ARGS!"=="" set "ARGS= "
-
-    rem 检查是否为 --local 模式
-    echo !ARGS! | findstr /b /c:"--local" >nul 2>&1
-    if not errorlevel 1 (
-        rem --local [PATH]
-        set "ARGS=!ARGS:~7!"
-        set "ARGS=!ARGS: =!"
-        if "!ARGS!"=="" (
-            set "TARGET=%~dp0.."
-        ) else (
-            set "TARGET=!ARGS!"
-        )
-        "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade --no-build-isolation "!TARGET!"
-        exit /b %errorlevel%
-    )
-
     "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade voice-typer-server !ARGS!
     exit /b %errorlevel%
 
