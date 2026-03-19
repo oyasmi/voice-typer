@@ -14,7 +14,7 @@ if "%~1"=="run" (
     shift
     goto :run
 )
-echo ç”¨æ³•: %~nx0 {setup [--local [PATH]]^|run [voice-typer-server å‚æ•°...]} 1>&2
+echo ÓÃ·¨: %~nx0 {setup [--local [PATH]]^|run [voice-typer-server ²ÎÊı...]} 1>&2
 exit /b 1
 
 :check_python_version
@@ -22,13 +22,13 @@ exit /b 1
     set "SRC=%~2"
     where "%PY%" >nul 2>&1
     if errorlevel 1 (
-        echo %SRC%ä¸å­˜åœ¨æˆ–ä¸å¯æ‰§è¡Œ: %PY% 1>&2
+        echo %SRC%²»´æÔÚ»ò²»¿ÉÖ´ĞĞ: %PY% 1>&2
         exit /b 1
     )
     "%PY%" -c "import sys; exit(0 if sys.version_info >= (%MIN_PYTHON_MAJOR%, %MIN_PYTHON_MINOR%) else 1)" 2>nul
     if errorlevel 1 (
         for /f "delims=" %%v in ('"%PY%" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"') do set "PY_VER=%%v"
-        echo %SRC%ç‰ˆæœ¬è¿‡ä½: !PY_VER!ã€‚VoiceTyper Server æœ€ä½è¦æ±‚ Python %MIN_PYTHON_MAJOR%.%MIN_PYTHON_MINOR%+ã€‚ 1>&2
+        echo %SRC%°æ±¾¹ıµÍ: !PY_VER!¡£VoiceTyper Server ×îµÍÒªÇó Python %MIN_PYTHON_MAJOR%.%MIN_PYTHON_MINOR%+¡£ 1>&2
         exit /b 1
     )
     exit /b 0
@@ -41,7 +41,7 @@ exit /b 1
     "%PYTHON_BIN%" -m venv "%VENV_DIR%"
     "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip setuptools wheel
 
-    rem æ£€æŸ¥æ˜¯å¦ä¸º --local æ¨¡å¼
+    rem ¼ì²éÊÇ·ñÎª --local Ä£Ê½
     if "%~1"=="--local" (
         shift
         if "%~1"=="" (
@@ -53,7 +53,7 @@ exit /b 1
         exit /b %errorlevel%
     )
 
-    rem æ”¶é›†å‰©ä½™å‚æ•°
+    rem ÊÕ¼¯Ê£Óà²ÎÊı
     set "ARGS="
     :setup_args
     if "%~1"=="" goto :setup_do
@@ -67,14 +67,14 @@ exit /b 1
 
 :run
     if not exist "%VENV_DIR%\Scripts\voice-typer-server.exe" (
-        echo è™šæ‹Ÿç¯å¢ƒä¸å­˜åœ¨æˆ–æœªå®‰è£… voice-typer-serverï¼Œè¯·å…ˆè¿è¡Œ: %~nx0 setup 1>&2
+        echo ĞéÄâ»·¾³²»´æÔÚ»òÎ´°²×° voice-typer-server£¬ÇëÏÈÔËĞĞ: %~nx0 setup 1>&2
         exit /b 1
     )
 
-    call :check_python_version "%VENV_DIR%\Scripts\python.exe" "è™šæ‹Ÿç¯å¢ƒ Python"
+    call :check_python_version "%VENV_DIR%\Scripts\python.exe" "ĞéÄâ»·¾³ Python"
     if errorlevel 1 exit /b 1
 
-    rem æ”¶é›†å‰©ä½™å‚æ•°
+    rem ÊÕ¼¯Ê£Óà²ÎÊı
     set "ARGS="
     :run_args
     if "%~1"=="" goto :run_do
