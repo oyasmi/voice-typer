@@ -7,7 +7,6 @@ enum AppState: Equatable {
     case recording
     case recognizing
     case inserting
-    case paused
     case error(String)
 
     var menuTitle: String {
@@ -24,8 +23,6 @@ enum AppState: Equatable {
             return "识别中..."
         case .inserting:
             return "输入中..."
-        case .paused:
-            return "已暂停"
         case .error(let message):
             return "错误: \(message)"
         }
@@ -45,8 +42,6 @@ enum AppState: Equatable {
             return "🟡"
         case .inserting:
             return "🟠"
-        case .paused:
-            return "⏸️"
         case .error:
             return "🔴"
         }

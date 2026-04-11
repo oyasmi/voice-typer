@@ -3,7 +3,7 @@ import Foundation
 enum AppConstants {
     static let appName = "VoiceTyper"
     static let bundleIdentifier = "com.voicetyper.app"
-    static let version = "0.1.0"
+    static let version = "2.0.0"
     static let minimumRecordingDuration: TimeInterval = 0.3
     static let targetSampleRate: Double = 16_000
     static let configDirectoryName = "voice_typer"

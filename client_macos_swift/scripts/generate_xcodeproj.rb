@@ -9,6 +9,8 @@ ROOT = File.expand_path('..', __dir__)
 PROJECT_PATH = File.join(ROOT, 'VoiceTyper.xcodeproj')
 TARGET_NAME = 'VoiceTyper'
 PRODUCT_BUNDLE_IDENTIFIER = 'com.voicetyper.app'
+YAMS_REPOSITORY_URL = 'https://github.com/jpsim/Yams.git'
+YAMS_MINIMUM_VERSION = '6.2.1'
 
 FileUtils.rm_rf(PROJECT_PATH)
 
@@ -17,11 +19,24 @@ project.root_object.attributes['LastSwiftUpdateCheck'] = '2600'
 project.root_object.attributes['LastUpgradeCheck'] = '2600'
 project.build_configuration_list.set_setting('SWIFT_VERSION', '6.0')
 project.build_configuration_list.set_setting('MACOSX_DEPLOYMENT_TARGET', '14.0')
-project.build_configuration_list.set_setting('MARKETING_VERSION', '0.1.0')
+project.build_configuration_list.set_setting('MARKETING_VERSION', '2.0.0')
 project.build_configuration_list.set_setting('CURRENT_PROJECT_VERSION', '1')
 
 app_target = project.new_target(:application, TARGET_NAME, :osx, '14.0')
 app_target.product_name = TARGET_NAME
+
+yams_package = project.new(Xcodeproj::Project::Object::XCRemoteSwiftPackageReference)
+yams_package.repositoryURL = YAMS_REPOSITORY_URL
+yams_package.requirement = {
+  'kind' => 'upToNextMajorVersion',
+  'minimumVersion' => YAMS_MINIMUM_VERSION,
+}
+project.root_object.package_references << yams_package
+
+yams_product = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependency)
+yams_product.package = yams_package
+yams_product.product_name = 'Yams'
+app_target.package_product_dependencies << yams_product
 
 app_target.build_configurations.each do |config|
   settings = config.build_settings
@@ -32,7 +47,7 @@ app_target.build_configurations.each do |config|
   settings['CODE_SIGN_STYLE'] = 'Automatic'
   settings['SWIFT_VERSION'] = '6.0'
   settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
-  settings['MARKETING_VERSION'] = '0.1.0'
+  settings['MARKETING_VERSION'] = '2.0.0'
   settings['CURRENT_PROJECT_VERSION'] = '1'
   settings['ENABLE_HARDENED_RUNTIME'] = 'NO'
   settings['LD_RUNPATH_SEARCH_PATHS'] = ['$(inherited)', '@executable_path/../Frameworks']

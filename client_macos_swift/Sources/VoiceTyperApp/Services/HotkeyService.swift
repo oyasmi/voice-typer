@@ -2,6 +2,31 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
+enum HotkeyServiceError: LocalizedError {
+    case unsupportedKey(String)
+    case inputMonitoringDenied
+    case startupTimedOut
+    case startupFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedKey(let key):
+            return "不支持的热键: \(key)"
+        case .inputMonitoringDenied:
+            return "输入监控权限缺失，无法启动热键监听"
+        case .startupTimedOut:
+            return "热键监听启动超时"
+        case .startupFailed(let message):
+            return message
+        }
+    }
+}
+
+private final class StartupResultBox: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    var error: Error?
+}
+
 final class HotkeyService: @unchecked Sendable {
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
@@ -15,12 +40,27 @@ final class HotkeyService: @unchecked Sendable {
 
     func start(with hotkey: HotkeyConfig) throws {
         stop()
+        if hotkey.key.lowercased() != "fn", Self.keyCode(for: hotkey.key) == nil {
+            throw HotkeyServiceError.unsupportedKey(hotkey.key)
+        }
+
         self.hotkey = hotkey
+        let startupBox = StartupResultBox()
         self.workerThread = Thread { [weak self] in
-            self?.runEventLoop()
+            self?.runEventLoop(startupBox: startupBox)
         }
         workerThread?.name = "VoiceTyper.HotkeyService"
         workerThread?.start()
+
+        if startupBox.semaphore.wait(timeout: .now() + 2) == .timedOut {
+            stop()
+            throw HotkeyServiceError.startupTimedOut
+        }
+
+        if let error = startupBox.error {
+            stop()
+            throw error
+        }
     }
 
     func stop() {
@@ -39,7 +79,7 @@ final class HotkeyService: @unchecked Sendable {
         isActive = false
     }
 
-    private func runEventLoop() {
+    private func runEventLoop(startupBox: StartupResultBox) {
         let mask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
@@ -64,20 +104,30 @@ final class HotkeyService: @unchecked Sendable {
 
         guard let tap else {
             AppLog.hotkey.error("无法创建事件监听，通常意味着输入监控权限缺失")
+            startupBox.error = HotkeyServiceError.inputMonitoringDenied
+            startupBox.semaphore.signal()
             return
         }
 
         self.eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        guard let source else {
+            startupBox.error = HotkeyServiceError.startupFailed("无法创建热键事件源")
+            startupBox.semaphore.signal()
+            return
+        }
+
         self.runLoopSource = source
         let currentRunLoop = CFRunLoopGetCurrent()
         self.runLoop = currentRunLoop
 
-        if let source {
-            CFRunLoopAddSource(currentRunLoop, source, .commonModes)
-        }
+        CFRunLoopAddSource(currentRunLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        startupBox.semaphore.signal()
         CFRunLoopRun()
+
+        CFRunLoopRemoveSource(currentRunLoop, source, .commonModes)
+        CFMachPortInvalidate(tap)
     }
 
     private func handle(eventType: CGEventType, event: CGEvent) {

@@ -18,7 +18,6 @@ final class AppCoordinator {
         inputMonitoring: .denied
     )
     private var hotwords: [String] = []
-    private var isEnabled = false
     private var serverReady = false
     private var currentState: AppState = .booting
 
@@ -45,9 +44,6 @@ final class AppCoordinator {
     }
 
     private func bindStatusBarActions() {
-        statusBarController.onToggleEnabled = { [weak self] in
-            self?.toggleEnabled()
-        }
         statusBarController.onOpenSetup = { [weak self] in
             self?.setupControllerIfNeeded(forceShow: true)
         }
@@ -102,21 +98,6 @@ final class AppCoordinator {
         setupWindowController?.window?.orderOut(nil)
     }
 
-    private func toggleEnabled() {
-        if isEnabled {
-            voiceTyperController?.stop()
-            isEnabled = false
-            currentState = .paused
-            recordingHUDController?.hideHUD()
-            updateStatusUI()
-            return
-        }
-
-        Task {
-            await reevaluateReadiness()
-        }
-    }
-
     private func refreshServerStatus() async {
         guard permissions.allRequiredGranted else {
             serverReady = false
@@ -145,21 +126,29 @@ final class AppCoordinator {
                 bindControllerEvents()
             }
 
-            if !isEnabled {
+            if let voiceTyperController, !voiceTyperController.isStarted {
                 do {
-                    try voiceTyperController?.start()
-                    isEnabled = true
-                    currentState = .idle
+                    try voiceTyperController.start()
                 } catch {
-                    currentState = .error("热键监听启动失败")
+                    currentState = .error("热键监听失败: \(error.localizedDescription)")
                     AppLog.hotkey.error("热键监听启动失败: \(error.localizedDescription, privacy: .public)")
+                    recordingHUDController?.hideHUD()
+                    updateStatusUI()
+                    return
                 }
+            }
+
+            switch currentState {
+            case .recording, .recognizing, .inserting:
+                break
+            default:
+                currentState = .idle
             }
             hideSetupWindowIfVisible()
         } else {
             currentState = .setupRequired
-            isEnabled = false
             voiceTyperController?.stop()
+            recordingHUDController?.hideHUD()
             setupControllerIfNeeded(forceShow: true)
         }
 
@@ -190,8 +179,7 @@ final class AppCoordinator {
         statusBarController.update(
             state: currentState,
             hotkeyDisplay: config.hotkey.displayString,
-            serverStatus: serverStatus,
-            isEnabled: isEnabled
+            serverStatus: serverStatus
         )
     }
 }

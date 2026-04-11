@@ -79,8 +79,7 @@ final class PermissionCenter {
             _ = requestAccessibility()
             return accessibilityStatus()
         case .inputMonitoring:
-            _ = requestInputMonitoring()
-            return inputMonitoringStatus()
+            return requestInputMonitoring()
         }
     }
 
@@ -130,7 +129,29 @@ final class PermissionCenter {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private func requestInputMonitoring() -> Bool {
-        CGRequestListenEventAccess()
+    private func requestInputMonitoring() -> PermissionStatus {
+        if inputMonitoringStatus() == .authorized {
+            return .authorized
+        }
+
+        _ = CGRequestListenEventAccess()
+
+        let status = inputMonitoringStatus()
+        guard status != .authorized else {
+            return .authorized
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "请在系统设置中允许“输入监控”"
+        alert.informativeText = "macOS 通常不会直接弹出“输入监控”的授权窗口。点击“打开系统设置”后，请在“隐私与安全性 > 输入监控”中启用 VoiceTyper，然后返回本窗口。"
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "取消")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            openSystemSettings(for: .inputMonitoring)
+        }
+
+        return .denied
     }
 }

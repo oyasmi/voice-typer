@@ -176,6 +176,11 @@ cython_debug/
 !.vscode/extensions.json
 !.vscode/*.code-snippets
 
+# Xcode user data
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
 # Local History for Visual Studio Code
 .history/
 

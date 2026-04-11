@@ -41,6 +41,20 @@ cd client_macos_swift
 
 - `dist/VoiceTyper.app`
 - `dist/VoiceTyper-macOS.zip`
+- `dist/VoiceTyper-macOS.dmg`
+
+其中 `DMG` 内会附带一个极简 `INSTALL.txt`，引导用户完成拖拽安装和首次放行。
+
+## 首次安装
+
+最短路径如下：
+
+1. 打开 `VoiceTyper-macOS.dmg`
+2. 将 `VoiceTyper.app` 拖到 `Applications`
+3. 从“应用程序”中打开 `VoiceTyper`
+4. 如果首次打开被系统拦截，到“系统设置 > 隐私与安全性”点击“仍要打开”
+
+更简洁的对外发布文案见 [docs/install.md](/Users/oyasmi/projects/voice-typer/client_macos_swift/docs/install.md:1)。
 
 ## 说明
 

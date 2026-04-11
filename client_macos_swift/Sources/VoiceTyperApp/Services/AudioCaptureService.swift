@@ -6,6 +6,10 @@ struct RecordedAudio {
     let duration: TimeInterval
 }
 
+private final class AudioConverterInputState: @unchecked Sendable {
+    var hasProvidedInput = false
+}
+
 final class AudioCaptureService: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
@@ -97,15 +101,15 @@ final class AudioCaptureService: @unchecked Sendable {
             return
         }
 
-        var providedInput = false
+        let inputState = AudioConverterInputState()
         var error: NSError?
         let status = converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-            if providedInput {
+            if inputState.hasProvidedInput {
                 outStatus.pointee = .noDataNow
                 return nil
             }
 
-            providedInput = true
+            inputState.hasProvidedInput = true
             outStatus.pointee = .haveData
             return buffer
         }
