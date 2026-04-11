@@ -250,6 +250,10 @@ server/logs/
 build/
 client/build/
 client/dist/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
 
 # Tornado server artifacts
 server/.tornado_cache/
