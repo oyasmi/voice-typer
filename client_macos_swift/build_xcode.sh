@@ -6,56 +6,86 @@ PROJECT_PATH="$ROOT_DIR/VoiceTyper.xcodeproj"
 BUILD_DIR="$ROOT_DIR/build/xcode"
 DIST_DIR="$ROOT_DIR/dist"
 APP_NAME="VoiceTyper"
-ZIP_NAME="$APP_NAME-macOS.zip"
-DMG_NAME="$APP_NAME-macOS.dmg"
-DMG_STAGE_DIR="$BUILD_DIR/dmg-root"
 INSTALL_GUIDE_PATH="$ROOT_DIR/packaging/INSTALL.txt"
+EXECUTABLE_REL="Contents/MacOS/$APP_NAME"
 
 ruby "$ROOT_DIR/scripts/generate_xcodeproj.rb"
 
-rm -rf "$BUILD_DIR" "$DIST_DIR/$APP_NAME.app" "$DIST_DIR/$ZIP_NAME" "$DIST_DIR/$DMG_NAME"
+rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
+# 解析依赖
 xcodebuild \
   -resolvePackageDependencies \
   -project "$PROJECT_PATH" \
   -scheme "$APP_NAME"
 
+# 构建 Universal Binary（arm64 + x86_64）
 xcodebuild \
   -project "$PROJECT_PATH" \
   -scheme "$APP_NAME" \
   -configuration Release \
   -derivedDataPath "$BUILD_DIR" \
+  ARCHS="arm64 x86_64" \
+  ONLY_ACTIVE_ARCH=NO \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   build
 
-APP_PATH="$BUILD_DIR/Build/Products/Release/$APP_NAME.app"
+UNIVERSAL_APP="$BUILD_DIR/Build/Products/Release/$APP_NAME.app"
 
-if [ ! -d "$APP_PATH" ]; then
-  echo "未找到构建产物: $APP_PATH" >&2
+if [ ! -d "$UNIVERSAL_APP" ]; then
+  echo "未找到构建产物: $UNIVERSAL_APP" >&2
   exit 1
 fi
 
-cp -R "$APP_PATH" "$DIST_DIR/"
-cd "$DIST_DIR"
-/usr/bin/zip -r -q "$ZIP_NAME" "$APP_NAME.app"
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$UNIVERSAL_APP/Contents/Info.plist")
+echo "检测到版本号: $VERSION"
 
-mkdir -p "$DMG_STAGE_DIR"
-cp -R "$APP_PATH" "$DMG_STAGE_DIR/"
-ln -s /Applications "$DMG_STAGE_DIR/Applications"
-cp "$INSTALL_GUIDE_PATH" "$DMG_STAGE_DIR/INSTALL.txt"
+# 为指定架构打包 zip + dmg
+package_variant() {
+  local arch="$1"
+  local suffix="$2"
+  local variant_dir="$BUILD_DIR/variants/$suffix"
+  local app_dir="$variant_dir/$APP_NAME.app"
+  local zip_name="$APP_NAME-$VERSION-macOS-$suffix.zip"
+  local dmg_name="$APP_NAME-$VERSION-macOS-$suffix.dmg"
+  local dmg_stage="$variant_dir/dmg-root"
 
-/usr/bin/hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$DMG_STAGE_DIR" \
-  -ov \
-  -format UDZO \
-  "$DIST_DIR/$DMG_NAME" >/dev/null
+  mkdir -p "$variant_dir"
+  cp -R "$UNIVERSAL_APP" "$app_dir"
 
-rm -rf "$DMG_STAGE_DIR"
+  # 非 universal 时用 lipo 提取单架构
+  if [ "$arch" != "universal" ]; then
+    lipo "$app_dir/$EXECUTABLE_REL" -thin "$arch" -output "$app_dir/$EXECUTABLE_REL.thin"
+    mv "$app_dir/$EXECUTABLE_REL.thin" "$app_dir/$EXECUTABLE_REL"
+  fi
 
+  # Zip
+  (cd "$variant_dir" && /usr/bin/zip -r -q "$DIST_DIR/$zip_name" "$APP_NAME.app")
+
+  # DMG
+  mkdir -p "$dmg_stage"
+  cp -R "$app_dir" "$dmg_stage/"
+  ln -s /Applications "$dmg_stage/Applications"
+  cp "$INSTALL_GUIDE_PATH" "$dmg_stage/INSTALL.txt"
+  /usr/bin/hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$dmg_stage" \
+    -ov \
+    -format UDZO \
+    "$DIST_DIR/$dmg_name" >/dev/null
+  rm -rf "$dmg_stage"
+
+  echo "  $suffix: $DIST_DIR/$zip_name, $DIST_DIR/$dmg_name"
+}
+
+echo ""
+echo "正在打包各架构分发包..."
+package_variant "arm64" "arm64"
+package_variant "x86_64" "x86_64"
+package_variant "universal" "universal"
+
+echo ""
 echo "构建完成:"
-echo "  App: $DIST_DIR/$APP_NAME.app"
-echo "  Zip: $DIST_DIR/$ZIP_NAME"
-echo "  DMG: $DIST_DIR/$DMG_NAME"
+ls -lh "$DIST_DIR"/*.zip "$DIST_DIR"/*.dmg
