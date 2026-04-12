@@ -24,7 +24,7 @@
  │                                            │    (16kHz float32)
  │  热键监听    录音     UI 浮窗    文本插入   │         │
  │  ─────────────────────────────────────────  │         │
- │  macOS : Fn/PyObjC  rumps     pbcopy       │         │
+ │  macOS : AppKit     原生录音  剪贴板/AX输入 │         │
  │  Linux : evdev      GTK4     wl-copy       │         ▼
  │  Win   : pynput     pystray  pyperclip     │  ┌─────────────┐
  │                                            │  │ Server :6008│
@@ -46,7 +46,7 @@
 
 | 平台 | 支持状态 | 客户端技术栈 |
 | --- | --- | --- |
-| **macOS** | ✅ 完全支持 | Python + PyObjC + rumps |
+| **macOS** | ✅ 完全支持 | Swift + AppKit |
 | **Windows** | ✅ 完全支持 | Python + pystray + pynput |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
 
@@ -105,17 +105,19 @@ bash ./voice_typer_server.sh run
 
 ## macOS 客户端
 
+👉 详细安装、首次授权、构建说明请参阅 [client_macos_swift/README.md](client_macos_swift/README.md)。
+
 ### 系统要求
 
 - macOS 14.0 (Sonoma) 或更高版本
 
 ### 下载应用
 
-从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载，解压 .app 文件，双击运行。
+从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-macOS.dmg`，将 `VoiceTyper.app` 拖到 `Applications` 后运行。
 
 ### 授予权限
 
-由于 macOS 的安全机制，首次使用需要授予以下权限：
+Swift 原生版会在首次启动时自动检查并引导完成以下权限：
 - **隐私与安全性 → 辅助功能 (Accessibility)**: 用于监听全局热键和模拟键盘输入。
 - **隐私与安全性 → 输入监控 (Input Monitoring)**: 用于监听 Fn 等按键事件。
 - **隐私与安全性 → 麦克风 (Microphone)**: 用于采集音频。
@@ -123,36 +125,36 @@ bash ./voice_typer_server.sh run
 ### 开始使用
 
 1. 启动应用后，菜单栏会出现 VoiceTyper 图标
-2. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
-3. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
+2. 如果存在未完成权限或服务不可用，会自动弹出“权限与设置”窗口
+3. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
+4. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
 
+### 配置与用户热词
 
-### 配置文件示例
+新版 macOS 客户端已经将常用配置 UI 化，可直接在“权限与设置”窗口中修改：
 
-配置文件位置: `~/.config/voice_typer/config.yaml`
+- 服务地址、端口、API Key
+- 是否启用 LLM 纠错
+- 热键模式与组合键
+- 用户热词
 
-```yaml
-server:
-  host: "127.0.0.1"
-  port: 6008
-  llm_recorrect: true   # 启用 LLM 智能纠错，需要服务端配置 LLM 参数
+底层配置仍保存在：
 
-hotkey:
-  modifiers: []         # 默认单 Fn（地球仪）键
-  key: "fn"
-  # 或改成其他组合键:
-  # modifiers:
-  #   - "ctrl"
-  # key: "space"
-
-hotword_files:
-  - "hotwords.txt"
-
-ui:
-  opacity: 0.85
-  width: 240
-  height: 70
+```text
+~/.config/voice_typer/config.yaml
 ```
+
+主热词文件默认位于：
+
+```text
+~/.config/voice_typer/hotwords.txt
+```
+
+### 旧版 Python macOS 客户端
+
+仓库中仍保留一个 Python 技术栈的历史实现：
+
+- [client_macos/README.md](client_macos/README.md)
 
 ---
 
