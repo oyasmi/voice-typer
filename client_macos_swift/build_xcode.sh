@@ -61,6 +61,9 @@ package_variant() {
     mv "$app_dir/$EXECUTABLE_REL.thin" "$app_dir/$EXECUTABLE_REL"
   fi
 
+  # adhoc 重签名（lipo 会破坏 linker-signed 签名，Apple Silicon 强制要求有效签名）
+  codesign --force --deep -s - "$app_dir"
+
   # Zip
   (cd "$variant_dir" && /usr/bin/zip -r -q "$DIST_DIR/$zip_name" "$APP_NAME.app")
 
