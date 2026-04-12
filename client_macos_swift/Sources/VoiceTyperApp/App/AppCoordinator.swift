@@ -6,6 +6,7 @@ final class AppCoordinator {
     private let configStore = ConfigStore()
     private let permissionCenter = PermissionCenter()
     private let statusBarController = StatusBarController()
+    private let setupHealthCheckClient = ASRClient()
 
     private var setupWindowController: SetupWindowController?
     private var recordingHUDController: RecordingHUDController?
@@ -18,6 +19,7 @@ final class AppCoordinator {
         inputMonitoring: .denied
     )
     private var hotwords: [String] = []
+    private var managedHotwordsText = ""
     private var serverReady = false
     private var currentState: AppState = .booting
 
@@ -25,9 +27,7 @@ final class AppCoordinator {
         bindStatusBarActions()
 
         do {
-            config = try configStore.loadOrCreate()
-            hotwords = configStore.loadHotwords(using: config)
-            recordingHUDController = RecordingHUDController(config: config.ui)
+            try reloadConfigurationFromDisk()
         } catch {
             AppLog.app.error("配置加载失败: \(error.localizedDescription, privacy: .public)")
             currentState = .error("配置加载失败")
@@ -36,7 +36,14 @@ final class AppCoordinator {
         }
 
         permissions = permissionCenter.snapshot()
+        if !permissions.allRequiredGranted {
+            currentState = .setupRequired
+        }
         updateStatusUI()
+
+        if !permissions.allRequiredGranted {
+            setupControllerIfNeeded(forceShow: true, preferredTab: .permissions)
+        }
 
         Task {
             await reevaluateReadiness()
@@ -45,7 +52,7 @@ final class AppCoordinator {
 
     private func bindStatusBarActions() {
         statusBarController.onOpenSetup = { [weak self] in
-            self?.setupControllerIfNeeded(forceShow: true)
+            self?.setupControllerIfNeeded(forceShow: true, preferredTab: nil)
         }
         statusBarController.onReconnectServer = { [weak self] in
             Task { await self?.refreshServerStatus() }
@@ -58,7 +65,7 @@ final class AppCoordinator {
         }
     }
 
-    private func setupControllerIfNeeded(forceShow: Bool = false) {
+    private func setupControllerIfNeeded(forceShow: Bool = false, preferredTab: SetupTab? = nil) {
         if setupWindowController == nil {
             let controller = SetupWindowController()
             controller.onRequestPermission = { [weak self] kind in
@@ -75,22 +82,40 @@ final class AppCoordinator {
             controller.onRetryServerCheck = { [weak self] in
                 Task { await self?.refreshServerStatus() }
             }
-            controller.onOpenConfigDirectory = { [weak self] in
-                self?.configStore.openConfigDirectory()
+            controller.onTestServerConnection = { [weak self] server in
+                guard let self else { return false }
+                return await self.setupHealthCheckClient.healthCheck(server: server)
+            }
+            controller.onSaveConfig = { [weak self] updatedConfig in
+                guard let self else { return }
+                try await self.applyConfig(updatedConfig)
+            }
+            controller.onSaveHotwords = { [weak self] text in
+                guard let self else { return }
+                try await self.applyHotwordsText(text)
             }
             controller.loadWindow()
             setupWindowController = controller
+            refreshSetupWindowEditorContent()
         }
 
         guard let setupWindowController else {
             return
         }
 
-        setupWindowController.update(snapshot: permissions, serviceReady: serverReady, hotkeyDisplay: config.hotkey.displayString)
+        setupWindowController.updatePermissions(
+            snapshot: permissions,
+            serviceReady: serverReady,
+            hotkeyDisplay: config.hotkey.displayString,
+            serverStatus: currentServerStatusText()
+        )
 
         if forceShow || !permissions.allRequiredGranted || !serverReady {
-            setupWindowController.showWindow(nil)
+            if let preferredTab {
+                setupWindowController.selectTab(preferredTab)
+            }
             NSApp.activate(ignoringOtherApps: true)
+            setupWindowController.presentWindow()
         }
     }
 
@@ -102,7 +127,12 @@ final class AppCoordinator {
         guard permissions.allRequiredGranted else {
             serverReady = false
             updateStatusUI()
-            setupWindowController?.update(snapshot: permissions, serviceReady: serverReady, hotkeyDisplay: config.hotkey.displayString)
+            setupWindowController?.updatePermissions(
+                snapshot: permissions,
+                serviceReady: serverReady,
+                hotkeyDisplay: config.hotkey.displayString,
+                serverStatus: currentServerStatusText()
+            )
             return
         }
 
@@ -113,7 +143,12 @@ final class AppCoordinator {
 
         serverReady = await voiceTyperController?.healthCheck() ?? false
         updateStatusUI()
-        setupWindowController?.update(snapshot: permissions, serviceReady: serverReady, hotkeyDisplay: config.hotkey.displayString)
+        setupWindowController?.updatePermissions(
+            snapshot: permissions,
+            serviceReady: serverReady,
+            hotkeyDisplay: config.hotkey.displayString,
+            serverStatus: currentServerStatusText()
+        )
     }
 
     private func reevaluateReadiness() async {
@@ -149,10 +184,15 @@ final class AppCoordinator {
             currentState = .setupRequired
             voiceTyperController?.stop()
             recordingHUDController?.hideHUD()
-            setupControllerIfNeeded(forceShow: true)
+            setupControllerIfNeeded(forceShow: true, preferredTab: recommendedTab())
         }
 
-        setupWindowController?.update(snapshot: permissions, serviceReady: serverReady, hotkeyDisplay: config.hotkey.displayString)
+        setupWindowController?.updatePermissions(
+            snapshot: permissions,
+            serviceReady: serverReady,
+            hotkeyDisplay: config.hotkey.displayString,
+            serverStatus: currentServerStatusText()
+        )
         updateStatusUI()
     }
 
@@ -175,11 +215,58 @@ final class AppCoordinator {
     }
 
     private func updateStatusUI() {
-        let serverStatus = serverReady ? "已连接 \(config.server.host):\(config.server.port)" : "未连接 \(config.server.host):\(config.server.port)"
         statusBarController.update(
             state: currentState,
             hotkeyDisplay: config.hotkey.displayString,
-            serverStatus: serverStatus
+            serverStatus: currentServerStatusText()
         )
+    }
+
+    private func reloadConfigurationFromDisk() throws {
+        config = try configStore.loadOrCreate()
+        hotwords = configStore.loadHotwords(using: config)
+        managedHotwordsText = try configStore.loadManagedHotwordsText(using: config)
+        recordingHUDController = RecordingHUDController(config: config.ui)
+    }
+
+    private func refreshSetupWindowEditorContent() {
+        setupWindowController?.loadEditableContent(
+            config: config,
+            managedHotwordsText: managedHotwordsText,
+            additionalHotwordFileCount: configStore.additionalHotwordFileCount(using: config)
+        )
+    }
+
+    private func applyConfig(_ updatedConfig: AppConfig) async throws {
+        try configStore.save(config: updatedConfig)
+        try await reloadAndReevaluateAfterSettingsChange()
+    }
+
+    private func applyHotwordsText(_ text: String) async throws {
+        try configStore.saveManagedHotwordsText(text, using: config)
+        try await reloadAndReevaluateAfterSettingsChange()
+    }
+
+    private func reloadAndReevaluateAfterSettingsChange() async throws {
+        voiceTyperController?.stop()
+        voiceTyperController = nil
+        serverReady = false
+        try reloadConfigurationFromDisk()
+        refreshSetupWindowEditorContent()
+        await reevaluateReadiness()
+    }
+
+    private func recommendedTab() -> SetupTab {
+        if !permissions.allRequiredGranted {
+            return .permissions
+        }
+        if !serverReady {
+            return .connection
+        }
+        return .permissions
+    }
+
+    private func currentServerStatusText() -> String {
+        serverReady ? "已连接 \(config.server.host):\(config.server.port)" : "未连接 \(config.server.host):\(config.server.port)"
     }
 }

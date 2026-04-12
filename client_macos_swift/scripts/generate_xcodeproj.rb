@@ -19,7 +19,7 @@ project.root_object.attributes['LastSwiftUpdateCheck'] = '2600'
 project.root_object.attributes['LastUpgradeCheck'] = '2600'
 project.build_configuration_list.set_setting('SWIFT_VERSION', '6.0')
 project.build_configuration_list.set_setting('MACOSX_DEPLOYMENT_TARGET', '14.0')
-project.build_configuration_list.set_setting('MARKETING_VERSION', '2.0.0')
+project.build_configuration_list.set_setting('MARKETING_VERSION', '2.1.0')
 project.build_configuration_list.set_setting('CURRENT_PROJECT_VERSION', '1')
 
 app_target = project.new_target(:application, TARGET_NAME, :osx, '14.0')
@@ -47,7 +47,7 @@ app_target.build_configurations.each do |config|
   settings['CODE_SIGN_STYLE'] = 'Automatic'
   settings['SWIFT_VERSION'] = '6.0'
   settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
-  settings['MARKETING_VERSION'] = '2.0.0'
+  settings['MARKETING_VERSION'] = '2.1.0'
   settings['CURRENT_PROJECT_VERSION'] = '1'
   settings['ENABLE_HARDENED_RUNTIME'] = 'NO'
   settings['LD_RUNPATH_SEARCH_PATHS'] = ['$(inherited)', '@executable_path/../Frameworks']
