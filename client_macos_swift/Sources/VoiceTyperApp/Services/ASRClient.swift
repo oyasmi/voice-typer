@@ -31,8 +31,7 @@ final class ASRClient: @unchecked Sendable {
     }
 
     func recognize(audioData: Data, hotwords: [String], server: ServerConfig) async throws -> String {
-        guard let encodedHotwords = hotwords.joined(separator: " ").addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-              let url = URL(string: "http://\(server.host):\(server.port)/recognize?llm_recorrect=\(server.llmRecorrect ? "true" : "false")") else {
+        guard let url = URL(string: "http://\(server.host):\(server.port)/recognize?llm_recorrect=\(server.llmRecorrect ? "true" : "false")") else {
             throw URLError(.badURL)
         }
 
@@ -43,12 +42,23 @@ final class ASRClient: @unchecked Sendable {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
         if !hotwords.isEmpty {
-            request.setValue(encodedHotwords, forHTTPHeaderField: "X-Hotwords")
+            request.setValue(hotwords.joined(separator: " "), forHTTPHeaderField: "X-Hotwords")
         }
 
         applyAuthorizationIfNeeded(to: &request, server: server)
 
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(
+                domain: AppConstants.bundleIdentifier,
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "服务端返回 \(httpResponse.statusCode): \(body)"]
+            )
+        }
+
         let decoded = try JSONDecoder().decode(RecognizeResponse.self, from: data)
         return decoded.text
     }

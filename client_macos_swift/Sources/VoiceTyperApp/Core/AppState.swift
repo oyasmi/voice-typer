@@ -46,4 +46,23 @@ enum AppState: Equatable {
             return "🔴"
         }
     }
+
+    var statusSymbolName: String {
+        switch self {
+        case .booting:
+            return "hourglass"
+        case .setupRequired:
+            return "exclamationmark.triangle"
+        case .idle:
+            return "mic"
+        case .recording:
+            return "mic.fill"
+        case .recognizing:
+            return "waveform"
+        case .inserting:
+            return "character.cursor.ibeam"
+        case .error:
+            return "exclamationmark.circle"
+        }
+    }
 }

@@ -247,6 +247,11 @@ final class ConfigStore {
             .appendingPathComponent(".\(url.lastPathComponent).tmp")
         try content.write(to: temporaryURL, atomically: true, encoding: .utf8)
 
+        defer {
+            // 无论成败清理临时文件（成功路径中文件已被移走，removeItem 会静默失败）
+            try? fileManager.removeItem(at: temporaryURL)
+        }
+
         if fileManager.fileExists(atPath: url.path) {
             _ = try fileManager.replaceItemAt(url, withItemAt: temporaryURL)
         } else {

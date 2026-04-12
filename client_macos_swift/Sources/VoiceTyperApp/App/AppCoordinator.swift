@@ -50,6 +50,10 @@ final class AppCoordinator {
         }
     }
 
+    func openSetupWindow() {
+        setupControllerIfNeeded(forceShow: true, preferredTab: nil)
+    }
+
     private func bindStatusBarActions() {
         statusBarController.onOpenSetup = { [weak self] in
             self?.setupControllerIfNeeded(forceShow: true, preferredTab: nil)

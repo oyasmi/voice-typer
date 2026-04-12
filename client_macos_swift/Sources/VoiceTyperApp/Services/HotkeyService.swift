@@ -27,8 +27,19 @@ private final class StartupResultBox: @unchecked Sendable {
     var error: Error?
 }
 
+/// 事件 tap 回调上下文。通过 weak 引用避免悬空指针崩溃。
+/// 内存由 `Unmanaged.passRetained` 管理，在 worker 线程退出时释放。
+private final class TapContext: @unchecked Sendable {
+    weak var service: HotkeyService?
+    init(_ service: HotkeyService) {
+        self.service = service
+    }
+}
+
 final class HotkeyService: @unchecked Sendable {
+    /// 热键按下回调。保证在主线程触发。
     var onPress: (() -> Void)?
+    /// 热键松开回调。保证在主线程触发。
     var onRelease: (() -> Void)?
 
     private var eventTap: CFMachPort?
@@ -37,6 +48,8 @@ final class HotkeyService: @unchecked Sendable {
     private var workerThread: Thread?
     private var hotkey: HotkeyConfig?
     private var isActive = false
+    private var isRunning = false
+    private let shutdownSemaphore = DispatchSemaphore(value: 0)
 
     func start(with hotkey: HotkeyConfig) throws {
         stop()
@@ -45,9 +58,10 @@ final class HotkeyService: @unchecked Sendable {
         }
 
         self.hotkey = hotkey
+        let context = TapContext(self)
         let startupBox = StartupResultBox()
         self.workerThread = Thread { [weak self] in
-            self?.runEventLoop(startupBox: startupBox)
+            self?.runEventLoop(startupBox: startupBox, context: context)
         }
         workerThread?.name = "VoiceTyper.HotkeyService"
         workerThread?.start()
@@ -61,29 +75,44 @@ final class HotkeyService: @unchecked Sendable {
             stop()
             throw error
         }
+
+        isRunning = true
     }
 
     func stop() {
+        // 禁用 tap 阻止新事件进入回调
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
         }
 
+        // 通知 worker 线程退出 RunLoop
         if let runLoop {
             CFRunLoopStop(runLoop)
         }
 
+        // 等待 worker 线程完成清理（超时 2 秒防止死锁）
+        if workerThread != nil {
+            _ = shutdownSemaphore.wait(timeout: .now() + 2)
+        }
+
+        // worker 线程已退出，安全清理主线程侧引用
         eventTap = nil
         runLoopSource = nil
         self.runLoop = nil
         workerThread = nil
+        hotkey = nil
         isActive = false
+        isRunning = false
     }
 
-    private func runEventLoop(startupBox: StartupResultBox) {
+    private func runEventLoop(startupBox: StartupResultBox, context: TapContext) {
         let mask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
             (1 << CGEventType.flagsChanged.rawValue)
+
+        // 使用 passRetained 确保 context 在事件 tap 存活期间不会被释放
+        let contextPtr = Unmanaged.passRetained(context).toOpaque()
 
         let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -94,26 +123,30 @@ final class HotkeyService: @unchecked Sendable {
                 guard let userInfo else {
                     return Unmanaged.passUnretained(event)
                 }
-
-                let service = Unmanaged<HotkeyService>.fromOpaque(userInfo).takeUnretainedValue()
-                service.handle(eventType: type, event: event)
+                let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
+                ctx.service?.handle(eventType: type, event: event)
                 return Unmanaged.passUnretained(event)
             },
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            userInfo: contextPtr
         )
 
         guard let tap else {
             AppLog.hotkey.error("无法创建事件监听，通常意味着输入监控权限缺失")
+            Unmanaged<TapContext>.fromOpaque(contextPtr).release()
             startupBox.error = HotkeyServiceError.inputMonitoringDenied
             startupBox.semaphore.signal()
+            shutdownSemaphore.signal()
             return
         }
 
         self.eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         guard let source else {
+            CFMachPortInvalidate(tap)
+            Unmanaged<TapContext>.fromOpaque(contextPtr).release()
             startupBox.error = HotkeyServiceError.startupFailed("无法创建热键事件源")
             startupBox.semaphore.signal()
+            shutdownSemaphore.signal()
             return
         }
 
@@ -126,8 +159,11 @@ final class HotkeyService: @unchecked Sendable {
         startupBox.semaphore.signal()
         CFRunLoopRun()
 
+        // worker 线程退出，执行所有本地资源清理
         CFRunLoopRemoveSource(currentRunLoop, source, .commonModes)
         CFMachPortInvalidate(tap)
+        Unmanaged<TapContext>.fromOpaque(contextPtr).release()
+        shutdownSemaphore.signal()
     }
 
     private func handle(eventType: CGEventType, event: CGEvent) {
@@ -154,13 +190,17 @@ final class HotkeyService: @unchecked Sendable {
 
             if matchesModifiers && matchesKey && !isActive {
                 isActive = true
-                onPress?()
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPress?()
+                }
             }
         case .keyUp:
             let matchesKey = event.getIntegerValueField(.keyboardEventKeycode) == Int64(targetKeyCode)
             if matchesKey && isActive {
                 isActive = false
-                onRelease?()
+                DispatchQueue.main.async { [weak self] in
+                    self?.onRelease?()
+                }
             }
         default:
             break
@@ -175,10 +215,14 @@ final class HotkeyService: @unchecked Sendable {
         let isFnPressed = event.flags.contains(.maskSecondaryFn)
         if isFnPressed && !isActive {
             isActive = true
-            onPress?()
+            DispatchQueue.main.async { [weak self] in
+                self?.onPress?()
+            }
         } else if !isFnPressed && isActive {
             isActive = false
-            onRelease?()
+            DispatchQueue.main.async { [weak self] in
+                self?.onRelease?()
+            }
         }
     }
 

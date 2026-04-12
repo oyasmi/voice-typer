@@ -23,6 +23,7 @@ final class AudioCaptureService: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var capturedSamples: [Float] = []
     private var isRunning = false
+    private var configurationChangeObserver: (any NSObjectProtocol)?
 
     func start() throws {
         guard !isRunning else {
@@ -33,6 +34,13 @@ final class AudioCaptureService: @unchecked Sendable {
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else {
+            throw NSError(
+                domain: AppConstants.bundleIdentifier,
+                code: 1003,
+                userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备，请检查麦克风连接"]
+            )
+        }
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             throw NSError(domain: AppConstants.bundleIdentifier, code: 1001, userInfo: [NSLocalizedDescriptionKey: "无法创建音频格式转换器"])
         }
@@ -46,6 +54,14 @@ final class AudioCaptureService: @unchecked Sendable {
         engine.prepare()
         try engine.start()
         isRunning = true
+
+        configurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { _ in
+            AppLog.audio.warning("音频引擎配置变更（设备切换），当前录音可能受影响")
+        }
     }
 
     func stop() throws -> RecordedAudio {
@@ -57,6 +73,7 @@ final class AudioCaptureService: @unchecked Sendable {
         inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
+        removeConfigurationChangeObserver()
 
         let samples: [Float]
         lock.lock()
@@ -81,6 +98,7 @@ final class AudioCaptureService: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
+        removeConfigurationChangeObserver()
         lock.lock()
         capturedSamples = []
         lock.unlock()
@@ -123,5 +141,12 @@ final class AudioCaptureService: @unchecked Sendable {
         lock.lock()
         capturedSamples.append(contentsOf: newSamples)
         lock.unlock()
+    }
+
+    private func removeConfigurationChangeObserver() {
+        if let observer = configurationChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configurationChangeObserver = nil
+        }
     }
 }

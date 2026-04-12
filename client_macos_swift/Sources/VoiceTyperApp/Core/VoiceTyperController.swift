@@ -10,7 +10,6 @@ final class VoiceTyperController {
     private let asrClient: ASRClient
     private let textInsertionService: TextInsertionService
 
-    private let lock = NSLock()
     private var isRecording = false
     private var isRunning = false
     private var recognitionTask: Task<Void, Never>?
@@ -61,7 +60,7 @@ final class VoiceTyperController {
         recognitionTask?.cancel()
         recognitionTask = nil
         isRunning = false
-        resetRecordingState()
+        isRecording = false
     }
 
     func healthCheck() async -> Bool {
@@ -69,32 +68,26 @@ final class VoiceTyperController {
     }
 
     private func beginRecording() {
-        lock.lock()
-        if !isRunning || isRecording {
-            lock.unlock()
+        guard isRunning, !isRecording else {
             return
         }
         isRecording = true
-        lock.unlock()
 
         do {
             try audioCaptureService.start()
             onStateChange?(.recording)
         } catch {
             AppLog.audio.error("开始录音失败: \(error.localizedDescription, privacy: .public)")
-            resetRecordingState()
+            isRecording = false
             onStateChange?(.error("开始录音失败"))
         }
     }
 
     private func finishRecording() {
-        lock.lock()
         guard isRecording else {
-            lock.unlock()
             return
         }
         isRecording = false
-        lock.unlock()
 
         do {
             let result = try audioCaptureService.stop()
@@ -156,9 +149,5 @@ final class VoiceTyperController {
         }
     }
 
-    private func resetRecordingState() {
-        lock.lock()
-        isRecording = false
-        lock.unlock()
-    }
+
 }

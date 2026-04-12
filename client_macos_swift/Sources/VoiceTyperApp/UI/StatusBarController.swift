@@ -43,11 +43,24 @@ final class StatusBarController: NSObject {
         ]
 
         statusItem.menu = menu
-        statusItem.button?.title = "⏳"
+        if let image = NSImage(systemSymbolName: AppState.booting.statusSymbolName, accessibilityDescription: AppState.booting.menuTitle) {
+            image.isTemplate = true
+            statusItem.button?.image = image
+            statusItem.button?.title = ""
+        } else {
+            statusItem.button?.title = AppState.booting.statusIcon
+        }
     }
 
     func update(state: AppState, hotkeyDisplay: String, serverStatus: String) {
-        statusItem.button?.title = state.statusIcon
+        if let image = NSImage(systemSymbolName: state.statusSymbolName, accessibilityDescription: state.menuTitle) {
+            image.isTemplate = true
+            statusItem.button?.image = image
+            statusItem.button?.title = ""
+        } else {
+            statusItem.button?.image = nil
+            statusItem.button?.title = state.statusIcon
+        }
         statusMenuItem.title = state.menuTitle
         hotkeyMenuItem.title = "热键: \(hotkeyDisplay)"
         serverMenuItem.title = "服务: \(serverStatus)"

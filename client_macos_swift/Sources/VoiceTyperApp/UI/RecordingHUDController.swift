@@ -107,5 +107,7 @@ final class RecordingHUDController: NSWindowController {
                 self.timeLabel.stringValue = "\(elapsed)s"
             }
         }
+        timer?.tolerance = 0.2
+        timer?.fire()
     }
 }

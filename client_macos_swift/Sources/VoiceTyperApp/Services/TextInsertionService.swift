@@ -16,6 +16,7 @@ private struct PasteboardSnapshot {
 @MainActor
 final class TextInsertionService {
     private let pasteboard = NSPasteboard.general
+    private var pendingRestoreTask: Task<Void, Never>?
 
     func insert(text: String) -> Bool {
         if insertUsingAccessibility(text: text) {
@@ -86,6 +87,10 @@ final class TextInsertionService {
     }
 
     private func insertUsingPasteboard(text: String) -> Bool {
+        // 取消上一次的剪贴板恢复任务，避免与本次操作冲突
+        pendingRestoreTask?.cancel()
+        pendingRestoreTask = nil
+
         let backup = snapshotPasteboard()
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
@@ -97,8 +102,9 @@ final class TextInsertionService {
             return false
         }
 
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
+        pendingRestoreTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
             self?.restorePasteboardIfNeeded(
                 snapshot: backup,
                 expectedText: text,
