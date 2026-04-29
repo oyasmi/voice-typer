@@ -14,7 +14,23 @@ if "%~1"=="run" (
     shift
     goto :run
 )
-echo ”√∑®: %~nx0 {setup [--local [PATH]]^|run [voice-typer-server ≤Œ ˝...]} 1>&2
+if "%~1"=="install" (
+    shift
+    goto :svc_install
+)
+if "%~1"=="uninstall" (
+    shift
+    goto :svc_uninstall
+)
+if "%~1"=="start" (
+    shift
+    goto :svc_start
+)
+if "%~1"=="stop" (
+    shift
+    goto :svc_stop
+)
+echo Áî®Ê≥ï: %~nx0 {setup [--local [PATH]]^|run [ÂèÇÊï∞...]^|install [--startup auto^|manual] [-- ÂèÇÊï∞...]^|uninstall^|start^|stop} 1>&2
 exit /b 1
 
 :check_python_version
@@ -22,15 +38,24 @@ exit /b 1
     set "SRC=%~2"
     where "%PY%" >nul 2>&1
     if errorlevel 1 (
-        echo %SRC%≤ª¥Ê‘⁄ªÚ≤ªø…÷¥––: %PY% 1>&2
+        echo %SRC%Êâæ‰∏çÂà∞Êàñ‰∏çÂèØÊâßË°å: %PY% 1>&2
         exit /b 1
     )
     "%PY%" -c "import sys; exit(0 if sys.version_info >= (%MIN_PYTHON_MAJOR%, %MIN_PYTHON_MINOR%) else 1)" 2>nul
     if errorlevel 1 (
         for /f "delims=" %%v in ('"%PY%" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"') do set "PY_VER=%%v"
-        echo %SRC%∞Ê±æπ˝µÕ: !PY_VER!°£VoiceTyper Server ◊ÓµÕ“™«Û Python %MIN_PYTHON_MAJOR%.%MIN_PYTHON_MINOR%+°£ 1>&2
+        echo %SRC%ÁâàÊú¨‰Ωé: !PY_VER!ÔºåVoiceTyper Server ÈúÄË¶Å Python %MIN_PYTHON_MAJOR%.%MIN_PYTHON_MINOR%+„ÄÇ 1>&2
         exit /b 1
     )
+    exit /b 0
+
+:check_venv
+    if not exist "%VENV_DIR%\Scripts\voice-typer-server.exe" (
+        echo ËôöÊãüÁéØÂ¢ÉÂ∞öÊú™ÂÆâË£Ö voice-typer-serverÔºåËØ∑ÂÖàËøêË°å: %~nx0 setup 1>&2
+        exit /b 1
+    )
+    call :check_python_version "%VENV_DIR%\Scripts\python.exe" "ËôöÊãüÁéØÂ¢É Python"
+    if errorlevel 1 exit /b 1
     exit /b 0
 
 :setup
@@ -41,7 +66,7 @@ exit /b 1
     "%PYTHON_BIN%" -m venv "%VENV_DIR%"
     "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip setuptools wheel
 
-    rem ºÏ≤È «∑ÒŒ™ --local ƒ£ Ω
+    rem ÊòØÂê¶‰∏∫ --local Ê®°Âºè
     if "%~1"=="--local" (
         shift
         if "%~1"=="" (
@@ -49,11 +74,11 @@ exit /b 1
         ) else (
             set "TARGET=%~1"
         )
-        "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade --no-build-isolation "!TARGET!"
+        "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade --no-build-isolation "!TARGET![windows-service]"
         exit /b %errorlevel%
     )
 
-    rem  ’ºØ £”‡≤Œ ˝
+    rem Êî∂ÈõÜÂâ©‰ΩôÂèÇÊï∞
     set "ARGS="
     :setup_args
     if "%~1"=="" goto :setup_do
@@ -62,19 +87,14 @@ exit /b 1
     goto :setup_args
 
     :setup_do
-    "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade voice-typer-server !ARGS!
+    "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade "voice-typer-server[windows-service]" !ARGS!
     exit /b %errorlevel%
 
 :run
-    if not exist "%VENV_DIR%\Scripts\voice-typer-server.exe" (
-        echo –Èƒ‚ª∑æ≥≤ª¥Ê‘⁄ªÚŒ¥∞≤◊∞ voice-typer-server£¨«Îœ»‘À––: %~nx0 setup 1>&2
-        exit /b 1
-    )
-
-    call :check_python_version "%VENV_DIR%\Scripts\python.exe" "–Èƒ‚ª∑æ≥ Python"
+    call :check_venv
     if errorlevel 1 exit /b 1
 
-    rem  ’ºØ £”‡≤Œ ˝
+    rem Êî∂ÈõÜÂâ©‰ΩôÂèÇÊï∞
     set "ARGS="
     :run_args
     if "%~1"=="" goto :run_do
@@ -84,4 +104,41 @@ exit /b 1
 
     :run_do
     "%VENV_DIR%\Scripts\voice-typer-server.exe" --host 127.0.0.1 --port 6008 --device cpu !ARGS!
+    exit /b %errorlevel%
+
+:svc_install
+    call :check_venv
+    if errorlevel 1 exit /b 1
+
+    rem Êî∂ÈõÜÂâ©‰ΩôÂèÇÊï∞Ôºà‰º†ÈÄíÁªô service installÔºâ
+    set "ARGS="
+    :svc_install_args
+    if "%~1"=="" goto :svc_install_do
+    set "ARGS=!ARGS! %~1"
+    shift
+    goto :svc_install_args
+
+    :svc_install_do
+    "%VENV_DIR%\Scripts\voice-typer-server.exe" service install !ARGS!
+    exit /b %errorlevel%
+
+:svc_uninstall
+    call :check_venv
+    if errorlevel 1 exit /b 1
+
+    "%VENV_DIR%\Scripts\voice-typer-server.exe" service uninstall
+    exit /b %errorlevel%
+
+:svc_start
+    call :check_venv
+    if errorlevel 1 exit /b 1
+
+    "%VENV_DIR%\Scripts\voice-typer-server.exe" service start
+    exit /b %errorlevel%
+
+:svc_stop
+    call :check_venv
+    if errorlevel 1 exit /b 1
+
+    "%VENV_DIR%\Scripts\voice-typer-server.exe" service stop
     exit /b %errorlevel%

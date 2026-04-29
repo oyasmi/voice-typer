@@ -160,10 +160,29 @@ def configure_logging():
     )
 
 
-def run_server(args):
-    """启动服务"""
-    configure_logging()
+class ServerContext:
+    """服务运行时上下文，封装服务端核心组件"""
 
+    def __init__(self, server, executor, llm_client):
+        self.server = server
+        self.executor = executor
+        self.llm_client = llm_client
+
+    def shutdown(self):
+        """优雅关闭服务"""
+        logger.info("停止服务...")
+        if self.llm_client:
+            self.llm_client.close()
+        self.executor.shutdown(wait=False)
+        tornado.ioloop.IOLoop.current().stop()
+
+
+def create_server(args) -> ServerContext:
+    """初始化模型、创建 HTTP 服务并开始监听端口。
+
+    返回 ServerContext 供调用方管理生命周期。
+    调用方需自行启动 IOLoop（``tornado.ioloop.IOLoop.current().start()``）。
+    """
     api_keys = load_api_keys(args.api_keys)
     if api_keys:
         logger.info(f"API密钥: 已配置 {len(api_keys)} 个")
@@ -223,14 +242,19 @@ def run_server(args):
     server.listen(args.port, args.host)
 
     logger.info(f"服务已启动: http://{args.host}:{args.port}")
+
+    return ServerContext(server, executor, llm_client)
+
+
+def run_server(args):
+    """以前台模式启动服务"""
+    configure_logging()
+
+    ctx = create_server(args)
     logger.info("按 Ctrl+C 停止服务")
 
     def shutdown(signum, frame):
-        logger.info("停止服务...")
-        if llm_client:
-            llm_client.close()
-        executor.shutdown(wait=False)
-        tornado.ioloop.IOLoop.current().stop()
+        ctx.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)

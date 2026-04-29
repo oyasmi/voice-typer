@@ -45,10 +45,87 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _build_service_parser() -> argparse.ArgumentParser:
+    """构建 service 子命令解析器"""
+    parser = argparse.ArgumentParser(
+        prog="voice-typer-server service",
+        description="管理 VoiceTyper Windows 服务",
+    )
+    sub = parser.add_subparsers(dest="action", help="服务管理操作")
+    sub.required = True
+
+    # install
+    install_parser = sub.add_parser("install", help="安装为 Windows 服务")
+    install_parser.add_argument(
+        "--startup",
+        choices=["auto", "manual"],
+        default="auto",
+        help="启动类型 (默认: %(default)s)",
+    )
+    install_parser.add_argument(
+        "server_args",
+        nargs=argparse.REMAINDER,
+        help="服务运行参数（在 -- 之后指定，如: -- --host 0.0.0.0 --port 6008）",
+    )
+
+    # uninstall
+    sub.add_parser("uninstall", help="卸载 Windows 服务")
+
+    # start
+    sub.add_parser("start", help="启动服务")
+
+    # stop
+    sub.add_parser("stop", help="停止服务")
+
+    return parser
+
+
+def _handle_service_command(argv):
+    """处理 service 子命令"""
+    if sys.platform != "win32":
+        print("错误: service 命令仅在 Windows 上可用", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        from .win_service import install_service, uninstall_service, start_service, stop_service
+    except ImportError as exc:
+        print(
+            f"错误: 缺少 pywin32 依赖，请运行: pip install voice-typer-server[windows-service]\n"
+            f"详细信息: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    parser = _build_service_parser()
+    args = parser.parse_args(argv)
+
+    if args.action == "install":
+        # 去掉 server_args 中可能存在的 '--' 分隔符
+        server_args = args.server_args
+        if server_args and server_args[0] == "--":
+            server_args = server_args[1:]
+        install_service(startup=args.startup, server_args=server_args or None)
+
+    elif args.action == "uninstall":
+        uninstall_service()
+
+    elif args.action == "start":
+        start_service()
+
+    elif args.action == "stop":
+        stop_service()
+
+
 def main(argv=None):
     """CLI 主入口"""
     if sys.version_info < (3, 9):
         raise SystemExit("voice-typer-server requires Python 3.9 or newer")
+
+    # 预处理参数：检测 service 子命令
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if raw_argv and raw_argv[0] == "service":
+        _handle_service_command(raw_argv[1:])
+        return
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -56,3 +133,4 @@ def main(argv=None):
     from .app import run_server
 
     run_server(args)
+

@@ -90,6 +90,54 @@ docker build -t voice-typer-server:latest .
 docker run -d -p 6008:6008 --name voice-typer voice-typer-server:latest
 ```
 
+### Windows 服务
+
+在 Windows 上可将 VoiceTyper Server 注册为系统服务，实现开机自启和后台运行。
+
+#### 安装与注册
+
+```bat
+REM 1. 安装环境（自动安装 pywin32 依赖）
+scripts\voice_typer_server.bat setup --local
+
+REM 2. 注册为 Windows 服务（需管理员权限，默认开机自启）
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu
+
+REM 启用 LLM 校对（推荐，可显著提升识别准确率）
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu ^
+    --llm-base-url https://api.openai.com/v1 ^
+    --llm-api-key sk-xxx ^
+    --llm-model gpt-4o-mini
+
+REM 手动启动模式（不随系统启动）
+scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008
+```
+
+#### 管理服务
+
+```bat
+REM 启动服务
+scripts\voice_typer_server.bat start
+
+REM 停止服务
+scripts\voice_typer_server.bat stop
+
+REM 卸载服务
+scripts\voice_typer_server.bat uninstall
+```
+
+也可以通过 `services.msc`（服务管理器）图形化操作，服务名为 **VoiceTyper 语音识别服务**。
+
+#### 服务日志
+
+服务模式下日志写入文件：`%USERPROFILE%\.voice-typer\server.log`，最大 10MB，保留 3 个备份。
+
+#### 注意事项
+
+- 安装、卸载、启停服务均需要**管理员权限**
+- 服务默认以 `LocalSystem` 账户运行。如果模型已缓存在当前用户目录下，首次启动可能需要重新下载
+- 修改运行参数需先卸载再重新安装服务
+
 ## 常用启动参数
 
 - `--host`：监听地址，默认 `127.0.0.1`
@@ -264,3 +312,4 @@ voice-typer-server --punc-model none
 - [voice_typer_server/recognizer.py](voice_typer_server/recognizer.py)
 - [voice_typer_server/llm_client.py](voice_typer_server/llm_client.py)
 - [voice_typer_server/auth.py](voice_typer_server/auth.py)
+- [voice_typer_server/win_service.py](voice_typer_server/win_service.py) — Windows 服务包装（仅 Windows）
