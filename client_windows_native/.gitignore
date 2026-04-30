@@ -1,0 +1,21 @@
+## .NET Build
+bin/
+obj/
+dist/
+
+## IDE
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+## Debug
+*.pdb
+
+## NuGet
+packages/
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
