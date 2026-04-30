@@ -38,7 +38,7 @@ mkdir dist 2>nul
 
 REM ===== [0/3] 还原依赖 =====
 echo [0/3] 还原 NuGet 依赖...
-dotnet restore --nologo -v q
+dotnet restore VoiceTyper.csproj --nologo -v q
 if errorlevel 1 (
     echo.
     echo [错误] NuGet 还原失败，请检查网络连接
@@ -50,7 +50,7 @@ echo.
 
 REM ===== [1/3] 构建检查 =====
 echo [1/3] 编译检查...
-dotnet build -c Release --nologo -v q
+dotnet build VoiceTyper.csproj -c Release --nologo -v q
 if errorlevel 1 (
     echo.
     echo [错误] 编译失败，请检查错误信息
@@ -62,7 +62,7 @@ echo.
 
 REM ===== [2/3] 便携版 =====
 echo [2/3] 发布便携版 (framework-dependent, ~3MB)...
-dotnet publish -c Release -r win-x64 ^
+dotnet publish VoiceTyper.csproj -c Release -r win-x64 ^
     --self-contained false ^
     -p:PublishSingleFile=true ^
     -o dist\_portable ^
@@ -79,7 +79,7 @@ echo.
 
 REM ===== [3/3] 完整版 =====
 echo [3/3] 发布完整版 (self-contained + compressed)...
-dotnet publish -c Release -r win-x64 ^
+dotnet publish VoiceTyper.csproj -c Release -r win-x64 ^
     --self-contained true ^
     -p:PublishSingleFile=true ^
     -p:EnableCompressionInSingleFile=true ^
