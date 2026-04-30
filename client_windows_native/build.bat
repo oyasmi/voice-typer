@@ -23,7 +23,7 @@ echo .NET SDK: %DOTNET_VER%
 
 REM ===== ¶ÁÈ¡°æ±¾ºÅ =====
 set VERSION=
-for /f "tokens=*" %%a in ('dotnet msbuild -getProperty:Version -nologo 2^>nul') do set VERSION=%%a
+for /f "tokens=*" %%a in ('dotnet msbuild VoiceTyper.csproj -getProperty:Version -nologo 2^>nul') do set VERSION=%%a
 if "%VERSION%"=="" set VERSION=2.1.0
 
 echo °æ±¾ºÅ:  %VERSION%
