@@ -42,6 +42,16 @@ build.bat
 - `dist/VoiceTyper-{版本}-win-x64-portable.exe` — 便携版 (~3MB)，需 .NET Desktop Runtime 8.0
 - `dist/VoiceTyper-{版本}-win-x64.exe` — 完整版 (~30-50MB)，独立运行
 
+## 服务端要求
+
+本客户端使用 HTTP 非流式协议，**服务端须以 `--no-streaming` 模式启动**：
+
+```bat
+scripts\voice_typer_server.bat run --no-streaming
+```
+
+若使用默认（流式）模式启动服务端，客户端将无法识别。详见 [服务端文档](../server/README.md)。
+
 ## 使用方法
 
 1. **启动**: 双击 `VoiceTyper.exe`，应用将驻留在系统托盘

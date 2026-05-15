@@ -35,6 +35,12 @@ pip install -r requirements.txt
 确保本地或远程已启动 VoiceTyper 服务端（FunASR）。
 客户端默认连接 `127.0.0.1:6008`。
 
+> **重要**：Windows 客户端使用 HTTP 非流式协议，服务端须以 `--no-streaming` 模式启动：
+> ```bat
+> scripts\voice_typer_server.bat run --no-streaming
+> ```
+> 若使用默认（流式）模式启动服务端，客户端将无法识别。详见 [服务端文档](../server/README.md)。
+
 ## 使用方法
 
 1. **启动客户端**

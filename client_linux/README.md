@@ -80,12 +80,16 @@ sudo usermod -aG input $USER
 
 ### 4. 启动 ASR 服务器
 
-在另一个终端中启动语音识别服务器：
+在另一个终端中启动语音识别服务器（Linux 客户端使用 HTTP 非流式模式，须加 `--no-streaming`）：
 
 ```bash
-cd ../server
-pip3 install -r requirements.txt
-./run.sh
+# 使用脚本安装并启动
+curl -O -L https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/scripts/voice_typer_server.sh
+bash ./voice_typer_server.sh setup
+bash ./voice_typer_server.sh run --no-streaming
+
+# 或如果已安装 voice-typer-server
+voice-typer-server --no-streaming
 ```
 
 ### 5. 运行 VoiceTyper

@@ -41,6 +41,13 @@ pip install -r requirements.txt
 
 确保主项目的 VoiceTyper 服务端已启动。默认连接地址为 `127.0.0.1:6008`。
 
+> **重要**：macOS Python 客户端使用 HTTP 非流式协议，服务端须以 `--no-streaming` 模式启动：
+> ```bash
+> bash ./voice_typer_server.sh run --no-streaming
+> # 或直接调用
+> voice-typer-server --no-streaming
+> ```
+
 执行以下命令直接在 Python 环境下运行：
 
 ```bash

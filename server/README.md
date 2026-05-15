@@ -101,16 +101,17 @@ REM 1. 安装环境（自动安装 pywin32 依赖）
 scripts\voice_typer_server.bat setup --local
 
 REM 2. 注册为 Windows 服务（需管理员权限，默认开机自启）
-scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu
+REM    Windows 客户端使用 HTTP 非流式模式，必须加 --no-streaming
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu --no-streaming
 
 REM 启用 LLM 校对（推荐，可显著提升识别准确率）
-scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu ^
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu --no-streaming ^
     --llm-base-url https://api.openai.com/v1 ^
     --llm-api-key sk-xxx ^
     --llm-model gpt-4o-mini
 
 REM 手动启动模式（不随系统启动）
-scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008
+scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008 --no-streaming
 ```
 
 #### 管理服务
