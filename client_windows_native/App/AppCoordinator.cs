@@ -27,6 +27,7 @@ internal sealed class AppCoordinator : IDisposable
     private AppStateInfo _currentState = AppStateInfo.Booting;
     private bool _serverReady;
     private bool _micPermissionDenied;
+    private bool _firstReadinessDone;
 
     public AppCoordinator()
     {
@@ -142,9 +143,19 @@ internal sealed class AppCoordinator : IDisposable
         }
 
         UpdateTray();
+
+        bool isFirst = !_firstReadinessDone;
+        _firstReadinessDone = true;
+
         if (_setupForm is { } form)
         {
             form.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
+        }
+
+        // 首次启动且服务不可达时自动打开设置窗口，避免用户不知道托盘图标在哪。
+        if (isFirst && !_serverReady)
+        {
+            OpenSetup();
         }
     }
 
