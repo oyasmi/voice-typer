@@ -12,13 +12,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VoiceTyper 语音识别服务")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认: %(default)s)")
     parser.add_argument("--port", type=int, default=6008, help="监听端口 (默认: %(default)s)")
-    parser.add_argument("--model", default="paraformer-zh", help="ASR 模型 (默认: %(default)s)")
+    parser.add_argument(
+        "--model",
+        default="paraformer-zh-streaming",
+        help="ASR 流式模型 (默认: %(default)s)",
+    )
     parser.add_argument(
         "--punc-model",
         default="ct-punc",
         help="标点模型，使用 none 可禁用 (默认: %(default)s)",
     )
     parser.add_argument("--device", default="cpu", help="设备: cpu/cuda/cuda:N (默认: %(default)s)")
+    parser.add_argument(
+        "--chunk-size",
+        default="0,10,5",
+        help="流式识别 chunk 大小，格式: left,current,right，单位 60ms 帧 (默认: %(default)s)",
+    )
     parser.add_argument("--api-keys", help="API 密钥（逗号分隔多个密钥）")
     parser.add_argument(
         "--onnx-threads",

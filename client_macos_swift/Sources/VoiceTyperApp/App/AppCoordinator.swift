@@ -6,7 +6,6 @@ final class AppCoordinator {
     private let configStore = ConfigStore()
     private let permissionCenter = PermissionCenter()
     private let statusBarController = StatusBarController()
-    private let setupHealthCheckClient = ASRClient()
 
     private var setupWindowController: SetupWindowController?
     private var recordingHUDController: RecordingHUDController?
@@ -86,9 +85,8 @@ final class AppCoordinator {
             controller.onRetryServerCheck = { [weak self] in
                 Task { await self?.refreshServerStatus() }
             }
-            controller.onTestServerConnection = { [weak self] server in
-                guard let self else { return false }
-                return await self.setupHealthCheckClient.healthCheck(server: server)
+            controller.onTestServerConnection = { server in
+                await AppCoordinator.checkServerHealth(server: server)
             }
             controller.onSaveConfig = { [weak self] updatedConfig in
                 guard let self else { return }
@@ -207,14 +205,40 @@ final class AppCoordinator {
             switch state {
             case .recording:
                 self.recordingHUDController?.showHUD()
+            case .recognizing:
+                // 保持 HUD 可见，切换为"识别中"样式
+                self.recordingHUDController?.setRecognizing()
             default:
                 self.recordingHUDController?.hideHUD()
             }
             self.updateStatusUI()
         }
 
+        voiceTyperController?.onPreviewUpdate = { [weak self] accumulated in
+            self?.recordingHUDController?.showPreview(accumulated)
+        }
+
         voiceTyperController?.onRecognizedText = { text in
             AppLog.app.info("识别结果: \(text, privacy: .public)")
+        }
+    }
+
+    private static func checkServerHealth(server: ServerConfig) async -> Bool {
+        guard let url = URL(string: "http://\(server.host):\(server.port)/health") else {
+            return false
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5.0
+        let trimmed = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return payload?["ready"] as? Bool ?? false
+        } catch {
+            return false
         }
     }
 

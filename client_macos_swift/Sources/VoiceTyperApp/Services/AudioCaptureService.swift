@@ -1,16 +1,22 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-struct RecordedAudio {
-    let data: Data
-    let duration: TimeInterval
-}
-
 private final class AudioConverterInputState: @unchecked Sendable {
     var hasProvidedInput = false
 }
 
+/// 流式录音服务。
+///
+/// 录音期间每凑满 `chunkSamples` 个 float32 样本就通过 `onChunk` 发出一帧；
+/// 停止时将剩余不足一帧的尾音通过 `onTailChunk` 发出，随后调用 `onStopped`。
 final class AudioCaptureService: @unchecked Sendable {
+    /// 每 600ms 触发一次，传入 float32 PCM 字节（9600 samples = 38400 bytes）
+    var onChunk: ((Data) -> Void)?
+    /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空 Data）
+    var onTailChunk: ((Data) -> Void)?
+
+    let chunkSamples: Int
+
     private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -21,16 +27,20 @@ final class AudioCaptureService: @unchecked Sendable {
 
     private let lock = NSLock()
     private var converter: AVAudioConverter?
-    private var capturedSamples: [Float] = []
+    private var ringBuffer: [Float] = []
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
 
-    func start() throws {
-        guard !isRunning else {
-            return
-        }
+    init(chunkSamples: Int = 9600) {
+        self.chunkSamples = chunkSamples
+    }
 
-        capturedSamples = []
+    func start() throws {
+        guard !isRunning else { return }
+
+        lock.lock()
+        ringBuffer = []
+        lock.unlock()
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -42,7 +52,11 @@ final class AudioCaptureService: @unchecked Sendable {
             )
         }
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw NSError(domain: AppConstants.bundleIdentifier, code: 1001, userInfo: [NSLocalizedDescriptionKey: "无法创建音频格式转换器"])
+            throw NSError(
+                domain: AppConstants.bundleIdentifier,
+                code: 1001,
+                userInfo: [NSLocalizedDescriptionKey: "无法创建音频格式转换器"]
+            )
         }
 
         self.converter = converter
@@ -64,50 +78,39 @@ final class AudioCaptureService: @unchecked Sendable {
         }
     }
 
-    func stop() throws -> RecordedAudio {
-        guard isRunning else {
-            return RecordedAudio(data: Data(), duration: 0)
-        }
+    /// 停止录音，将剩余尾音通过 `onTailChunk` 发出。
+    func stop() {
+        guard isRunning else { return }
 
-        let inputNode = engine.inputNode
-        inputNode.removeTap(onBus: 0)
+        engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
         removeConfigurationChangeObserver()
 
-        let samples: [Float]
         lock.lock()
-        samples = capturedSamples
-        capturedSamples = []
+        let tail = ringBuffer
+        ringBuffer = []
         lock.unlock()
 
-        let data = samples.withUnsafeBufferPointer { pointer in
-            guard let baseAddress = pointer.baseAddress else {
-                return Data()
-            }
-            return Data(bytes: baseAddress, count: pointer.count * MemoryLayout<Float>.size)
-        }
-        let duration = Double(samples.count) / AppConstants.targetSampleRate
-        return RecordedAudio(data: data, duration: duration)
+        let tailData = floatsToData(tail)
+        onTailChunk?(tailData)
     }
 
     func stopWithoutResult() {
-        guard isRunning else {
-            return
-        }
+        guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
         removeConfigurationChangeObserver()
         lock.lock()
-        capturedSamples = []
+        ringBuffer = []
         lock.unlock()
     }
 
+    // MARK: - Private
+
     private func append(buffer: AVAudioPCMBuffer) {
-        guard let converter else {
-            return
-        }
+        guard let converter else { return }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let targetFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
@@ -115,9 +118,7 @@ final class AudioCaptureService: @unchecked Sendable {
         guard let convertedBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: max(targetFrameCapacity, 1)
-        ) else {
-            return
-        }
+        ) else { return }
 
         let inputState = AudioConverterInputState()
         var error: NSError?
@@ -126,21 +127,34 @@ final class AudioCaptureService: @unchecked Sendable {
                 outStatus.pointee = .noDataNow
                 return nil
             }
-
             inputState.hasProvidedInput = true
             outStatus.pointee = .haveData
             return buffer
         }
 
-        guard error == nil, status != .error, let channel = convertedBuffer.floatChannelData?.pointee else {
-            return
-        }
+        guard error == nil, status != .error,
+              let channel = convertedBuffer.floatChannelData?.pointee else { return }
 
-        let sampleCount = Int(convertedBuffer.frameLength)
-        let newSamples = Array(UnsafeBufferPointer(start: channel, count: sampleCount))
+        let newSamples = Array(UnsafeBufferPointer(start: channel, count: Int(convertedBuffer.frameLength)))
+
         lock.lock()
-        capturedSamples.append(contentsOf: newSamples)
+        ringBuffer.append(contentsOf: newSamples)
+        // 每凑满 chunkSamples 就取出一帧
+        while ringBuffer.count >= chunkSamples {
+            let chunk = Array(ringBuffer.prefix(chunkSamples))
+            ringBuffer.removeFirst(chunkSamples)
+            lock.unlock()
+            onChunk?(floatsToData(chunk))
+            lock.lock()
+        }
         lock.unlock()
+    }
+
+    private func floatsToData(_ samples: [Float]) -> Data {
+        samples.withUnsafeBufferPointer { ptr in
+            guard let base = ptr.baseAddress else { return Data() }
+            return Data(bytes: base, count: ptr.count * MemoryLayout<Float>.size)
+        }
     }
 
     private func removeConfigurationChangeObserver() {
