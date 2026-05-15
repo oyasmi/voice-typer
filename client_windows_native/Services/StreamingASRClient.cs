@@ -79,7 +79,7 @@ internal sealed class StreamingASRClient : IDisposable
         _ = SendAudioAsync(data);
     }
 
-    public void Finalize()
+    public void FinalizeStream()
     {
         if (_closed || _ws is null) return;
         _ = SendJsonAsync(new Dictionary<string, object?> { ["type"] = "finalize" }, CancellationToken.None);

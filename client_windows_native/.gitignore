@@ -19,3 +19,6 @@ packages/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+## Unignore app.manifest (root .gitignore excludes *.manifest for PyInstaller)
+!app.manifest

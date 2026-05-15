@@ -199,7 +199,7 @@ internal sealed class VoiceTyperController : IDisposable
             UiDispatcher.Post(() =>
             {
                 if (data.Length > 0) client.SendAudio(data);
-                client.Finalize();
+                client.FinalizeStream();
                 StateChanged?.Invoke(AppStateInfo.Recognizing);
             });
         };
