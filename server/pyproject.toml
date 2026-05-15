@@ -19,10 +19,6 @@ dependencies = [
   "jieba",
   "numpy>=1.23,<2.0",
 ]
-
-[project.optional-dependencies]
-windows-service = ["pywin32>=306"]
-
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",
@@ -34,6 +30,9 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
   "Environment :: Console",
 ]
+
+[project.optional-dependencies]
+windows-service = ["pywin32>=306"]
 
 [project.urls]
 Homepage = "https://github.com/oyasmi/voice-typer"
