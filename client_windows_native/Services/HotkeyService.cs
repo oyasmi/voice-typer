@@ -1,192 +1,254 @@
+using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using VoiceTyper.Core;
 using VoiceTyper.Support;
+using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.Services;
 
+internal sealed class HotkeyServiceException : Exception
+{
+    public HotkeyServiceException(string message) : base(message) { }
+}
+
 /// <summary>
-/// 全局热键服务。使用 SetWindowsHookEx(WH_KEYBOARD_LL) 低级键盘钩子。
-/// 与 macOS Swift 版的 CGEventTap 方案对应。
-///
-/// 关键设计:
-/// - 钩子安装在 UI 线程，回调也在 UI 线程执行（通过消息循环）
-/// - _hookDelegate 必须持有强引用，防止 GC 回收导致崩溃
-///   （与 Swift 版修复的 TapContext 弱引用问题同一类问题）
-/// - 回调必须尽快返回，避免阻塞全局键盘输入
+/// 全局热键监听。基于 <c>WH_KEYBOARD_LL</c> 低级钩子，进程范围内只允许一个实例。
+/// 必须在 UI 线程（即拥有消息泵的线程）上 Start，因为低级钩子的回调通过该线程的消息队列分发。
 /// </summary>
 internal sealed class HotkeyService : IDisposable
 {
-    public event Action? OnPress;
-    public event Action? OnRelease;
+    /// <summary>热键按下（首次按下，去重过 auto-repeat）。在 UI 线程触发。</summary>
+    public Action? OnPress;
+    /// <summary>热键松开。在 UI 线程触发。</summary>
+    public Action? OnRelease;
 
-    private IntPtr _hookHandle;
-    private NativeInterop.LowLevelKeyboardProc? _hookDelegate;
+    private IntPtr _hookHandle = IntPtr.Zero;
+    private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
+    private HotkeyConfig? _hotkey;
+    private int _targetVk;
+    private ModifierMask _expectedModifiers;
     private bool _isActive;
-    private uint _targetVk;
-    private HashSet<int> _requiredModifierVks = new();
-    private bool _isRunning;
 
-    /// <summary>启动热键监听</summary>
-    public void Start(HotkeyConfig config)
+    [Flags]
+    private enum ModifierMask
+    {
+        None = 0,
+        Ctrl = 1,
+        Alt = 2,
+        Shift = 4,
+        Win = 8,
+    }
+
+    public void Start(HotkeyConfig hotkey)
     {
         Stop();
 
-        _targetVk = ResolveKeyCode(config.Key);
-        if (_targetVk == 0)
+        var vk = MapKeyToVk(hotkey.Key);
+        if (vk == 0)
         {
-            AppLog.Error($"不支持的热键: {config.Key}");
-            return;
+            throw new HotkeyServiceException($"不支持的热键主键: {hotkey.Key}");
         }
 
-        _requiredModifierVks = ResolveModifiers(config.Modifiers);
-
-        // 必须持有委托引用，防止被 GC 回收
-        _hookDelegate = HookCallback;
-        _hookHandle = NativeInterop.SetWindowsHookEx(
-            NativeInterop.WH_KEYBOARD_LL,
-            _hookDelegate,
-            IntPtr.Zero,
-            0);
-
-        if (_hookHandle == IntPtr.Zero)
-        {
-            var error = Marshal.GetLastWin32Error();
-            AppLog.Error($"安装键盘钩子失败，错误码: {error}");
-            _hookDelegate = null;
-            return;
-        }
-
-        _isRunning = true;
-        AppLog.Info($"热键监听已启动: {FormatHotkey(config)}");
-    }
-
-    /// <summary>停止热键监听</summary>
-    public void Stop()
-    {
-        _isRunning = false;
+        _hotkey = hotkey.Clone();
+        _targetVk = vk;
+        _expectedModifiers = BuildExpected(hotkey.Modifiers);
         _isActive = false;
 
-        if (_hookHandle != IntPtr.Zero)
+        _proc = HookCallback;
+        var moduleHandle = GetModuleHandleW(null);
+        _hookHandle = SetWindowsHookExW(WH_KEYBOARD_LL, _proc, moduleHandle, 0);
+        if (_hookHandle == IntPtr.Zero)
         {
-            NativeInterop.UnhookWindowsHookEx(_hookHandle);
-            _hookHandle = IntPtr.Zero;
+            var err = Marshal.GetLastWin32Error();
+            _proc = null;
+            throw new HotkeyServiceException($"安装键盘钩子失败 (Win32 error {err})");
         }
 
-        _hookDelegate = null;
+        AppLog.Info("hotkey", $"热键监听启动: {hotkey.DisplayString}");
     }
+
+    public void Stop()
+    {
+        if (_hookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookHandle);
+            _hookHandle = IntPtr.Zero;
+        }
+        _proc = null;
+        _hotkey = null;
+        _targetVk = 0;
+        _expectedModifiers = ModifierMask.None;
+        _isActive = false;
+    }
+
+    public void Dispose() => Stop();
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && _isRunning)
+        if (nCode < 0 || _hotkey is null)
         {
-            var kbd = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
-            var msg = (int)wParam;
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
 
-            if (msg is NativeInterop.WM_KEYDOWN or NativeInterop.WM_SYSKEYDOWN)
+        var msg = wParam.ToInt32();
+        var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+
+        // 忽略 SendInput 注入的事件（我们自己注入 Ctrl+V 时不希望被自己截到）
+        // 标准的 KBDLLHOOKSTRUCT.flags 的 LLKHF_INJECTED = 0x10
+        const uint LLKHF_INJECTED = 0x10;
+        if ((data.flags & LLKHF_INJECTED) != 0)
+        {
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
+
+        bool isKeyDown = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+        bool isKeyUp = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+
+        if (!isKeyDown && !isKeyUp)
+        {
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
+
+        int vk = (int)data.vkCode;
+
+        if (isKeyDown && vk == _targetVk)
+        {
+            // 修饰键必须严格匹配（不多不少）
+            var currentMods = ReadCurrentModifiers();
+            if (currentMods == _expectedModifiers && !_isActive)
             {
-                if (!_isActive && kbd.vkCode == _targetVk && AreModifiersPressed())
-                {
-                    _isActive = true;
-                    try { OnPress?.Invoke(); }
-                    catch (Exception ex) { AppLog.Error("热键按下回调错误", ex); }
-                }
+                _isActive = true;
+                UiDispatcher.Post(() => OnPress?.Invoke());
             }
-            else if (msg is NativeInterop.WM_KEYUP or NativeInterop.WM_SYSKEYUP)
+        }
+        else if (isKeyUp && vk == _targetVk && _isActive)
+        {
+            _isActive = false;
+            UiDispatcher.Post(() => OnRelease?.Invoke());
+        }
+        else if (isKeyUp && _isActive && IsModifierVk(vk))
+        {
+            // 用户按住组合键时先松开了修饰键。此时录音应当作"松开"处理。
+            var afterRelease = ReadCurrentModifiersExcluding(vk);
+            if (afterRelease != _expectedModifiers)
             {
-                if (_isActive && kbd.vkCode == _targetVk)
-                {
-                    _isActive = false;
-                    try { OnRelease?.Invoke(); }
-                    catch (Exception ex) { AppLog.Error("热键释放回调错误", ex); }
-                }
+                _isActive = false;
+                UiDispatcher.Post(() => OnRelease?.Invoke());
             }
         }
 
-        // 必须调用 CallNextHookEx 传递事件，否则会阻断全局键盘
-        return NativeInterop.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    /// <summary>使用 GetAsyncKeyState 检查修饰键当前状态</summary>
-    private bool AreModifiersPressed()
+    private static ModifierMask BuildExpected(List<string> modifiers)
     {
-        foreach (var vk in _requiredModifierVks)
+        var mask = ModifierMask.None;
+        foreach (var m in modifiers)
         {
-            // GetAsyncKeyState 返回值的高位表示当前是否按下
-            if ((NativeInterop.GetAsyncKeyState(vk) & 0x8000) == 0)
-                return false;
-        }
-        return true;
-    }
-
-    /// <summary>将配置中的修饰键名解析为虚拟键码</summary>
-    private static HashSet<int> ResolveModifiers(List<string> modifiers)
-    {
-        var vks = new HashSet<int>();
-
-        foreach (var mod in modifiers)
-        {
-            switch (mod.ToLowerInvariant())
+            switch (m.Trim().ToLowerInvariant())
             {
                 case "ctrl":
                 case "control":
-                    vks.Add(NativeInterop.VK_CONTROL);
+                    mask |= ModifierMask.Ctrl;
                     break;
                 case "alt":
-                    vks.Add(NativeInterop.VK_MENU);
+                case "option":
+                    mask |= ModifierMask.Alt;
                     break;
                 case "shift":
-                    vks.Add(NativeInterop.VK_SHIFT);
+                    mask |= ModifierMask.Shift;
                     break;
                 case "win":
-                case "cmd":
-                case "command":
-                    // 通用 Win 键：检查左 Win 即可（GetAsyncKeyState 会响应任意一侧）
-                    vks.Add(NativeInterop.VK_LWIN);
-                    break;
                 case "win_l":
-                    vks.Add(NativeInterop.VK_LWIN);
-                    break;
                 case "win_r":
-                    vks.Add(NativeInterop.VK_RWIN);
+                case "super":
+                case "command":
+                case "cmd":
+                    mask |= ModifierMask.Win;
                     break;
             }
         }
-
-        return vks;
+        return mask;
     }
 
-    /// <summary>将配置中的键名解析为虚拟键码</summary>
-    private static uint ResolveKeyCode(string key)
+    private static ModifierMask ReadCurrentModifiers()
     {
-        var k = key.ToLowerInvariant();
+        var mask = ModifierMask.None;
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) mask |= ModifierMask.Ctrl;
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) mask |= ModifierMask.Alt;
+        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) mask |= ModifierMask.Shift;
+        if (((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0) mask |= ModifierMask.Win;
+        return mask;
+    }
 
-        // 字母键 A-Z
-        if (k.Length == 1 && k[0] >= 'a' && k[0] <= 'z')
-            return (uint)(k[0] - 'a' + 0x41);
+    private static ModifierMask ReadCurrentModifiersExcluding(int releasedVk)
+    {
+        var mask = ReadCurrentModifiers();
+        switch (releasedVk)
+        {
+            case VK_CONTROL: mask &= ~ModifierMask.Ctrl; break;
+            case VK_MENU: mask &= ~ModifierMask.Alt; break;
+            case VK_SHIFT: mask &= ~ModifierMask.Shift; break;
+            case VK_LWIN:
+            case VK_RWIN:
+                mask &= ~ModifierMask.Win;
+                break;
+        }
+        return mask;
+    }
 
-        // 数字键 0-9
-        if (k.Length == 1 && k[0] >= '0' && k[0] <= '9')
-            return (uint)(k[0] - '0' + 0x30);
+    private static bool IsModifierVk(int vk) =>
+        vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT || vk == VK_LWIN || vk == VK_RWIN
+        || vk == 0xA0 || vk == 0xA1 // LSHIFT, RSHIFT
+        || vk == 0xA2 || vk == 0xA3 // LCONTROL, RCONTROL
+        || vk == 0xA4 || vk == 0xA5; // LMENU, RMENU
 
+    private static int MapKeyToVk(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return 0;
+        var k = key.Trim().ToLowerInvariant();
+
+        // 单字符
+        if (k.Length == 1)
+        {
+            var ch = char.ToUpperInvariant(k[0]);
+            if (ch is >= 'A' and <= 'Z' or >= '0' and <= '9') return ch;
+        }
+
+        // 命名键
         return k switch
         {
             "space" => 0x20,
             "tab" => 0x09,
-            "enter" => 0x0D,
-            "f1" => 0x70, "f2" => 0x71, "f3" => 0x72, "f4" => 0x73,
-            "f5" => 0x74, "f6" => 0x75, "f7" => 0x76, "f8" => 0x77,
-            "f9" => 0x78, "f10" => 0x79, "f11" => 0x7A, "f12" => 0x7B,
-            _ => 0
+            "enter" or "return" => 0x0D,
+            "esc" or "escape" => 0x1B,
+            "backspace" => 0x08,
+            "insert" => 0x2D,
+            "delete" => 0x2E,
+            "home" => 0x24,
+            "end" => 0x23,
+            "pageup" or "page_up" => 0x21,
+            "pagedown" or "page_down" => 0x22,
+            "up" => 0x26,
+            "down" => 0x28,
+            "left" => 0x25,
+            "right" => 0x27,
+            "f1" => 0x70,
+            "f2" => 0x71,
+            "f3" => 0x72,
+            "f4" => 0x73,
+            "f5" => 0x74,
+            "f6" => 0x75,
+            "f7" => 0x76,
+            "f8" => 0x77,
+            "f9" => 0x78,
+            "f10" => 0x79,
+            "f11" => 0x7A,
+            "f12" => 0x7B,
+            "capslock" or "caps_lock" => 0x14,
+            _ => 0,
         };
     }
-
-    /// <summary>格式化热键用于显示</summary>
-    internal static string FormatHotkey(HotkeyConfig config)
-    {
-        var parts = new List<string>(config.Modifiers);
-        parts.Add(config.Key);
-        return string.Join("+", parts).ToUpper();
-    }
-
-    public void Dispose() => Stop();
 }

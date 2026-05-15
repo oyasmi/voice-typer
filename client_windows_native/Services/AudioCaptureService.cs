@@ -1,3 +1,7 @@
+using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -5,186 +9,242 @@ using VoiceTyper.Support;
 
 namespace VoiceTyper.Services;
 
+internal sealed class AudioStartException : Exception
+{
+    public bool IsAccessDenied { get; }
+    public AudioStartException(string message, bool accessDenied, Exception? inner = null) : base(message, inner)
+    {
+        IsAccessDenied = accessDenied;
+    }
+}
+
 /// <summary>
-/// 录音服务。使用 NAudio WASAPI 以设备原生格式捕获音频，
-/// 停止录音时一次性转换为 16kHz float32 mono（与服务端要求一致）。
-/// 转换策略与 macOS Swift 版的 AVAudioConverter 后处理模式对应。
+/// 流式录音服务。录音期间每凑满 600ms（9600 个 16kHz float32 样本）通过 <see cref="OnChunk"/> 发出；
+/// 停止时将剩余尾音通过 <see cref="OnTailChunk"/> 发出。
+/// 回调可能在工作线程触发，调用方负责自行 marshal。
 /// </summary>
 internal sealed class AudioCaptureService : IDisposable
 {
-    private WasapiCapture? _capture;
-    private MemoryStream? _rawBuffer;
-    private readonly object _lock = new();
-    private bool _isRecording;
+    public Action<byte[]>? OnChunk;
+    public Action<byte[]>? OnTailChunk;
 
-    /// <summary>检测可用的音频捕获设备数量（供 SetupForm 使用）</summary>
-    public static int GetCaptureDeviceCount()
+    public int ChunkSamples { get; } = AppConstants.ChunkSamples;
+
+    private readonly object _lock = new();
+    private WasapiCapture? _capture;
+    private MMDevice? _device;
+    private BufferedWaveProvider? _inputBuffer;
+    private ISampleProvider? _resampledProvider;
+    private readonly Queue<float> _ringBuffer = new();
+    private WaveFormat? _captureFormat;
+    private bool _running;
+
+    public bool IsRunning
     {
-        try
-        {
-            using var enumerator = new MMDeviceEnumerator();
-            return enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).Count;
-        }
-        catch
-        {
-            return 0;
-        }
+        get { lock (_lock) return _running; }
     }
 
-    /// <summary>开始录音</summary>
     public void Start()
     {
-        if (_isRecording) return;
-
-        _rawBuffer = new MemoryStream();
-
-        try
-        {
-            _capture = new WasapiCapture();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                "没有可用的音频输入设备，请检查麦克风连接。", ex);
-        }
-
-        if (_capture.WaveFormat.SampleRate == 0)
-        {
-            _capture.Dispose();
-            _capture = null;
-            throw new InvalidOperationException("音频设备采样率无效，请检查麦克风设置。");
-        }
-
-        _capture.DataAvailable += OnDataAvailable;
-        _capture.RecordingStopped += OnRecordingStopped;
-        _capture.StartRecording();
-        _isRecording = true;
-
-        AppLog.Info($"开始录音，设备格式: {_capture.WaveFormat}");
-    }
-
-    /// <summary>停止录音并返回转换后的音频数据</summary>
-    public (byte[] AudioData, TimeSpan Duration) Stop()
-    {
-        if (!_isRecording || _capture == null)
-            return (Array.Empty<byte>(), TimeSpan.Zero);
-
-        _isRecording = false;
-        _capture.StopRecording();
-
-        byte[] rawData;
-        WaveFormat sourceFormat = _capture.WaveFormat;
-
         lock (_lock)
         {
-            rawData = _rawBuffer?.ToArray() ?? Array.Empty<byte>();
-            _rawBuffer?.Dispose();
-            _rawBuffer = null;
+            if (_running) return;
+
+            try
+            {
+                var enumerator = new MMDeviceEnumerator();
+                _device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            }
+            catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
+            {
+                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", accessDenied: true, ex);
+            }
+            catch (Exception ex)
+            {
+                throw new AudioStartException("未找到可用麦克风设备", accessDenied: false, ex);
+            }
+
+            try
+            {
+                _capture = new WasapiCapture(_device, useEventSync: true);
+                _captureFormat = _capture.WaveFormat;
+
+                _inputBuffer = new BufferedWaveProvider(_captureFormat)
+                {
+                    BufferDuration = TimeSpan.FromSeconds(2),
+                    DiscardOnBufferOverflow = true,
+                };
+
+                // 重采样到 16kHz / mono / float32（IEEE float）。
+                // 选 WDL 而非 MediaFoundationResampler：纯托管、不依赖 MF DLL，且对语音 16kHz 重采样质量足够。
+                var sampleProvider = _inputBuffer.ToSampleProvider();
+                if (_captureFormat.Channels > 1)
+                {
+                    sampleProvider = sampleProvider.ToMono();
+                }
+                _resampledProvider = new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
+
+                _capture.DataAvailable += OnCaptureDataAvailable;
+                _capture.RecordingStopped += OnCaptureStopped;
+                _capture.StartRecording();
+
+                _ringBuffer.Clear();
+                _running = true;
+            }
+            catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
+            {
+                Cleanup();
+                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", accessDenied: true, ex);
+            }
+            catch (Exception ex)
+            {
+                Cleanup();
+                throw new AudioStartException($"启动录音失败: {ex.Message}", accessDenied: false, ex);
+            }
         }
 
-        Cleanup();
-
-        if (rawData.Length == 0)
-            return (Array.Empty<byte>(), TimeSpan.Zero);
-
-        // 后处理：转换为 16kHz float32 mono
-        var converted = ConvertToTarget(rawData, sourceFormat);
-        var sampleCount = converted.Length / sizeof(float);
-        var duration = TimeSpan.FromSeconds(sampleCount / (double)Constants.TargetSampleRate);
-
-        return (converted, duration);
-    }
-
-    /// <summary>停止录音，丢弃所有数据</summary>
-    public void StopWithoutResult()
-    {
-        if (!_isRecording) return;
-
-        _isRecording = false;
-        _capture?.StopRecording();
-
-        lock (_lock)
-        {
-            _rawBuffer?.Dispose();
-            _rawBuffer = null;
-        }
-
-        Cleanup();
-    }
-
-    private void OnDataAvailable(object? sender, WaveInEventArgs e)
-    {
-        if (!_isRecording || e.BytesRecorded == 0) return;
-
-        lock (_lock)
-        {
-            _rawBuffer?.Write(e.Buffer, 0, e.BytesRecorded);
-        }
-    }
-
-    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
-    {
-        if (e.Exception != null)
-            AppLog.Error("录音停止异常", e.Exception);
+        AppLog.Info("audio", $"录音启动: device={_device?.FriendlyName}, format={_captureFormat}");
     }
 
     /// <summary>
-    /// 将原始音频转换为 16kHz float32 mono。
-    /// 转换链: 原始 PCM → ISampleProvider → ToMono → WdlResampling → byte[]
+    /// 停止录音，发出尾音帧。即使没有尾音也会以空 Data 触发 <see cref="OnTailChunk"/>，
+    /// 让调用方知道录音流已经结束。
     /// </summary>
-    private byte[] ConvertToTarget(byte[] rawData, WaveFormat sourceFormat)
+    public void Stop()
     {
+        WasapiCapture? capture;
+        lock (_lock)
+        {
+            if (!_running) return;
+            capture = _capture;
+            _running = false;
+        }
+
+        try { capture?.StopRecording(); }
+        catch (Exception ex) { AppLog.Warn("audio", $"StopRecording 异常: {ex.Message}"); }
+
+        // 取走剩余尾音
+        byte[] tail;
+        lock (_lock)
+        {
+            tail = DrainRingBufferLocked();
+            _ringBuffer.Clear();
+        }
+
+        OnTailChunk?.Invoke(tail);
+        AppLog.Info("audio", $"录音停止，尾音 {tail.Length} bytes");
+    }
+
+    /// <summary>不发出尾音直接终止（如错误清理）。</summary>
+    public void StopWithoutResult()
+    {
+        WasapiCapture? capture;
+        lock (_lock)
+        {
+            if (!_running) return;
+            capture = _capture;
+            _running = false;
+            _ringBuffer.Clear();
+        }
+        try { capture?.StopRecording(); }
+        catch { /* swallow */ }
+    }
+
+    private void OnCaptureDataAvailable(object? sender, WaveInEventArgs e)
+    {
+        if (e.BytesRecorded <= 0) return;
+
+        BufferedWaveProvider? input;
+        ISampleProvider? resampled;
+        lock (_lock)
+        {
+            if (!_running) return;
+            input = _inputBuffer;
+            resampled = _resampledProvider;
+        }
+        if (input is null || resampled is null) return;
+
         try
         {
-            using var rawStream = new RawSourceWaveStream(
-                rawData, 0, rawData.Length, sourceFormat);
+            input.AddSamples(e.Buffer, 0, e.BytesRecorded);
 
-            ISampleProvider provider = rawStream.ToSampleProvider();
-
-            // 立体声 → 单声道
-            if (provider.WaveFormat.Channels > 1)
-                provider = provider.ToMono();
-
-            // 重采样 → 16kHz（使用纯托管 WDL 重采样，Trim 友好）
-            if (provider.WaveFormat.SampleRate != Constants.TargetSampleRate)
-                provider = new WdlResamplingSampleProvider(provider, Constants.TargetSampleRate);
-
-            // 读出所有 float32 样本
-            var samples = new List<float>();
-            var buffer = new float[4096];
-            int read;
-            while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+            // 重采样输出：把所有可读样本拉出来
+            var pool = ArrayPool<float>.Shared;
+            var tmp = pool.Rent(4096);
+            try
             {
-                for (int i = 0; i < read; i++)
-                    samples.Add(buffer[i]);
+                int read;
+                while ((read = resampled.Read(tmp, 0, tmp.Length)) > 0)
+                {
+                    AppendSamples(tmp, read);
+                    if (read < tmp.Length) break;
+                }
             }
-
-            // float[] → byte[]
-            var floatArray = samples.ToArray();
-            var result = new byte[floatArray.Length * sizeof(float)];
-            Buffer.BlockCopy(floatArray, 0, result, 0, result.Length);
-            return result;
+            finally
+            {
+                pool.Return(tmp);
+            }
         }
         catch (Exception ex)
         {
-            AppLog.Error("音频格式转换失败", ex);
-            return Array.Empty<byte>();
+            AppLog.Error("audio", "处理音频数据异常", ex);
         }
+    }
+
+    private void OnCaptureStopped(object? sender, StoppedEventArgs e)
+    {
+        if (e.Exception is not null)
+        {
+            AppLog.Error("audio", "WASAPI 停止异常", e.Exception);
+        }
+    }
+
+    private void AppendSamples(float[] buffer, int count)
+    {
+        // 把样本塞入 ring buffer，每凑满 ChunkSamples 个就 emit 一帧。
+        List<byte[]>? toEmit = null;
+        lock (_lock)
+        {
+            for (int i = 0; i < count; i++) _ringBuffer.Enqueue(buffer[i]);
+
+            while (_ringBuffer.Count >= ChunkSamples)
+            {
+                var chunk = new byte[ChunkSamples * sizeof(float)];
+                var floats = MemoryMarshal.Cast<byte, float>(chunk);
+                for (int i = 0; i < ChunkSamples; i++) floats[i] = _ringBuffer.Dequeue();
+                (toEmit ??= new List<byte[]>()).Add(chunk);
+            }
+        }
+
+        if (toEmit is null) return;
+        var cb = OnChunk;
+        if (cb is null) return;
+        foreach (var c in toEmit) cb(c);
+    }
+
+    private byte[] DrainRingBufferLocked()
+    {
+        if (_ringBuffer.Count == 0) return Array.Empty<byte>();
+        var buf = new byte[_ringBuffer.Count * sizeof(float)];
+        var floats = MemoryMarshal.Cast<byte, float>(buf);
+        int i = 0;
+        while (_ringBuffer.Count > 0) floats[i++] = _ringBuffer.Dequeue();
+        return buf;
     }
 
     private void Cleanup()
     {
-        if (_capture != null)
-        {
-            _capture.DataAvailable -= OnDataAvailable;
-            _capture.RecordingStopped -= OnRecordingStopped;
-            _capture.Dispose();
-            _capture = null;
-        }
+        try { _capture?.Dispose(); } catch { }
+        try { _device?.Dispose(); } catch { }
+        _capture = null;
+        _resampledProvider = null;
+        _device = null;
+        _inputBuffer = null;
     }
 
     public void Dispose()
     {
         StopWithoutResult();
+        Cleanup();
     }
 }

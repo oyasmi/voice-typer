@@ -1,95 +1,124 @@
+using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using VoiceTyper.Core;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.Services;
 
+internal sealed class ASRClientException : Exception
+{
+    public ASRClientException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
 /// <summary>
-/// 语音识别 HTTP 客户端。
-/// 使用内置 HttpClient（替代 Python 版的 tornado）。
-/// 修复了 Python 版的 hotwords percent-encoding bug：直接发送 UTF-8 原文。
+/// 非流式（HTTP POST /recognize）语音识别客户端。
+/// 每次识别新建一个 <see cref="ASRClient"/>，调用 <see cref="RecognizeAsync"/>。
 /// </summary>
 internal sealed class ASRClient : IDisposable
 {
-    private readonly HttpClient _client = new();
+    private readonly HttpClient _http;
+    private readonly ServerConfig _server;
 
-    /// <summary>检查服务端是否可用</summary>
-    public async Task<bool> HealthCheckAsync(ServerConfig server)
+    public ASRClient(ServerConfig server)
+    {
+        _server = server;
+        _http = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(Math.Max(5, server.Timeout)),
+        };
+    }
+
+    public async Task<string> RecognizeAsync(byte[] audioData, string hotwords, bool llmRecorrect, CancellationToken ct = default)
+    {
+        var url = $"http://{_server.Host}:{_server.Port}/recognize?llm_recorrect={(llmRecorrect ? "true" : "false")}";
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Content = new ByteArrayContent(audioData);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+
+        var trimmedKey = (_server.ApiKey ?? "").Trim();
+        if (trimmedKey.Length > 0)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", trimmedKey);
+        }
+
+        if (!string.IsNullOrEmpty(hotwords))
+        {
+            request.Headers.Add("X-Hotwords", Uri.EscapeDataString(hotwords));
+        }
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ASRClientException("识别请求超时");
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new ASRClientException($"连接服务端失败: {ex.Message}", ex);
+        }
+
+        using (response)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new ASRClientException($"服务返回 {(int)response.StatusCode}: {Truncate(body, 200)}");
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("text", out var textProp))
+                {
+                    return textProp.GetString() ?? "";
+                }
+                throw new ASRClientException("响应缺少 text 字段");
+            }
+            catch (JsonException ex)
+            {
+                throw new ASRClientException($"响应解析失败: {ex.Message}", ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 健康检查；返回 ready 字段（默认 false）。任何异常都视为不可用。
+    /// </summary>
+    public static async Task<bool> HealthCheckAsync(ServerConfig server, CancellationToken ct = default)
     {
         try
         {
-            var url = $"http://{server.Host}:{server.Port}/health";
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            ApplyAuth(request, server);
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            var response = await _client.SendAsync(request, cts.Token);
-
-            if (!response.IsSuccessStatusCode)
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"http://{server.Host}:{server.Port}/health");
+            var trimmed = (server.ApiKey ?? "").Trim();
+            if (trimmed.Length > 0)
             {
-                AppLog.Warning($"健康检查失败: HTTP {(int)response.StatusCode}");
-                return false;
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", trimmed);
             }
+            using var resp = await http.SendAsync(req, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return false;
 
-            var json = await response.Content.ReadAsStringAsync(cts.Token);
-            using var doc = JsonDocument.Parse(json);
-            var ready = doc.RootElement.TryGetProperty("ready", out var readyProp) && readyProp.GetBoolean();
-
-            AppLog.Info($"健康检查: ready={ready}");
-            return ready;
+            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.TryGetProperty("ready", out var ready) && ready.GetBoolean();
         }
         catch (Exception ex)
         {
-            AppLog.Warning($"健康检查失败: {ex.Message}");
+            AppLog.Debug("network", $"健康检查失败: {ex.Message}");
             return false;
         }
     }
 
-    /// <summary>发送音频数据进行识别</summary>
-    public async Task<string> RecognizeAsync(
-        byte[] audioData, List<string> hotwords, ServerConfig server)
-    {
-        var url = $"http://{server.Host}:{server.Port}/recognize" +
-                  $"?llm_recorrect={(server.LlmRecorrect ? "true" : "false")}";
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max) + "...";
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        request.Content = new ByteArrayContent(audioData);
-        request.Content.Headers.ContentType =
-            new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-
-        // 修正: 直接发送 UTF-8 原文（不做 percent-encoding）
-        if (hotwords.Count > 0)
-            request.Headers.TryAddWithoutValidation("X-Hotwords", string.Join(" ", hotwords));
-
-        ApplyAuth(request, server);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(server.Timeout));
-        var response = await _client.SendAsync(request, cts.Token);
-        var body = await response.Content.ReadAsStringAsync(cts.Token);
-
-        // 校验 HTTP 状态码（对齐 macOS Swift 版修复后的行为）
-        if (!response.IsSuccessStatusCode)
-        {
-            AppLog.Warning($"识别请求失败: HTTP {(int)response.StatusCode} - {body}");
-            return "";
-        }
-
-        using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.TryGetProperty("text", out var text)
-            ? text.GetString() ?? ""
-            : "";
-    }
-
-    /// <summary>添加鉴权头（仅非本地地址且有 API Key 时）</summary>
-    private static void ApplyAuth(HttpRequestMessage request, ServerConfig server)
-    {
-        if (server.Host != "127.0.0.1" && !string.IsNullOrEmpty(server.ApiKey))
-        {
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", server.ApiKey);
-        }
-    }
-
-    public void Dispose() => _client.Dispose();
+    public void Dispose() => _http.Dispose();
 }

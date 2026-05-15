@@ -1,515 +1,682 @@
+using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using VoiceTyper.Core;
-using VoiceTyper.Services;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.UI;
 
+internal enum SetupTab { Connection = 0, Hotkey = 1, Hotwords = 2 }
+
 /// <summary>
-/// 设置窗口。3 个 Tab: 服务端连接、热键配置、词库管理。
-/// 顶部状态栏显示麦克风和服务端连接状态。
-/// 对应 macOS Swift 版的 SetupWindowController。
+/// 设置窗口：连接 / 热键 / 用户热词 三个 Tab。
+/// 所有方法必须在 UI 线程调用。
 /// </summary>
 internal sealed class SetupForm : Form
 {
-    /// <summary>可选主键列表 (显示名, 配置值)</summary>
-    private static readonly (string Display, string Value)[] KeyOptions =
+    public Func<ServerConfig, Task<bool>>? OnTestServerConnection;
+    public Func<AppConfig, Task>? OnSaveConfig;
+    public Func<string, Task>? OnSaveHotwords;
+    public Action? OnRetryServerCheck;
+
+    private AppConfig _loadedConfig = new();
+    private string _loadedHotwordsText = "";
+    private int _additionalHotwordFileCount;
+
+    // ─ 顶部状态横幅 ────────────────────────────────────────────
+    private readonly Panel _bannerPanel = new();
+    private readonly Label _bannerLabel = new();
+    private readonly Button _bannerRetry = new();
+    private readonly Button _bannerOpenMicSettings = new();
+    private bool _showMicWarning;
+
+    // ─ Tab 1：连接 ────────────────────────────────────────────
+    private readonly TextBox _hostField = new();
+    private readonly NumericUpDown _portField = new();
+    private readonly TextBox _apiKeyField = new();
+    private readonly CheckBox _streamingCheck = new();
+    private readonly CheckBox _llmCheck = new();
+    private readonly Button _testButton = new();
+    private readonly Button _saveConnectionButton = new();
+    private readonly Label _connectionMessage = new();
+
+    // ─ Tab 2：热键 ────────────────────────────────────────────
+    private readonly CheckBox _modCtrl = new();
+    private readonly CheckBox _modAlt = new();
+    private readonly CheckBox _modShift = new();
+    private readonly CheckBox _modWin = new();
+    private readonly TextBox _hotkeyKey = new();
+    private readonly Label _hotkeyPreview = new();
+    private readonly Button _saveHotkeyButton = new();
+    private readonly Label _hotkeyMessage = new();
+
+    // ─ Tab 3：热词 ────────────────────────────────────────────
+    private readonly TextBox _hotwordsArea = new();
+    private readonly Label _hotwordsInfo = new();
+    private readonly Label _hotwordsCount = new();
+    private readonly Button _reloadHotwordsButton = new();
+    private readonly Button _saveHotwordsButton = new();
+    private readonly Label _hotwordsMessage = new();
+
+    private readonly TabControl _tabs = new();
+    private readonly Label _versionLabel = new();
+
+    public SetupForm()
     {
-        ("F1", "f1"), ("F2", "f2"), ("F3", "f3"), ("F4", "f4"),
-        ("F5", "f5"), ("F6", "f6"), ("F7", "f7"), ("F8", "f8"),
-        ("F9", "f9"), ("F10", "f10"), ("F11", "f11"), ("F12", "f12"),
-        ("Space", "space"), ("Tab", "tab"), ("Enter", "enter"),
-        ("A", "a"), ("B", "b"), ("C", "c"), ("D", "d"), ("E", "e"),
-        ("F", "f"), ("G", "g"), ("H", "h"), ("I", "i"), ("J", "j"),
-        ("K", "k"), ("L", "l"), ("M", "m"), ("N", "n"), ("O", "o"),
-        ("P", "p"), ("Q", "q"), ("R", "r"), ("S", "s"), ("T", "t"),
-        ("U", "u"), ("V", "v"), ("W", "w"), ("X", "x"), ("Y", "y"),
-        ("Z", "z"),
-    };
-
-    private readonly AppConfig _config;
-
-    // Tab 1: 服务端
-    private TextBox _txtHost = null!;
-    private NumericUpDown _nudPort = null!;
-    private TextBox _txtApiKey = null!;
-    private NumericUpDown _nudTimeout = null!;
-    private CheckBox _chkLlmRecorrect = null!;
-    private Label _lblServerStatus = null!;
-    private Button _btnTestConnection = null!;
-
-    // Tab 2: 热键
-    private CheckBox _chkCtrl = null!, _chkAlt = null!, _chkShift = null!, _chkWin = null!;
-    private ComboBox _cboKey = null!;
-    private Label _lblHotkeyPreview = null!;
-
-    // Tab 3: 词库
-    private TextBox _txtHotwords = null!;
-
-    /// <summary>获取用户编辑后的配置</summary>
-    public AppConfig GetConfig() => _config;
-
-    /// <summary>获取词库编辑器的文本内容</summary>
-    public string GetHotwordsText() => _txtHotwords.Text;
-
-    public SetupForm(AppConfig config, bool serverConnected, int micCount)
-    {
-        _config = CloneConfig(config);
-        BuildUI(serverConnected, micCount);
-    }
-
-    // ===================================================================
-    //  UI 构建
-    // ===================================================================
-
-    private void BuildUI(bool serverConnected, int micCount)
-    {
-        Text = $"{Constants.AppName} 设置";
-        Size = new Size(500, 500);
-        MinimumSize = new Size(460, 440);
+        Text = "VoiceTyper 设置";
+        Size = new Size(720, 600);
+        MinimumSize = new Size(640, 520);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        Font = new Font("Microsoft YaHei UI", 9);
+        ShowInTaskbar = true;
+        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = SystemColors.Control;
 
-        // 尝试加载图标
-        var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "icon.ico");
-        if (File.Exists(iconPath))
-            try { Icon = new System.Drawing.Icon(iconPath); } catch { }
+        BuildBanner();
+        BuildTabs();
+        BuildFooter();
 
-        // ── 顶部状态面板 ──
-        var statusPanel = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 50,
-            Padding = new Padding(16, 8, 16, 8),
-            BackColor = Color.FromArgb(245, 245, 245),
-        };
-
-        statusPanel.Controls.Add(new Label
-        {
-            Text = micCount > 0
-                ? $"🎤 麦克风: 已检测到 {micCount} 个设备"
-                : "🎤 麦克风: ⚠ 未检测到音频输入设备",
-            ForeColor = micCount > 0 ? Color.FromArgb(40, 120, 40) : Color.FromArgb(180, 60, 20),
-            AutoSize = true,
-            Location = new Point(16, 6),
-        });
-
-        statusPanel.Controls.Add(new Label
-        {
-            Text = serverConnected
-                ? $"🌐 服务端: 已连接 ({_config.Server.Host}:{_config.Server.Port})"
-                : "🌐 服务端: 未连接",
-            ForeColor = serverConnected ? Color.FromArgb(40, 120, 40) : Color.FromArgb(180, 60, 20),
-            AutoSize = true,
-            Location = new Point(16, 27),
-        });
-
-        // ── Tab 控件 ──
-        var tabControl = new TabControl
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Point(12, 6),
-        };
-        tabControl.TabPages.Add(BuildServerTab());
-        tabControl.TabPages.Add(BuildHotkeyTab());
-        tabControl.TabPages.Add(BuildHotwordsTab());
-
-        // ── 底部按钮面板 ──
-        var bottomPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(12, 9, 12, 9),
-        };
-
-        var btnCancel = new Button
-        {
-            Text = "取消",
-            Size = new Size(80, 32),
-            DialogResult = DialogResult.Cancel,
-        };
-
-        var btnSave = new Button
-        {
-            Text = "保存并关闭",
-            Size = new Size(110, 32),
-        };
-        btnSave.Click += OnSave;
-
-        // RightToLeft: Cancel 在最右, Save 在其左
-        bottomPanel.Controls.Add(btnCancel);
-        bottomPanel.Controls.Add(btnSave);
-
-        AcceptButton = btnSave;
-        CancelButton = btnCancel;
-
-        // ── 组装 (顺序: Bottom → Top → Fill) ──
-        Controls.Add(tabControl);
-        Controls.Add(statusPanel);
-        Controls.Add(bottomPanel);
+        Controls.Add(_tabs);
+        Controls.Add(_bannerPanel);
+        Controls.Add(_versionLabel);
     }
 
-    // ===================================================================
-    //  Tab 1: 服务端连接
-    // ===================================================================
-
-    private TabPage BuildServerTab()
+    public void LoadEditableContent(AppConfig config, string managedHotwordsText, int additionalHotwordFileCount)
     {
-        var page = new TabPage("服务端连接") { Padding = new Padding(16, 12, 16, 8) };
+        _loadedConfig = config.Clone();
+        _loadedHotwordsText = managedHotwordsText;
+        _additionalHotwordFileCount = additionalHotwordFileCount;
 
-        var table = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 8,
-        };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _hostField.Text = config.Server.Host;
+        _portField.Value = Math.Clamp(config.Server.Port, 1, 65535);
+        _apiKeyField.Text = config.Server.ApiKey;
+        _streamingCheck.Checked = config.Server.Streaming;
+        _llmCheck.Checked = config.Server.LlmRecorrect;
 
-        int row = 0;
+        var mods = config.Hotkey.Modifiers.Select(m => m.ToLowerInvariant()).ToHashSet();
+        _modCtrl.Checked = mods.Contains("ctrl") || mods.Contains("control");
+        _modAlt.Checked = mods.Contains("alt") || mods.Contains("option");
+        _modShift.Checked = mods.Contains("shift");
+        _modWin.Checked = mods.Any(m => m is "win" or "win_l" or "win_r" or "super" or "command" or "cmd");
+        _hotkeyKey.Text = config.Hotkey.Key;
+        UpdateHotkeyPreview();
 
-        // 服务器地址
-        table.Controls.Add(MakeLabel("服务器地址:"), 0, row);
-        _txtHost = new TextBox
-        {
-            Text = _config.Server.Host,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right,
-        };
-        table.Controls.Add(_txtHost, 1, row++);
+        _hotwordsArea.Text = managedHotwordsText;
+        UpdateHotwordsMeta();
 
-        // 端口
-        table.Controls.Add(MakeLabel("端口:"), 0, row);
-        _nudPort = new NumericUpDown
-        {
-            Minimum = 1, Maximum = 65535,
-            Value = _config.Server.Port,
-            Width = 100,
-        };
-        table.Controls.Add(_nudPort, 1, row++);
-
-        // API 密钥
-        table.Controls.Add(MakeLabel("API 密钥:"), 0, row);
-        _txtApiKey = new TextBox
-        {
-            Text = _config.Server.ApiKey ?? "",
-            Anchor = AnchorStyles.Left | AnchorStyles.Right,
-        };
-        table.Controls.Add(_txtApiKey, 1, row++);
-
-        // 超时
-        table.Controls.Add(MakeLabel("超时 (秒):"), 0, row);
-        _nudTimeout = new NumericUpDown
-        {
-            Minimum = 1, Maximum = 300,
-            Value = (decimal)_config.Server.Timeout,
-            Width = 100,
-        };
-        table.Controls.Add(_nudTimeout, 1, row++);
-
-        // LLM 纠错
-        _chkLlmRecorrect = new CheckBox
-        {
-            Text = "启用 LLM 智能纠错（需要服务端支持）",
-            Checked = _config.Server.LlmRecorrect,
-            AutoSize = true,
-        };
-        table.Controls.Add(_chkLlmRecorrect, 0, row);
-        table.SetColumnSpan(_chkLlmRecorrect, 2);
-        row++;
-
-        // 分隔
-        table.Controls.Add(new Label { Height = 12 }, 0, row++);
-
-        // 连接测试
-        var testPanel = new FlowLayoutPanel { AutoSize = true };
-        _btnTestConnection = new Button { Text = "测试连接", Width = 90 };
-        _btnTestConnection.Click += OnTestConnection;
-        _lblServerStatus = new Label
-        {
-            Text = "点击测试确认连接状态",
-            ForeColor = Color.Gray,
-            AutoSize = true,
-            Padding = new Padding(6, 6, 0, 0),
-        };
-        testPanel.Controls.AddRange(new Control[] { _btnTestConnection, _lblServerStatus });
-        table.Controls.Add(testPanel, 0, row);
-        table.SetColumnSpan(testPanel, 2);
-
-        page.Controls.Add(table);
-        return page;
+        _connectionMessage.Text = "";
+        _hotkeyMessage.Text = "";
+        _hotwordsMessage.Text = "";
     }
 
-    // ===================================================================
-    //  Tab 2: 热键设置
-    // ===================================================================
-
-    private TabPage BuildHotkeyTab()
+    public void UpdateServerStatus(bool ready, string display, bool micPermissionDenied)
     {
-        var page = new TabPage("热键设置") { Padding = new Padding(16, 12, 16, 8) };
-
-        var layout = new FlowLayoutPanel
+        _showMicWarning = micPermissionDenied;
+        if (micPermissionDenied)
         {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-        };
-
-        // ── 修饰键 ──
-        var modGroup = new GroupBox { Text = "修饰键", Width = 420, Height = 65, Padding = new Padding(8) };
-        var modFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
-
-        var mods = _config.Hotkey.Modifiers.Select(m => m.ToLowerInvariant()).ToList();
-        _chkCtrl = new CheckBox { Text = "Ctrl", Checked = mods.Any(m => m is "ctrl" or "control"), AutoSize = true, Padding = new Padding(4, 0, 12, 0) };
-        _chkAlt = new CheckBox { Text = "Alt", Checked = mods.Contains("alt"), AutoSize = true, Padding = new Padding(4, 0, 12, 0) };
-        _chkShift = new CheckBox { Text = "Shift", Checked = mods.Contains("shift"), AutoSize = true, Padding = new Padding(4, 0, 12, 0) };
-        _chkWin = new CheckBox { Text = "Win", Checked = mods.Any(m => m is "win" or "win_l" or "win_r" or "cmd"), AutoSize = true, Padding = new Padding(4, 0, 12, 0) };
-
-        foreach (var cb in new[] { _chkCtrl, _chkAlt, _chkShift, _chkWin })
-            cb.CheckedChanged += (_, _) => RefreshHotkeyPreview();
-
-        modFlow.Controls.AddRange(new Control[] { _chkCtrl, _chkAlt, _chkShift, _chkWin });
-        modGroup.Controls.Add(modFlow);
-        layout.Controls.Add(modGroup);
-
-        // ── 主键 ──
-        layout.Controls.Add(new Label { Height = 10 });
-        var keyPanel = new FlowLayoutPanel { AutoSize = true };
-        keyPanel.Controls.Add(MakeLabel("主键:"));
-
-        _cboKey = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
-        int selectedIndex = 0;
-        for (int i = 0; i < KeyOptions.Length; i++)
-        {
-            _cboKey.Items.Add(KeyOptions[i].Display);
-            if (KeyOptions[i].Value == _config.Hotkey.Key.ToLowerInvariant())
-                selectedIndex = i;
+            _bannerPanel.BackColor = Color.FromArgb(255, 245, 220);
+            _bannerLabel.Text = "麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。";
+            _bannerLabel.ForeColor = Color.FromArgb(120, 70, 0);
+            _bannerOpenMicSettings.Visible = true;
+            _bannerRetry.Visible = false;
         }
-        _cboKey.SelectedIndex = selectedIndex;
-        _cboKey.SelectedIndexChanged += (_, _) => RefreshHotkeyPreview();
-        keyPanel.Controls.Add(_cboKey);
-        layout.Controls.Add(keyPanel);
-
-        // ── 热键预览 ──
-        layout.Controls.Add(new Label { Height = 12 });
-        _lblHotkeyPreview = new Label
+        else if (ready)
         {
-            Font = new Font("Microsoft YaHei UI", 14, FontStyle.Bold),
-            ForeColor = Color.FromArgb(30, 100, 180),
-            AutoSize = true,
-        };
-        RefreshHotkeyPreview();
-        layout.Controls.Add(_lblHotkeyPreview);
-
-        // ── 说明 ──
-        layout.Controls.Add(new Label { Height = 16 });
-        layout.Controls.Add(new Label
+            _bannerPanel.BackColor = Color.FromArgb(225, 245, 230);
+            _bannerLabel.Text = $"服务已连接：{display}";
+            _bannerLabel.ForeColor = Color.FromArgb(30, 110, 50);
+            _bannerOpenMicSettings.Visible = false;
+            _bannerRetry.Visible = true;
+        }
+        else
         {
-            Text = "提示: 按住热键说话，松开后自动识别并输入文本。\n录音不足 0.3 秒将被忽略。",
-            ForeColor = Color.Gray,
-            AutoSize = true,
-        });
-
-        page.Controls.Add(layout);
-        return page;
+            _bannerPanel.BackColor = Color.FromArgb(252, 230, 230);
+            _bannerLabel.Text = $"服务未连接：{display}";
+            _bannerLabel.ForeColor = Color.FromArgb(150, 40, 40);
+            _bannerOpenMicSettings.Visible = false;
+            _bannerRetry.Visible = true;
+        }
     }
 
-    // ===================================================================
-    //  Tab 3: 词库管理
-    // ===================================================================
-
-    private TabPage BuildHotwordsTab()
+    public void SelectTab(SetupTab tab)
     {
-        var page = new TabPage("词库管理") { Padding = new Padding(16, 12, 16, 8) };
+        if ((int)tab >= 0 && (int)tab < _tabs.TabPages.Count)
+        {
+            _tabs.SelectedIndex = (int)tab;
+        }
+    }
 
+    public void Present()
+    {
+        if (!Visible)
+        {
+            Show();
+        }
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        BringToFront();
+        Activate();
+    }
+
+    // ─── UI 构建 ────────────────────────────────────────────────
+
+    private void BuildBanner()
+    {
+        _bannerPanel.Dock = DockStyle.Top;
+        _bannerPanel.Height = 46;
+        _bannerPanel.Padding = new Padding(14, 6, 14, 6);
+        _bannerPanel.BackColor = Color.FromArgb(245, 245, 245);
+
+        _bannerLabel.AutoSize = false;
+        _bannerLabel.Dock = DockStyle.Fill;
+        _bannerLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _bannerLabel.Font = new Font(Font, FontStyle.Regular);
+
+        _bannerRetry.Text = "重新检测";
+        _bannerRetry.AutoSize = true;
+        _bannerRetry.Dock = DockStyle.Right;
+        _bannerRetry.Padding = new Padding(8, 0, 8, 0);
+        _bannerRetry.FlatStyle = FlatStyle.Standard;
+        _bannerRetry.Click += (_, _) => OnRetryServerCheck?.Invoke();
+
+        _bannerOpenMicSettings.Text = "打开麦克风设置";
+        _bannerOpenMicSettings.AutoSize = true;
+        _bannerOpenMicSettings.Dock = DockStyle.Right;
+        _bannerOpenMicSettings.Padding = new Padding(8, 0, 8, 0);
+        _bannerOpenMicSettings.Visible = false;
+        _bannerOpenMicSettings.Click += (_, _) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "ms-settings:privacy-microphone",
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("ui", $"打开麦克风设置失败: {ex.Message}");
+            }
+        };
+
+        _bannerPanel.Controls.Add(_bannerLabel);
+        _bannerPanel.Controls.Add(_bannerRetry);
+        _bannerPanel.Controls.Add(_bannerOpenMicSettings);
+    }
+
+    private void BuildTabs()
+    {
+        _tabs.Dock = DockStyle.Fill;
+        _tabs.Padding = new Point(14, 6);
+
+        var connectionPage = new TabPage("连接") { BackColor = SystemColors.Control };
+        var hotkeyPage = new TabPage("热键") { BackColor = SystemColors.Control };
+        var hotwordsPage = new TabPage("用户热词") { BackColor = SystemColors.Control };
+
+        BuildConnectionPage(connectionPage);
+        BuildHotkeyPage(hotkeyPage);
+        BuildHotwordsPage(hotwordsPage);
+
+        _tabs.TabPages.Add(connectionPage);
+        _tabs.TabPages.Add(hotkeyPage);
+        _tabs.TabPages.Add(hotwordsPage);
+    }
+
+    private void BuildFooter()
+    {
+        _versionLabel.Text = $"版本 {AppConstants.Version}";
+        _versionLabel.Dock = DockStyle.Bottom;
+        _versionLabel.Height = 24;
+        _versionLabel.Padding = new Padding(16, 4, 16, 4);
+        _versionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _versionLabel.ForeColor = Color.Gray;
+        _versionLabel.Font = new Font(Font.FontFamily, 8f);
+    }
+
+    private void BuildConnectionPage(TabPage page)
+    {
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
+            Padding = new Padding(20, 20, 20, 16),
+            ColumnCount = 2,
+            AutoSize = false,
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        // 文件路径提示
-        layout.Controls.Add(new Label
+        layout.Controls.Add(MakeFieldLabel("服务地址："), 0, 0);
+        _hostField.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _hostField.Width = 360;
+        layout.Controls.Add(_hostField, 1, 0);
+
+        layout.Controls.Add(MakeFieldLabel("端口："), 0, 1);
+        _portField.Minimum = 1;
+        _portField.Maximum = 65535;
+        _portField.Width = 120;
+        _portField.Value = 6008;
+        layout.Controls.Add(_portField, 1, 1);
+
+        layout.Controls.Add(MakeFieldLabel("API Key："), 0, 2);
+        _apiKeyField.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _apiKeyField.UseSystemPasswordChar = true;
+        _apiKeyField.Width = 360;
+        layout.Controls.Add(_apiKeyField, 1, 2);
+
+        // 流式开关
+        _streamingCheck.Text = "流式识别（推荐，低延迟）";
+        _streamingCheck.AutoSize = true;
+        layout.Controls.Add(new Panel { Height = 8, Width = 1 }, 0, 3);
+        var streamingNote = new Label
         {
-            Text = $"词库文件: {ConfigStore.DefaultHotwordsPath}",
+            Text = "流式模式通过 WebSocket 实时回传识别结果；非流式模式支持热词，兼容旧服务端。",
             ForeColor = Color.Gray,
-            AutoSize = true,
-            Padding = new Padding(0, 0, 0, 6),
-        }, 0, 0);
-
-        // 编辑器
-        _txtHotwords = new TextBox
-        {
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            Dock = DockStyle.Fill,
-            Font = new Font("Consolas", 10),
-            AcceptsReturn = true,
-            WordWrap = false,
+            AutoSize = false,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Height = 36,
         };
+        layout.Controls.Add(_streamingCheck, 1, 4);
+        layout.Controls.Add(streamingNote, 1, 5);
 
-        try
-        {
-            if (File.Exists(ConfigStore.DefaultHotwordsPath))
-                _txtHotwords.Text = File.ReadAllText(ConfigStore.DefaultHotwordsPath);
-        }
-        catch (Exception ex)
-        {
-            _txtHotwords.Text = $"# 加载失败: {ex.Message}";
-        }
+        _llmCheck.Text = "启用 LLM 纠错（需服务端支持）";
+        _llmCheck.AutoSize = true;
+        layout.Controls.Add(_llmCheck, 1, 6);
 
-        layout.Controls.Add(_txtHotwords, 0, 1);
+        _connectionMessage.AutoSize = false;
+        _connectionMessage.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _connectionMessage.Height = 22;
+        _connectionMessage.ForeColor = Color.Gray;
+        layout.Controls.Add(_connectionMessage, 1, 7);
 
-        // 底部操作栏
-        var actionPanel = new FlowLayoutPanel { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-        var btnOpen = new Button { Text = "在编辑器中打开", Width = 120 };
-        btnOpen.Click += (_, _) =>
+        // 按钮行
+        _testButton.Text = "测试连接";
+        _testButton.AutoSize = true;
+        _testButton.Padding = new Padding(10, 4, 10, 4);
+        _testButton.Click += async (_, _) => await HandleTestConnection();
+
+        _saveConnectionButton.Text = "保存并应用";
+        _saveConnectionButton.AutoSize = true;
+        _saveConnectionButton.Padding = new Padding(10, 4, 10, 4);
+        _saveConnectionButton.Click += async (_, _) => await HandleSaveConnection();
+
+        var buttonRow = new FlowLayoutPanel
         {
-            try { Process.Start(new ProcessStartInfo(ConfigStore.DefaultHotwordsPath) { UseShellExecute = true }); }
-            catch { }
-        };
-        actionPanel.Controls.Add(btnOpen);
-        actionPanel.Controls.Add(new Label
-        {
-            Text = "每行一个词，# 开头为注释",
-            ForeColor = Color.Gray,
+            FlowDirection = FlowDirection.RightToLeft,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
             AutoSize = true,
-            Padding = new Padding(8, 6, 0, 0),
-        });
-        layout.Controls.Add(actionPanel, 0, 2);
+            Height = 36,
+            Padding = new Padding(0, 6, 0, 0),
+        };
+        buttonRow.Controls.Add(_saveConnectionButton);
+        buttonRow.Controls.Add(_testButton);
+        layout.Controls.Add(buttonRow, 1, 8);
 
         page.Controls.Add(layout);
-        return page;
     }
 
-    // ===================================================================
-    //  事件处理
-    // ===================================================================
-
-    /// <summary>测试服务端连接</summary>
-    private async void OnTestConnection(object? sender, EventArgs e)
+    private void BuildHotkeyPage(TabPage page)
     {
-        _btnTestConnection.Enabled = false;
-        _lblServerStatus.Text = "正在连接...";
-        _lblServerStatus.ForeColor = Color.Gray;
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(20, 20, 20, 16),
+            ColumnCount = 2,
+            AutoSize = false,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        layout.Controls.Add(MakeFieldLabel("修饰键："), 0, 0);
+        var modsRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            Height = 32,
+            WrapContents = false,
+        };
+        _modCtrl.Text = "Ctrl";
+        _modAlt.Text = "Alt";
+        _modShift.Text = "Shift";
+        _modWin.Text = "Win";
+        foreach (var c in new[] { _modCtrl, _modAlt, _modShift, _modWin })
+        {
+            c.AutoSize = true;
+            c.Margin = new Padding(0, 4, 16, 4);
+            c.CheckedChanged += (_, _) => UpdateHotkeyPreview();
+            modsRow.Controls.Add(c);
+        }
+        layout.Controls.Add(modsRow, 1, 0);
+
+        layout.Controls.Add(MakeFieldLabel("主键："), 0, 1);
+        _hotkeyKey.Width = 160;
+        _hotkeyKey.Text = "f2";
+        _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
+        layout.Controls.Add(_hotkeyKey, 1, 1);
+
+        layout.Controls.Add(MakeFieldLabel("预览："), 0, 2);
+        _hotkeyPreview.AutoSize = true;
+        _hotkeyPreview.Font = new Font("Consolas", 11f, FontStyle.Bold);
+        _hotkeyPreview.ForeColor = SystemColors.HighlightText.IsEmpty ? Color.RoyalBlue : Color.RoyalBlue;
+        _hotkeyPreview.Text = "Ctrl+F2";
+        layout.Controls.Add(_hotkeyPreview, 1, 2);
+
+        var hotkeyHint = new Label
+        {
+            Text = "支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→",
+            ForeColor = Color.Gray,
+            AutoSize = false,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Height = 36,
+        };
+        layout.Controls.Add(hotkeyHint, 1, 3);
+
+        _hotkeyMessage.AutoSize = false;
+        _hotkeyMessage.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _hotkeyMessage.Height = 22;
+        _hotkeyMessage.ForeColor = Color.Gray;
+        layout.Controls.Add(_hotkeyMessage, 1, 4);
+
+        _saveHotkeyButton.Text = "保存并应用";
+        _saveHotkeyButton.AutoSize = true;
+        _saveHotkeyButton.Padding = new Padding(10, 4, 10, 4);
+        _saveHotkeyButton.Click += async (_, _) => await HandleSaveHotkey();
+
+        var btnRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            AutoSize = true,
+            Height = 36,
+            Padding = new Padding(0, 6, 0, 0),
+        };
+        btnRow.Controls.Add(_saveHotkeyButton);
+        layout.Controls.Add(btnRow, 1, 5);
+
+        page.Controls.Add(layout);
+    }
+
+    private void BuildHotwordsPage(TabPage page)
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(20, 20, 20, 16),
+            ColumnCount = 1,
+            RowCount = 5,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+
+        _hotwordsInfo.AutoSize = false;
+        _hotwordsInfo.Dock = DockStyle.Fill;
+        _hotwordsInfo.ForeColor = Color.Gray;
+        layout.Controls.Add(_hotwordsInfo, 0, 0);
+
+        _hotwordsArea.Multiline = true;
+        _hotwordsArea.AcceptsReturn = true;
+        _hotwordsArea.AcceptsTab = false;
+        _hotwordsArea.ScrollBars = ScrollBars.Vertical;
+        _hotwordsArea.WordWrap = false;
+        _hotwordsArea.Dock = DockStyle.Fill;
+        _hotwordsArea.Font = new Font("Consolas", 10f);
+        _hotwordsArea.TextChanged += (_, _) => UpdateHotwordsMeta();
+        layout.Controls.Add(_hotwordsArea, 0, 1);
+
+        _hotwordsCount.AutoSize = false;
+        _hotwordsCount.Dock = DockStyle.Fill;
+        _hotwordsCount.ForeColor = Color.Gray;
+        _hotwordsCount.TextAlign = ContentAlignment.MiddleLeft;
+        layout.Controls.Add(_hotwordsCount, 0, 2);
+
+        _reloadHotwordsButton.Text = "重新加载";
+        _reloadHotwordsButton.AutoSize = true;
+        _reloadHotwordsButton.Padding = new Padding(10, 4, 10, 4);
+        _reloadHotwordsButton.Click += (_, _) =>
+        {
+            _hotwordsArea.Text = _loadedHotwordsText;
+            SetHotwordsMessage("已重新加载磁盘内容", Color.Gray);
+            UpdateHotwordsMeta();
+        };
+
+        _saveHotwordsButton.Text = "保存并应用";
+        _saveHotwordsButton.AutoSize = true;
+        _saveHotwordsButton.Padding = new Padding(10, 4, 10, 4);
+        _saveHotwordsButton.Click += async (_, _) => await HandleSaveHotwords();
+
+        var btnRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+        };
+        btnRow.Controls.Add(_saveHotwordsButton);
+        btnRow.Controls.Add(_reloadHotwordsButton);
+        layout.Controls.Add(btnRow, 0, 3);
+
+        _hotwordsMessage.AutoSize = false;
+        _hotwordsMessage.Dock = DockStyle.Fill;
+        _hotwordsMessage.ForeColor = Color.Gray;
+        layout.Controls.Add(_hotwordsMessage, 0, 4);
+
+        page.Controls.Add(layout);
+    }
+
+    private static Label MakeFieldLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = false,
+        Width = 110,
+        TextAlign = ContentAlignment.MiddleRight,
+        Anchor = AnchorStyles.Top | AnchorStyles.Right,
+        Padding = new Padding(0, 4, 8, 0),
+    };
+
+    // ─── 行为 ────────────────────────────────────────────────
+
+    private void UpdateHotkeyPreview()
+    {
+        var parts = new System.Collections.Generic.List<string>();
+        if (_modCtrl.Checked) parts.Add("Ctrl");
+        if (_modAlt.Checked) parts.Add("Alt");
+        if (_modShift.Checked) parts.Add("Shift");
+        if (_modWin.Checked) parts.Add("Win");
+        var key = _hotkeyKey.Text.Trim();
+        if (!string.IsNullOrEmpty(key)) parts.Add(key.ToUpperInvariant());
+        _hotkeyPreview.Text = parts.Count == 0 ? "—" : string.Join("+", parts);
+    }
+
+    private void UpdateHotwordsMeta()
+    {
+        var count = 0;
+        foreach (var raw in _hotwordsArea.Text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith("#")) continue;
+            count++;
+        }
+        _hotwordsCount.Text = $"词条数：{count}";
+
+        _hotwordsInfo.Text = _additionalHotwordFileCount > 0
+            ? $"这里编辑的是主热词文件。当前还有 {_additionalHotwordFileCount} 个附加词库会继续加载，但不在此处编辑。"
+            : "这里编辑的是主热词文件，保存后立即写回并重新加载。";
+    }
+
+    private ServerConfig? TryBuildServerConfig()
+    {
+        var host = _hostField.Text.Trim();
+        if (string.IsNullOrEmpty(host))
+        {
+            SetConnectionMessage("服务地址不能为空", Color.Firebrick);
+            return null;
+        }
+
+        var server = new ServerConfig
+        {
+            Host = host,
+            Port = (int)_portField.Value,
+            Timeout = _loadedConfig.Server.Timeout > 0 ? _loadedConfig.Server.Timeout : 60.0,
+            ApiKey = _apiKeyField.Text,
+            LlmRecorrect = _llmCheck.Checked,
+            Streaming = _streamingCheck.Checked,
+        };
+        return server;
+    }
+
+    private HotkeyConfig? TryBuildHotkeyConfig()
+    {
+        var key = _hotkeyKey.Text.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(key))
+        {
+            SetHotkeyMessage("主键不能为空", Color.Firebrick);
+            return null;
+        }
+
+        var mods = new System.Collections.Generic.List<string>();
+        if (_modCtrl.Checked) mods.Add("ctrl");
+        if (_modAlt.Checked) mods.Add("alt");
+        if (_modShift.Checked) mods.Add("shift");
+        if (_modWin.Checked) mods.Add("win");
+
+        return new HotkeyConfig { Modifiers = mods, Key = key };
+    }
+
+    private async Task HandleTestConnection()
+    {
+        var server = TryBuildServerConfig();
+        if (server is null) return;
+
+        SetConnectionButtonsEnabled(false);
+        SetConnectionMessage("正在测试连接...", Color.Gray);
 
         try
         {
-            var testConfig = new ServerConfig
-            {
-                Host = _txtHost.Text.Trim(),
-                Port = (int)_nudPort.Value,
-                ApiKey = _txtApiKey.Text.Trim(),
-            };
-
-            using var client = new ASRClient();
-            var ok = await client.HealthCheckAsync(testConfig);
-
-            _lblServerStatus.Text = ok ? "✓ 连接成功，服务就绪" : "✗ 连接失败，请检查地址和端口";
-            _lblServerStatus.ForeColor = ok
-                ? Color.FromArgb(40, 120, 40)
-                : Color.FromArgb(200, 60, 20);
-        }
-        catch (Exception ex)
-        {
-            _lblServerStatus.Text = $"✗ {ex.Message}";
-            _lblServerStatus.ForeColor = Color.FromArgb(200, 60, 20);
+            var ok = (OnTestServerConnection is null)
+                ? false
+                : await OnTestServerConnection(server).ConfigureAwait(true);
+            SetConnectionMessage(
+                ok ? "连接成功，服务已就绪。" : "连接失败，请检查服务地址、端口与流式配置。",
+                ok ? Color.SeaGreen : Color.Firebrick
+            );
         }
         finally
         {
-            _btnTestConnection.Enabled = true;
+            SetConnectionButtonsEnabled(true);
         }
     }
 
-    /// <summary>保存配置</summary>
-    private void OnSave(object? sender, EventArgs e)
+    private async Task HandleSaveConnection()
     {
-        // 验证
-        if (string.IsNullOrWhiteSpace(_txtHost.Text))
+        var server = TryBuildServerConfig();
+        if (server is null) return;
+        if (OnSaveConfig is null) return;
+
+        var draft = _loadedConfig.Clone();
+        draft.Server = server;
+
+        SetConnectionButtonsEnabled(false);
+        SetConnectionMessage("保存中...", Color.Gray);
+        try
         {
-            MessageBox.Show("服务器地址不能为空。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            await OnSaveConfig(draft).ConfigureAwait(true);
+            SetConnectionMessage("设置已保存并生效。", Color.SeaGreen);
         }
-
-        // 收集服务端配置
-        _config.Server.Host = _txtHost.Text.Trim();
-        _config.Server.Port = (int)_nudPort.Value;
-        _config.Server.ApiKey = _txtApiKey.Text.Trim();
-        _config.Server.Timeout = (double)_nudTimeout.Value;
-        _config.Server.LlmRecorrect = _chkLlmRecorrect.Checked;
-
-        // 收集热键配置
-        var modifiers = new List<string>();
-        if (_chkCtrl.Checked) modifiers.Add("ctrl");
-        if (_chkAlt.Checked) modifiers.Add("alt");
-        if (_chkShift.Checked) modifiers.Add("shift");
-        if (_chkWin.Checked) modifiers.Add("win_l");
-        _config.Hotkey.Modifiers = modifiers;
-
-        if (_cboKey.SelectedIndex >= 0 && _cboKey.SelectedIndex < KeyOptions.Length)
-            _config.Hotkey.Key = KeyOptions[_cboKey.SelectedIndex].Value;
-
-        DialogResult = DialogResult.OK;
+        catch (Exception ex)
+        {
+            SetConnectionMessage($"保存失败：{ex.Message}", Color.Firebrick);
+        }
+        finally
+        {
+            SetConnectionButtonsEnabled(true);
+        }
     }
 
-    /// <summary>刷新热键预览文本</summary>
-    private void RefreshHotkeyPreview()
+    private async Task HandleSaveHotkey()
     {
-        var parts = new List<string>();
-        if (_chkCtrl.Checked) parts.Add("Ctrl");
-        if (_chkAlt.Checked) parts.Add("Alt");
-        if (_chkShift.Checked) parts.Add("Shift");
-        if (_chkWin.Checked) parts.Add("Win");
+        var hotkey = TryBuildHotkeyConfig();
+        if (hotkey is null) return;
+        if (OnSaveConfig is null) return;
 
-        var keyName = (_cboKey.SelectedIndex >= 0 && _cboKey.SelectedIndex < KeyOptions.Length)
-            ? KeyOptions[_cboKey.SelectedIndex].Display
-            : "?";
-        parts.Add(keyName);
+        var draft = _loadedConfig.Clone();
+        draft.Hotkey = hotkey;
 
-        _lblHotkeyPreview.Text = $"当前热键: {string.Join(" + ", parts)}";
+        _saveHotkeyButton.Enabled = false;
+        SetHotkeyMessage("保存中...", Color.Gray);
+        try
+        {
+            await OnSaveConfig(draft).ConfigureAwait(true);
+            SetHotkeyMessage("热键已保存并生效。", Color.SeaGreen);
+        }
+        catch (Exception ex)
+        {
+            SetHotkeyMessage($"保存失败：{ex.Message}", Color.Firebrick);
+        }
+        finally
+        {
+            _saveHotkeyButton.Enabled = true;
+        }
     }
 
-    // ===================================================================
-    //  Helper
-    // ===================================================================
-
-    private static Label MakeLabel(string text) => new()
+    private async Task HandleSaveHotwords()
     {
-        Text = text,
-        AutoSize = true,
-        Anchor = AnchorStyles.Left,
-        Padding = new Padding(0, 5, 8, 0),
-    };
+        if (OnSaveHotwords is null) return;
 
-    private static AppConfig CloneConfig(AppConfig src) => new()
+        _saveHotwordsButton.Enabled = false;
+        _reloadHotwordsButton.Enabled = false;
+        SetHotwordsMessage("保存中...", Color.Gray);
+        try
+        {
+            await OnSaveHotwords(_hotwordsArea.Text).ConfigureAwait(true);
+            SetHotwordsMessage("热词已保存并重新加载。", Color.SeaGreen);
+        }
+        catch (Exception ex)
+        {
+            SetHotwordsMessage($"保存失败：{ex.Message}", Color.Firebrick);
+        }
+        finally
+        {
+            _saveHotwordsButton.Enabled = true;
+            _reloadHotwordsButton.Enabled = true;
+        }
+    }
+
+    private void SetConnectionMessage(string text, Color color)
     {
-        Server = new ServerConfig
+        _connectionMessage.Text = text;
+        _connectionMessage.ForeColor = color;
+    }
+
+    private void SetHotkeyMessage(string text, Color color)
+    {
+        _hotkeyMessage.Text = text;
+        _hotkeyMessage.ForeColor = color;
+    }
+
+    private void SetHotwordsMessage(string text, Color color)
+    {
+        _hotwordsMessage.Text = text;
+        _hotwordsMessage.ForeColor = color;
+    }
+
+    private void SetConnectionButtonsEnabled(bool enabled)
+    {
+        _testButton.Enabled = enabled;
+        _saveConnectionButton.Enabled = enabled;
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // 关闭按钮 → 隐藏到托盘
+        if (e.CloseReason == CloseReason.UserClosing)
         {
-            Host = src.Server.Host,
-            Port = src.Server.Port,
-            Timeout = src.Server.Timeout,
-            ApiKey = src.Server.ApiKey,
-            LlmRecorrect = src.Server.LlmRecorrect,
-        },
-        Hotkey = new HotkeyConfig
-        {
-            Modifiers = new List<string>(src.Hotkey.Modifiers),
-            Key = src.Hotkey.Key,
-        },
-        HotwordFiles = new List<string>(src.HotwordFiles),
-        Ui = new UiConfig
-        {
-            Opacity = src.Ui.Opacity,
-            Width = src.Ui.Width,
-            Height = src.Ui.Height,
-        },
-    };
+            e.Cancel = true;
+            Hide();
+        }
+        base.OnFormClosing(e);
+    }
 }

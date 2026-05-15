@@ -1,6 +1,6 @@
-using System.Diagnostics;
-using System.IO.Pipes;
-using System.Windows.Forms;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using VoiceTyper.Core;
 using VoiceTyper.Services;
 using VoiceTyper.Support;
@@ -9,313 +9,230 @@ using VoiceTyper.UI;
 namespace VoiceTyper.App;
 
 /// <summary>
-/// 应用中心调度器。继承 ApplicationContext 提供 WinForms 消息循环。
-/// 集成: 控制器 + 托盘 + 录音浮窗 + 设置窗口 + Named Pipe 单实例激活。
-/// 对应 macOS Swift 版的 AppCoordinator + AppDelegate 角色。
+/// 中央调度器。负责装配、生命周期、配置变更处理。
+/// 所有公共方法必须在 UI 线程调用。
 /// </summary>
-internal sealed class AppCoordinator : ApplicationContext
+internal sealed class AppCoordinator : IDisposable
 {
     private readonly ConfigStore _configStore = new();
-    private readonly TrayIconManager _trayIcon;
-    private readonly SynchronizationContext? _uiContext;
-
+    private readonly TrayController _tray = new();
+    private RecordingHud? _hud;
+    private SetupForm? _setupForm;
     private VoiceTyperController? _controller;
-    private RecordingOverlay? _overlay;
-    private SetupForm? _activeSetupForm;
-    private AppConfig? _config;
-    private bool _enabled;
-    private bool _serverConnected;
-    private CancellationTokenSource? _pipeCts;
+
+    private AppConfig _config = new();
+    private IReadOnlyList<string> _hotwords = Array.Empty<string>();
+    private string _managedHotwordsText = "";
+
+    private AppStateInfo _currentState = AppStateInfo.Booting;
+    private bool _serverReady;
+    private bool _micPermissionDenied;
 
     public AppCoordinator()
     {
-        _trayIcon = new TrayIconManager();
-
-        // 在 NotifyIcon 创建后捕获 UI SynchronizationContext（用于 Pipe 回调）
-        _uiContext = SynchronizationContext.Current;
-
-        _trayIcon.OnToggleEnabled += ToggleEnabled;
-        _trayIcon.OnOpenConfig += OpenConfig;
-        _trayIcon.OnOpenHotwords += OpenHotwords;
-        _trayIcon.OnOpenConfigDir += OpenConfigDir;
-        _trayIcon.OnOpenSetup += ShowSetupWindow;
-        _trayIcon.OnQuit += Quit;
-
-        // 启动 Named Pipe 服务端（接收第二实例的激活信号）
-        StartPipeServer();
-
-        // 异步初始化（不阻塞应用启动）
-        _ = InitializeAsync();
+        _tray.OnOpenSetup = () => OpenSetup();
+        _tray.OnReconnectServer = () => _ = RefreshServerStatusAsync();
+        _tray.OnOpenConfigDirectory = () => _configStore.OpenConfigDirectory();
+        _tray.OnQuit = () => System.Windows.Forms.Application.Exit();
     }
 
-    // ===================================================================
-    //  初始化
-    // ===================================================================
-
-    private async Task InitializeAsync()
+    public void Start()
     {
         try
         {
-            AppLog.Info("========================================");
-            AppLog.Info($"{Constants.AppName} v{Constants.Version} 启动");
-            AppLog.Info("========================================");
-
-            // 1. 加载配置
-            AppLog.Info("加载配置...");
-            var (config, hotwords) = _configStore.LoadOrCreate();
-            _config = config;
-            AppLog.Info($"配置: {config.Server.Host}:{config.Server.Port}, " +
-                        $"热键: {HotkeyService.FormatHotkey(config.Hotkey)}, " +
-                        $"词库: {hotwords.Count} 词");
-
-            // 2. 初始化控制器
-            _controller = new VoiceTyperController(config, hotwords);
-            _controller.OnStateChange += OnStateChange;
-
-            // 3. 创建录音浮窗
-            _overlay = new RecordingOverlay(config.Ui.Width, config.Ui.Height, config.Ui.Opacity);
-
-            // 4. 健康检查
-            AppLog.Info("检查服务端...");
-            _serverConnected = await _controller.HealthCheckAsync();
-            if (_serverConnected)
-            {
-                var llm = config.Server.LlmRecorrect ? "（LLM 修正: 已启用）" : "";
-                AppLog.Info($"语音识别服务已连接 {llm}");
-            }
-            else
-            {
-                AppLog.Warning("语音识别服务未就绪，请确认服务端已启动");
-            }
-
-            // 5. 检测麦克风
-            var micCount = AudioCaptureService.GetCaptureDeviceCount();
-            AppLog.Info($"音频输入设备: {micCount} 个");
-
-            // 6. 启动
-            _controller.Start();
-            _enabled = true;
-
-            var hotkey = HotkeyService.FormatHotkey(config.Hotkey);
-            _trayIcon.Update(AppState.Idle, hotkey);
-            AppLog.Info($"启动完成，按住 {hotkey} 开始语音输入");
+            ReloadConfigurationFromDisk();
         }
         catch (Exception ex)
         {
-            AppLog.Error("初始化失败", ex);
-            _trayIcon.Update(AppState.Error, "");
-            MessageBox.Show(
-                $"VoiceTyper 初始化失败:\n\n{ex.Message}\n\n请检查日志文件。",
-                Constants.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    // ===================================================================
-    //  状态变化处理
-    // ===================================================================
-
-    private void OnStateChange(AppState state)
-    {
-        var hotkey = _config != null ? HotkeyService.FormatHotkey(_config.Hotkey) : "";
-        _trayIcon.Update(state, hotkey);
-
-        if (_controller != null)
-            _trayIcon.UpdateStats(_controller.CharCount, _controller.InputCount);
-
-        // 控制录音浮窗
-        switch (state)
-        {
-            case AppState.Recording:
-                _overlay?.ShowOverlay("正在听...");
-                break;
-            case AppState.Recognizing:
-                _overlay?.UpdateOverlayText("识别中...");
-                break;
-            default:
-                _overlay?.HideOverlay();
-                break;
-        }
-    }
-
-    // ===================================================================
-    //  设置窗口
-    // ===================================================================
-
-    private void ShowSetupWindow()
-    {
-        // 防止重复打开
-        if (_activeSetupForm != null && !_activeSetupForm.IsDisposed)
-        {
-            _activeSetupForm.BringToFront();
-            _activeSetupForm.Activate();
+            AppLog.Error("coordinator", "加载配置失败", ex);
+            _currentState = AppStateInfo.ErrorWith("配置加载失败");
+            UpdateTray();
             return;
         }
 
-        var micCount = AudioCaptureService.GetCaptureDeviceCount();
-        _activeSetupForm = new SetupForm(_config!, _serverConnected, micCount);
+        UpdateTray();
+        _ = ReevaluateReadinessAsync();
+    }
 
-        if (_activeSetupForm.ShowDialog() == DialogResult.OK)
+    public void Dispose()
+    {
+        _controller?.Dispose();
+        _hud?.Dispose();
+        _setupForm?.Dispose();
+        _tray.Dispose();
+    }
+
+    public void OpenSetup()
+    {
+        EnsureSetupForm();
+        _setupForm!.LoadEditableContent(_config, _managedHotwordsText, _configStore.AdditionalHotwordFileCount(_config));
+        _setupForm!.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
+        _setupForm!.Present();
+    }
+
+    // ─── 配置 ──────────────────────────────────────────────────
+
+    private void ReloadConfigurationFromDisk()
+    {
+        _config = _configStore.LoadOrCreate();
+        _hotwords = _configStore.LoadHotwords(_config);
+        _managedHotwordsText = _configStore.LoadManagedHotwordsText(_config);
+
+        // 重建 HUD（UI 配置可能变了）
+        _hud?.Dispose();
+        _hud = new RecordingHud(_config.UI);
+    }
+
+    private async Task ApplyConfigAndReloadAsync(AppConfig draft)
+    {
+        _configStore.Save(draft);
+        await ReloadAndReevaluateAsync().ConfigureAwait(true);
+    }
+
+    private async Task ApplyHotwordsAndReloadAsync(string text)
+    {
+        _configStore.SaveManagedHotwordsText(text, _config);
+        await ReloadAndReevaluateAsync().ConfigureAwait(true);
+    }
+
+    private async Task ReloadAndReevaluateAsync()
+    {
+        _controller?.Stop();
+        _controller?.Dispose();
+        _controller = null;
+        _serverReady = false;
+
+        ReloadConfigurationFromDisk();
+
+        if (_setupForm is { } form)
         {
-            var newConfig = _activeSetupForm.GetConfig();
-            var hotwordsText = _activeSetupForm.GetHotwordsText();
+            form.LoadEditableContent(_config, _managedHotwordsText, _configStore.AdditionalHotwordFileCount(_config));
+        }
+        UpdateTray();
+        await ReevaluateReadinessAsync().ConfigureAwait(true);
+    }
 
-            // 保存词库文件
+    // ─── 服务/录音可用性 ─────────────────────────────────────
+
+    private async Task ReevaluateReadinessAsync()
+    {
+        await RefreshServerStatusAsync().ConfigureAwait(true);
+
+        if (_serverReady)
+        {
+            EnsureController();
             try
             {
-                File.WriteAllText(ConfigStore.DefaultHotwordsPath, hotwordsText);
-                AppLog.Info("词库已保存");
+                _controller!.Start();
+                if (_currentState.State is not AppState.Recording and not AppState.Recognizing and not AppState.Inserting)
+                {
+                    _currentState = AppStateInfo.Idle;
+                }
             }
             catch (Exception ex)
             {
-                AppLog.Error("保存词库失败", ex);
+                AppLog.Error("coordinator", "启动 controller 失败", ex);
+                _currentState = AppStateInfo.ErrorWith($"热键监听失败：{ex.Message}");
             }
-
-            // 应用新配置
-            ApplyNewConfig(newConfig);
-        }
-
-        _activeSetupForm = null;
-    }
-
-    /// <summary>应用新配置：保存 → 重启控制器 → 重建浮窗</summary>
-    private async void ApplyNewConfig(AppConfig newConfig)
-    {
-        // 停止当前控制器
-        _controller?.Stop();
-        _controller?.Dispose();
-
-        // 保存配置
-        _configStore.Save(newConfig);
-        _config = newConfig;
-
-        // 重新加载词库
-        var hotwords = _configStore.LoadHotwords(newConfig.HotwordFiles);
-
-        // 重建控制器
-        _controller = new VoiceTyperController(newConfig, hotwords);
-        _controller.OnStateChange += OnStateChange;
-
-        // 重建浮窗（尺寸/透明度可能已变化）
-        _overlay?.Dispose();
-        _overlay = new RecordingOverlay(newConfig.Ui.Width, newConfig.Ui.Height, newConfig.Ui.Opacity);
-
-        // 重新检查服务连接
-        _serverConnected = await _controller.HealthCheckAsync();
-
-        // 重启
-        if (_enabled)
-        {
-            _controller.Start();
-            var hotkey = HotkeyService.FormatHotkey(newConfig.Hotkey);
-            _trayIcon.Update(AppState.Idle, hotkey);
-            AppLog.Info($"配置已更新，热键: {hotkey}");
-        }
-    }
-
-    // ===================================================================
-    //  Named Pipe 服务端 (单实例激活)
-    // ===================================================================
-
-    /// <summary>
-    /// 启动 Named Pipe 服务端。当第二个 VoiceTyper 实例启动时,
-    /// 它会通过 Pipe 发送 "activate" 信号，第一个实例收到后打开设置窗口。
-    /// </summary>
-    private void StartPipeServer()
-    {
-        _pipeCts = new CancellationTokenSource();
-        var token = _pipeCts.Token;
-
-        Task.Run(async () =>
-        {
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    using var server = new NamedPipeServerStream(
-                        "VoiceTyper.Activate", PipeDirection.In, 1,
-                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-
-                    await server.WaitForConnectionAsync(token);
-
-                    using var reader = new StreamReader(server);
-                    var message = await reader.ReadToEndAsync(token);
-
-                    if (message.Trim() == "activate")
-                    {
-                        AppLog.Info("收到第二实例激活信号");
-                        _uiContext?.Post(_ => ShowSetupWindow(), null);
-                    }
-                }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex)
-                {
-                    AppLog.Warning($"Pipe server 异常: {ex.Message}");
-                    try { await Task.Delay(1000, token); }
-                    catch (OperationCanceledException) { break; }
-                }
-            }
-        }, token);
-    }
-
-    // ===================================================================
-    //  托盘菜单操作
-    // ===================================================================
-
-    private void ToggleEnabled()
-    {
-        if (_controller == null) return;
-
-        if (_enabled)
-        {
-            _controller.Stop();
-            _enabled = false;
-            _trayIcon.SetEnabled(false);
-            _trayIcon.Update(AppState.Idle, "");
-            _overlay?.HideOverlay();
-            AppLog.Info("已暂停语音输入");
         }
         else
         {
-            _controller.Start();
-            _enabled = true;
-            var hotkey = _config != null ? HotkeyService.FormatHotkey(_config.Hotkey) : "";
-            _trayIcon.SetEnabled(true);
-            _trayIcon.Update(AppState.Idle, hotkey);
-            AppLog.Info("已启用语音输入");
+            _controller?.Stop();
+            _currentState = AppStateInfo.SetupRequired;
         }
-    }
 
-    private void OpenConfig() => OpenFileOrDir(ConfigStore.ConfigPath);
-    private void OpenHotwords() => OpenFileOrDir(ConfigStore.DefaultHotwordsPath);
-    private void OpenConfigDir() => OpenFileOrDir(ConfigStore.ConfigDir);
-
-    private static void OpenFileOrDir(string path)
-    {
-        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch (Exception ex) { AppLog.Error($"打开失败: {path}", ex); }
-    }
-
-    private void Quit()
-    {
-        AppLog.Info("用户退出");
-        _pipeCts?.Cancel();
-        _controller?.Stop();
-        _controller?.Dispose();
-        _overlay?.Dispose();
-        _trayIcon.Dispose();
-        ExitThread();
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
+        UpdateTray();
+        if (_setupForm is { } form)
         {
-            _pipeCts?.Cancel();
-            _pipeCts?.Dispose();
-            _controller?.Dispose();
-            _overlay?.Dispose();
-            _trayIcon.Dispose();
+            form.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
         }
-        base.Dispose(disposing);
     }
+
+    private async Task RefreshServerStatusAsync()
+    {
+        try
+        {
+            _serverReady = await ASRClient.HealthCheckAsync(_config.Server).ConfigureAwait(true);
+        }
+        catch
+        {
+            _serverReady = false;
+        }
+        UpdateTray();
+        if (_setupForm is { } form)
+        {
+            form.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
+        }
+    }
+
+    private void EnsureController()
+    {
+        if (_controller is not null) return;
+        var controller = new VoiceTyperController(_config, _hotwords);
+
+        controller.StateChanged = state =>
+        {
+            _currentState = state;
+            switch (state.State)
+            {
+                case AppState.Recording:
+                    _hud?.ShowRecording();
+                    break;
+                case AppState.Recognizing:
+                    _hud?.SetRecognizing();
+                    break;
+                case AppState.Idle:
+                case AppState.Inserting:
+                case AppState.Error:
+                case AppState.SetupRequired:
+                case AppState.Booting:
+                default:
+                    _hud?.HideHud();
+                    break;
+            }
+
+            // 录音异常时持续显示麦克风权限提示
+            if (state.State == AppState.Error && state.Message?.Contains("麦克风") == true)
+            {
+                _micPermissionDenied = true;
+                if (_setupForm is { } form)
+                {
+                    form.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
+                }
+            }
+
+            UpdateTray();
+        };
+
+        controller.PreviewUpdate = preview => _hud?.ShowPreview(preview);
+        controller.RecognizedText = text => AppLog.Info("coordinator", $"识别结果: {Truncate(text, 80)}");
+
+        _controller = controller;
+    }
+
+    private void EnsureSetupForm()
+    {
+        if (_setupForm is not null && !_setupForm.IsDisposed) return;
+
+        var form = new SetupForm();
+        form.OnTestServerConnection = async server => await ASRClient.HealthCheckAsync(server).ConfigureAwait(true);
+        form.OnSaveConfig = async draft => await ApplyConfigAndReloadAsync(draft).ConfigureAwait(true);
+        form.OnSaveHotwords = async text => await ApplyHotwordsAndReloadAsync(text).ConfigureAwait(true);
+        form.OnRetryServerCheck = () => _ = RefreshServerStatusAsync();
+        _setupForm = form;
+    }
+
+    private void UpdateTray()
+    {
+        _tray.Update(_currentState, _config.Hotkey.DisplayString, ServerDisplay());
+    }
+
+    private string ServerDisplay()
+    {
+        var addr = $"{_config.Server.Host}:{_config.Server.Port}";
+        return _serverReady ? $"已连接 {addr}" : $"未连接 {addr}";
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max) + "...";
 }

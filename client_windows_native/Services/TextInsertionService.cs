@@ -1,120 +1,120 @@
-using System.Runtime.InteropServices;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using VoiceTyper.Support;
+using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.Services;
 
 /// <summary>
-/// 文本插入服务。使用 Clipboard + SendInput(Ctrl+V) 方式。
-/// 与 macOS Swift 版的剪贴板回退策略对应。
-///
-/// 设计要点:
-/// - 备份原剪贴板内容 → 写入识别文本 → 模拟 Ctrl+V → 延迟恢复剪贴板
-/// - 使用 WinForms Timer 延迟恢复（确保在 UI 线程执行，剪贴板操作需要 STA）
-/// - 与 macOS Swift 版一样追踪 pendingRestore，防止连续输入时恢复逻辑冲突
+/// 文本插入服务：剪贴板 + SendInput Ctrl+V。
+/// 必须在 UI 线程调用（剪贴板 API 是 STA-affined）。
 /// </summary>
 internal sealed class TextInsertionService
 {
-    private System.Windows.Forms.Timer? _restoreTimer;
-    private string? _clipboardBackup;
+    private CancellationTokenSource? _pendingRestoreCts;
 
-    /// <summary>将文本插入到当前焦点位置</summary>
     public bool Insert(string text)
     {
-        if (string.IsNullOrEmpty(text)) return false;
+        if (string.IsNullOrEmpty(text)) return true;
 
-        try
-        {
-            return InsertUsingClipboard(text);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error("文本插入失败", ex);
-            return false;
-        }
-    }
-
-    private bool InsertUsingClipboard(string text)
-    {
-        // 取消上一次未完成的剪贴板恢复
-        _restoreTimer?.Stop();
-        _restoreTimer?.Dispose();
-        _restoreTimer = null;
+        // 取消上一轮的剪贴板恢复任务（如果还在等待）
+        _pendingRestoreCts?.Cancel();
+        _pendingRestoreCts = null;
 
         // 备份当前剪贴板
-        string? backup = null;
-        try
+        IDataObject? backup = null;
+        try { backup = Clipboard.GetDataObject(); }
+        catch (Exception ex)
         {
-            if (Clipboard.ContainsText())
-                backup = Clipboard.GetText();
-        }
-        catch
-        {
-            // 剪贴板可能被其他进程锁定，忽略
+            AppLog.Debug("input", $"读取原剪贴板失败（忽略）: {ex.Message}");
         }
 
         // 写入识别文本
         try
         {
-            Clipboard.SetText(text);
+            Clipboard.SetDataObject(text, copy: true, retryTimes: 5, retryDelay: 20);
         }
         catch (Exception ex)
         {
-            AppLog.Error("写入剪贴板失败", ex);
+            AppLog.Error("input", "写入剪贴板失败", ex);
             return false;
         }
 
-        // 短暂等待剪贴板就绪（与 Python 版的 time.sleep(0.05) 对应）
-        Thread.Sleep(30);
+        // 模拟 Ctrl+V
+        if (!SendCtrlV())
+        {
+            AppLog.Error("input", "SendInput 模拟 Ctrl+V 失败");
+            return false;
+        }
 
-        // 模拟 Ctrl+V 粘贴
-        SimulatePaste();
+        // 500ms 后尝试恢复原剪贴板内容（若期间未被其它进程改写）
+        if (backup is not null)
+        {
+            var cts = new CancellationTokenSource();
+            _pendingRestoreCts = cts;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(500, cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
 
-        // 延迟恢复剪贴板（使用 WinForms Timer 保证在 UI 线程执行）
-        _clipboardBackup = backup;
-        _restoreTimer = new System.Windows.Forms.Timer { Interval = 500 };
-        _restoreTimer.Tick += OnRestoreClipboard;
-        _restoreTimer.Start();
+                UiDispatcher.Post(() => RestoreClipboardIfUnchanged(backup, text));
+            });
+        }
 
         return true;
     }
 
-    private void OnRestoreClipboard(object? sender, EventArgs e)
+    private static void RestoreClipboardIfUnchanged(IDataObject backup, string expectedText)
     {
-        _restoreTimer?.Stop();
-        _restoreTimer?.Dispose();
-        _restoreTimer = null;
-
         try
         {
-            if (_clipboardBackup != null)
-                Clipboard.SetText(_clipboardBackup);
+            // 当前剪贴板的字符串内容仍然是我们刚写入的 expectedText 才恢复；
+            // 否则说明用户/其它程序又写了新内容，不要打扰。
+            string? current = null;
+            try { current = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
+            catch { /* swallow */ }
+
+            if (current != expectedText) return;
+            Clipboard.SetDataObject(backup, copy: true, retryTimes: 5, retryDelay: 20);
         }
-        catch
+        catch (Exception ex)
         {
-            // 恢复失败不影响主流程
+            AppLog.Debug("input", $"恢复剪贴板失败（忽略）: {ex.Message}");
         }
     }
 
-    /// <summary>使用 SendInput 模拟 Ctrl+V 按键</summary>
-    private static void SimulatePaste()
+    private static bool SendCtrlV()
     {
-        const ushort VK_V = 0x56;
+        // 序列：CTRL down, V down, V up, CTRL up
+        var inputs = new INPUT[4];
 
-        var inputs = new[]
-        {
-            NativeInterop.CreateKeyInput((ushort)NativeInterop.VK_CONTROL, down: true),
-            NativeInterop.CreateKeyInput(VK_V, down: true),
-            NativeInterop.CreateKeyInput(VK_V, down: false),
-            NativeInterop.CreateKeyInput((ushort)NativeInterop.VK_CONTROL, down: false),
-        };
+        inputs[0] = MakeKeyInput((ushort)VK_CONTROL, keyUp: false);
+        inputs[1] = MakeKeyInput((ushort)VK_V, keyUp: false);
+        inputs[2] = MakeKeyInput((ushort)VK_V, keyUp: true);
+        inputs[3] = MakeKeyInput((ushort)VK_CONTROL, keyUp: true);
 
-        var sent = NativeInterop.SendInput(
-            (uint)inputs.Length,
-            inputs,
-            Marshal.SizeOf<NativeInterop.INPUT>());
-
-        if (sent != inputs.Length)
-            AppLog.Warning($"SendInput 只发送了 {sent}/{inputs.Length} 个事件");
+        var sent = SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+        return sent == inputs.Length;
     }
+
+    private static INPUT MakeKeyInput(ushort vk, bool keyUp) => new()
+    {
+        type = INPUT_KEYBOARD,
+        U = new InputUnion
+        {
+            ki = new KEYBDINPUT
+            {
+                wVk = vk,
+                wScan = 0,
+                dwFlags = keyUp ? KEYEVENTF_KEYUP : 0,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero,
+            },
+        },
+    };
 }
