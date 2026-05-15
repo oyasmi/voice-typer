@@ -91,8 +91,8 @@ final class VoiceTyperController {
     private func finishRecording() {
         guard isRecording else { return }
         isRecording = false
-        // 流式：stop() 触发 onTailChunk → sendAudio(tail) → finalize()
-        // 非流式：stop() 触发 onTailChunk → 收集尾音 → POST
+        // 流式：stop() 触发 onTailChunk → sendAudio(tail) + finalize()
+        // 非流式：stop() 触发 onTailChunk → 累积尾音 → HTTP POST
         audioCaptureService.stop()
     }
 
@@ -107,19 +107,39 @@ final class VoiceTyperController {
             self.onPreviewUpdate?(self.accumulatedPreview)
         }
 
-        client.onFinal = { [weak self] text in
+        // [weak client] 而非 self.asrClient：onFinal 触发时 asrClient 可能已指向更新的会话，
+        // 通过身份比较确认是否是当前会话，避免误关后续录音的 WS 连接。
+        client.onFinal = { [weak self, weak client] text in
             guard let self else { return }
-            self.handleFinalText(text)
+            if let c = client, self.asrClient === c {
+                // 当前（最新）会话完成：清理预览、完整拆解、状态转换
+                self.accumulatedPreview = ""
+                self.onPreviewUpdate?("")
+                self.teardownASRClient()
+                self.handleFinalText(text)
+            } else {
+                // 旧会话在后台完成：静默关闭 + 直接插入，不影响当前会话状态
+                client?.close()
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, self.isRunning else { return }
+                _ = self.textInsertionService.insert(text: trimmed)
+                self.onRecognizedText?(trimmed)
+            }
         }
 
-        client.onError = { [weak self] message in
+        client.onError = { [weak self, weak client] message in
             guard let self else { return }
             AppLog.network.error("ASR 错误: \(message, privacy: .public)")
-            self.teardownASRClient()
-            self.accumulatedPreview = ""
-            self.onPreviewUpdate?("")
-            self.onStateChange?(.error(message))
-            self.isRecording = false
+            if let c = client, self.asrClient === c {
+                self.teardownASRClient()
+                self.accumulatedPreview = ""
+                self.onPreviewUpdate?("")
+                self.onStateChange?(.error(message))
+                self.isRecording = false
+            } else {
+                // 旧会话出错，不干扰当前会话
+                client?.close()
+            }
         }
 
         do {
@@ -134,16 +154,20 @@ final class VoiceTyperController {
             return
         }
 
+        // onChunk 在 AVAudioEngine 音频线程回调，需跳回 MainActor 再访问 @MainActor 的 client
         audioCaptureService.onChunk = { [weak client] data in
-            client?.sendAudio(data)
-        }
-
-        audioCaptureService.onTailChunk = { [weak self, weak client] data in
-            if !data.isEmpty {
+            Task { @MainActor [weak client] in
                 client?.sendAudio(data)
             }
-            client?.finalize()
-            Task { @MainActor [weak self] in
+        }
+
+        // onTailChunk 同理；sendAudio + finalize 需保证在同一 MainActor 执行块内顺序完成
+        audioCaptureService.onTailChunk = { [weak self, weak client] data in
+            Task { @MainActor [weak self, weak client] in
+                if !data.isEmpty {
+                    client?.sendAudio(data)
+                }
+                client?.finalize()
                 self?.onStateChange?(.recognizing)
             }
         }
@@ -201,12 +225,13 @@ final class VoiceTyperController {
         batchAudioChunks = []
 
         guard !combinedData.isEmpty else {
+            teardownASRClient()
             onStateChange?(.idle)
             return
         }
 
-        let hotwordsString = hotwords.joined(separator: " ")
         let client = ASRClient(server: config.server)
+        let hotwordsString = hotwords.joined(separator: " ")
 
         do {
             let text = try await client.recognize(
@@ -214,8 +239,10 @@ final class VoiceTyperController {
                 hotwords: hotwordsString,
                 llmRecorrect: config.server.llmRecorrect
             )
+            teardownASRClient()
             handleFinalText(text)
         } catch {
+            teardownASRClient()
             AppLog.network.error("批量识别失败: \(error.localizedDescription, privacy: .public)")
             onStateChange?(.error("识别失败：\(error.localizedDescription)"))
         }
@@ -223,15 +250,13 @@ final class VoiceTyperController {
 
     // MARK: - 公共处理
 
+    /// 插入最终文本并更新状态。
+    /// 调用方负责在调用前完成会话拆解（teardownASRClient / client.close）。
     private func handleFinalText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        accumulatedPreview = ""
-        onPreviewUpdate?("")
-        teardownASRClient()
-
         guard !trimmed.isEmpty else {
-            onStateChange?(.idle)
+            if !isRecording { onStateChange?(.idle) }
             return
         }
 
@@ -241,7 +266,8 @@ final class VoiceTyperController {
         let inserted = textInsertionService.insert(text: trimmed)
         if inserted {
             onRecognizedText?(trimmed)
-            onStateChange?(.idle)
+            // 若此时有新录音正在进行（并发会话），不覆盖 .recording 状态
+            if !isRecording { onStateChange?(.idle) }
         } else {
             onStateChange?(.error("文本插入失败"))
         }

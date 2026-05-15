@@ -74,6 +74,20 @@ def _prepare_model_dir(model_name: Optional[str], aliases: dict) -> Tuple[Option
     raise FileNotFoundError(f"未找到 ONNX 模型文件: {model_dir}")
 
 
+def _extract_preds_text(asr_result) -> str:
+    """从 funasr-onnx ASR 结果中提取文本，兼容 online/offline 两种返回格式。"""
+    if not asr_result:
+        return ""
+    first = asr_result[0]
+    preds = first.get("preds", "") if isinstance(first, dict) else first
+    if isinstance(preds, str):
+        return preds
+    if isinstance(preds, (list, tuple)) and preds:
+        head = preds[0]
+        return head if isinstance(head, str) else str(head)
+    return str(preds) if preds else ""
+
+
 def _extract_punc_text(punc_result) -> str:
     if not punc_result:
         return ""
@@ -191,16 +205,7 @@ class SpeechRecognizer:
             return self._model(audio)
 
     def _extract_asr_text(self, asr_result) -> str:
-        if not asr_result:
-            return ""
-        first = asr_result[0]
-        preds = first.get("preds", "") if isinstance(first, dict) else first
-        if isinstance(preds, str):
-            return preds
-        if isinstance(preds, (tuple, list)) and preds:
-            head = preds[0]
-            return head if isinstance(head, str) else str(head)
-        return str(preds) if preds else ""
+        return _extract_preds_text(asr_result)
 
 
 # ---------------------------------------------------------------------------
@@ -276,16 +281,7 @@ class StreamingSpeechRecognizer:
         return Session(self)
 
     def _extract_fragment(self, asr_result) -> str:
-        if not asr_result:
-            return ""
-        first = asr_result[0]
-        preds = first.get("preds", "") if isinstance(first, dict) else first
-        if isinstance(preds, str):
-            return preds
-        if isinstance(preds, (list, tuple)) and preds:
-            head = preds[0]
-            return head if isinstance(head, str) else str(head)
-        return str(preds) if preds else ""
+        return _extract_preds_text(asr_result)
 
     def _apply_punc(self, text: str) -> str:
         if not self._punc_model or not text.strip():
@@ -341,8 +337,8 @@ class Session:
                     np.zeros(0, dtype=np.float32),
                     param_dict={"is_final": True, "cache": self._cache},
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"流式 finalize flush 跳过: {exc}")
 
         full_text = "".join(self._fragments)
         return self._owner._apply_punc(full_text)

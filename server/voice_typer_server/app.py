@@ -112,7 +112,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                 return
 
             executor = self.application.settings.get("executor")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             t0 = time.time()
             text = await loop.run_in_executor(
                 executor, recognizer.recognize, audio, hotwords
@@ -200,7 +200,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         if self.session is None:
             return
         chunk = np.frombuffer(data, dtype=np.float32)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         executor = self.application.settings.get("executor")
         fragment = await loop.run_in_executor(executor, self.session.feed, chunk)
         if fragment:
@@ -235,7 +235,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             self.close(code=4500)
             return
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         executor = self.application.settings.get("executor")
 
         t0 = time.time()
@@ -270,8 +270,8 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
                 {"type": "error", "code": code, "message": message},
                 ensure_ascii=False,
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"_send_error 写入失败（连接可能已关闭）: {exc}")
 
     def on_close(self):
         self.session = None
@@ -356,6 +356,8 @@ def create_server(args) -> ServerContext:
     logger.info(f"设备: {args.device}")
     if streaming:
         logger.info(f"Chunk: {args.chunk_size}")
+    elif args.chunk_size != "0,10,5":
+        logger.warning("--chunk-size 仅在流式模式下生效，当前为非流式模式，已忽略")
     logger.info(f"Python: {sys.version.split()[0]}")
     if args.host == "127.0.0.1":
         logger.info("鉴权: 本地地址，已跳过")

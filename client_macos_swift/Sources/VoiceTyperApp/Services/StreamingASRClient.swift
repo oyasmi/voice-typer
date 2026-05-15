@@ -142,9 +142,7 @@ final class StreamingASRClient {
             } catch {
                 if !closed && !Task.isCancelled {
                     AppLog.network.error("WS receive 失败: \(error.localizedDescription, privacy: .public)")
-                    await MainActor.run { [weak self] in
-                        self?.onError?("连接中断")
-                    }
+                    onError?("连接中断")
                 }
                 break
             }
