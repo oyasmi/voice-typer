@@ -40,19 +40,22 @@ struct ServerConfig: Codable {
     var timeout: Double
     var apiKey: String
     var llmRecorrect: Bool
+    var streaming: Bool
 
     init(
         host: String = "127.0.0.1",
         port: Int = 6008,
         timeout: Double = 60.0,
         apiKey: String = "",
-        llmRecorrect: Bool = true
+        llmRecorrect: Bool = true,
+        streaming: Bool = true
     ) {
         self.host = host
         self.port = port
         self.timeout = timeout
         self.apiKey = apiKey
         self.llmRecorrect = llmRecorrect
+        self.streaming = streaming
     }
 
     init(from decoder: Decoder) throws {
@@ -62,6 +65,7 @@ struct ServerConfig: Codable {
         self.timeout = try container.decodeIfPresent(Double.self, forKey: .timeout) ?? 60.0
         self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         self.llmRecorrect = try container.decodeIfPresent(Bool.self, forKey: .llmRecorrect) ?? true
+        self.streaming = try container.decodeIfPresent(Bool.self, forKey: .streaming) ?? true
     }
 
     enum CodingKeys: String, CodingKey {
@@ -70,6 +74,7 @@ struct ServerConfig: Codable {
         case timeout
         case apiKey = "api_key"
         case llmRecorrect = "llm_recorrect"
+        case streaming
     }
 }
 

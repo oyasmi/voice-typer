@@ -1,5 +1,6 @@
 """
-VoiceTyper 流式语音识别服务
+VoiceTyper 语音识别服务
+支持流式（WebSocket）和非流式（HTTP）两种模式。
 """
 import asyncio
 import concurrent.futures
@@ -8,6 +9,8 @@ import logging
 import signal
 import sys
 import time
+from typing import Optional
+from urllib.parse import unquote
 
 import numpy as np
 import tornado.httpserver
@@ -17,62 +20,150 @@ import tornado.websocket
 
 from .auth import BaseAuthenticatedHandler
 from .llm_client import LLMClient
-from .recognizer import StreamingSpeechRecognizer
+from .recognizer import SpeechRecognizer, StreamingSpeechRecognizer
 
 logger = logging.getLogger("VoiceTyper")
 
 
 def _check_api_key(request, settings) -> bool:
-    """WebSocket 握手阶段的 API key 校验（复用 BaseAuthenticatedHandler 逻辑）。"""
+    """WebSocket 握手阶段的 API key 校验。"""
     api_keys = settings.get("api_keys", [])
-    server_host = settings.get("server_host", "127.0.0.1")
-
     if not api_keys:
         return True
-
-    # 本地地址免鉴权
+    server_host = settings.get("server_host", "127.0.0.1")
     remote_ip = request.remote_ip or ""
     if server_host == "127.0.0.1" and remote_ip in ("127.0.0.1", "::1"):
         return True
-
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):]
-        return token in api_keys
-
+        return auth_header[len("Bearer "):] in api_keys
     return False
 
 
-class HealthHandler(BaseAuthenticatedHandler):
-    """健康检查"""
+# ---------------------------------------------------------------------------
+# /health
+# ---------------------------------------------------------------------------
 
+class HealthHandler(BaseAuthenticatedHandler):
     @tornado.web.authenticated
     def get(self):
         recognizer = self.application.settings.get("recognizer")
-        llm_client = self.application.settings.get("llm_client")
+        llm_client  = self.application.settings.get("llm_client")
+        streaming   = self.application.settings.get("streaming", True)
         self.write({
-            "status": "ok",
-            "ready": recognizer.is_ready if recognizer else False,
+            "status":     "ok",
+            "ready":      recognizer.is_ready if recognizer else False,
+            "streaming":  streaming,
             "llm_enabled": llm_client is not None,
-            "streaming": True,
         })
 
 
+# ---------------------------------------------------------------------------
+# 非流式：POST /recognize
+# ---------------------------------------------------------------------------
+
+class RecognizeHandler(BaseAuthenticatedHandler):
+    """非流式语音识别接口（HTTP POST）。"""
+
+    def _parse_request(self):
+        ct = self.request.headers.get("Content-Type", "").lower()
+        if ct.startswith("application/octet-stream"):
+            audio_bytes = self.request.body
+            hotwords    = unquote(self.request.headers.get("X-Hotwords", ""))
+            llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
+            return audio_bytes, hotwords, llm_recorrect
+        if "audio" not in self.request.files:
+            raise tornado.web.HTTPError(400, reason="缺少 audio 文件")
+        audio_file    = self.request.files["audio"][0]
+        audio_bytes   = audio_file["body"]
+        hotwords      = self.get_argument("hotwords", "")
+        llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
+        return audio_bytes, hotwords, llm_recorrect
+
+    @tornado.web.authenticated
+    async def post(self):
+        recognizer = self.application.settings.get("recognizer")
+        llm_client  = self.application.settings.get("llm_client")
+
+        try:
+            audio_bytes, hotwords, llm_recorrect = self._parse_request()
+
+            if len(audio_bytes) > 64 * 1024 * 1024:
+                self.set_status(413)
+                self.write({"error": "音频文件过大，最大支持 64MB"})
+                return
+
+            try:
+                audio = np.frombuffer(audio_bytes, dtype=np.float32)
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"音频格式无效: {exc}")
+                self.set_status(400)
+                self.write({"error": "音频格式无效，需要 float32 格式"})
+                return
+
+            if len(audio) == 0:
+                self.set_status(400)
+                self.write({"error": "音频数据为空"})
+                return
+
+            if not recognizer or not recognizer.is_ready:
+                self.set_status(503)
+                self.write({"error": "服务未就绪"})
+                return
+
+            executor = self.application.settings.get("executor")
+            loop = asyncio.get_event_loop()
+            t0 = time.time()
+            text = await loop.run_in_executor(
+                executor, recognizer.recognize, audio, hotwords
+            )
+            elapsed = round(time.time() - t0, 3)
+
+            llm_elapsed: Optional[float] = None
+            if llm_recorrect and llm_client and text.strip():
+                try:
+                    t1 = time.time()
+                    original = text
+                    text = await llm_client.correct_text(text)
+                    llm_elapsed = round(time.time() - t1, 3)
+                    if original != text:
+                        logger.info(f"LLM 修正 ({llm_elapsed}s): {original!r} → {text!r}")
+                    else:
+                        logger.info(f"LLM 修正: 无需改动 ({llm_elapsed}s)")
+                except Exception as exc:
+                    logger.warning(f"LLM 修正失败，使用原始文本: {exc}")
+
+            result = {"text": text, "duration": round(len(audio) / 16000, 2), "elapsed": elapsed}
+            if llm_elapsed is not None:
+                result["llmElapsed"] = llm_elapsed
+            self.write(result)
+
+        except tornado.web.HTTPError as exc:
+            self.set_status(exc.status_code)
+            self.write({"error": exc.reason or str(exc)})
+        except Exception as exc:
+            self.set_status(500)
+            self.write({"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# 流式：WebSocket /recognize/stream
+# ---------------------------------------------------------------------------
+
 class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
     """
-    流式语音识别 WebSocket 端点 (/recognize/stream)
+    流式语音识别 WebSocket 端点。
 
     协议：
-    Client → Server:
-      连接后立即发送  text:   {"type":"start","hotwords":"词1 词2","sample_rate":16000}
-      录音中每 600ms  binary: float32 PCM，9600 samples = 38400 bytes
-      松开热键时      text:   {"type":"finalize"}
-
-    Server → Client:
-      每个 chunk 有增量  text: {"type":"partial","text":"今天","seq":N}
-      finalize 完成     text: {"type":"final","text":"今天天气不错。","asrElapsed":0.82}
-      错误              text: {"type":"error","code":"...","message":"..."}
-      完成后 close (1000)
+      Client → Server:
+        连接后立即  text:   {"type":"start","hotwords":"词1 词2","sample_rate":16000}
+        录音中每 600ms  binary: float32 PCM，9600 samples = 38400 bytes
+        松开热键   text:   {"type":"finalize"}
+      Server → Client:
+        有增量时   text: {"type":"partial","text":"今天","seq":N}
+        完成时     text: {"type":"final","text":"今天天气不错。","asrElapsed":0.82}
+        错误时     text: {"type":"error","code":"...","message":"..."}
+        之后 close (1000)
     """
 
     def check_origin(self, origin):
@@ -88,12 +179,10 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         if not recognizer or not recognizer.is_ready:
             self.close(code=4503, reason="service not ready")
             return
-
         self.llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
         self.session = None
         self.hotwords = ""
         self.seq = 0
-        self._tail_chunk: bytes = b""
         logger.info("WS 连接建立")
 
     async def on_message(self, message):
@@ -109,13 +198,11 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 
     async def _handle_audio(self, data: bytes):
         if self.session is None:
-            return  # start 帧还没到，忽略
-
+            return
         chunk = np.frombuffer(data, dtype=np.float32)
         loop = asyncio.get_event_loop()
         executor = self.application.settings.get("executor")
         fragment = await loop.run_in_executor(executor, self.session.feed, chunk)
-
         if fragment:
             await self.write_message(json.dumps(
                 {"type": "partial", "text": fragment, "seq": self.seq},
@@ -131,17 +218,14 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             return
 
         msg_type = msg.get("type")
-
         if msg_type == "start":
             recognizer = self.application.settings["recognizer"]
             self.hotwords = msg.get("hotwords", "")
             self.session = recognizer.new_session()
             self.seq = 0
             logger.info(f"会话开始，hotwords='{self.hotwords}' llm={self.llm_recorrect}")
-
         elif msg_type == "finalize":
             await self._do_finalize()
-
         else:
             logger.warning(f"未知控制帧 type={msg_type!r}")
 
@@ -157,7 +241,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         t0 = time.time()
         text = await loop.run_in_executor(executor, self.session.finalize, None)
         asr_elapsed = round(time.time() - t0, 3)
-        logger.info(f"ASR finalize 耗时: {asr_elapsed}s，原始文本: {text!r}")
+        logger.info(f"ASR finalize 耗时: {asr_elapsed}s，文本: {text!r}")
 
         llm_elapsed = None
         llm_client = self.application.settings.get("llm_client")
@@ -177,7 +261,6 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         payload = {"type": "final", "text": text, "asrElapsed": asr_elapsed}
         if llm_elapsed is not None:
             payload["llmElapsed"] = llm_elapsed
-
         await self.write_message(json.dumps(payload, ensure_ascii=False))
         self.close(code=1000)
 
@@ -195,17 +278,29 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         logger.info(f"WS 连接关闭，code={self.close_code}")
 
 
-def make_app(api_keys=None, server_host="127.0.0.1", recognizer=None, llm_client=None, executor=None):
-    """创建 Tornado 应用"""
-    app = tornado.web.Application([
-        (r"/health", HealthHandler),
-        (r"/recognize/stream", StreamRecognizeHandler),
-    ])
-    app.settings["api_keys"] = api_keys or []
+# ---------------------------------------------------------------------------
+# 工厂 & 启动
+# ---------------------------------------------------------------------------
+
+def make_app(api_keys=None, server_host="127.0.0.1",
+             recognizer=None, llm_client=None, executor=None, streaming=True):
+    if streaming:
+        handlers = [
+            (r"/health",            HealthHandler),
+            (r"/recognize/stream",  StreamRecognizeHandler),
+        ]
+    else:
+        handlers = [
+            (r"/health",    HealthHandler),
+            (r"/recognize", RecognizeHandler),
+        ]
+    app = tornado.web.Application(handlers)
+    app.settings["api_keys"]    = api_keys or []
     app.settings["server_host"] = server_host
-    app.settings["recognizer"] = recognizer
-    app.settings["llm_client"] = llm_client
-    app.settings["executor"] = executor
+    app.settings["recognizer"]  = recognizer
+    app.settings["llm_client"]  = llm_client
+    app.settings["executor"]    = executor
+    app.settings["streaming"]   = streaming
     return app
 
 
@@ -226,7 +321,7 @@ def configure_logging():
 
 class ServerContext:
     def __init__(self, server, executor, llm_client):
-        self.server = server
+        self.server   = server
         self.executor = executor
         self.llm_client = llm_client
 
@@ -239,22 +334,28 @@ class ServerContext:
 
 
 def create_server(args) -> ServerContext:
-    """初始化模型、创建 HTTP/WS 服务并开始监听。"""
     api_keys = load_api_keys(args.api_keys)
+    streaming = args.streaming
+
     if api_keys:
         logger.info(f"API密钥: 已配置 {len(api_keys)} 个")
     elif args.host != "127.0.0.1":
         logger.warning("远程访问未配置 API 密钥，建议使用 --api-keys 参数")
 
     logger.info("=" * 50)
-    logger.info("VoiceTyper 流式语音识别服务")
+    logger.info("VoiceTyper 语音识别服务")
     logger.info("=" * 50)
-    logger.info(f"地址: ws://{args.host}:{args.port}/recognize/stream")
-    logger.info("后端: onnx (streaming)")
-    logger.info(f"模型: {args.model}")
+    if streaming:
+        logger.info(f"模式: 流式（WebSocket）")
+        logger.info(f"地址: ws://{args.host}:{args.port}/recognize/stream")
+    else:
+        logger.info(f"模式: 非流式（HTTP）")
+        logger.info(f"地址: http://{args.host}:{args.port}/recognize")
+    logger.info("后端: onnx")
     logger.info(f"标点: {args.punc_model}")
     logger.info(f"设备: {args.device}")
-    logger.info(f"Chunk: {args.chunk_size}")
+    if streaming:
+        logger.info(f"Chunk: {args.chunk_size}")
     logger.info(f"Python: {sys.version.split()[0]}")
     if args.host == "127.0.0.1":
         logger.info("鉴权: 本地地址，已跳过")
@@ -276,20 +377,34 @@ def create_server(args) -> ServerContext:
 
     punc_model = args.punc_model if args.punc_model != "none" else None
 
-    chunk_size = [int(x) for x in args.chunk_size.split(",")]
-    recognizer = StreamingSpeechRecognizer(
-        model_name=args.model,
-        punc_model=punc_model,
-        device=args.device,
-        chunk_size=chunk_size,
-        intra_op_num_threads=args.onnx_threads,
-    )
+    # --model 未指定时按模式选默认值
+    model_name = args.model
+    if not model_name:
+        model_name = "paraformer-zh-streaming" if streaming else "paraformer-zh"
+    logger.info(f"模型: {model_name}")
 
     logger.info("初始化模型...")
     t0 = time.time()
+
+    if streaming:
+        chunk_size = [int(x) for x in args.chunk_size.split(",")]
+        recognizer = StreamingSpeechRecognizer(
+            model_name=model_name,
+            punc_model=punc_model,
+            device=args.device,
+            chunk_size=chunk_size,
+            intra_op_num_threads=args.onnx_threads,
+        )
+    else:
+        recognizer = SpeechRecognizer(
+            model_name=model_name,
+            punc_model=punc_model,
+            device=args.device,
+            intra_op_num_threads=args.onnx_threads,
+        )
+
     recognizer.initialize()
-    elapsed = time.time() - t0
-    logger.info(f"初始化完成，耗时 {elapsed:.1f}s")
+    logger.info(f"初始化完成，耗时 {time.time() - t0:.1f}s")
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     app = make_app(
@@ -298,19 +413,21 @@ def create_server(args) -> ServerContext:
         recognizer=recognizer,
         llm_client=llm_client,
         executor=executor,
+        streaming=streaming,
     )
-    server = tornado.httpserver.HTTPServer(app)
+    server = tornado.httpserver.HTTPServer(app, max_buffer_size=64 * 1024 * 1024)
     server.listen(args.port, args.host)
 
-    logger.info(f"服务已启动: ws://{args.host}:{args.port}/recognize/stream")
+    if streaming:
+        logger.info(f"服务已启动: ws://{args.host}:{args.port}/recognize/stream")
+    else:
+        logger.info(f"服务已启动: http://{args.host}:{args.port}")
 
     return ServerContext(server, executor, llm_client)
 
 
 def run_server(args):
-    """以前台模式启动服务"""
     configure_logging()
-
     ctx = create_server(args)
     logger.info("按 Ctrl+C 停止服务")
 

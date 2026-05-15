@@ -5,9 +5,9 @@
 ## 亮点
 
 - 本地运行，默认不依赖云端 ASR
-- 提供稳定的 HTTP 接口，客户端可直接接入
+- **流式识别（默认）**：WebSocket 实时回传，低延迟边说边显示
+- **非流式识别（兼容）**：HTTP POST，支持热词，可作为旧客户端兼容路径
 - 内置中文识别和标点恢复默认模型
-- 支持热词
 - 可选启用 API Key
 - 可选接入 OpenAI 兼容 LLM 做纠错
 - 支持 `python -m`、命令行和脚本三种启动方式
@@ -142,8 +142,10 @@ scripts\voice_typer_server.bat uninstall
 
 - `--host`：监听地址，默认 `127.0.0.1`
 - `--port`：监听端口，默认 `6008`
+- `--streaming` / `--no-streaming`：识别模式，默认流式（WebSocket）；`--no-streaming` 切换为非流式（HTTP）
 - `--device`：`cpu` / `cuda` / `cuda:N`
-- `--model`：ASR 模型，默认 `paraformer-zh`
+- `--model`：ASR 模型，未指定时自动选择（流式：`paraformer-zh-streaming`；非流式：`paraformer-zh`）
+- `--chunk-size`：流式 chunk 大小，格式 `left,current,right`（单位 60ms 帧），默认 `0,10,5`
 - `--punc-model`：标点模型，默认 `ct-punc`，设为 `none` 可禁用
 - `--onnx-threads`：ONNX Runtime 线程数，默认 `4`
 - `--api-keys`：API Key 列表，逗号分隔
@@ -152,11 +154,11 @@ scripts\voice_typer_server.bat uninstall
 示例：
 
 ```bash
-voice-typer-server \
-  --host 0.0.0.0 \
-  --device cpu \
-  --onnx-threads 2 \
-  --api-keys akey
+# 流式模式（默认）
+voice-typer-server --host 0.0.0.0 --device cpu --api-keys akey
+
+# 非流式兼容模式（支持热词）
+voice-typer-server --no-streaming --host 0.0.0.0 --device cpu --api-keys akey
 ```
 
 ## 常见使用场景
@@ -198,18 +200,26 @@ voice-typer-server \
 
 ## 接口
 
-服务端默认暴露两个接口：
+### `/health`（GET）
 
-- `GET /health`
-- `POST /recognize`
+通用健康检查，返回 `{"status":"ok","ready":bool,"streaming":bool,"llm_enabled":bool}`。
 
-### `/health`
+### 流式模式（默认）：`/recognize/stream`（WebSocket）
 
-用于检查服务是否已启动、模型是否已就绪。
+WebSocket 端点，客户端与服务端保持长连接，边发音频边获取识别片段。
 
-### `/recognize`
+协议概要：
 
-用于提交音频并获取识别结果。
+1. 连接后发送 `{"type":"start","hotwords":"","sample_rate":16000}`
+2. 录音期间持续发送 binary 帧（float32 PCM，每帧约 600ms = 9600 samples）
+3. 松开热键后发送 `{"type":"finalize"}`
+4. 服务端返回 `{"type":"partial","text":"...","seq":N}` 和最终 `{"type":"final","text":"...","asrElapsed":0.82}`
+
+> **注意**：流式模式不支持热词（`paraformer-zh-streaming` 模型限制）。
+
+### 非流式模式（`--no-streaming`）：`/recognize`（HTTP POST）
+
+提交整段音频，返回完整识别结果。支持热词。
 
 推荐方式：
 
@@ -218,7 +228,7 @@ voice-typer-server \
 
 可选参数：
 
-- 请求头 `X-Hotwords`
+- 请求头 `X-Hotwords`：URL-encoded 热词（空格分隔）
 - 查询参数 `llm_recorrect=true|false`
 
 同时也兼容旧版 `multipart/form-data` 上传。
@@ -242,12 +252,13 @@ curl -X POST http://127.0.0.1:6008/recognize \
 ## 模型与运行说明
 
 - 服务端使用 `onnxruntime`
-- 默认 ASR 模型短名：
-  - `paraformer-zh`
+- ASR 模型短名（`--model` 未指定时按模式自动选择）：
+  - `paraformer-zh-streaming`：流式模式默认，支持实时识别
+  - `paraformer-zh`：非流式模式默认，支持热词
 - 默认标点模型短名：
   - `ct-punc`
 
-短名会自动映射到官方离线 ONNX 模型。
+短名会自动映射到官方 ONNX 模型，首次使用会从 ModelScope 自动下载。
 
 如果模型目录中只有 `model_quant.onnx`，服务端会自动使用量化模型。
 

@@ -82,6 +82,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
     private let hostField = NSTextField(string: "")
     private let portField = NSTextField(string: "")
     private let apiKeyField = NSSecureTextField(string: "")
+    private let streamingButton = NSButton(checkboxWithTitle: "流式识别（推荐，低延迟）", target: nil, action: nil)
     private let llmRecorrectButton = NSButton(checkboxWithTitle: "启用 LLM 纠错", target: nil, action: nil)
     private let hotkeyModeControl = NSSegmentedControl(labels: ["Fn", "组合键"], trackingMode: .selectOne, target: nil, action: nil)
     private let modifierControlButton = NSButton(checkboxWithTitle: "Control", target: nil, action: nil)
@@ -145,6 +146,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         hostField.stringValue = config.server.host
         portField.stringValue = String(config.server.port)
         apiKeyField.stringValue = config.server.apiKey
+        streamingButton.state = config.server.streaming ? .on : .off
         llmRecorrectButton.state = config.server.llmRecorrect ? .on : .off
 
         if config.hotkey.key.lowercased() == "fn" {
@@ -342,6 +344,16 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         hostField.widthAnchor.constraint(greaterThanOrEqualToConstant: 460).isActive = true
         portField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
 
+        let streamingRow = NSStackView(views: [streamingButton, makeFlexibleSpacer()])
+        streamingRow.orientation = .horizontal
+        streamingRow.alignment = .centerY
+        streamingRow.spacing = 8
+
+        let streamingHint = NSTextField(wrappingLabelWithString: "流式模式通过 WebSocket 实时回传识别结果，延迟更低；非流式模式支持热词，兼容旧服务端。")
+        streamingHint.maximumNumberOfLines = 0
+        streamingHint.font = .systemFont(ofSize: 12)
+        streamingHint.textColor = .secondaryLabelColor
+
         let llmRow = NSStackView(views: [llmRecorrectButton, makeFlexibleSpacer()])
         llmRow.orientation = .horizontal
         llmRow.alignment = .centerY
@@ -386,6 +398,8 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         let stack = makePageStack()
         stack.addArrangedSubview(headerLabel)
         stack.addArrangedSubview(serverGrid)
+        stack.addArrangedSubview(streamingRow)
+        stack.addArrangedSubview(streamingHint)
         stack.addArrangedSubview(llmRow)
         stack.addArrangedSubview(serverButtonRow)
         stack.addArrangedSubview(connectionMessageLabel)
@@ -396,6 +410,8 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
 
         headerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         serverGrid.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        streamingRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        streamingHint.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         llmRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         serverButtonRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         connectionMessageLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -847,7 +863,8 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
             port: port,
             timeout: loadedConfig.server.timeout,
             apiKey: apiKeyField.stringValue,
-            llmRecorrect: llmRecorrectButton.state == .on
+            llmRecorrect: llmRecorrectButton.state == .on,
+            streaming: streamingButton.state == .on
         )
     }
 

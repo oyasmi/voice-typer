@@ -13,6 +13,7 @@ final class VoiceTyperController {
     private var isRecording = false
     private var isRunning = false
     private var accumulatedPreview = ""
+    private var batchAudioChunks: [Data] = []
 
     var onStateChange: ((AppState) -> Void)?
     var onRecognizedText: ((String) -> Void)?
@@ -56,7 +57,6 @@ final class VoiceTyperController {
     }
 
     func healthCheck() async -> Bool {
-        // 流式架构：健康检查通过 HTTP /health 端点验证服务可用性
         guard let url = URL(string: "http://\(config.server.host):\(config.server.port)/health") else {
             return false
         }
@@ -81,7 +81,24 @@ final class VoiceTyperController {
     private func beginRecording() {
         guard isRunning, !isRecording else { return }
 
-        // 建立 WebSocket 连接
+        if config.server.streaming {
+            beginStreamingRecording()
+        } else {
+            beginBatchRecording()
+        }
+    }
+
+    private func finishRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        // 流式：stop() 触发 onTailChunk → sendAudio(tail) → finalize()
+        // 非流式：stop() 触发 onTailChunk → 收集尾音 → POST
+        audioCaptureService.stop()
+    }
+
+    // MARK: - 流式路径
+
+    private func beginStreamingRecording() {
         let client = StreamingASRClient()
 
         client.onPartial = { [weak self] fragment in
@@ -117,13 +134,11 @@ final class VoiceTyperController {
             return
         }
 
-        // 配置音频切片回调
         audioCaptureService.onChunk = { [weak client] data in
             client?.sendAudio(data)
         }
 
         audioCaptureService.onTailChunk = { [weak self, weak client] data in
-            // 尾音发送完后立即 finalize（在 Audio 线程回调，client 是 Sendable）
             if !data.isEmpty {
                 client?.sendAudio(data)
             }
@@ -148,13 +163,65 @@ final class VoiceTyperController {
         onStateChange?(.recording)
     }
 
-    private func finishRecording() {
-        guard isRecording else { return }
-        isRecording = false
-        // stop() 会触发 onTailChunk → sendAudio(tail) → finalize()
-        // 状态切换到 .recognizing 在 onTailChunk 中完成
-        audioCaptureService.stop()
+    // MARK: - 非流式路径
+
+    private func beginBatchRecording() {
+        batchAudioChunks = []
+
+        audioCaptureService.onChunk = { [weak self] data in
+            self?.batchAudioChunks.append(data)
+        }
+
+        audioCaptureService.onTailChunk = { [weak self] data in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if !data.isEmpty {
+                    self.batchAudioChunks.append(data)
+                }
+                await self.performBatchRecognition()
+            }
+        }
+
+        do {
+            try audioCaptureService.start()
+        } catch {
+            AppLog.audio.error("开始录音失败: \(error.localizedDescription, privacy: .public)")
+            onStateChange?(.error("开始录音失败"))
+            return
+        }
+
+        isRecording = true
+        onStateChange?(.recording)
     }
+
+    private func performBatchRecognition() async {
+        onStateChange?(.recognizing)
+
+        let combinedData = batchAudioChunks.reduce(Data(), +)
+        batchAudioChunks = []
+
+        guard !combinedData.isEmpty else {
+            onStateChange?(.idle)
+            return
+        }
+
+        let hotwordsString = hotwords.joined(separator: " ")
+        let client = ASRClient(server: config.server)
+
+        do {
+            let text = try await client.recognize(
+                audioData: combinedData,
+                hotwords: hotwordsString,
+                llmRecorrect: config.server.llmRecorrect
+            )
+            handleFinalText(text)
+        } catch {
+            AppLog.network.error("批量识别失败: \(error.localizedDescription, privacy: .public)")
+            onStateChange?(.error("识别失败：\(error.localizedDescription)"))
+        }
+    }
+
+    // MARK: - 公共处理
 
     private func handleFinalText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -183,6 +250,7 @@ final class VoiceTyperController {
     private func teardownASRClient() {
         asrClient?.close()
         asrClient = nil
+        batchAudioChunks = []
         audioCaptureService.onChunk = nil
         audioCaptureService.onTailChunk = nil
     }

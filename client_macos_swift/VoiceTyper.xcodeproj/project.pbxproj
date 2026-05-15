@@ -11,6 +11,7 @@
 		0C5BA21E132677F9F3592DCB /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A221DA318B41C0D9A842631A /* AudioCaptureService.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		0D03D934A0EBD59FE05EDEFD /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CA63A12A6E0EC36FA3DC5A9F /* Cocoa.framework */; };
 		18EC92C0A4B2B47C090D625D /* StreamingASRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E7EA6ED9B5C194FB6FE2A80 /* StreamingASRClient.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		B3F1A2C4D5E6078901234567 /* ASRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4032100000001 /* ASRClient.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		241CFA787F958B65DD6AFEBA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 289B313565AD39058A0982BF /* AppIcon.icns */; };
 		2C72BD25DC5F46B847E7A1CD /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB9133943155E28E91CFAB8E /* AppDelegate.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		2EAAE9F0B240908C52A51EEE /* HotkeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1421447C878B6F4F1746891B /* HotkeyService.swift */; settings = {COMPILER_FLAGS = "-"; }; };
@@ -41,6 +42,7 @@
 		5E19225C66D48D9BEFCC8EDC /* SetupWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SetupWindowController.swift; path = Sources/VoiceTyperApp/UI/SetupWindowController.swift; sourceTree = "<group>"; };
 		6C7B2CB8563C2E194EDEB73F /* AppCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppCoordinator.swift; path = Sources/VoiceTyperApp/App/AppCoordinator.swift; sourceTree = "<group>"; };
 		8E7EA6ED9B5C194FB6FE2A80 /* StreamingASRClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StreamingASRClient.swift; path = Sources/VoiceTyperApp/Services/StreamingASRClient.swift; sourceTree = "<group>"; };
+		A9B8C7D6E5F4032100000001 /* ASRClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ASRClient.swift; path = Sources/VoiceTyperApp/Services/ASRClient.swift; sourceTree = "<group>"; };
 		9C9A7204FF7ECE74F5CBBD68 /* Constants.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = Sources/VoiceTyperApp/Support/Constants.swift; sourceTree = "<group>"; };
 		9F813E28F651871D45E0868C /* Logger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Logger.swift; path = Sources/VoiceTyperApp/Support/Logger.swift; sourceTree = "<group>"; };
 		A1DB79CD7F76159AE07D68DC /* AppState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppState.swift; path = Sources/VoiceTyperApp/Core/AppState.swift; sourceTree = "<group>"; };
@@ -88,6 +90,7 @@
 		62D2CAB7BA662AE89586E728 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				A9B8C7D6E5F4032100000001 /* ASRClient.swift */,
 				8E7EA6ED9B5C194FB6FE2A80 /* StreamingASRClient.swift */,
 				A221DA318B41C0D9A842631A /* AudioCaptureService.swift */,
 				1421447C878B6F4F1746891B /* HotkeyService.swift */,
@@ -258,6 +261,7 @@
 				5CDE63C03C2EDFC4ED4E34D9 /* ConfigStore.swift in Sources */,
 				84B0A9C5C5C56D27E673E0D7 /* PermissionCenter.swift in Sources */,
 				F3A785E94C3640285F42EC09 /* VoiceTyperController.swift in Sources */,
+				B3F1A2C4D5E6078901234567 /* ASRClient.swift in Sources */,
 				18EC92C0A4B2B47C090D625D /* StreamingASRClient.swift in Sources */,
 				0C5BA21E132677F9F3592DCB /* AudioCaptureService.swift in Sources */,
 				2EAAE9F0B240908C52A51EEE /* HotkeyService.swift in Sources */,
