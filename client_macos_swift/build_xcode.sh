@@ -9,8 +9,6 @@ APP_NAME="VoiceTyper"
 INSTALL_GUIDE_PATH="$ROOT_DIR/packaging/INSTALL.txt"
 EXECUTABLE_REL="Contents/MacOS/$APP_NAME"
 
-ruby "$ROOT_DIR/scripts/generate_xcodeproj.rb"
-
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
