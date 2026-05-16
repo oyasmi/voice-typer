@@ -37,6 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--offline-model",
+        default=None,
+        help=(
+            "流式模式下用于松手后复识别的离线模型，最终结果由它产出 "
+            "(默认: paraformer-zh)"
+        ),
+    )
+    parser.add_argument(
         "--punc-model",
         default="ct-punc",
         help="标点模型，使用 none 可禁用 (默认: %(default)s)",

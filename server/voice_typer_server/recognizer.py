@@ -227,12 +227,15 @@ class StreamingSpeechRecognizer:
         device: str = "cpu",
         chunk_size: List[int] = None,
         intra_op_num_threads: int = 4,
+        offline_recognizer: Optional["SpeechRecognizer"] = None,
     ):
         self.model_name = model_name
         self.punc_model_name = punc_model
         self.device = device
         self.chunk_size = chunk_size or [0, 10, 5]
         self.intra_op_num_threads = intra_op_num_threads
+        # 离线整段识别器：流式只负责预览，松手后由它对完整音频复识别得出准确结果
+        self._offline_recognizer = offline_recognizer
         self._model = None
         self._punc_model = None
         self._initialized = False
@@ -294,17 +297,23 @@ class StreamingSpeechRecognizer:
 
 
 class Session:
-    """单次录音会话，对应一个 WebSocket 连接。每次新建，用完即弃。"""
+    """单次录音会话，对应一个 WebSocket 连接。每次新建，用完即弃。
+
+    feed() 用流式模型产出 partial 预览（跟嘴）；同时累积原始音频，
+    finalize() 时改用离线整段模型对完整音频复识别，得到准确的最终文本。
+    """
 
     def __init__(self, owner: StreamingSpeechRecognizer):
         self._owner = owner
         self._cache: dict = {}
         self._fragments: List[str] = []
+        self._audio_buffer: List[np.ndarray] = []  # 累积原始音频，供离线复识别
 
     def feed(self, audio_chunk: np.ndarray) -> str:
-        """喂入约 600ms 的 PCM chunk，返回该 chunk 的文本增量（可能为空）。"""
+        """喂入约 600ms 的 PCM chunk，返回该 chunk 的文本增量（仅作预览）。"""
         if len(audio_chunk) == 0:
             return ""
+        self._audio_buffer.append(audio_chunk)
         try:
             result = self._owner._model(
                 audio_chunk,
@@ -318,27 +327,30 @@ class Session:
             logger.error(f"流式 feed 失败: {exc}")
             return ""
 
-    def finalize(self, tail_chunk: Optional[np.ndarray] = None) -> str:
-        """Flush 尾音 → 拼接 → ct-punc → 返回最终文本。"""
-        if tail_chunk is not None and len(tail_chunk) > 0:
-            try:
-                result = self._owner._model(
-                    tail_chunk,
-                    param_dict={"is_final": True, "cache": self._cache},
-                )
-                fragment = self._owner._extract_fragment(result)
-                if fragment:
-                    self._fragments.append(fragment)
-            except Exception as exc:
-                logger.error(f"流式 finalize flush 失败: {exc}")
-        else:
-            try:
-                self._owner._model(
-                    np.zeros(0, dtype=np.float32),
-                    param_dict={"is_final": True, "cache": self._cache},
-                )
-            except Exception as exc:
-                logger.debug(f"流式 finalize flush 跳过: {exc}")
+    def finalize(self, hotwords: str = "") -> str:
+        """松手后调用：用离线模型对完整音频复识别，得到准确的最终文本。"""
+        full_audio = (
+            np.concatenate(self._audio_buffer)
+            if self._audio_buffer
+            else np.zeros(0, dtype=np.float32)
+        )
 
-        full_text = "".join(self._fragments)
-        return self._owner._apply_punc(full_text)
+        offline = self._owner._offline_recognizer
+        if offline is not None and offline.is_ready and len(full_audio) > 0:
+            try:
+                return offline.recognize(full_audio, hotwords)
+            except Exception as exc:
+                logger.warning(f"离线复识别失败，回退到流式拼接结果: {exc}")
+
+        return self._finalize_streaming()
+
+    def _finalize_streaming(self) -> str:
+        """回退路径：flush 流式 cache → 拼接碎片 → ct-punc。"""
+        try:
+            self._owner._model(
+                np.zeros(0, dtype=np.float32),
+                param_dict={"is_final": True, "cache": self._cache},
+            )
+        except Exception as exc:
+            logger.debug(f"流式 finalize flush 跳过: {exc}")
+        return self._owner._apply_punc("".join(self._fragments))

@@ -239,9 +239,9 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         executor = self.application.settings.get("executor")
 
         t0 = time.time()
-        text = await loop.run_in_executor(executor, self.session.finalize, None)
+        text = await loop.run_in_executor(executor, self.session.finalize, self.hotwords)
         asr_elapsed = round(time.time() - t0, 3)
-        logger.info(f"ASR finalize 耗时: {asr_elapsed}s，文本: {text!r}")
+        logger.info(f"离线复识别耗时: {asr_elapsed}s，文本: {text!r}")
 
         llm_elapsed = None
         llm_client = self.application.settings.get("llm_client")
@@ -383,20 +383,36 @@ def create_server(args) -> ServerContext:
     model_name = args.model
     if not model_name:
         model_name = "paraformer-zh-streaming" if streaming else "paraformer-zh"
-    logger.info(f"模型: {model_name}")
+    if streaming:
+        logger.info(f"流式预览模型: {model_name}")
+    else:
+        logger.info(f"模型: {model_name}")
 
     logger.info("初始化模型...")
     t0 = time.time()
 
     if streaming:
         chunk_size = [int(x) for x in args.chunk_size.split(",")]
+        offline_model_name = args.offline_model or "paraformer-zh"
+        logger.info(f"离线复识别模型: {offline_model_name}（最终结果由它产出）")
+        # 离线整段识别器：负责松手后的准确识别（含标点）
+        offline_recognizer = SpeechRecognizer(
+            model_name=offline_model_name,
+            punc_model=punc_model,
+            device=args.device,
+            intra_op_num_threads=args.onnx_threads,
+        )
+        offline_recognizer.initialize()
+        # 流式识别器：仅产出 partial 预览，标点交给离线模型
         recognizer = StreamingSpeechRecognizer(
             model_name=model_name,
-            punc_model=punc_model,
+            punc_model=None,
             device=args.device,
             chunk_size=chunk_size,
             intra_op_num_threads=args.onnx_threads,
+            offline_recognizer=offline_recognizer,
         )
+        recognizer.initialize()
     else:
         recognizer = SpeechRecognizer(
             model_name=model_name,
@@ -404,8 +420,8 @@ def create_server(args) -> ServerContext:
             device=args.device,
             intra_op_num_threads=args.onnx_threads,
         )
+        recognizer.initialize()
 
-    recognizer.initialize()
     logger.info(f"初始化完成，耗时 {time.time() - t0:.1f}s")
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
