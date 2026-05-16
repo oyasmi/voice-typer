@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0
+## 1.2.0
 
 ### 流式双通道：partial 预览 + 离线复识别 final
 
