@@ -63,19 +63,19 @@ curl -O -L https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/sc
 bash ./voice_typer_server.sh setup
 ```
 
-**macOS Swift 客户端**（流式识别，默认，低延迟）：
+**macOS Swift 客户端 / Windows 原生客户端**（流式识别，默认，HUD 实时预览 + 离线准确结果）：
 
 ```bash
 bash ./voice_typer_server.sh run
 ```
 
-**Windows / Linux / macOS Python 客户端**（非流式，兼容模式）：
+**Linux / macOS Python 旧版客户端**（非流式，兼容模式）：
 
 ```bash
 bash ./voice_typer_server.sh run --no-streaming
 ```
 
-> **兼容说明**：服务端默认为流式（WebSocket）模式，仅 macOS Swift 客户端支持。Windows、Linux 及旧版 macOS Python 客户端须加 `--no-streaming` 以使用 HTTP 非流式模式。
+> **兼容说明**：服务端默认为流式（WebSocket）模式，macOS Swift 客户端与 Windows 原生客户端均支持。Linux 及旧版 macOS Python 客户端须加 `--no-streaming` 以使用 HTTP 非流式模式。
 
 #### 或者让 🤖 AI Agent 帮你安装
 
@@ -100,13 +100,13 @@ bash ./voice_typer_server.sh run --no-streaming
    ~/.venvs/voice-typer/bin/pip install --upgrade voice-typer-server
 
 4. 安装完成后告知用户，并给出以下启动命令供用户自行使用：
-   - 前台启动（macOS Swift 客户端，流式）：~/.venvs/voice-typer/bin/voice-typer-server
-   - 前台启动（Windows / Linux / macOS Python 客户端，非流式）：~/.venvs/voice-typer/bin/voice-typer-server --no-streaming
+   - 前台启动（macOS Swift / Windows 原生客户端，流式，默认）：~/.venvs/voice-typer/bin/voice-typer-server
+   - 前台启动（Linux / macOS Python 旧版客户端，非流式）：~/.venvs/voice-typer/bin/voice-typer-server --no-streaming
    - 后台启动：nohup ~/.venvs/voice-typer/bin/voice-typer-server [--no-streaming] &
 
 5. 询问用户是否需要现在就帮忙启动服务：
-   - 先询问用户使用的是哪种客户端：macOS Swift 版 / Windows 版 / Linux 版 / macOS Python 版
-   - macOS Swift 客户端支持流式（默认），其余客户端须加 --no-streaming
+   - 先询问用户使用的是哪种客户端：macOS Swift 版 / Windows 原生版 / Linux 版 / macOS Python 版
+   - macOS Swift 和 Windows 原生客户端支持流式（默认），Linux 及旧版 macOS Python 客户端须加 --no-streaming
    - 再询问用户是否需要配置 LLM 纠错功能（需要 --llm-base-url、--llm-api-key、--llm-model 三个参数）
    - 如果用户不提供 LLM 参数，则禁用纠错功能，以对应参数启动
 ```
