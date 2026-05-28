@@ -79,6 +79,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
     private let summaryTitleLabel = NSTextField(labelWithString: "仍需完成检查项")
     private let continueLabel = NSTextField(wrappingLabelWithString: "请先完成未通过项，再开始使用。")
 
+    private let schemePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let hostField = NSTextField(string: "")
     private let portField = NSTextField(string: "")
     private let apiKeyField = NSSecureTextField(string: "")
@@ -143,6 +144,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         loadedManagedHotwordsText = managedHotwordsText
         self.additionalHotwordFileCount = additionalHotwordFileCount
 
+        schemePopup.selectItem(withTitle: config.server.httpScheme)
         hostField.stringValue = config.server.host
         portField.stringValue = String(config.server.port)
         apiKeyField.stringValue = config.server.apiKey
@@ -333,6 +335,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         headerLabel.alignment = .left
 
         let serverGrid = NSGridView(views: [
+            [makeFormLabel("协议"), makeFillContainer(for: schemePopup)],
             [makeFormLabel("服务地址"), hostField],
             [makeFormLabel("端口"), portField],
             [makeFormLabel("API Key"), apiKeyField],
@@ -761,6 +764,11 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
     }
 
     private func configureConnectionControls() {
+        schemePopup.removeAllItems()
+        schemePopup.addItems(withTitles: ["http", "https"])
+        schemePopup.selectItem(withTitle: "http")
+        schemePopup.toolTip = "选择 https 时 WebSocket 自动改用 wss"
+
         hostField.placeholderString = "127.0.0.1"
         portField.placeholderString = "6008"
         apiKeyField.placeholderString = "可选"
@@ -858,8 +866,9 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
             throw SetupWindowValidationError.invalidPort
         }
 
+        let scheme = schemePopup.titleOfSelectedItem ?? loadedConfig.server.scheme
         return ServerConfig(
-            scheme: loadedConfig.server.scheme,
+            scheme: scheme,
             host: host,
             port: port,
             timeout: loadedConfig.server.timeout,
