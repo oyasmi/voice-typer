@@ -12,6 +12,7 @@
 		0D03D934A0EBD59FE05EDEFD /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CA63A12A6E0EC36FA3DC5A9F /* Cocoa.framework */; };
 		18EC92C0A4B2B47C090D625D /* StreamingASRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E7EA6ED9B5C194FB6FE2A80 /* StreamingASRClient.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		B3F1A2C4D5E6078901234567 /* ASRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D6E5F4032100000001 /* ASRClient.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		D2B2C3D4E5F60718293A4B5C /* ServerHealthProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A1B2C3D4E5F60718293A4B /* ServerHealthProbe.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		241CFA787F958B65DD6AFEBA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 289B313565AD39058A0982BF /* AppIcon.icns */; };
 		2C72BD25DC5F46B847E7A1CD /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB9133943155E28E91CFAB8E /* AppDelegate.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		2EAAE9F0B240908C52A51EEE /* HotkeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1421447C878B6F4F1746891B /* HotkeyService.swift */; settings = {COMPILER_FLAGS = "-"; }; };
@@ -50,6 +51,7 @@
 		AA9BC7CAA00E2E6EC4B1EA63 /* StatusBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StatusBarController.swift; path = Sources/VoiceTyperApp/UI/StatusBarController.swift; sourceTree = "<group>"; };
 		BAEB9851565BF0EA9CD7167F /* PermissionCenter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCenter.swift; path = Sources/VoiceTyperApp/Core/PermissionCenter.swift; sourceTree = "<group>"; };
 		C4440147F1EB39D757950E65 /* TextInsertionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TextInsertionService.swift; path = Sources/VoiceTyperApp/Services/TextInsertionService.swift; sourceTree = "<group>"; };
+		D1A1B2C3D4E5F60718293A4B /* ServerHealthProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServerHealthProbe.swift; path = Sources/VoiceTyperApp/Services/ServerHealthProbe.swift; sourceTree = "<group>"; };
 		CA63A12A6E0EC36FA3DC5A9F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		DB9133943155E28E91CFAB8E /* AppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Sources/VoiceTyperApp/App/AppDelegate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -95,6 +97,7 @@
 				A221DA318B41C0D9A842631A /* AudioCaptureService.swift */,
 				1421447C878B6F4F1746891B /* HotkeyService.swift */,
 				C4440147F1EB39D757950E65 /* TextInsertionService.swift */,
+				D1A1B2C3D4E5F60718293A4B /* ServerHealthProbe.swift */,
 			);
 			name = Services;
 			sourceTree = "<group>";
@@ -266,6 +269,7 @@
 				0C5BA21E132677F9F3592DCB /* AudioCaptureService.swift in Sources */,
 				2EAAE9F0B240908C52A51EEE /* HotkeyService.swift in Sources */,
 				988BCB702D6BA30402AB2783 /* TextInsertionService.swift in Sources */,
+				D2B2C3D4E5F60718293A4B5C /* ServerHealthProbe.swift in Sources */,
 				916989E623368830FDB1DB43 /* Constants.swift in Sources */,
 				392AB06369D3875B4D9905B7 /* Logger.swift in Sources */,
 				06BC389F4804546D8769661B /* RecordingHUDController.swift in Sources */,
@@ -330,7 +334,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -355,7 +359,7 @@
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.voicetyper.app;
 				PRODUCT_NAME = VoiceTyper;
 				SDKROOT = macosx;
@@ -379,7 +383,7 @@
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.voicetyper.app;
 				PRODUCT_NAME = VoiceTyper;
 				SDKROOT = macosx;
@@ -436,7 +440,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

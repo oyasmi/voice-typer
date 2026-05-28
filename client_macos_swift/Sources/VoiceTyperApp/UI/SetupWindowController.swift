@@ -859,6 +859,7 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         }
 
         return ServerConfig(
+            scheme: loadedConfig.server.scheme,
             host: host,
             port: port,
             timeout: loadedConfig.server.timeout,

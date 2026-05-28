@@ -14,10 +14,17 @@ final class VoiceTyperController {
     private var isRunning = false
     private var accumulatedPreview = ""
     private var batchAudioChunks: [Data] = []
+    private var recordingStartedAt: Date?
+
+    /// 录音时长低于此阈值的会话直接丢弃，避免误触上传无意义音频。
+    /// 见仓库根目录 PROTOCOL.md "短录音过滤"。
+    private static let minimumRecordingDuration: TimeInterval = 0.3
 
     var onStateChange: ((AppState) -> Void)?
     var onRecognizedText: ((String) -> Void)?
     var onPreviewUpdate: ((String) -> Void)?
+    /// 非致命提示（流式 partial 失败等），UI 可短暂闪烁状态但不打断录音。
+    var onPreviewWarning: ((String) -> Void)?
     var isStarted: Bool { isRunning }
 
     init(
@@ -57,23 +64,11 @@ final class VoiceTyperController {
     }
 
     func healthCheck() async -> Bool {
-        guard let url = URL(string: "http://\(config.server.host):\(config.server.port)/health") else {
-            return false
+        let result = await ServerHealthProbe.check(server: config.server)
+        if let version = result.version {
+            AppLog.network.info("服务端版本: \(version, privacy: .public)")
         }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5.0
-        let trimmedKey = config.server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedKey.isEmpty {
-            request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-        }
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return payload?["ready"] as? Bool ?? false
-        } catch {
-            AppLog.network.error("健康检查失败: \(error.localizedDescription, privacy: .public)")
-            return false
-        }
+        return result.ready
     }
 
     // MARK: - 录音流程
@@ -81,6 +76,7 @@ final class VoiceTyperController {
     private func beginRecording() {
         guard isRunning, !isRecording else { return }
 
+        recordingStartedAt = Date()
         if config.server.streaming {
             beginStreamingRecording()
         } else {
@@ -91,9 +87,30 @@ final class VoiceTyperController {
     private func finishRecording() {
         guard isRecording else { return }
         isRecording = false
+
+        // 短录音过滤：低于阈值的录音视为误触，立即取消。
+        if let startedAt = recordingStartedAt,
+           Date().timeIntervalSince(startedAt) < Self.minimumRecordingDuration {
+            AppLog.audio.info("录音时长低于阈值，已丢弃")
+            cancelCurrentRecording()
+            return
+        }
+
         // 流式：stop() 触发 onTailChunk → sendAudio(tail) + finalize()
         // 非流式：stop() 触发 onTailChunk → 累积尾音 → HTTP POST
         audioCaptureService.stop()
+    }
+
+    /// 取消当前录音：丢弃尾音、关闭 WS、回到 idle。
+    private func cancelCurrentRecording() {
+        audioCaptureService.stopWithoutResult()
+        teardownASRClient()
+        accumulatedPreview = ""
+        onPreviewUpdate?("")
+        recordingStartedAt = nil
+        if isRunning {
+            onStateChange?(.idle)
+        }
     }
 
     // MARK: - 流式路径
@@ -124,6 +141,14 @@ final class VoiceTyperController {
                 guard !trimmed.isEmpty, self.isRunning else { return }
                 _ = self.textInsertionService.insert(text: trimmed)
                 self.onRecognizedText?(trimmed)
+            }
+        }
+
+        client.onWarning = { [weak self, weak client] message in
+            guard let self else { return }
+            // 仅当前会话的 warning 才转发到 HUD；旧会话的提示直接丢弃。
+            if let c = client, self.asrClient === c {
+                self.onPreviewWarning?(message)
             }
         }
 
@@ -219,16 +244,19 @@ final class VoiceTyperController {
     }
 
     private func performBatchRecognition() async {
-        onStateChange?(.recognizing)
-
         let combinedData = batchAudioChunks.reduce(Data(), +)
         batchAudioChunks = []
 
-        guard !combinedData.isEmpty else {
+        // 兜底：若实际音频不足阈值（采样数 = bytes / 4），同样丢弃。
+        let sampleCount = combinedData.count / MemoryLayout<Float>.size
+        let minimumSamples = Int(Self.minimumRecordingDuration * AppConstants.targetSampleRate)
+        guard !combinedData.isEmpty, sampleCount >= minimumSamples else {
             teardownASRClient()
             onStateChange?(.idle)
             return
         }
+
+        onStateChange?(.recognizing)
 
         let client = ASRClient(server: config.server)
         let hotwordsString = hotwords.joined(separator: " ")

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+### 协议与鉴权统一
+
+- 新增仓库根目录 [`PROTOCOL.md`](../PROTOCOL.md)，作为客户端↔服务端协议的唯一来源。
+- **鉴权**：HTTP 与 WebSocket 走同一份 `authorize_request()`。新规则——未配置 `--api-keys` 放行；配置后 listen=`127.0.0.1` 放行；其他监听地址必须 `Authorization: Bearer <key>`。修复了 HTTP 在 `--host 0.0.0.0 --api-keys ...` 下仍允许本机无密钥访问的语义差。
+- **partial 协议**：明确 `partial.text` 为**增量片段**。`Session.feed` 加防御性差分，即使底层模型返回累计串也会裁成 delta 再下发。
+- **feed 异常上报**：流式 feed 单帧异常改为发 `{"type":"warning","code":"feed_failed"}` 帧，**连接保留**，finalize 仍可走离线模型兜底。新增 `no_session` warning。
+- **`/health`** 新增 `version`、`protocol_version`、`asr_model`、`offline_model`、`punc_model`、`device` 字段，便于客户端日志与诊断。
+
 ## 1.2.0
 
 ### 流式双通道：partial 预览 + 离线复识别 final

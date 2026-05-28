@@ -310,22 +310,37 @@ class Session:
         self._audio_buffer: List[np.ndarray] = []  # 累积原始音频，供离线复识别
 
     def feed(self, audio_chunk: np.ndarray) -> str:
-        """喂入约 600ms 的 PCM chunk，返回该 chunk 的文本增量（仅作预览）。"""
+        """喂入约 600ms 的 PCM chunk，返回该 chunk 的文本**增量**。
+
+        协议约定（详见仓库根目录 PROTOCOL.md）：
+        返回值是自上一次 feed 以来的新增字符串，**不是**累计文本。
+        客户端只需按到达顺序拼接即可还原当前转写。
+
+        即使底层模型偶发返回了包含历史前缀的累计串，这里也会做差分
+        裁掉已发出的部分，确保 server→client 的语义始终是"纯增量"。
+
+        feed 异常会原样抛出，由调用方决定上报方式；调用方 raise 后音频
+        仍保留在 _audio_buffer 中，finalize 仍可用离线模型兜底。
+        """
         if len(audio_chunk) == 0:
             return ""
         self._audio_buffer.append(audio_chunk)
-        try:
-            result = self._owner._model(
-                audio_chunk,
-                param_dict={"is_final": False, "cache": self._cache},
-            )
-            fragment = self._owner._extract_fragment(result)
-            if fragment:
-                self._fragments.append(fragment)
-            return fragment
-        except Exception as exc:
-            logger.error(f"流式 feed 失败: {exc}")
+
+        result = self._owner._model(
+            audio_chunk,
+            param_dict={"is_final": False, "cache": self._cache},
+        )
+        raw = self._owner._extract_fragment(result)
+        if not raw:
             return ""
+
+        # 防御性差分：若模型返回带历史前缀的累计串（不同版本行为不一致），
+        # 仅取出真正新增的尾段。多数版本下 raw 已经只是 delta，diff 为 raw 本身。
+        already = "".join(self._fragments)
+        delta = raw[len(already):] if raw.startswith(already) else raw
+        if delta:
+            self._fragments.append(delta)
+        return delta
 
     def finalize(self, hotwords: str = "") -> str:
         """松手后调用：用离线模型对完整音频复识别，得到准确的最终文本。"""

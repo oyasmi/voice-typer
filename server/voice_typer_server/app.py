@@ -18,26 +18,12 @@ import tornado.ioloop
 import tornado.web
 import tornado.websocket
 
-from .auth import BaseAuthenticatedHandler
+from . import __version__
+from .auth import BaseAuthenticatedHandler, authorize_request
 from .llm_client import LLMClient
 from .recognizer import SpeechRecognizer, StreamingSpeechRecognizer
 
 logger = logging.getLogger("VoiceTyper")
-
-
-def _check_api_key(request, settings) -> bool:
-    """WebSocket 握手阶段的 API key 校验。"""
-    api_keys = settings.get("api_keys", [])
-    if not api_keys:
-        return True
-    server_host = settings.get("server_host", "127.0.0.1")
-    remote_ip = request.remote_ip or ""
-    if server_host == "127.0.0.1" and remote_ip in ("127.0.0.1", "::1"):
-        return True
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[len("Bearer "):] in api_keys
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -45,16 +31,22 @@ def _check_api_key(request, settings) -> bool:
 # ---------------------------------------------------------------------------
 
 class HealthHandler(BaseAuthenticatedHandler):
-    @tornado.web.authenticated
     def get(self):
-        recognizer = self.application.settings.get("recognizer")
+        recognizer  = self.application.settings.get("recognizer")
         llm_client  = self.application.settings.get("llm_client")
         streaming   = self.application.settings.get("streaming", True)
+        models      = self.application.settings.get("models", {})
         self.write({
-            "status":     "ok",
-            "ready":      recognizer.is_ready if recognizer else False,
-            "streaming":  streaming,
-            "llm_enabled": llm_client is not None,
+            "status":            "ok",
+            "ready":             recognizer.is_ready if recognizer else False,
+            "version":           __version__,
+            "protocol_version":  1,
+            "streaming":         streaming,
+            "llm_enabled":       llm_client is not None,
+            "asr_model":         models.get("asr"),
+            "offline_model":     models.get("offline"),
+            "punc_model":        models.get("punc"),
+            "device":            models.get("device"),
         })
 
 
@@ -80,7 +72,6 @@ class RecognizeHandler(BaseAuthenticatedHandler):
         llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
         return audio_bytes, hotwords, llm_recorrect
 
-    @tornado.web.authenticated
     async def post(self):
         recognizer = self.application.settings.get("recognizer")
         llm_client  = self.application.settings.get("llm_client")
@@ -154,23 +145,26 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
     """
     流式语音识别 WebSocket 端点。
 
-    协议：
+    协议（详见仓库根目录 PROTOCOL.md）：
       Client → Server:
         连接后立即  text:   {"type":"start","hotwords":"词1 词2","sample_rate":16000}
         录音中每 600ms  binary: float32 PCM，9600 samples = 38400 bytes
         松开热键   text:   {"type":"finalize"}
       Server → Client:
         有增量时   text: {"type":"partial","text":"今天","seq":N}
+                       注意：text 是**增量片段**，客户端按到达顺序拼接即可。
+        非致命提示 text: {"type":"warning","code":"...","message":"..."}
+                       feed 阶段单帧异常等，连接保持，finalize 仍可继续。
         完成时     text: {"type":"final","text":"今天天气不错。","asrElapsed":0.82}
-        错误时     text: {"type":"error","code":"...","message":"..."}
-        之后 close (1000)
+        致命错误   text: {"type":"error","code":"...","message":"..."}（之后 close）
+        正常结束   close (1000)
     """
 
     def check_origin(self, origin):
         return True
 
     def prepare(self):
-        if not _check_api_key(self.request, self.application.settings):
+        if not authorize_request(self.request, self.application.settings):
             self.set_status(401)
             self.finish({"error": "Unauthorized"})
 
@@ -198,11 +192,19 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 
     async def _handle_audio(self, data: bytes):
         if self.session is None:
+            await self._send_warning("no_session", "audio received before start")
             return
         chunk = np.frombuffer(data, dtype=np.float32)
         loop = asyncio.get_running_loop()
         executor = self.application.settings.get("executor")
-        fragment = await loop.run_in_executor(executor, self.session.feed, chunk)
+        try:
+            fragment = await loop.run_in_executor(executor, self.session.feed, chunk)
+        except Exception as exc:
+            # feed 失败属于非致命错误：通知客户端但保留连接，
+            # finalize 时还能用离线模型对累积音频复识别兜底。
+            logger.warning("流式 feed 异常: %s", exc)
+            await self._send_warning("feed_failed", str(exc))
+            return
         if fragment:
             await self.write_message(json.dumps(
                 {"type": "partial", "text": fragment, "seq": self.seq},
@@ -273,6 +275,16 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         except Exception as exc:
             logger.debug(f"_send_error 写入失败（连接可能已关闭）: {exc}")
 
+    async def _send_warning(self, code: str, message: str):
+        """非致命提示帧；连接保持，客户端可继续 finalize。"""
+        try:
+            await self.write_message(json.dumps(
+                {"type": "warning", "code": code, "message": message},
+                ensure_ascii=False,
+            ))
+        except Exception as exc:
+            logger.debug(f"_send_warning 写入失败（连接可能已关闭）: {exc}")
+
     def on_close(self):
         self.session = None
         logger.info(f"WS 连接关闭，code={self.close_code}")
@@ -283,7 +295,8 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 # ---------------------------------------------------------------------------
 
 def make_app(api_keys=None, server_host="127.0.0.1",
-             recognizer=None, llm_client=None, executor=None, streaming=True):
+             recognizer=None, llm_client=None, executor=None,
+             streaming=True, models=None):
     if streaming:
         handlers = [
             (r"/health",            HealthHandler),
@@ -301,6 +314,7 @@ def make_app(api_keys=None, server_host="127.0.0.1",
     app.settings["llm_client"]  = llm_client
     app.settings["executor"]    = executor
     app.settings["streaming"]   = streaming
+    app.settings["models"]      = models or {}
     return app
 
 
@@ -391,6 +405,7 @@ def create_server(args) -> ServerContext:
     logger.info("初始化模型...")
     t0 = time.time()
 
+    offline_model_name: Optional[str] = None
     if streaming:
         chunk_size = [int(x) for x in args.chunk_size.split(",")]
         offline_model_name = args.offline_model or "paraformer-zh"
@@ -424,6 +439,13 @@ def create_server(args) -> ServerContext:
 
     logger.info(f"初始化完成，耗时 {time.time() - t0:.1f}s")
 
+    models_meta = {
+        "asr":     model_name,
+        "offline": offline_model_name if streaming else None,
+        "punc":    punc_model,
+        "device":  args.device,
+    }
+
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     app = make_app(
         api_keys=api_keys,
@@ -432,6 +454,7 @@ def create_server(args) -> ServerContext:
         llm_client=llm_client,
         executor=executor,
         streaming=streaming,
+        models=models_meta,
     )
     server = tornado.httpserver.HTTPServer(app, max_buffer_size=64 * 1024 * 1024)
     server.listen(args.port, args.host)

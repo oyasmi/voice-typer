@@ -9,7 +9,7 @@ final class ASRClient {
     }
 
     func recognize(audioData: Data, hotwords: String, llmRecorrect: Bool) async throws -> String {
-        guard let url = URL(string: "http://\(server.host):\(server.port)/recognize?llm_recorrect=\(llmRecorrect)") else {
+        guard let url = URL(string: "\(server.httpScheme)://\(server.host):\(server.port)/recognize?llm_recorrect=\(llmRecorrect)") else {
             throw URLError(.badURL)
         }
 

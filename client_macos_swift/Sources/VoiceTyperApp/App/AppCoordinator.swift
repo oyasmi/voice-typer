@@ -86,7 +86,7 @@ final class AppCoordinator {
                 Task { await self?.refreshServerStatus() }
             }
             controller.onTestServerConnection = { server in
-                await AppCoordinator.checkServerHealth(server: server)
+                await ServerHealthProbe.check(server: server).ready
             }
             controller.onSaveConfig = { [weak self] updatedConfig in
                 guard let self else { return }
@@ -208,6 +208,9 @@ final class AppCoordinator {
             case .recognizing:
                 // 保持 HUD 可见，切换为"识别中"样式
                 self.recordingHUDController?.setRecognizing()
+            case .error(let message):
+                // HUD 用错误样式短暂提示后自隐，避免用户对"录音消失"无感
+                self.recordingHUDController?.showError(message)
             default:
                 self.recordingHUDController?.hideHUD()
             }
@@ -218,27 +221,12 @@ final class AppCoordinator {
             self?.recordingHUDController?.showPreview(accumulated)
         }
 
+        voiceTyperController?.onPreviewWarning = { [weak self] message in
+            self?.recordingHUDController?.flashWarning(message)
+        }
+
         voiceTyperController?.onRecognizedText = { text in
             AppLog.app.info("识别结果: \(text, privacy: .public)")
-        }
-    }
-
-    private static func checkServerHealth(server: ServerConfig) async -> Bool {
-        guard let url = URL(string: "http://\(server.host):\(server.port)/health") else {
-            return false
-        }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5.0
-        let trimmed = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
-        }
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return payload?["ready"] as? Bool ?? false
-        } catch {
-            return false
         }
     }
 

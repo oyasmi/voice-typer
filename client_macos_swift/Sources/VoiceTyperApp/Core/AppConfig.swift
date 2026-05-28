@@ -35,6 +35,7 @@ struct AppConfig: Codable {
 }
 
 struct ServerConfig: Codable {
+    var scheme: String
     var host: String
     var port: Int
     var timeout: Double
@@ -43,6 +44,7 @@ struct ServerConfig: Codable {
     var streaming: Bool
 
     init(
+        scheme: String = "http",
         host: String = "127.0.0.1",
         port: Int = 6008,
         timeout: Double = 60.0,
@@ -50,6 +52,7 @@ struct ServerConfig: Codable {
         llmRecorrect: Bool = true,
         streaming: Bool = true
     ) {
+        self.scheme = scheme
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -60,6 +63,8 @@ struct ServerConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawScheme = try container.decodeIfPresent(String.self, forKey: .scheme) ?? "http"
+        self.scheme = ServerConfig.normalizeScheme(rawScheme)
         self.host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
         self.port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 6008
         self.timeout = try container.decodeIfPresent(Double.self, forKey: .timeout) ?? 60.0
@@ -68,7 +73,23 @@ struct ServerConfig: Codable {
         self.streaming = try container.decodeIfPresent(Bool.self, forKey: .streaming) ?? true
     }
 
+    /// HTTP / HTTPS — 用于 /health、POST /recognize。
+    var httpScheme: String {
+        scheme.lowercased() == "https" ? "https" : "http"
+    }
+
+    /// WS / WSS — 与 httpScheme 对应。
+    var wsScheme: String {
+        scheme.lowercased() == "https" ? "wss" : "ws"
+    }
+
+    private static func normalizeScheme(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        return (lowered == "https" || lowered == "wss") ? "https" : "http"
+    }
+
     enum CodingKeys: String, CodingKey {
+        case scheme
         case host
         case port
         case timeout

@@ -144,6 +144,7 @@ The format is shared across all clients (so server/hotword config migrates betwe
 
 ```yaml
 server:
+  scheme: "http"         # http / https; ws/wss is derived automatically
   host: "127.0.0.1"
   port: 6008
   timeout: 60
@@ -173,7 +174,11 @@ Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` s
 3. **Streaming (default, native clients):** raw frames are pushed over WebSocket; partial text is shown live in the HUD. On key release, the server runs an offline re-recognition pass for the accurate final text.
 4. **Non-streaming (Linux, or `--no-streaming`):** the full clip is sent via HTTP `POST /recognize` on key release.
 5. Server pipeline: ASR → punctuation restoration → optional LLM correction.
-6. Final text is inserted at the cursor (recordings under ~0.3s are discarded).
+6. Final text is inserted at the cursor.
+
+> **Short-recording filter:** clients discard sessions shorter than **300ms** before any network call — see `PROTOCOL.md` §5.1 and `VoiceTyperController.minimumRecordingDuration` on macOS. This is a client-side convention; the server does not enforce it.
+
+> **Wire protocol:** the canonical client↔server contract (rules, frames, partial-is-delta semantics, scheme handling) lives in [`PROTOCOL.md`](PROTOCOL.md). Update it whenever changing wire behavior on either side.
 
 ### Text Insertion
 - **macOS:** prefer Accessibility direct write (`AXValue`/`AXSelectedTextRange`, no clipboard pollution); fall back to backing up the pasteboard, writing text, simulating `Cmd+V`, then restoring.

@@ -5,6 +5,7 @@ import Foundation
 private enum ServerMessage {
     case partial(text: String, seq: Int)
     case final(text: String, asrElapsed: Double?, llmElapsed: Double?)
+    case warning(code: String, message: String)
     case error(code: String, message: String)
     case unknown
 }
@@ -29,6 +30,11 @@ private func parseServerMessage(_ raw: String) -> ServerMessage {
         let llmElapsed = json["llmElapsed"] as? Double
         return .final(text: text, asrElapsed: asrElapsed, llmElapsed: llmElapsed)
 
+    case "warning":
+        let code = json["code"] as? String ?? "unknown"
+        let message = json["message"] as? String ?? ""
+        return .warning(code: code, message: message)
+
     case "error":
         let code = json["code"] as? String ?? "unknown"
         let message = json["message"] as? String ?? ""
@@ -49,6 +55,8 @@ private func parseServerMessage(_ raw: String) -> ServerMessage {
 final class StreamingASRClient {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
+    /// 非致命提示（如 feed_failed）。连接仍存活，finalize 可继续。
+    var onWarning: ((String) -> Void)?
     var onError: ((String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
@@ -59,7 +67,7 @@ final class StreamingASRClient {
 
     func connect(server: ServerConfig, hotwords: [String], llmRecorrect: Bool) throws {
         var components = URLComponents()
-        components.scheme = "ws"
+        components.scheme = server.wsScheme
         components.host = server.host
         components.port = server.port
         components.path = "/recognize/stream"
@@ -157,8 +165,11 @@ final class StreamingASRClient {
                 onPartial?(text)
             }
         case .final(let text, let asr, let llm):
-            AppLog.network.info("final: \(text, privacy: .public) asr=\(asr ?? 0, privacy: .public) llm=\(llm ?? 0, privacy: .public)")
+            AppLog.network.info("final asr=\(asr ?? 0, privacy: .public) llm=\(llm ?? 0, privacy: .public)")
             onFinal?(text)
+        case .warning(let code, let message):
+            AppLog.network.warning("服务端 warning [\(code, privacy: .public)]: \(message, privacy: .public)")
+            onWarning?(message)
         case .error(_, let message):
             AppLog.network.error("服务端错误: \(message, privacy: .public)")
             onError?(message)

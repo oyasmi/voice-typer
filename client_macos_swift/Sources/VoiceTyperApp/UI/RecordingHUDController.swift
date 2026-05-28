@@ -94,6 +94,50 @@ final class RecordingHUDController: NSWindowController {
         waveformView.setRecognizing()
     }
 
+    /// 显示一次性错误浮层，约 2.5s 后自动隐藏。
+    /// 用于 `.error(...)` / 服务断线等不再进入录音流程的场景。
+    func showError(_ message: String) {
+        guard let window else { return }
+        ensureUIBuilt()
+        if let screen = NSScreen.main {
+            let x = (screen.frame.width - window.frame.width) / 2
+            let y: CGFloat = 120
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+        timer?.invalidate()
+        timer = nil
+        startDate = nil
+        timeLabel.stringValue = ""
+        statusLabel.stringValue = "错误"
+        previewLabel.stringValue = message.isEmpty ? "服务异常" : message
+        dotView.stopPulse()
+        dotView.setStatic(color: NSColor(calibratedRed: 1.0, green: 0.36, blue: 0.32, alpha: 1))
+        waveformView.stopAnimating()
+        window.orderFrontRegardless()
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self else { return }
+            // 用户已开始新录音则不打断
+            if self.startDate == nil {
+                self.hideHUD()
+            }
+        }
+    }
+
+    /// 录音过程中的非致命提示（如 partial 暂时不可用）。
+    /// 仅闪烁 statusLabel，不中断动画。
+    func flashWarning(_ message: String) {
+        statusLabel.stringValue = message.isEmpty ? "识别提示" : message
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let self else { return }
+            if self.startDate != nil {
+                self.statusLabel.stringValue = "录音中"
+            }
+        }
+    }
+
     // MARK: - UI 构建
 
     private func ensureUIBuilt() {

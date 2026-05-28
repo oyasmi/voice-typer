@@ -134,11 +134,13 @@ final class ConfigStore {
         """
         # VoiceTyper 客户端配置
         server:
+          scheme: "http"        # http / https，对应 ws / wss
           host: "127.0.0.1"
           port: 6008
           timeout: 60
           api_key: ""
           llm_recorrect: true
+          streaming: true       # false 走 HTTP 兼容模式
 
         hotkey:
           modifiers: []
@@ -203,11 +205,13 @@ final class ConfigStore {
 
         return """
         server:
+          scheme: \(yamlString(config.server.httpScheme))
           host: \(yamlString(config.server.host))
           port: \(config.server.port)
           timeout: \(yamlNumber(config.server.timeout))
           api_key: \(yamlString(config.server.apiKey))
           llm_recorrect: \(config.server.llmRecorrect ? "true" : "false")
+          streaming: \(config.server.streaming ? "true" : "false")
         hotkey:
         \(hotkeyModifiersBlock)
           key: \(yamlString(config.hotkey.key))
