@@ -48,7 +48,7 @@ build.bat
 
 ## 配置文件
 
-路径：`%APPDATA%\voice_typer\config.yaml`（与 macOS / Python 版完全兼容）
+路径：`%APPDATA%\voice_typer\config.yaml`（与 macOS / Linux 客户端格式完全兼容）
 
 ```yaml
 server:

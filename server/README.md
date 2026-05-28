@@ -6,7 +6,7 @@
 
 - 本地运行，默认不依赖云端 ASR
 - **流式识别（默认）**：WebSocket 双通道——录音时 HUD 实时预览（跟嘴），松手后离线整段复识别产出准确最终结果
-- **非流式识别（兼容）**：HTTP POST，支持热词，可作为旧客户端兼容路径
+- **非流式识别（兼容）**：HTTP POST，支持热词，供 Linux 客户端及非流式场景使用
 - 内置中文识别和标点恢复默认模型
 - 可选启用 API Key
 - 可选接入 OpenAI 兼容 LLM 做纠错
@@ -100,18 +100,18 @@ docker run -d -p 6008:6008 --name voice-typer voice-typer-server:latest
 REM 1. 安装环境（自动安装 pywin32 依赖）
 scripts\voice_typer_server.bat setup --local
 
-REM 2. 注册为 Windows 服务（需管理员权限，默认开机自启）
-REM    Windows 客户端使用 HTTP 非流式模式，必须加 --no-streaming
-scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu --no-streaming
+REM 2. 注册为 Windows 服务（需管理员权限，默认开机自启、默认流式模式）
+REM    Windows 原生客户端支持流式，无需额外参数；若连接的是 Linux 等非流式客户端，请追加 --no-streaming
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu
 
 REM 启用 LLM 校对（推荐，可显著提升识别准确率）
-scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu --no-streaming ^
+scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu ^
     --llm-base-url https://api.openai.com/v1 ^
     --llm-api-key sk-xxx ^
     --llm-model gpt-4o-mini
 
 REM 手动启动模式（不随系统启动）
-scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008 --no-streaming
+scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008
 ```
 
 #### 管理服务

@@ -6,6 +6,7 @@
 
 - 🎤 **按住录音** - 按住热键开始录音，松开自动识别
 - 🔒 **完全离线** - 无需联网，本地处理，保护隐私
+- ⚡ **流式实时预览** - 原生客户端默认流式模式，边说边在 HUD 浮窗中显示识别结果，松手后离线整段复识别产出准确文本
 - ⚙️ **自定义配置** - 支持自定义热键、用户词库
 - 🌐 **Fn 键支持** - macOS 支持绑定 Fn（地球仪）键作为热键
 - ⏱️ **短录音过滤** - 自动丢弃 0.3 秒以下的误触录音
@@ -20,9 +21,9 @@
   按住热键                                           松开热键
      │                                                  │
      ▼                                                  ▼
- ┌────────────────── 客户端 ──────────────────┐    POST /recognize
- │                                            │    (16kHz float32)
- │  热键监听    录音     UI 浮窗    文本插入   │         │
+ ┌────────────────── 客户端 ──────────────────┐  流式: WS /recognize/stream
+ │                                            │  非流式: POST /recognize
+ │  热键监听    录音     UI 浮窗    文本插入   │     (16kHz float32)
  │  ─────────────────────────────────────────  │         │
  │  macOS : Swift+AppKit  原生录音  剪贴板/AX  │         │
  │  Windows: .NET8+WinForms 原生录音 剪贴板   │         ▼
@@ -32,7 +33,7 @@
  └────────────────────────────────────────────┘  │             │
                                                  │  ┌───────┐  │
      ┌───────────────────────────────────────────┤  │  ASR  │  │
-     │         JSON { text: "识别结果" }         │  │(ONNX) │  │
+     │   partial 实时预览 / final 准确结果       │  │(ONNX) │  │
      ▼                                           │  └───┬───┘  │
  光标处插入文本                                    │      ▼      │
                                                  │  标点恢复   │
@@ -121,66 +122,41 @@ bash ./voice_typer_server.sh run --no-streaming
 
 ## macOS 客户端
 
-👉 详细安装、首次授权、构建说明请参阅 [client_macos_swift/README.md](client_macos_swift/README.md)。
+基于 Swift + AppKit 的原生菜单栏应用，流式识别（默认）。
 
-### 系统要求
+- **系统要求**：macOS 14.0 (Sonoma) 或更高版本，Apple Silicon
+- **安装**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-macOS.dmg`，将 `VoiceTyper.app` 拖入「应用程序」后打开
+- **首次授权**：应用会自动检查并引导完成三项权限——麦克风、辅助功能 (Accessibility)、输入监控 (Input Monitoring)，以及服务端连通性；存在未完成项时会自动弹出「权限与设置」窗口
+- **默认热键**：`Fn`（地球仪）键，可在「权限与设置」窗口改为组合键
+- **配置**：常用项均已 UI 化（服务地址/端口/API Key、LLM 纠错、热键、用户热词），底层仍保存于 `~/.config/voice_typer/config.yaml`
 
-- macOS 14.0 (Sonoma) 或更高版本
-
-### 下载应用
-
-从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-macOS.dmg`，将 `VoiceTyper.app` 拖到 `Applications` 后运行。
-
-### 授予权限
-
-Swift 原生版会在首次启动时自动检查并引导完成以下权限：
-- **隐私与安全性 → 辅助功能 (Accessibility)**: 用于监听全局热键和模拟键盘输入。
-- **隐私与安全性 → 输入监控 (Input Monitoring)**: 用于监听 Fn 等按键事件。
-- **隐私与安全性 → 麦克风 (Microphone)**: 用于采集音频。
-
-### 开始使用
-
-1. 启动应用后，菜单栏会出现 VoiceTyper 图标
-2. 如果存在未完成权限或服务不可用，会自动弹出“权限与设置”窗口
-3. **按住热键**（默认 `Fn` / 地球仪键，也可配置为其他按键）开始录音
-4. **松开** 自动识别并插入文本到当前光标位置（录音不足 0.3 秒将被忽略）
-
-### 配置与用户热词
-
-新版 macOS 客户端已经将常用配置 UI 化，可直接在“权限与设置”窗口中修改：
-
-- 服务地址、端口、API Key
-- 是否启用 LLM 纠错
-- 热键模式与组合键
-- 用户热词
-
-底层配置仍保存在：
-
-```text
-~/.config/voice_typer/config.yaml
-```
-
-主热词文件默认位于：
-
-```text
-~/.config/voice_typer/hotwords.txt
-```
+👉 详细安装、授权与构建说明请参阅 [client_macos_swift/README.md](client_macos_swift/README.md)。
 
 ---
 
 ## Windows 客户端
 
-👉 详细安装和使用说明请参阅 [client_windows_native/README.md](client_windows_native/README.md)。
+基于 .NET 8 + WinForms 的原生托盘应用，流式识别（默认）。
 
-基于 .NET 8 + WinForms 的原生客户端，支持流式识别（默认）。从 release 下载 `VoiceTyper.exe`，双击即可运行。默认热键 `Ctrl+F2`，按住录音，松开识别。
+- **系统要求**：Windows 10 / 11（便携版需 `.NET Desktop Runtime 8.0`，完整版自带运行时）
+- **安装**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper.exe`，双击运行，应用驻留系统托盘
+- **默认热键**：`Ctrl + F2`
+- **配置**：托盘菜单「权限与设置」中配置，配置文件位于 `%APPDATA%\voice_typer\config.yaml`
+
+👉 详细安装、构建与配置说明请参阅 [client_windows_native/README.md](client_windows_native/README.md)。
 
 ---
 
 ## Linux 客户端
 
-👉 详细安装和使用说明请参阅 [client_linux/README.md](client_linux/README.md)。
+基于 Python + GTK4 + evdev 的 Wayland 客户端，非流式（HTTP）模式，须配合服务端 `--no-streaming`。
 
-支持 Wayland + GNOME 环境，使用 evdev 监听热键、GTK4 指示器、wl-clipboard 插入文本。默认热键 `Ctrl+F2`。
+- **系统要求**：Linux Wayland 会话（推荐 GNOME），Python 3.10+，GTK4、wl-clipboard
+- **安装**：`cd client_linux && make install && make install-udev`（udev 规则用于 evdev 访问，安装后需注销重新登录）
+- **默认热键**：`Ctrl + F2`
+- **配置**：`~/.config/voice_typer/config.yaml`
+
+👉 详细安装、依赖与故障排除请参阅 [client_linux/README.md](client_linux/README.md)。
 
 ---
 
@@ -216,7 +192,7 @@ server:
 
 ## 自定义词库
 
-编辑 `~/.config/voice_typer/hotwords.txt`，每行一个词：
+编辑热词文件，每行一个词，`#` 开头为注释：
 
 ```text
 # 专业术语
@@ -228,6 +204,13 @@ GitHub
 你的名字
 公司名称
 ```
+
+热词文件位置：
+
+- macOS / Linux：`~/.config/voice_typer/hotwords.txt`
+- Windows：`%APPDATA%\voice_typer\hotwords.txt`
+
+> **注意**：热词仅在**非流式模式**下生效（流式预览模型本身不支持热词）。原生客户端默认走流式，可在客户端设置中关闭「流式识别」以启用热词。
 
 ## 致谢
 
