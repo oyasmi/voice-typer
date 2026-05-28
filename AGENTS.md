@@ -3,7 +3,7 @@
 ## 项目概述
 VoiceTyper 是一个基于 ONNX 模型的跨平台语音输入工具，采用 HTTP/JSON 客户端-服务端架构。
 - **Server** (`server/`)：Python ASR 服务，基于 `onnxruntime`。
-- **Clients**：macOS (`client_macos/`)、Linux (`client_linux/`)、Windows (`client_windows/`) 以及规划中的 Go 重写 (`client_go/`)。
+- **Clients**：macOS 原生 (`client_macos_swift/`，Swift + AppKit)、Windows 原生 (`client_windows_native/`，.NET 8 + WinForms)、Linux (`client_linux/`，Python + GTK4 + evdev)。
 
 ## 安装与运行
 
@@ -16,10 +16,10 @@ cd server
 ```
 或直接通过 Python 包运行：`voice-typer-server --help`
 
-### macOS Client
+### macOS Client (Swift)
 ```bash
-cd client_macos
-make install && make run
+cd client_macos_swift
+make build && make run   # 详见 client_macos_swift/README.md
 ```
 
 ### Linux Client (Wayland)
@@ -28,11 +28,10 @@ cd client_linux
 make install && make install-udev && make run
 ```
 
-### Windows Client
+### Windows Client (.NET)
 ```bash
-cd client_windows
-pip install -r requirements.txt
-python main.py
+cd client_windows_native
+dotnet restore && dotnet run   # 详见 client_windows_native/README.md
 ```
 
 ## 测试流程
@@ -46,7 +45,7 @@ python main.py
 - **语言**：代码注释和文档使用**中文**。
 - **错误处理**：避免静默忽略异常，统一使用 `logging`（格式：`%(asctime)s - %(levelname)s - %(message)s`）。
 - **音频流**：客户端录音格式为 **16kHz float32** 单声道，随 HTTP POST 发至 `/recognize` 接口。
-- **文本输入机制**：通过剪贴板 + 键盘模拟（macOS: pbcopy; Linux: wl-copy; Windows: pyperclip）。
+- **文本输入机制**：通过剪贴板 + 键盘模拟（macOS: 原生 NSPasteboard/AX; Linux: wl-copy; Windows: 原生剪贴板）。
 
 > **注意**：
 > - 服务端已移除 GPU OOM 隐患，建议使用 `cpu` 运行推理，可选配 LLM 纠错（详情参考 `server/README.md`）。

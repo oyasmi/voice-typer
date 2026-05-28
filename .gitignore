@@ -279,5 +279,3 @@ server/.pytest_cache/
 server/.mypy_cache/
 
 CLAUDE.md
-
-client_go/voicetyper

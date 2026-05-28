@@ -131,10 +131,3 @@ cd client_macos_swift
 - `dist/VoiceTyper-macOS.dmg`
 
 其中 `DMG` 内会附带一个极简 `INSTALL.txt`，用于引导用户完成拖拽安装和首次放行。
-
-
-## 旧版 Python 客户端
-
-仓库中仍保留一个 Python 技术栈的 macOS 客户端实现，用于兼容旧版本或参考实现：
-
-- [client_macos](../client_macos/README.md)

@@ -24,9 +24,9 @@
  │                                            │    (16kHz float32)
  │  热键监听    录音     UI 浮窗    文本插入   │         │
  │  ─────────────────────────────────────────  │         │
- │  macOS : AppKit     原生录音  剪贴板/AX输入 │         │
- │  Linux : evdev      GTK4     wl-copy       │         ▼
- │  Win   : pynput     pystray  pyperclip     │  ┌─────────────┐
+ │  macOS : Swift+AppKit  原生录音  剪贴板/AX  │         │
+ │  Windows: .NET8+WinForms 原生录音 剪贴板   │         ▼
+ │  Linux : evdev      GTK4     wl-copy       │  ┌─────────────┐
  │                                            │  │ Server :6008│
  │  配置: ~/.config/voice_typer/config.yaml   │  │  (Tornado)  │
  └────────────────────────────────────────────┘  │             │
@@ -47,7 +47,7 @@
 | 平台 | 支持状态 | 客户端技术栈 |
 | --- | --- | --- |
 | **macOS** | ✅ 完全支持 | Swift + AppKit |
-| **Windows** | ✅ 完全支持 | Python + pystray + pynput |
+| **Windows** | ✅ 完全支持 | .NET 8 + WinForms |
 | **Linux** | ✅ 完全支持 | Python + GTK4 + evdev (Wayland) |
 
 ## 快速开始
@@ -69,13 +69,13 @@ bash ./voice_typer_server.sh setup
 bash ./voice_typer_server.sh run
 ```
 
-**Linux / macOS Python 旧版客户端**（非流式，兼容模式）：
+**Linux 客户端**（非流式，兼容模式）：
 
 ```bash
 bash ./voice_typer_server.sh run --no-streaming
 ```
 
-> **兼容说明**：服务端默认为流式（WebSocket）模式，macOS Swift 客户端与 Windows 原生客户端均支持。Linux 及旧版 macOS Python 客户端须加 `--no-streaming` 以使用 HTTP 非流式模式。
+> **兼容说明**：服务端默认为流式（WebSocket）模式，macOS Swift 客户端与 Windows 原生客户端均支持。Linux 客户端须加 `--no-streaming` 以使用 HTTP 非流式模式。
 
 #### 或者让 🤖 AI Agent 帮你安装
 
@@ -101,12 +101,12 @@ bash ./voice_typer_server.sh run --no-streaming
 
 4. 安装完成后告知用户，并给出以下启动命令供用户自行使用：
    - 前台启动（macOS Swift / Windows 原生客户端，流式，默认）：~/.venvs/voice-typer/bin/voice-typer-server
-   - 前台启动（Linux / macOS Python 旧版客户端，非流式）：~/.venvs/voice-typer/bin/voice-typer-server --no-streaming
+   - 前台启动（Linux 客户端，非流式）：~/.venvs/voice-typer/bin/voice-typer-server --no-streaming
    - 后台启动：nohup ~/.venvs/voice-typer/bin/voice-typer-server [--no-streaming] &
 
 5. 询问用户是否需要现在就帮忙启动服务：
-   - 先询问用户使用的是哪种客户端：macOS Swift 版 / Windows 原生版 / Linux 版 / macOS Python 版
-   - macOS Swift 和 Windows 原生客户端支持流式（默认），Linux 及旧版 macOS Python 客户端须加 --no-streaming
+   - 先询问用户使用的是哪种客户端：macOS Swift 版 / Windows 原生版 / Linux 版
+   - macOS Swift 和 Windows 原生客户端支持流式（默认），Linux 客户端须加 --no-streaming
    - 再询问用户是否需要配置 LLM 纠错功能（需要 --llm-base-url、--llm-api-key、--llm-model 三个参数）
    - 如果用户不提供 LLM 参数，则禁用纠错功能，以对应参数启动
 ```
@@ -166,19 +166,13 @@ Swift 原生版会在首次启动时自动检查并引导完成以下权限：
 ~/.config/voice_typer/hotwords.txt
 ```
 
-### 旧版 Python macOS 客户端
-
-仓库中仍保留一个 Python 技术栈的历史实现：
-
-- [client_macos/README.md](client_macos/README.md)
-
 ---
 
 ## Windows 客户端
 
-👉 详细安装和使用说明请参阅 [client_windows/README.md](client_windows/README.md)。
+👉 详细安装和使用说明请参阅 [client_windows_native/README.md](client_windows_native/README.md)。
 
-从 release 下载 `VoiceTyper.exe`，双击即可运行。默认热键 `Ctrl+F2`，按住录音，松开识别。
+基于 .NET 8 + WinForms 的原生客户端，支持流式识别（默认）。从 release 下载 `VoiceTyper.exe`，双击即可运行。默认热键 `Ctrl+F2`，按住录音，松开识别。
 
 ---
 
@@ -238,7 +232,5 @@ GitHub
 ## 致谢
 
 - [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 阿里达摩院开源的语音识别工具包
-- [rumps](https://github.com/jaredks/rumps) - macOS 菜单栏应用框架
-- [pynput](https://github.com/moses-palmer/pynput) - 跨平台输入控制库
-- [PyGObject](https://pygobject.readthedocs.io/) - Python GTK 绑定
+- [PyGObject](https://pygobject.readthedocs.io/) - Python GTK 绑定（Linux 客户端）
 - [evdev](https://python-evdev.readthedocs.io/) - Linux 输入设备处理
