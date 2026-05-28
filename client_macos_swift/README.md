@@ -39,7 +39,7 @@ Swift 版优先解决以下问题：
 4. 从“应用程序”中打开 `VoiceTyper`
 5. 如果首次打开被系统拦截，到“系统设置 > 隐私与安全性”点击“仍要打开”
 
-更简洁的对外安装文案见 [docs/install.md](/Users/oyasmi/projects/voice-typer/client_macos_swift/docs/install.md:1)。
+更简洁的对外安装文案见 [docs/install.md](docs/install.md)。
 
 ### 首次启动
 
