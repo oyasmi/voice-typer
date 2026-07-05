@@ -44,6 +44,7 @@ private enum SetupWindowValidationError: LocalizedError {
     case emptyHost
     case invalidPort
     case emptyHotkeyKey
+    case unsupportedHotkeyKey(String)
 
     var errorDescription: String? {
         switch self {
@@ -53,6 +54,8 @@ private enum SetupWindowValidationError: LocalizedError {
             return "端口必须是 1 到 65535 之间的数字。"
         case .emptyHotkeyKey:
             return "组合键模式下必须填写主键。"
+        case .unsupportedHotkeyKey(let key):
+            return "不支持的主键“\(key)”。可用：字母 a–z、数字 0–9、space、tab、enter、F1–F12。"
         }
     }
 }
@@ -886,6 +889,10 @@ final class SetupWindowController: NSWindowController, NSTabViewDelegate, NSText
         let key = hotkeyKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !key.isEmpty else {
             throw SetupWindowValidationError.emptyHotkeyKey
+        }
+        // 保存前校验主键可用，避免落盘一个 HotkeyService 无法启动、导致应用静默进入错误态的配置。
+        guard HotkeyService.isSupportedKey(key) else {
+            throw SetupWindowValidationError.unsupportedHotkeyKey(key)
         }
 
         return HotkeyConfig(modifiers: currentModifierStrings(), key: key)

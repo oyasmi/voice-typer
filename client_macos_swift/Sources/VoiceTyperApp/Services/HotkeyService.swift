@@ -126,6 +126,12 @@ final class HotkeyService: @unchecked Sendable {
                     return Unmanaged.passUnretained(event)
                 }
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
+                // 系统在回调超时等情况下会禁用 tap；若不重新启用，全局热键会静默失效
+                // 直到重启应用。这里检测到禁用事件立即恢复。
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    ctx.service?.reenableTap()
+                    return Unmanaged.passUnretained(event)
+                }
                 ctx.service?.handle(eventType: type, event: event)
                 return Unmanaged.passUnretained(event)
             },
@@ -166,6 +172,14 @@ final class HotkeyService: @unchecked Sendable {
         CFMachPortInvalidate(tap)
         Unmanaged<TapContext>.fromOpaque(contextPtr).release()
         shutdownSemaphore.signal()
+    }
+
+    /// 重新启用被系统禁用的事件 tap。运行在 tap 回调线程（worker 线程），
+    /// 与 `eventTap` 的赋值同线程，无需额外同步。
+    fileprivate func reenableTap() {
+        guard let eventTap else { return }
+        AppLog.hotkey.warning("事件监听被系统禁用，已重新启用")
+        CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
     private func handle(eventType: CGEventType, event: CGEvent) {
@@ -253,61 +267,37 @@ final class HotkeyService: @unchecked Sendable {
             expectedShift == flags.contains(.maskShift)
     }
 
+    /// 支持作为热键主键的键名 → 虚拟键码。"fn" 不在此表中，走独立的
+    /// flagsChanged 处理路径（见 `handleFn`）。
+    private static let keyCodeMap: [String: CGKeyCode] = [
+        "a": CGKeyCode(kVK_ANSI_A), "b": CGKeyCode(kVK_ANSI_B), "c": CGKeyCode(kVK_ANSI_C),
+        "d": CGKeyCode(kVK_ANSI_D), "e": CGKeyCode(kVK_ANSI_E), "f": CGKeyCode(kVK_ANSI_F),
+        "g": CGKeyCode(kVK_ANSI_G), "h": CGKeyCode(kVK_ANSI_H), "i": CGKeyCode(kVK_ANSI_I),
+        "j": CGKeyCode(kVK_ANSI_J), "k": CGKeyCode(kVK_ANSI_K), "l": CGKeyCode(kVK_ANSI_L),
+        "m": CGKeyCode(kVK_ANSI_M), "n": CGKeyCode(kVK_ANSI_N), "o": CGKeyCode(kVK_ANSI_O),
+        "p": CGKeyCode(kVK_ANSI_P), "q": CGKeyCode(kVK_ANSI_Q), "r": CGKeyCode(kVK_ANSI_R),
+        "s": CGKeyCode(kVK_ANSI_S), "t": CGKeyCode(kVK_ANSI_T), "u": CGKeyCode(kVK_ANSI_U),
+        "v": CGKeyCode(kVK_ANSI_V), "w": CGKeyCode(kVK_ANSI_W), "x": CGKeyCode(kVK_ANSI_X),
+        "y": CGKeyCode(kVK_ANSI_Y), "z": CGKeyCode(kVK_ANSI_Z),
+        "0": CGKeyCode(kVK_ANSI_0), "1": CGKeyCode(kVK_ANSI_1), "2": CGKeyCode(kVK_ANSI_2),
+        "3": CGKeyCode(kVK_ANSI_3), "4": CGKeyCode(kVK_ANSI_4), "5": CGKeyCode(kVK_ANSI_5),
+        "6": CGKeyCode(kVK_ANSI_6), "7": CGKeyCode(kVK_ANSI_7), "8": CGKeyCode(kVK_ANSI_8),
+        "9": CGKeyCode(kVK_ANSI_9),
+        "space": CGKeyCode(kVK_Space), "tab": CGKeyCode(kVK_Tab), "enter": CGKeyCode(kVK_Return),
+        "f1": CGKeyCode(kVK_F1), "f2": CGKeyCode(kVK_F2), "f3": CGKeyCode(kVK_F3),
+        "f4": CGKeyCode(kVK_F4), "f5": CGKeyCode(kVK_F5), "f6": CGKeyCode(kVK_F6),
+        "f7": CGKeyCode(kVK_F7), "f8": CGKeyCode(kVK_F8), "f9": CGKeyCode(kVK_F9),
+        "f10": CGKeyCode(kVK_F10), "f11": CGKeyCode(kVK_F11), "f12": CGKeyCode(kVK_F12),
+    ]
+
     private static func keyCode(for key: String) -> CGKeyCode? {
-        switch key.lowercased() {
-        case "a": return CGKeyCode(kVK_ANSI_A)
-        case "b": return CGKeyCode(kVK_ANSI_B)
-        case "c": return CGKeyCode(kVK_ANSI_C)
-        case "d": return CGKeyCode(kVK_ANSI_D)
-        case "e": return CGKeyCode(kVK_ANSI_E)
-        case "f": return CGKeyCode(kVK_ANSI_F)
-        case "g": return CGKeyCode(kVK_ANSI_G)
-        case "h": return CGKeyCode(kVK_ANSI_H)
-        case "i": return CGKeyCode(kVK_ANSI_I)
-        case "j": return CGKeyCode(kVK_ANSI_J)
-        case "k": return CGKeyCode(kVK_ANSI_K)
-        case "l": return CGKeyCode(kVK_ANSI_L)
-        case "m": return CGKeyCode(kVK_ANSI_M)
-        case "n": return CGKeyCode(kVK_ANSI_N)
-        case "o": return CGKeyCode(kVK_ANSI_O)
-        case "p": return CGKeyCode(kVK_ANSI_P)
-        case "q": return CGKeyCode(kVK_ANSI_Q)
-        case "r": return CGKeyCode(kVK_ANSI_R)
-        case "s": return CGKeyCode(kVK_ANSI_S)
-        case "t": return CGKeyCode(kVK_ANSI_T)
-        case "u": return CGKeyCode(kVK_ANSI_U)
-        case "v": return CGKeyCode(kVK_ANSI_V)
-        case "w": return CGKeyCode(kVK_ANSI_W)
-        case "x": return CGKeyCode(kVK_ANSI_X)
-        case "y": return CGKeyCode(kVK_ANSI_Y)
-        case "z": return CGKeyCode(kVK_ANSI_Z)
-        case "0": return CGKeyCode(kVK_ANSI_0)
-        case "1": return CGKeyCode(kVK_ANSI_1)
-        case "2": return CGKeyCode(kVK_ANSI_2)
-        case "3": return CGKeyCode(kVK_ANSI_3)
-        case "4": return CGKeyCode(kVK_ANSI_4)
-        case "5": return CGKeyCode(kVK_ANSI_5)
-        case "6": return CGKeyCode(kVK_ANSI_6)
-        case "7": return CGKeyCode(kVK_ANSI_7)
-        case "8": return CGKeyCode(kVK_ANSI_8)
-        case "9": return CGKeyCode(kVK_ANSI_9)
-        case "space": return CGKeyCode(kVK_Space)
-        case "tab": return CGKeyCode(kVK_Tab)
-        case "enter": return CGKeyCode(kVK_Return)
-        case "f1": return CGKeyCode(kVK_F1)
-        case "f2": return CGKeyCode(kVK_F2)
-        case "f3": return CGKeyCode(kVK_F3)
-        case "f4": return CGKeyCode(kVK_F4)
-        case "f5": return CGKeyCode(kVK_F5)
-        case "f6": return CGKeyCode(kVK_F6)
-        case "f7": return CGKeyCode(kVK_F7)
-        case "f8": return CGKeyCode(kVK_F8)
-        case "f9": return CGKeyCode(kVK_F9)
-        case "f10": return CGKeyCode(kVK_F10)
-        case "f11": return CGKeyCode(kVK_F11)
-        case "f12": return CGKeyCode(kVK_F12)
-        default:
-            return nil
-        }
+        keyCodeMap[key.lowercased()]
+    }
+
+    /// 该键名是否可作为热键（供设置界面在保存前做校验，避免落盘无法启动的配置）。
+    /// "fn" 视为合法（独立处理路径）。
+    static func isSupportedKey(_ key: String) -> Bool {
+        let normalized = key.lowercased()
+        return normalized == "fn" || keyCodeMap[normalized] != nil
     }
 }
