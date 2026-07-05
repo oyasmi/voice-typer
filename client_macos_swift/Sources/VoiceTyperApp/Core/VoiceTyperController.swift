@@ -57,8 +57,6 @@ final class VoiceTyperController {
         }
         try hotkeyService.start(with: config.hotkey)
         isRunning = true
-        // 预热音频引擎（不开麦、不亮指示灯），缩短首次按键的冷启动。
-        audioCaptureService.prewarm()
         onStateChange?(.idle)
     }
 
@@ -108,7 +106,7 @@ final class VoiceTyperController {
         audioCaptureService.stop()
     }
 
-    /// 停止采集、丢弃尾音、关闭 WS、清空预览并重新预热引擎。
+    /// 停止采集、丢弃尾音、关闭 WS、清空预览。
     /// 不做状态转换，由调用方决定回到 idle 还是发"已取消"提示。
     private func resetRecording() {
         audioCaptureService.stopWithoutResult()
@@ -117,7 +115,6 @@ final class VoiceTyperController {
         onPreviewUpdate?("")
         recordingStartedAt = nil
         isRecording = false
-        audioCaptureService.prewarm()
     }
 
     /// 取消当前录音并静默回到 idle（短录音过滤等内部触发）。
@@ -188,7 +185,6 @@ final class VoiceTyperController {
                 self.accumulatedPreview = ""
                 self.onPreviewUpdate?("")
                 self.isRecording = false
-                self.audioCaptureService.prewarm()
                 self.onStateChange?(.error(message))
             } else {
                 // 旧会话出错，不干扰当前会话
@@ -283,7 +279,6 @@ final class VoiceTyperController {
         let minimumSamples = Int(Self.minimumRecordingDuration * AppConstants.targetSampleRate)
         guard !combinedData.isEmpty, sampleCount >= minimumSamples else {
             teardownASRClient()
-            audioCaptureService.prewarm()
             onStateChange?(.idle)
             return
         }
@@ -303,7 +298,6 @@ final class VoiceTyperController {
             handleFinalText(text)
         } catch {
             teardownASRClient()
-            audioCaptureService.prewarm()
             AppLog.network.error("批量识别失败: \(error.localizedDescription, privacy: .public)")
             onStateChange?(.error("识别失败：\(error.localizedDescription)"))
         }
@@ -318,7 +312,6 @@ final class VoiceTyperController {
 
         guard !trimmed.isEmpty else {
             if !isRecording {
-                audioCaptureService.prewarm()
                 onStateChange?(.idle)
             }
             return
@@ -332,7 +325,6 @@ final class VoiceTyperController {
             onRecognizedText?(trimmed)
             // 若此时有新录音正在进行（并发会话），不覆盖 .recording 状态
             if !isRecording {
-                audioCaptureService.prewarm()
                 onStateChange?(.idle)
             }
         } else {

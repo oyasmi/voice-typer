@@ -35,16 +35,6 @@ final class AudioCaptureService: @unchecked Sendable {
         self.chunkSamples = chunkSamples
     }
 
-    /// 预热音频引擎，缩短按下热键时 `start()` 的冷启动，降低丢首字概率。
-    ///
-    /// 关键：`prepare()` 只预分配引擎资源，**不安装 tap、不启动引擎**，因此不会
-    /// 开启麦克风、不会点亮系统录音指示灯。真正采集仅在 `start()` 后发生。
-    /// 引擎已在运行时跳过（避免打断正在进行的录音）。
-    func prewarm() {
-        guard !isRunning else { return }
-        engine.prepare()
-    }
-
     func start() throws {
         guard !isRunning else { return }
 
