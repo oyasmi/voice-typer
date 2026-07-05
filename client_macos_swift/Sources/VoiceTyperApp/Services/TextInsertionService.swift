@@ -25,6 +25,15 @@ final class TextInsertionService {
         return insertUsingPasteboard(text: text)
     }
 
+    /// 插入失败时的兜底：把识别结果写入剪贴板，避免长听写内容彻底丢失。
+    /// 取消待恢复任务，防止把这次的文本又还原掉。
+    func copyToClipboard(text: String) {
+        pendingRestoreTask?.cancel()
+        pendingRestoreTask = nil
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     private func insertUsingAccessibility(text: String) -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedObject: CFTypeRef?

@@ -102,7 +102,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                 self.write({"error": "服务未就绪"})
                 return
 
-            executor = self.application.settings.get("executor")
+            executor = self.application.settings.get("offline_executor")
             loop = asyncio.get_running_loop()
             t0 = time.time()
             text = await loop.run_in_executor(
@@ -118,7 +118,8 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                     text = await llm_client.correct_text(text)
                     llm_elapsed = round(time.time() - t1, 3)
                     if original != text:
-                        logger.info(f"LLM 修正 ({llm_elapsed}s): {original!r} → {text!r}")
+                        logger.info(f"LLM 修正完成 ({llm_elapsed}s)")
+                        logger.debug(f"LLM 修正: {original!r} → {text!r}")
                     else:
                         logger.info(f"LLM 修正: 无需改动 ({llm_elapsed}s)")
                 except Exception as exc:
@@ -161,7 +162,11 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
     """
 
     def check_origin(self, origin):
-        return True
+        # 原生客户端（macOS/Windows URLSession/WinHTTP）建立 WS 时不发送 Origin 头，
+        # Tornado 仅在存在 Origin 头时才调用本方法。带 Origin 的连接基本来自浏览器页面，
+        # 一律拒绝，防止任意网页连上本机 ws://127.0.0.1 白嫖识别算力。
+        # 若将来新增 Web 客户端，需在此放行其同源 Origin。
+        return False
 
     def prepare(self):
         if not authorize_request(self.request, self.application.settings):
@@ -196,7 +201,9 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             return
         chunk = np.frombuffer(data, dtype=np.float32)
         loop = asyncio.get_running_loop()
-        executor = self.application.settings.get("executor")
+        # 流式预览用独立 executor：避免 partial feed 排在其它会话漫长的离线 finalize 之后，
+        # 保证并发录音时实时预览不被卡死。
+        executor = self.application.settings.get("stream_executor")
         try:
             fragment = await loop.run_in_executor(executor, self.session.feed, chunk)
         except Exception as exc:
@@ -238,12 +245,13 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             return
 
         loop = asyncio.get_running_loop()
-        executor = self.application.settings.get("executor")
+        executor = self.application.settings.get("offline_executor")
 
         t0 = time.time()
         text = await loop.run_in_executor(executor, self.session.finalize, self.hotwords)
         asr_elapsed = round(time.time() - t0, 3)
-        logger.info(f"离线复识别耗时: {asr_elapsed}s，文本: {text!r}")
+        logger.info(f"离线复识别耗时: {asr_elapsed}s")
+        logger.debug(f"离线复识别文本: {text!r}")
 
         llm_elapsed = None
         llm_client = self.application.settings.get("llm_client")
@@ -295,7 +303,8 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 # ---------------------------------------------------------------------------
 
 def make_app(api_keys=None, server_host="127.0.0.1",
-             recognizer=None, llm_client=None, executor=None,
+             recognizer=None, llm_client=None,
+             stream_executor=None, offline_executor=None,
              streaming=True, models=None):
     if streaming:
         handlers = [
@@ -312,7 +321,10 @@ def make_app(api_keys=None, server_host="127.0.0.1",
     app.settings["server_host"] = server_host
     app.settings["recognizer"]  = recognizer
     app.settings["llm_client"]  = llm_client
-    app.settings["executor"]    = executor
+    # stream_executor: 流式 partial 预览；offline_executor: 离线复识别 / HTTP 识别。
+    # 两者独立，使并发会话的实时预览不被漫长的离线 finalize 阻塞。
+    app.settings["stream_executor"]  = stream_executor
+    app.settings["offline_executor"] = offline_executor
     app.settings["streaming"]   = streaming
     app.settings["models"]      = models or {}
     return app
@@ -334,16 +346,17 @@ def configure_logging():
 
 
 class ServerContext:
-    def __init__(self, server, executor, llm_client):
+    def __init__(self, server, executors, llm_client):
         self.server   = server
-        self.executor = executor
+        self.executors = [e for e in executors if e is not None]
         self.llm_client = llm_client
 
     def shutdown(self):
         logger.info("停止服务...")
         if self.llm_client:
             self.llm_client.close()
-        self.executor.shutdown(wait=False)
+        for executor in self.executors:
+            executor.shutdown(wait=False)
         tornado.ioloop.IOLoop.current().stop()
 
 
@@ -446,13 +459,25 @@ def create_server(args) -> ServerContext:
         "device":  args.device,
     }
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    # 两个单 worker executor：ONNX 推理非线程安全，各自串行；但流式预览与离线复识别
+    # 分属两条独立流水线，互不阻塞。非流式模式只用到 offline_executor。
+    offline_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="vt-offline"
+    )
+    stream_executor = (
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="vt-stream"
+        )
+        if streaming
+        else None
+    )
     app = make_app(
         api_keys=api_keys,
         server_host=args.host,
         recognizer=recognizer,
         llm_client=llm_client,
-        executor=executor,
+        stream_executor=stream_executor,
+        offline_executor=offline_executor,
         streaming=streaming,
         models=models_meta,
     )
@@ -464,7 +489,7 @@ def create_server(args) -> ServerContext:
     else:
         logger.info(f"服务已启动: http://{args.host}:{args.port}")
 
-    return ServerContext(server, executor, llm_client)
+    return ServerContext(server, [stream_executor, offline_executor], llm_client)
 
 
 def run_server(args):

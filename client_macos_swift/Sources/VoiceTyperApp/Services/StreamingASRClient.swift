@@ -61,6 +61,8 @@ final class StreamingASRClient {
 
     private var task: URLSessionWebSocketTask?
     private var receiveLoopTask: Task<Void, Never>?
+    /// finalize 后等待 final 帧的超时任务；收到 final/error 或 close 时取消。
+    private var finalizeTimeoutTask: Task<Void, Never>?
     private var closed = false
 
     // MARK: - 连接
@@ -115,14 +117,28 @@ final class StreamingASRClient {
         }
     }
 
-    func finalize() {
+    /// 请求离线复识别的最终结果。
+    /// - Parameter timeout: 等待 `final` 帧的最长时间；超时视为识别失败，触发 onError，
+    ///   避免服务端卡住 / 网络半开时 HUD 永久停在"识别中"。传 <= 0 表示不设超时。
+    func finalize(timeout: TimeInterval) {
         guard !closed else { return }
         sendJSON(["type": "finalize"])
+
+        finalizeTimeoutTask?.cancel()
+        guard timeout > 0 else { return }
+        finalizeTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled, let self, !self.closed else { return }
+            AppLog.network.error("finalize 超时（\(timeout, privacy: .public)s），未收到 final")
+            self.onError?("识别超时")
+        }
     }
 
     func close() {
         guard !closed else { return }
         closed = true
+        finalizeTimeoutTask?.cancel()
+        finalizeTimeoutTask = nil
         receiveLoopTask?.cancel()
         receiveLoopTask = nil
         task?.cancel(with: .normalClosure, reason: nil)
@@ -165,12 +181,16 @@ final class StreamingASRClient {
                 onPartial?(text)
             }
         case .final(let text, let asr, let llm):
+            finalizeTimeoutTask?.cancel()
+            finalizeTimeoutTask = nil
             AppLog.network.info("final asr=\(asr ?? 0, privacy: .public) llm=\(llm ?? 0, privacy: .public)")
             onFinal?(text)
         case .warning(let code, let message):
             AppLog.network.warning("服务端 warning [\(code, privacy: .public)]: \(message, privacy: .public)")
             onWarning?(message)
         case .error(_, let message):
+            finalizeTimeoutTask?.cancel()
+            finalizeTimeoutTask = nil
             AppLog.network.error("服务端错误: \(message, privacy: .public)")
             onError?(message)
         case .unknown:

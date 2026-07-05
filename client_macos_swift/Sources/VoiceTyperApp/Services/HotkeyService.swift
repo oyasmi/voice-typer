@@ -41,6 +41,8 @@ final class HotkeyService: @unchecked Sendable {
     var onPress: (() -> Void)?
     /// 热键松开回调。保证在主线程触发。
     var onRelease: (() -> Void)?
+    /// 录音进行中按下 Esc 的取消回调。保证在主线程触发。
+    var onCancel: (() -> Void)?
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -168,6 +170,18 @@ final class HotkeyService: @unchecked Sendable {
 
     private func handle(eventType: CGEventType, event: CGEvent) {
         guard let hotkey else {
+            return
+        }
+
+        // 录音进行中（热键仍处于激活态）按 Esc → 取消本次录音。
+        // 放在热键分支之前，Fn 与组合键两种模式都能触发。tap 为 listenOnly，
+        // 不吞事件，Esc 仍会照常传递给前台应用。
+        if isActive,
+           eventType == .keyDown,
+           event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Escape) {
+            DispatchQueue.main.async { [weak self] in
+                self?.onCancel?()
+            }
             return
         }
 

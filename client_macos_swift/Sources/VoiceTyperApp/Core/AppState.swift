@@ -3,6 +3,8 @@ import Foundation
 enum AppState: Equatable {
     case booting
     case setupRequired
+    /// 权限齐全但服务端尚未就绪（如模型仍在加载），后台自动轮询重连中。
+    case connecting
     case idle
     case recording
     case recognizing
@@ -15,6 +17,8 @@ enum AppState: Equatable {
             return "启动中"
         case .setupRequired:
             return "需要完成授权与设置"
+        case .connecting:
+            return "连接服务中…"
         case .idle:
             return "就绪"
         case .recording:
@@ -34,6 +38,8 @@ enum AppState: Equatable {
             return "⏳"
         case .setupRequired:
             return "⚠️"
+        case .connecting:
+            return "🔄"
         case .idle:
             return "🎤"
         case .recording:
@@ -53,6 +59,8 @@ enum AppState: Equatable {
             return "hourglass"
         case .setupRequired:
             return "exclamationmark.triangle"
+        case .connecting:
+            return "arrow.triangle.2.circlepath"
         case .idle:
             return "mic"
         case .recording:

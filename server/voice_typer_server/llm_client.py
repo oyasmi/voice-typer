@@ -43,7 +43,14 @@ class LLMClient:
         return "你是训练有素的文本校对员，请修正识别文本中的错别字并返回纯文本。"
 
     async def correct_text(self, text: str) -> str:
-        """使用 LLM 修正识别文本中的显著错误"""
+        """使用 LLM 修正识别文本中的显著错误。
+
+        若模型因 max_tokens 截断（finish_reason=="length"），说明输出不完整，
+        直接返回原始文本，避免把用户后半段听写内容悄悄丢掉。
+        """
+        # 纠错输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
+        # 中文大致 1 字 ≈ 1~2 token，留足冗余。
+        dynamic_max_tokens = max(self.max_tokens, len(text) * 2 + 128)
         payload = {
             "model": self.model,
             "messages": [
@@ -51,7 +58,7 @@ class LLMClient:
                 {"role": "user", "content": text},
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": dynamic_max_tokens,
         }
 
         headers = {
@@ -70,7 +77,11 @@ class LLMClient:
             )
             response = await self.http_client.fetch(request)
             result = json.loads(response.body.decode("utf-8"))
-            return result["choices"][0]["message"]["content"].strip()
+            choice = result["choices"][0]
+            if choice.get("finish_reason") == "length":
+                logger.warning("LLM 输出被 max_tokens 截断，放弃修正并返回原文")
+                return text
+            return choice["message"]["content"].strip()
         except HTTPError as exc:
             error_body = exc.response.body.decode("utf-8") if exc.response else str(exc)
             logger.error(f"LLM API 错误 ({exc.code}): {error_body}")

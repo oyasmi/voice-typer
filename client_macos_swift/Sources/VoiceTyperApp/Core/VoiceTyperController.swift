@@ -25,6 +25,8 @@ final class VoiceTyperController {
     var onPreviewUpdate: ((String) -> Void)?
     /// 非致命提示（流式 partial 失败等），UI 可短暂闪烁状态但不打断录音。
     var onPreviewWarning: ((String) -> Void)?
+    /// 用户主动取消（录音中按 Esc）。与 .idle 区分，便于 UI 给出"已取消"提示。
+    var onCancelled: (() -> Void)?
     var isStarted: Bool { isRunning }
 
     init(
@@ -50,8 +52,13 @@ final class VoiceTyperController {
         hotkeyService.onRelease = { [weak self] in
             Task { @MainActor [weak self] in self?.finishRecording() }
         }
+        hotkeyService.onCancel = { [weak self] in
+            Task { @MainActor [weak self] in self?.cancelByUser() }
+        }
         try hotkeyService.start(with: config.hotkey)
         isRunning = true
+        // 预热音频引擎（不开麦、不亮指示灯），缩短首次按键的冷启动。
+        audioCaptureService.prewarm()
         onStateChange?(.idle)
     }
 
@@ -101,15 +108,33 @@ final class VoiceTyperController {
         audioCaptureService.stop()
     }
 
-    /// 取消当前录音：丢弃尾音、关闭 WS、回到 idle。
-    private func cancelCurrentRecording() {
+    /// 停止采集、丢弃尾音、关闭 WS、清空预览并重新预热引擎。
+    /// 不做状态转换，由调用方决定回到 idle 还是发"已取消"提示。
+    private func resetRecording() {
         audioCaptureService.stopWithoutResult()
         teardownASRClient()
         accumulatedPreview = ""
         onPreviewUpdate?("")
         recordingStartedAt = nil
+        isRecording = false
+        audioCaptureService.prewarm()
+    }
+
+    /// 取消当前录音并静默回到 idle（短录音过滤等内部触发）。
+    private func cancelCurrentRecording() {
+        resetRecording()
         if isRunning {
             onStateChange?(.idle)
+        }
+    }
+
+    /// 用户在录音过程中按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
+    private func cancelByUser() {
+        guard isRecording else { return }
+        resetRecording()
+        if isRunning {
+            AppLog.audio.info("用户取消录音")
+            onCancelled?()
         }
     }
 
@@ -156,11 +181,15 @@ final class VoiceTyperController {
             guard let self else { return }
             AppLog.network.error("ASR 错误: \(message, privacy: .public)")
             if let c = client, self.asrClient === c {
+                // 停止采集，避免 WS 中途出错后 AVAudioEngine 继续运行、麦克风指示灯常亮，
+                // 并防止残留音频混入下一次录音。
+                self.audioCaptureService.stopWithoutResult()
                 self.teardownASRClient()
                 self.accumulatedPreview = ""
                 self.onPreviewUpdate?("")
-                self.onStateChange?(.error(message))
                 self.isRecording = false
+                self.audioCaptureService.prewarm()
+                self.onStateChange?(.error(message))
             } else {
                 // 旧会话出错，不干扰当前会话
                 client?.close()
@@ -189,11 +218,13 @@ final class VoiceTyperController {
         // onTailChunk 同理；sendAudio + finalize 需保证在同一 MainActor 执行块内顺序完成
         audioCaptureService.onTailChunk = { [weak self, weak client] data in
             Task { @MainActor [weak self, weak client] in
+                guard let self else { return }
                 if !data.isEmpty {
                     client?.sendAudio(data)
                 }
-                client?.finalize()
-                self?.onStateChange?(.recognizing)
+                // 传入超时：服务端卡住 / 网络半开时不至于让 HUD 永久停在"识别中"。
+                client?.finalize(timeout: self.config.server.timeout)
+                self.onStateChange?(.recognizing)
             }
         }
 
@@ -252,6 +283,7 @@ final class VoiceTyperController {
         let minimumSamples = Int(Self.minimumRecordingDuration * AppConstants.targetSampleRate)
         guard !combinedData.isEmpty, sampleCount >= minimumSamples else {
             teardownASRClient()
+            audioCaptureService.prewarm()
             onStateChange?(.idle)
             return
         }
@@ -271,6 +303,7 @@ final class VoiceTyperController {
             handleFinalText(text)
         } catch {
             teardownASRClient()
+            audioCaptureService.prewarm()
             AppLog.network.error("批量识别失败: \(error.localizedDescription, privacy: .public)")
             onStateChange?(.error("识别失败：\(error.localizedDescription)"))
         }
@@ -284,7 +317,10 @@ final class VoiceTyperController {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            if !isRecording { onStateChange?(.idle) }
+            if !isRecording {
+                audioCaptureService.prewarm()
+                onStateChange?(.idle)
+            }
             return
         }
 
@@ -295,9 +331,15 @@ final class VoiceTyperController {
         if inserted {
             onRecognizedText?(trimmed)
             // 若此时有新录音正在进行（并发会话），不覆盖 .recording 状态
-            if !isRecording { onStateChange?(.idle) }
+            if !isRecording {
+                audioCaptureService.prewarm()
+                onStateChange?(.idle)
+            }
         } else {
-            onStateChange?(.error("文本插入失败"))
+            // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
+            textInsertionService.copyToClipboard(text: trimmed)
+            AppLog.app.error("文本插入失败，已复制到剪贴板")
+            onStateChange?(.error("插入失败，已复制到剪贴板，可手动粘贴"))
         }
     }
 

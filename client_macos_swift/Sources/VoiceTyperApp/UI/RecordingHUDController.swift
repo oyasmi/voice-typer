@@ -15,8 +15,18 @@ final class RecordingHUDController: NSWindowController {
     private let previewLabel = NSTextField(labelWithString: "")
     private let previewContainer = NSView()
 
+    /// HUD 当前阶段。取代原先用 `startDate == nil` 间接推断状态的写法，
+    /// 避免"识别中"仍持有 startDate 导致 flashWarning 把状态错误改回"录音中"。
+    private enum Phase {
+        case hidden
+        case recording
+        case recognizing
+        case transient  // 错误 / 已取消等一次性提示
+    }
+
     private var timer: Timer?
     private var startDate: Date?
+    private var phase: Phase = .hidden
     private var hasBuiltUI = false
     private var hudOpacity: Double = 0.78
     private var accumulatedPreview = ""
@@ -56,6 +66,7 @@ final class RecordingHUDController: NSWindowController {
             window.setFrameOrigin(NSPoint(x: x, y: y))
         }
         startDate = Date()
+        phase = .recording
         timeLabel.stringValue = "0s"
         previewLabel.stringValue = displayText(for: "")
         accumulatedPreview = ""
@@ -68,6 +79,7 @@ final class RecordingHUDController: NSWindowController {
     func hideHUD() {
         timer?.invalidate()
         timer = nil
+        phase = .hidden
         dotView.stopPulse()
         waveformView.stopAnimating()
         window?.orderOut(nil)
@@ -88,6 +100,7 @@ final class RecordingHUDController: NSWindowController {
 
     /// 切换到"识别中"状态（松键后等待 final）。
     func setRecognizing() {
+        phase = .recognizing
         statusLabel.stringValue = "识别中"
         dotView.stopPulse()
         dotView.setStatic(color: NSColor(calibratedRed: 1.0, green: 0.75, blue: 0.0, alpha: 1))
@@ -97,6 +110,27 @@ final class RecordingHUDController: NSWindowController {
     /// 显示一次性错误浮层，约 2.5s 后自动隐藏。
     /// 用于 `.error(...)` / 服务断线等不再进入录音流程的场景。
     func showError(_ message: String) {
+        showTransient(
+            status: "错误",
+            message: message.isEmpty ? "服务异常" : message,
+            dotColor: NSColor(calibratedRed: 1.0, green: 0.36, blue: 0.32, alpha: 1),
+            autoHideAfter: 2_500_000_000
+        )
+    }
+
+    /// 显示"已取消"提示浮层，约 1.2s 后自动隐藏（用户按 Esc 取消录音）。
+    func showCanceled() {
+        showTransient(
+            status: "已取消",
+            message: "本次录音已取消",
+            dotColor: NSColor(white: 0.7, alpha: 1),
+            autoHideAfter: 1_200_000_000
+        )
+    }
+
+    /// 一次性提示浮层的公共实现。展示后经 `autoHideAfter` 纳秒自动隐藏，
+    /// 若期间用户已开始新录音（phase 变化）则不打断。
+    private func showTransient(status: String, message: String, dotColor: NSColor, autoHideAfter: UInt64) {
         guard let window else { return }
         ensureUIBuilt()
         if let screen = NSScreen.main {
@@ -107,19 +141,20 @@ final class RecordingHUDController: NSWindowController {
         timer?.invalidate()
         timer = nil
         startDate = nil
+        phase = .transient
         timeLabel.stringValue = ""
-        statusLabel.stringValue = "错误"
-        previewLabel.stringValue = message.isEmpty ? "服务异常" : message
+        statusLabel.stringValue = status
+        previewLabel.stringValue = message
         dotView.stopPulse()
-        dotView.setStatic(color: NSColor(calibratedRed: 1.0, green: 0.36, blue: 0.32, alpha: 1))
+        dotView.setStatic(color: dotColor)
         waveformView.stopAnimating()
         window.orderFrontRegardless()
 
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: autoHideAfter)
             guard let self else { return }
-            // 用户已开始新录音则不打断
-            if self.startDate == nil {
+            // 仅当仍停留在本次瞬态提示时才隐藏；用户已开始新录音则不打断。
+            if self.phase == .transient {
                 self.hideHUD()
             }
         }
@@ -128,11 +163,13 @@ final class RecordingHUDController: NSWindowController {
     /// 录音过程中的非致命提示（如 partial 暂时不可用）。
     /// 仅闪烁 statusLabel，不中断动画。
     func flashWarning(_ message: String) {
+        guard phase == .recording else { return }
         statusLabel.stringValue = message.isEmpty ? "识别提示" : message
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard let self else { return }
-            if self.startDate != nil {
+            // 仅当仍处于录音阶段才恢复文案，避免把"识别中"错误改回"录音中"。
+            if self.phase == .recording {
                 self.statusLabel.stringValue = "录音中"
             }
         }

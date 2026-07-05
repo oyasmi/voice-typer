@@ -130,7 +130,7 @@ Both share the same layout (`.swift` / `.cs`):
 
 - `asr_server.py` - Tornado entry point: `GET /health`, `POST /recognize` (HTTP), WebSocket streaming endpoint
 - `recognizer.py` - FunASR/ONNX model wrapper
-- `auth.py` - API authentication (`X-API-Key` / `Authorization` header)
+- `auth.py` - API authentication (`Authorization: Bearer <key>` header)
 - `llm_client.py` - OpenAI-compatible LLM client for text correction
 - `scripts/voice_typer_server.sh` - setup/run helper
 
@@ -157,12 +157,12 @@ hotkey:
 hotword_files:
   - "hotwords.txt"
 ui:
-  opacity: 0.85
-  width: 240
-  height: 70
+  opacity: 0.85         # HUD 背景不透明度，客户端会读取
+  width: 240            # 预留字段：macOS HUD 目前尺寸固定，width/height 暂不生效
+  height: 70            # 同上
 ```
 
-Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` starts a comment. Hotwords only take effect in non-streaming mode.
+Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` starts a comment. Hotwords apply to the **offline recognition pass**: the full HTTP `/recognize` in non-streaming mode, and the post-release re-recognition (`Session.finalize`) that produces the final text in streaming mode. They do **not** influence the live streaming preview (partials).
 
 **Server configuration:** command-line arguments only (see "Server Options").
 
