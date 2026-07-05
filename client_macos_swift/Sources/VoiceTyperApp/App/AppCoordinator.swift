@@ -21,6 +21,11 @@ final class AppCoordinator {
     private var managedHotwordsText = ""
     private var serverReady = false
     private var currentState: AppState = .booting
+    /// 用户是否已从菜单主动暂停听写。暂停时不监听热键、不轮询服务端。
+    private var isPaused = false
+    /// 用户是否主动打开了设置窗口。为 true 时保存设置不会自动关闭窗口
+    /// （区别于首启引导：引导阶段就绪后自动收起设置窗）。
+    private var userOpenedSetup = false
     /// 服务端未就绪时的后台退避轮询任务。nil 表示当前未在轮询。
     private var serverPollTask: Task<Void, Never>?
 
@@ -52,15 +57,19 @@ final class AppCoordinator {
     }
 
     func openSetupWindow() {
+        userOpenedSetup = true
         setupControllerIfNeeded(forceShow: true, preferredTab: nil)
     }
 
     private func bindStatusBarActions() {
         statusBarController.onOpenSetup = { [weak self] in
-            self?.setupControllerIfNeeded(forceShow: true, preferredTab: nil)
+            self?.openSetupWindow()
         }
         statusBarController.onReconnectServer = { [weak self] in
             Task { await self?.reevaluateReadiness() }
+        }
+        statusBarController.onTogglePause = { [weak self] in
+            self?.togglePause()
         }
         statusBarController.onOpenConfigDirectory = { [weak self] in
             self?.configStore.openConfigDirectory()
@@ -98,6 +107,21 @@ final class AppCoordinator {
                 guard let self else { return }
                 try await self.applyHotwordsText(text)
             }
+            controller.onSuspendHotkey = { [weak self] suspend in
+                guard let self else { return }
+                if suspend {
+                    // 录制热键期间停掉全局监听，避免按 Fn 当场触发录音。
+                    self.voiceTyperController?.stop()
+                } else {
+                    Task { await self.reevaluateReadiness() }
+                }
+            }
+            controller.onPreviewHUDOpacity = { [weak self] opacity in
+                self?.recordingHUDController?.previewOpacity(opacity)
+            }
+            controller.onClose = { [weak self] in
+                self?.userOpenedSetup = false
+            }
             controller.loadWindow()
             setupWindowController = controller
             refreshSetupWindowEditorContent()
@@ -119,7 +143,24 @@ final class AppCoordinator {
     }
 
     private func hideSetupWindowIfVisible() {
+        // 用户主动打开设置窗口时不自动收起，避免保存设置把正在编辑的窗口关掉。
+        guard !userOpenedSetup else { return }
         setupWindowController?.window?.orderOut(nil)
+    }
+
+    /// 从菜单切换暂停 / 恢复听写。
+    private func togglePause() {
+        if isPaused {
+            isPaused = false
+            Task { await reevaluateReadiness() }
+        } else {
+            isPaused = true
+            cancelServerPolling()
+            voiceTyperController?.stop()
+            recordingHUDController?.hideHUD()
+            currentState = .paused
+            updateStatusUI()
+        }
     }
 
     /// 重新评估权限与服务端就绪状态，并驱动状态机。
@@ -129,6 +170,13 @@ final class AppCoordinator {
     ///   不打扰用户（覆盖"开机自启客户端时服务端仍在加载模型"的常见场景）。
     /// - 权限齐全且服务端就绪：启动热键监听并进入 `.idle`。
     private func reevaluateReadiness() async {
+        // 暂停期间：忽略权限/服务端回调触发的复活，保持暂停态。
+        guard !isPaused else {
+            currentState = .paused
+            updateStatusUI()
+            return
+        }
+
         permissions = permissionCenter.snapshot()
 
         guard permissions.allRequiredGranted else {
@@ -243,6 +291,7 @@ final class AppCoordinator {
     private func bindControllerEvents() {
         voiceTyperController?.onStateChange = { [weak self] state in
             guard let self else { return }
+            let previous = self.currentState
             self.currentState = state
             switch state {
             case .recording:
@@ -250,9 +299,18 @@ final class AppCoordinator {
             case .recognizing:
                 // 保持 HUD 可见，切换为"识别中"样式
                 self.recordingHUDController?.setRecognizing()
+            case .inserting:
+                // 保持 HUD 可见，等待 idle 触发成功反馈
+                break
             case .error(let message):
                 // HUD 用错误样式短暂提示后自隐，避免用户对"录音消失"无感
                 self.recordingHUDController?.showError(message)
+            case .idle:
+                if previous == .inserting {
+                    self.recordingHUDController?.showSuccess()
+                } else {
+                    self.recordingHUDController?.hideHUD()
+                }
             default:
                 self.recordingHUDController?.hideHUD()
             }
@@ -261,6 +319,10 @@ final class AppCoordinator {
 
         voiceTyperController?.onPreviewUpdate = { [weak self] accumulated in
             self?.recordingHUDController?.showPreview(accumulated)
+        }
+
+        voiceTyperController?.onAudioLevel = { [weak self] level in
+            self?.recordingHUDController?.updateLevel(level)
         }
 
         voiceTyperController?.onPreviewWarning = { [weak self] message in
@@ -307,9 +369,29 @@ final class AppCoordinator {
         try await reloadAndReevaluateAfterSettingsChange()
     }
 
+    /// 热词自动保存：只刷新热词并用新词重建控制器，不重新探测服务端、不收起窗口。
+    /// （热词编辑是高频自动保存，走完整 reevaluate 会反复重启热键并可能关掉设置窗。）
     private func applyHotwordsText(_ text: String) async throws {
         try configStore.saveManagedHotwordsText(text, using: config)
-        try await reloadAndReevaluateAfterSettingsChange()
+        hotwords = configStore.loadHotwords(using: config)
+        managedHotwordsText = try configStore.loadManagedHotwordsText(using: config)
+
+        if !isPaused,
+           permissions.allRequiredGranted,
+           serverReady,
+           let controller = voiceTyperController,
+           controller.isStarted {
+            controller.stop()
+            voiceTyperController = nil
+            ensureController()
+            do {
+                try voiceTyperController?.start()
+            } catch {
+                AppLog.hotkey.error("热词更新后热键重启失败: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        refreshSetupWindowEditorContent()
     }
 
     private func reloadAndReevaluateAfterSettingsChange() async throws {

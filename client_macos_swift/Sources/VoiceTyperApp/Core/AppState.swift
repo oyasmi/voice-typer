@@ -9,6 +9,8 @@ enum AppState: Equatable {
     case recording
     case recognizing
     case inserting
+    /// 用户主动暂停听写：热键监听与服务轮询均停止，直到用户从菜单恢复。
+    case paused
     case error(String)
 
     var menuTitle: String {
@@ -27,29 +29,10 @@ enum AppState: Equatable {
             return "识别中..."
         case .inserting:
             return "输入中..."
+        case .paused:
+            return "已暂停"
         case .error(let message):
             return "错误: \(message)"
-        }
-    }
-
-    var statusIcon: String {
-        switch self {
-        case .booting:
-            return "⏳"
-        case .setupRequired:
-            return "⚠️"
-        case .connecting:
-            return "🔄"
-        case .idle:
-            return "🎤"
-        case .recording:
-            return "🟢"
-        case .recognizing:
-            return "🟡"
-        case .inserting:
-            return "🟠"
-        case .error:
-            return "🔴"
         }
     }
 
@@ -69,6 +52,8 @@ enum AppState: Equatable {
             return "waveform"
         case .inserting:
             return "character.cursor.ibeam"
+        case .paused:
+            return "mic.slash"
         case .error:
             return "exclamationmark.circle"
         }

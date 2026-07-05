@@ -8,6 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		06BC389F4804546D8769661B /* RecordingHUDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F20354ECA9563FD4DAB83B /* RecordingHUDController.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F1E2D3C4B5A60718293A4B02 /* StatusMenuHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E2D3C4B5A60718293A4B01 /* StatusMenuHeaderView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B1 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A1 /* SettingsViewModel.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B2 /* PermissionsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A2 /* PermissionsSettingsView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B3 /* ConnectionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A3 /* ConnectionSettingsView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B4 /* HotkeyRecorderField.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A4 /* HotkeyRecorderField.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B5 /* HotkeySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A5 /* HotkeySettingsView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B6 /* HotwordsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A6 /* HotwordsSettingsView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B7 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A7 /* GeneralSettingsView.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		F0F0F0F0F0F0F0F0F0F0F0B8 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0F0F0F0F0F0F0F0F0F0F0A8 /* LaunchAtLogin.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		0C5BA21E132677F9F3592DCB /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A221DA318B41C0D9A842631A /* AudioCaptureService.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		0D03D934A0EBD59FE05EDEFD /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CA63A12A6E0EC36FA3DC5A9F /* Cocoa.framework */; };
 		18EC92C0A4B2B47C090D625D /* StreamingASRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E7EA6ED9B5C194FB6FE2A80 /* StreamingASRClient.swift */; settings = {COMPILER_FLAGS = "-"; }; };
@@ -36,6 +45,15 @@
 		1421447C878B6F4F1746891B /* HotkeyService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HotkeyService.swift; path = Sources/VoiceTyperApp/Services/HotkeyService.swift; sourceTree = "<group>"; };
 		289B313565AD39058A0982BF /* AppIcon.icns */ = {isa = PBXFileReference; includeInIndex = 1; name = AppIcon.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		28F20354ECA9563FD4DAB83B /* RecordingHUDController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingHUDController.swift; path = Sources/VoiceTyperApp/UI/RecordingHUDController.swift; sourceTree = "<group>"; };
+		F1E2D3C4B5A60718293A4B01 /* StatusMenuHeaderView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StatusMenuHeaderView.swift; path = Sources/VoiceTyperApp/UI/StatusMenuHeaderView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A1 /* SettingsViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsViewModel.swift; path = Sources/VoiceTyperApp/UI/Settings/SettingsViewModel.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A2 /* PermissionsSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionsSettingsView.swift; path = Sources/VoiceTyperApp/UI/Settings/PermissionsSettingsView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A3 /* ConnectionSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConnectionSettingsView.swift; path = Sources/VoiceTyperApp/UI/Settings/ConnectionSettingsView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A4 /* HotkeyRecorderField.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HotkeyRecorderField.swift; path = Sources/VoiceTyperApp/UI/Settings/HotkeyRecorderField.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A5 /* HotkeySettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HotkeySettingsView.swift; path = Sources/VoiceTyperApp/UI/Settings/HotkeySettingsView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A6 /* HotwordsSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HotwordsSettingsView.swift; path = Sources/VoiceTyperApp/UI/Settings/HotwordsSettingsView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A7 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GeneralSettingsView.swift; path = Sources/VoiceTyperApp/UI/Settings/GeneralSettingsView.swift; sourceTree = "<group>"; };
+		F0F0F0F0F0F0F0F0F0F0F0A8 /* LaunchAtLogin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaunchAtLogin.swift; path = Sources/VoiceTyperApp/Support/LaunchAtLogin.swift; sourceTree = "<group>"; };
 		3F876A5C2C6F932447F482E8 /* ConfigStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigStore.swift; path = Sources/VoiceTyperApp/Core/ConfigStore.swift; sourceTree = "<group>"; };
 		41B1E9DDA558601BB378FA05 /* VoiceTyperAppMain.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VoiceTyperAppMain.swift; path = Sources/VoiceTyperApp/App/VoiceTyperAppMain.swift; sourceTree = "<group>"; };
 		48481841C40926F467114F99 /* AppConfig.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppConfig.swift; path = Sources/VoiceTyperApp/Core/AppConfig.swift; sourceTree = "<group>"; };
@@ -152,8 +170,24 @@
 				28F20354ECA9563FD4DAB83B /* RecordingHUDController.swift */,
 				5E19225C66D48D9BEFCC8EDC /* SetupWindowController.swift */,
 				AA9BC7CAA00E2E6EC4B1EA63 /* StatusBarController.swift */,
+				F1E2D3C4B5A60718293A4B01 /* StatusMenuHeaderView.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0C0 /* Settings */,
 			);
 			name = UI;
+			sourceTree = "<group>";
+		};
+		F0F0F0F0F0F0F0F0F0F0F0C0 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				F0F0F0F0F0F0F0F0F0F0F0A1 /* SettingsViewModel.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A2 /* PermissionsSettingsView.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A3 /* ConnectionSettingsView.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A4 /* HotkeyRecorderField.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A5 /* HotkeySettingsView.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A6 /* HotwordsSettingsView.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A7 /* GeneralSettingsView.swift */,
+			);
+			name = Settings;
 			sourceTree = "<group>";
 		};
 		EEFA1AAB1A2036985B87F3DD /* Support */ = {
@@ -161,6 +195,7 @@
 			children = (
 				9C9A7204FF7ECE74F5CBBD68 /* Constants.swift */,
 				9F813E28F651871D45E0868C /* Logger.swift */,
+				F0F0F0F0F0F0F0F0F0F0F0A8 /* LaunchAtLogin.swift */,
 			);
 			name = Support;
 			sourceTree = "<group>";
@@ -275,6 +310,15 @@
 				06BC389F4804546D8769661B /* RecordingHUDController.swift in Sources */,
 				34FD7C2E44AF4BCD7D5DF49B /* SetupWindowController.swift in Sources */,
 				A904CD4BA92F6F5132D341C0 /* StatusBarController.swift in Sources */,
+				F1E2D3C4B5A60718293A4B02 /* StatusMenuHeaderView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B1 /* SettingsViewModel.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B2 /* PermissionsSettingsView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B3 /* ConnectionSettingsView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B4 /* HotkeyRecorderField.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B5 /* HotkeySettingsView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B6 /* HotwordsSettingsView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B7 /* GeneralSettingsView.swift in Sources */,
+				F0F0F0F0F0F0F0F0F0F0F0B8 /* LaunchAtLogin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -334,7 +378,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.6.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -359,7 +403,7 @@
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.voicetyper.app;
 				PRODUCT_NAME = VoiceTyper;
 				SDKROOT = macosx;
@@ -383,7 +427,7 @@
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.voicetyper.app;
 				PRODUCT_NAME = VoiceTyper;
 				SDKROOT = macosx;
@@ -440,7 +484,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.5.1;
+				MARKETING_VERSION = 2.6.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -27,6 +27,8 @@ final class VoiceTyperController {
     var onPreviewWarning: ((String) -> Void)?
     /// 用户主动取消（录音中按 Esc）。与 .idle 区分，便于 UI 给出"已取消"提示。
     var onCancelled: (() -> Void)?
+    /// 录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。保证在主线程触发。
+    var onAudioLevel: ((Float) -> Void)?
     var isStarted: Bool { isRunning }
 
     init(
@@ -54,6 +56,11 @@ final class VoiceTyperController {
         }
         hotkeyService.onCancel = { [weak self] in
             Task { @MainActor [weak self] in self?.cancelByUser() }
+        }
+        // 电平回调在音频线程触发，跳回主线程再转发给 UI。
+        // 音频引擎仅在录音期间运行，故无需按会话单独装卸此回调。
+        audioCaptureService.onLevel = { [weak self] level in
+            Task { @MainActor [weak self] in self?.onAudioLevel?(level) }
         }
         try hotkeyService.start(with: config.hotkey)
         isRunning = true

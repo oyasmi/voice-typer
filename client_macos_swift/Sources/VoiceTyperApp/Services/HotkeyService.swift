@@ -294,6 +294,12 @@ final class HotkeyService: @unchecked Sendable {
         keyCodeMap[key.lowercased()]
     }
 
+    /// 虚拟键码 → 支持的热键主键名（供设置界面的按键录制器反查）。
+    /// 不在支持表中的键返回 nil。"fn" 走独立路径，不在此表中。
+    static func keyName(for keyCode: UInt16) -> String? {
+        keyCodeMap.first { $0.value == CGKeyCode(keyCode) }?.key
+    }
+
     /// 该键名是否可作为热键（供设置界面在保存前做校验，避免落盘无法启动的配置）。
     /// "fn" 视为合法（独立处理路径）。
     static func isSupportedKey(_ key: String) -> Bool {

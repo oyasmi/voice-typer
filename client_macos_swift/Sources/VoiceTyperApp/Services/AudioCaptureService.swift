@@ -14,6 +14,9 @@ final class AudioCaptureService: @unchecked Sendable {
     var onChunk: ((Data) -> Void)?
     /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空 Data）
     var onTailChunk: ((Data) -> Void)?
+    /// 每次音频输入回调触发一次（约 20–60ms），传入该缓冲区的线性 RMS 电平（0…1 量级，
+    /// 未做分贝归一化）。在音频线程调用，消费方负责切换线程与平滑。
+    var onLevel: ((Float) -> Void)?
 
     let chunkSamples: Int
 
@@ -136,6 +139,15 @@ final class AudioCaptureService: @unchecked Sendable {
               let channel = convertedBuffer.floatChannelData?.pointee else { return }
 
         let newSamples = Array(UnsafeBufferPointer(start: channel, count: Int(convertedBuffer.frameLength)))
+
+        // 电平回调：在锁外计算 RMS 并发出，供 HUD 波形显示真实音量。
+        if let onLevel, !newSamples.isEmpty {
+            var sumSquares: Float = 0
+            for sample in newSamples {
+                sumSquares += sample * sample
+            }
+            onLevel((sumSquares / Float(newSamples.count)).squareRoot())
+        }
 
         lock.lock()
         ringBuffer.append(contentsOf: newSamples)

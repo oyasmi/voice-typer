@@ -125,7 +125,9 @@ struct HotkeyConfig: Codable {
 
 struct UIConfig: Codable {
     var opacity: Double
+    /// 已废弃：HUD 现为胶囊形态，尺寸由内容自适应。字段保留仅为跨平台配置兼容，macOS 不再读取。
     var width: Double
+    /// 已废弃：同 `width`。
     var height: Double
 
     init(opacity: Double = 0.85, width: Double = 240, height: Double = 70) {
