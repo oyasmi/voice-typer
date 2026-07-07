@@ -6,7 +6,10 @@ import QuartzCore
 final class RecordingHUDController: NSWindowController {
     // MARK: - 几何常量
 
-    private static let hudWidth: CGFloat = 340
+    private static let legacyHudWidth: CGFloat = 340
+    private static let defaultHudWidth: CGFloat = legacyHudWidth * 2
+    private static let maximumHudWidth: CGFloat = legacyHudWidth * 3
+    private static let screenMargin: CGFloat = 16
     private static let compactHeight: CGFloat = 48
     private static let expandedHeight: CGFloat = 100
     private static let cornerRadius: CGFloat = 24
@@ -40,6 +43,8 @@ final class RecordingHUDController: NSWindowController {
 
     /// 展开态（显示 preview 行）与否。
     private var isExpanded = false
+    /// 当前 HUD 宽度。随预览内容增长到上限，避免文本继续把窗口推到屏幕外。
+    private var currentHudWidth: CGFloat = defaultHudWidth
     /// 当前窗口底边左下角锚点（展开/收起时保持底边不动，向上生长）。
     private var anchorOrigin: CGPoint = .zero
     /// 收起防抖：preview 短暂清空时延迟收起，避免抖动。
@@ -51,7 +56,7 @@ final class RecordingHUDController: NSWindowController {
     // MARK: - 初始化
 
     convenience init(config: UIConfig) {
-        let rect = NSRect(x: 0, y: 0, width: RecordingHUDController.hudWidth, height: RecordingHUDController.compactHeight)
+        let rect = NSRect(x: 0, y: 0, width: RecordingHUDController.defaultHudWidth, height: RecordingHUDController.compactHeight)
         let panel = NSPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -85,6 +90,7 @@ final class RecordingHUDController: NSWindowController {
         phase = .recording
         startDate = Date()
         isExpanded = false
+        currentHudWidth = Self.defaultHudWidth
         accumulatedPreview = ""
 
         statusLabel.stringValue = "录音中"
@@ -122,8 +128,10 @@ final class RecordingHUDController: NSWindowController {
         let hasText = !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasText {
             cancelCollapse()
+            updateHudWidth(for: accumulated, animated: true)
             setExpanded(true)
         } else {
+            updateHudWidth(for: "", animated: true)
             scheduleCollapse()
         }
     }
@@ -133,6 +141,7 @@ final class RecordingHUDController: NSWindowController {
         accumulatedPreview = ""
         previewLabel.stringValue = displayText(for: "")
         cancelCollapse()
+        updateHudWidth(for: "", animated: true)
         setExpanded(false)
     }
 
@@ -231,10 +240,13 @@ final class RecordingHUDController: NSWindowController {
         dotView.stopPulse()
         dotView.setStatic(color: .systemGreen)
         waveformView.isHidden = true
+        currentHudWidth = Self.defaultHudWidth
 
         if window?.isVisible != true {
             isExpanded = false
             present(height: Self.compactHeight)
+        } else {
+            updateHudWidth(for: "", animated: true)
         }
 
         // 每次拖动都重排自动隐藏，避免拖动过程中 HUD 提前消失。
@@ -276,6 +288,7 @@ final class RecordingHUDController: NSWindowController {
         waveformView.stop()
         setGlyph(symbol: glyph, color: color)
         showGlyph(true)
+        updateHudWidth(for: expanded ? message : "", animated: window?.isVisible == true)
 
         if window?.isVisible == true {
             setExpanded(expanded)
@@ -294,25 +307,72 @@ final class RecordingHUDController: NSWindowController {
 
     // MARK: - 窗口显示 / 定位 / 动画
 
-    /// 计算目标屏幕（鼠标所在屏，回退主屏），返回给定高度下的底边左下角锚点。
-    private func computeAnchorOrigin() -> CGPoint {
+    /// 计算目标屏幕（鼠标所在屏，回退主屏）。
+    private func targetScreen() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
-        guard let screen else { return .zero }
+    }
+
+    /// 计算指定宽度下的窗口宽度与底边左下角锚点，确保 HUD 不越出可见屏幕。
+    private func layoutMetrics(for requestedWidth: CGFloat) -> (origin: CGPoint, width: CGFloat) {
+        guard let screen = targetScreen() else {
+            return (CGPoint(x: 0, y: 0), min(requestedWidth, Self.maximumHudWidth))
+        }
         let visible = screen.visibleFrame
-        let x = visible.midX - Self.hudWidth / 2
+        let availableWidth = max(180, visible.width - Self.screenMargin * 2)
+        let defaultWidth = min(Self.defaultHudWidth, availableWidth)
+        let maximumWidth = min(Self.maximumHudWidth, availableWidth)
+        let width = min(max(requestedWidth, defaultWidth), maximumWidth)
+        let centeredX = visible.midX - width / 2
+        let minX = visible.minX + Self.screenMargin
+        let maxX = visible.maxX - Self.screenMargin - width
+        let x = min(max(centeredX, minX), maxX)
         let y = visible.minY + 80
-        return CGPoint(x: x, y: y)
+        return (CGPoint(x: x, y: y), width)
+    }
+
+    private func targetHudWidth(for text: String) -> CGFloat {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return Self.defaultHudWidth }
+
+        let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .regular)
+        let textWidth = ceil((trimmed as NSString).size(withAttributes: [.font: font]).width)
+        return max(Self.defaultHudWidth, textWidth + 32)
+    }
+
+    private func updateHudWidth(for text: String, animated: Bool) {
+        let metrics = layoutMetrics(for: targetHudWidth(for: text))
+        currentHudWidth = metrics.width
+        anchorOrigin = metrics.origin
+
+        guard let window, window.isVisible else { return }
+        let height = isExpanded ? Self.expandedHeight : Self.compactHeight
+        let target = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
+        guard animated else {
+            window.setFrame(target, display: true)
+            window.invalidateShadow()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().setFrame(target, display: true)
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.window?.invalidateShadow() }
+        }
     }
 
     /// 带入场动画呈现窗口（alpha 0→1 + 上移 10pt）。
     private func present(height: CGFloat) {
         guard let window else { return }
-        anchorOrigin = computeAnchorOrigin()
-        let startFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: Self.hudWidth, height: height)
-        let endFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: Self.hudWidth, height: height)
+        let metrics = layoutMetrics(for: currentHudWidth)
+        anchorOrigin = metrics.origin
+        currentHudWidth = metrics.width
+        let startFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: currentHudWidth, height: height)
+        let endFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
 
         window.setFrame(startFrame, display: false)
         window.alphaValue = 0
@@ -361,7 +421,10 @@ final class RecordingHUDController: NSWindowController {
             return
         }
         let height = expanded ? Self.expandedHeight : Self.compactHeight
-        let target = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: Self.hudWidth, height: height)
+        let metrics = layoutMetrics(for: currentHudWidth)
+        anchorOrigin = metrics.origin
+        currentHudWidth = metrics.width
+        let target = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
 
         guard animated else {
             window.setFrame(target, display: true)
