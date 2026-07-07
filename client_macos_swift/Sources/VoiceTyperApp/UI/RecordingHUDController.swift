@@ -7,8 +7,8 @@ final class RecordingHUDController: NSWindowController {
     // MARK: - 几何常量
 
     private static let legacyHudWidth: CGFloat = 340
-    private static let defaultHudWidth: CGFloat = legacyHudWidth * 2
-    private static let maximumHudWidth: CGFloat = legacyHudWidth * 3
+    private static let defaultHudWidth: CGFloat = legacyHudWidth * 2.5
+    private static let maximumScreenWidthRatio: CGFloat = 0.5
     private static let screenMargin: CGFloat = 16
     private static let compactHeight: CGFloat = 48
     private static let expandedHeight: CGFloat = 100
@@ -318,12 +318,12 @@ final class RecordingHUDController: NSWindowController {
     /// 计算指定宽度下的窗口宽度与底边左下角锚点，确保 HUD 不越出可见屏幕。
     private func layoutMetrics(for requestedWidth: CGFloat) -> (origin: CGPoint, width: CGFloat) {
         guard let screen = targetScreen() else {
-            return (CGPoint(x: 0, y: 0), min(requestedWidth, Self.maximumHudWidth))
+            return (CGPoint(x: 0, y: 0), max(requestedWidth, Self.defaultHudWidth))
         }
         let visible = screen.visibleFrame
         let availableWidth = max(180, visible.width - Self.screenMargin * 2)
-        let defaultWidth = min(Self.defaultHudWidth, availableWidth)
-        let maximumWidth = min(Self.maximumHudWidth, availableWidth)
+        let maximumWidth = min(visible.width * Self.maximumScreenWidthRatio, availableWidth)
+        let defaultWidth = maximumWidth
         let width = min(max(requestedWidth, defaultWidth), maximumWidth)
         let centeredX = visible.midX - width / 2
         let minX = visible.minX + Self.screenMargin
@@ -518,7 +518,11 @@ final class RecordingHUDController: NSWindowController {
         statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         statusLabel.textColor = .labelColor
         statusLabel.alignment = .left
+        statusLabel.lineBreakMode = .byClipping
+        statusLabel.cell?.usesSingleLineMode = true
+        statusLabel.cell?.wraps = false
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         timeLabel.textColor = .tertiaryLabelColor

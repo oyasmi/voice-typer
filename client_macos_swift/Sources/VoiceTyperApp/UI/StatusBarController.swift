@@ -207,7 +207,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func handleAbout() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(nil)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: AppConstants.appName,
+            .applicationVersion: AppConstants.version,
+        ])
     }
 
     @objc private func handleQuit() {
