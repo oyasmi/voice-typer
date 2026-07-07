@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llm-temperature",
         type=float,
-        default=0.3,
+        default=0.0,
         help="LLM 温度参数 (默认: %(default)s)",
     )
     parser.add_argument(
