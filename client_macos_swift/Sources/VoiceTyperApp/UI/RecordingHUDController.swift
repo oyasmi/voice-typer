@@ -19,6 +19,7 @@ final class RecordingHUDController: NSWindowController {
     private let statusLabel = NSTextField(labelWithString: "录音中")
     private let timeLabel = NSTextField(labelWithString: "")
     private let previewLabel = NSTextField(labelWithString: "")
+    private let previewClipView = NSView()
     private let effectView = NSVisualEffectView()
     private let dimView = NSView()
 
@@ -474,18 +475,27 @@ final class RecordingHUDController: NSWindowController {
         topRow.spacing = 10
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
+        previewClipView.wantsLayer = true
+        previewClipView.layer?.masksToBounds = true
+        previewClipView.translatesAutoresizingMaskIntoConstraints = false
+
         previewLabel.font = .systemFont(ofSize: 14, weight: .regular)
-        previewLabel.textColor = .labelColor
-        previewLabel.alignment = .left
-        previewLabel.lineBreakMode = .byTruncatingHead
-        previewLabel.maximumNumberOfLines = 2
-        previewLabel.cell?.truncatesLastVisibleLine = true
+        previewLabel.textColor = .secondaryLabelColor
+        previewLabel.alignment = .right
+        previewLabel.lineBreakMode = .byClipping
+        previewLabel.maximumNumberOfLines = 1
+        previewLabel.cell?.usesSingleLineMode = true
+        previewLabel.cell?.wraps = false
+        previewLabel.cell?.isScrollable = false
         previewLabel.alphaValue = 0
         previewLabel.translatesAutoresizingMaskIntoConstraints = false
+        previewLabel.setContentHuggingPriority(.required, for: .horizontal)
+        previewLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        previewClipView.addSubview(previewLabel)
 
         contentView.addSubview(effectView)
         contentView.addSubview(topRow)
-        contentView.addSubview(previewLabel)
+        contentView.addSubview(previewClipView)
 
         NSLayoutConstraint.activate([
             effectView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -515,9 +525,15 @@ final class RecordingHUDController: NSWindowController {
             topRow.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
             topRow.heightAnchor.constraint(equalToConstant: 28),
 
-            previewLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            previewLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            previewLabel.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 8),
+            previewClipView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            previewClipView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            previewClipView.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 8),
+            previewClipView.heightAnchor.constraint(equalToConstant: 22),
+
+            previewLabel.trailingAnchor.constraint(equalTo: previewClipView.trailingAnchor),
+            previewLabel.centerYAnchor.constraint(equalTo: previewClipView.centerYAnchor),
+            previewLabel.leadingAnchor.constraint(lessThanOrEqualTo: previewClipView.leadingAnchor),
+            previewLabel.heightAnchor.constraint(equalTo: previewClipView.heightAnchor),
         ])
 
         applyDimOpacity()
