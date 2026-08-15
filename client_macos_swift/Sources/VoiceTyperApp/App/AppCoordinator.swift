@@ -17,8 +17,6 @@ final class AppCoordinator {
         accessibility: .denied,
         inputMonitoring: .denied
     )
-    private var hotwords: [String] = []
-    private var managedHotwordsText = ""
     private var serverReady = false
     private var currentState: AppState = .booting
     /// 用户是否已从菜单主动暂停听写。暂停时不监听热键、不轮询服务端。
@@ -102,10 +100,6 @@ final class AppCoordinator {
             controller.onSaveConfig = { [weak self] updatedConfig in
                 guard let self else { return }
                 try await self.applyConfig(updatedConfig)
-            }
-            controller.onSaveHotwords = { [weak self] text in
-                guard let self else { return }
-                try await self.applyHotwordsText(text)
             }
             controller.onSuspendHotkey = { [weak self] suspend in
                 guard let self else { return }
@@ -274,7 +268,7 @@ final class AppCoordinator {
 
     private func ensureController() {
         if voiceTyperController == nil {
-            voiceTyperController = VoiceTyperController(config: config, hotwords: hotwords)
+            voiceTyperController = VoiceTyperController(config: config)
             bindControllerEvents()
         }
     }
@@ -351,47 +345,16 @@ final class AppCoordinator {
 
     private func reloadConfigurationFromDisk() throws {
         config = try configStore.loadOrCreate()
-        hotwords = configStore.loadHotwords(using: config)
-        managedHotwordsText = try configStore.loadManagedHotwordsText(using: config)
         recordingHUDController = RecordingHUDController(config: config.ui)
     }
 
     private func refreshSetupWindowEditorContent() {
-        setupWindowController?.loadEditableContent(
-            config: config,
-            managedHotwordsText: managedHotwordsText,
-            additionalHotwordFileCount: configStore.additionalHotwordFileCount(using: config)
-        )
+        setupWindowController?.loadEditableContent(config: config)
     }
 
     private func applyConfig(_ updatedConfig: AppConfig) async throws {
         try configStore.save(config: updatedConfig)
         try await reloadAndReevaluateAfterSettingsChange()
-    }
-
-    /// 热词自动保存：只刷新热词并用新词重建控制器，不重新探测服务端、不收起窗口。
-    /// （热词编辑是高频自动保存，走完整 reevaluate 会反复重启热键并可能关掉设置窗。）
-    private func applyHotwordsText(_ text: String) async throws {
-        try configStore.saveManagedHotwordsText(text, using: config)
-        hotwords = configStore.loadHotwords(using: config)
-        managedHotwordsText = try configStore.loadManagedHotwordsText(using: config)
-
-        if !isPaused,
-           permissions.allRequiredGranted,
-           serverReady,
-           let controller = voiceTyperController,
-           controller.isStarted {
-            controller.stop()
-            voiceTyperController = nil
-            ensureController()
-            do {
-                try voiceTyperController?.start()
-            } catch {
-                AppLog.hotkey.error("热词更新后热键重启失败: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        refreshSetupWindowEditorContent()
     }
 
     private func reloadAndReevaluateAfterSettingsChange() async throws {

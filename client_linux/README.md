@@ -8,7 +8,6 @@ Linux Wayland 语音输入客户端，使用 FunASR 进行离线语音识别。
 - ⌨️ **全局热键** - 按住热键开始录音，释放自动识别并插入文本
 - 🖥️ **Wayland 原生支持** - 专为 Wayland + GNOME 环境设计，使用 evdev 和 GTK4
 - 📋 **智能文本插入** - 自动将识别结果插入到当前光标位置
-- 🎯 **用户词库** - 支持自定义词汇，提高识别准确率
 - 🔧 **可视化指示器** - 录音时显示浮动窗口，实时显示录音时长
 
 ## 系统要求
@@ -132,31 +131,11 @@ hotkey:
     - "ctrl"  # 修饰键: ctrl, alt, shift, super
   key: "f2"   # 主键
 
-# 用户词库文件
-hotword_files:
-  - "hotwords.txt"
-
 # UI 配置
 ui:
   opacity: 0.85  # 录音指示器透明度
   width: 240     # 录音指示器宽度
   height: 70     # 录音指示器高度
-```
-
-### 自定义词库
-
-编辑 `~/.config/voice_typer/hotwords.txt`，每行一个词：
-
-```text
-# 专业术语
-FunASR
-Python
-GitHub
-
-# 自定义词汇
-你的名字
-公司名称
-...
 ```
 
 ## 故障排除

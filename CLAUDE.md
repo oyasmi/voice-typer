@@ -25,7 +25,7 @@ There are three clients, each in its own directory:
 │  - Hotkey listener  │  ◀──────────────────────────────  │                   │
 │  - Audio recording  │              JSON / partials       │  - Speech model   │
 │  - Status HUD / UI  │                                    │  - Punctuation    │
-│  - Text insertion   │                                    │  - Hotwords       │
+│  - Text insertion   │                                    │  - Punctuation    │
 └─────────────────────┘                                    │  - LLM correction │
                                                            └───────────────────┘
 ```
@@ -111,9 +111,9 @@ make log            # view logs (also make log-f to follow)
 Both share the same layout (`.swift` / `.cs`):
 
 - `App/` — `AppCoordinator` (central wiring, lifecycle, state-machine callbacks) and the platform entry point.
-- `Core/` — `AppConfig` (config model), `AppState` (state enum + display info), `ConfigStore` (YAML read/write + hotword management), `VoiceTyperController` (core state machine + streaming/non-streaming dual path). macOS adds `PermissionCenter` for first-launch permission flow.
+- `Core/` — `AppConfig` (config model), `AppState` (state enum + display info), `ConfigStore` (YAML read/write), `VoiceTyperController` (core state machine + streaming/non-streaming dual path). macOS adds `PermissionCenter` for first-launch permission flow.
 - `Services/` — `HotkeyService`, `AudioCaptureService` (16kHz/mono/float32), `StreamingASRClient` (WebSocket), `ASRClient` (HTTP), `TextInsertionService`.
-- `UI/` — status-bar/tray controller, `RecordingHUD` (live status + streaming preview), `SetupForm`/`SetupWindowController` (connection, hotkey, hotword settings).
+- `UI/` — status-bar/tray controller, `RecordingHUD` (live status + streaming preview), `SetupForm`/`SetupWindowController` (connection, hotkey settings).
 - `Support/` — logging, constants, native interop (P/Invoke on Windows).
 
 ### Linux client (`client_linux/`)
@@ -142,7 +142,7 @@ Both share the same layout (`.swift` / `.cs`):
 - macOS / Linux: `~/.config/voice_typer/config.yaml`
 - Windows: `%APPDATA%\voice_typer\config.yaml`
 
-The format is shared across all clients (so server/hotword config migrates between them):
+The format is shared across all clients (so server config migrates between them):
 
 ```yaml
 server:
@@ -156,17 +156,11 @@ server:
 hotkey:
   modifiers: []          # e.g. ["ctrl"]; native macOS supports "fn"
   key: "fn"              # macOS default fn; Windows default f2 with ctrl
-hotword_files:
-  - "hotwords.txt"
 ui:
   opacity: 0.85         # HUD 背景不透明度，客户端会读取
   width: 240            # 预留字段：macOS HUD 目前尺寸固定，width/height 暂不生效
   height: 70            # 同上
 ```
-
-Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` starts a comment.
-
-> **Hotwords are currently inert on every ONNX path.** SenseVoice (the default final-text model) has no contextual-biasing path, and the plain `funasr_onnx` `Paraformer.__call__(wav, **kwargs)` silently swallows `hotword=`. Only `ContextualParaformer` / `SeacoParaformer` implement it. Clients still send hotwords and the server still accepts them, but `GET /health` reports the truth in `hotwords_supported` (see `PROTOCOL.md` §2). Restoring hotwords means switching the offline model to a contextual variant.
 
 **Server configuration:** command-line arguments only (see "Server Options").
 

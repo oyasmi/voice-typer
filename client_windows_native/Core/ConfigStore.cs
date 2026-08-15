@@ -17,7 +17,6 @@ internal sealed class ConfigStore
 
     public string ConfigDirectory => AppConstants.ConfigDirectory;
     public string ConfigPath => AppConstants.ConfigFilePath;
-    public string DefaultHotwordsPath => AppConstants.DefaultHotwordsPath;
 
     /// <summary>不存在时写入默认配置；否则按现状解析。</summary>
     public AppConfig LoadOrCreate()
@@ -31,11 +30,6 @@ internal sealed class ConfigStore
             cfg.Server ??= new ServerConfig();
             cfg.Hotkey ??= new HotkeyConfig();
             cfg.UI ??= new UIConfig();
-            cfg.HotwordFiles ??= new List<string> { AppConstants.DefaultHotwordsFileName };
-            if (cfg.HotwordFiles.Count == 0)
-            {
-                cfg.HotwordFiles.Add(AppConstants.DefaultHotwordsFileName);
-            }
             return cfg;
         }
         catch (Exception ex)
@@ -48,9 +42,7 @@ internal sealed class ConfigStore
     public void Save(AppConfig config)
     {
         EnsureDefaultFiles();
-        var normalized = config.Clone();
-        normalized.HotwordFiles = NormalizeHotwordFiles(normalized.HotwordFiles);
-        WriteAtomically(ConfigPath, SerializeYaml(normalized));
+        WriteAtomically(ConfigPath, SerializeYaml(config.Clone()));
     }
 
     public void EnsureDefaultFiles()
@@ -60,11 +52,6 @@ internal sealed class ConfigStore
         if (!File.Exists(ConfigPath))
         {
             WriteAtomically(ConfigPath, DefaultConfigYaml);
-        }
-
-        if (!File.Exists(DefaultHotwordsPath))
-        {
-            WriteAtomically(DefaultHotwordsPath, DefaultHotwordsContent);
         }
     }
 
@@ -84,104 +71,13 @@ internal sealed class ConfigStore
         }
     }
 
-    public IReadOnlyList<string> LoadHotwords(AppConfig config)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var words = new List<string>();
 
-        foreach (var rel in config.HotwordFiles)
-        {
-            var path = ResolveHotwordPath(rel);
-            if (!File.Exists(path)) continue;
 
-            string[] lines;
-            try { lines = File.ReadAllLines(path); }
-            catch (Exception ex)
-            {
-                AppLog.Warn("config", $"读取热词文件失败 {path}: {ex.Message}");
-                continue;
-            }
 
-            foreach (var line in lines)
-            {
-                var word = line.Trim();
-                if (string.IsNullOrEmpty(word) || word.StartsWith("#")) continue;
-                if (seen.Add(word)) words.Add(word);
-            }
-        }
 
-        return words;
-    }
 
-    public string LoadManagedHotwordsText(AppConfig config)
-    {
-        EnsureDefaultFiles();
-        var path = ManagedHotwordsPath(config);
-        if (!File.Exists(path))
-        {
-            WriteAtomically(path, DefaultHotwordsContent);
-        }
-        return File.ReadAllText(path);
-    }
 
-    public void SaveManagedHotwordsText(string text, AppConfig config)
-    {
-        EnsureDefaultFiles();
-        var path = ManagedHotwordsPath(config);
-        var normalized = NormalizeHotwordsText(text);
-        WriteAtomically(path, normalized);
-    }
 
-    public string ManagedHotwordsPath(AppConfig config)
-    {
-        var files = NormalizeHotwordFiles(config.HotwordFiles);
-        var first = files.FirstOrDefault() ?? AppConstants.DefaultHotwordsFileName;
-        return ResolveHotwordPath(first);
-    }
-
-    public int AdditionalHotwordFileCount(AppConfig config)
-    {
-        var managed = Path.GetFullPath(ManagedHotwordsPath(config));
-        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rel in NormalizeHotwordFiles(config.HotwordFiles))
-        {
-            unique.Add(Path.GetFullPath(ResolveHotwordPath(rel)));
-        }
-        unique.Remove(managed);
-        return unique.Count;
-    }
-
-    private string ResolveHotwordPath(string relativeOrAbsolute)
-    {
-        if (string.IsNullOrEmpty(relativeOrAbsolute))
-        {
-            return Path.Combine(ConfigDirectory, AppConstants.DefaultHotwordsFileName);
-        }
-        if (Path.IsPathRooted(relativeOrAbsolute)) return relativeOrAbsolute;
-        return Path.Combine(ConfigDirectory, relativeOrAbsolute);
-    }
-
-    private static List<string> NormalizeHotwordFiles(IEnumerable<string>? input)
-    {
-        var normalized = new List<string> { AppConstants.DefaultHotwordsFileName };
-        var seen = new HashSet<string>(normalized, StringComparer.OrdinalIgnoreCase);
-
-        if (input is null) return normalized;
-
-        foreach (var raw in input)
-        {
-            var trimmed = raw?.Trim();
-            if (string.IsNullOrEmpty(trimmed) || !seen.Add(trimmed)) continue;
-            normalized.Add(trimmed);
-        }
-        return normalized;
-    }
-
-    private static string NormalizeHotwordsText(string text)
-    {
-        var unified = text.Replace("\r\n", "\n").Replace("\r", "\n").Trim();
-        return string.IsNullOrEmpty(unified) ? "" : unified + "\n";
-    }
 
     private static void WriteAtomically(string path, string content)
     {
@@ -209,8 +105,6 @@ internal sealed class ConfigStore
             ? "  modifiers: []"
             : "  modifiers:\n" + string.Join("\n", config.Hotkey.Modifiers.Select(m => $"    - {YamlString(m)}"));
 
-        var hotwordFilesBlock = string.Join("\n", config.HotwordFiles.Select(f => $"  - {YamlString(f)}"));
-
         return string.Join("\n",
             $"server:",
             $"  host: {YamlString(config.Server.Host)}",
@@ -222,8 +116,6 @@ internal sealed class ConfigStore
             $"hotkey:",
             modifiersBlock,
             $"  key: {YamlString(config.Hotkey.Key)}",
-            $"hotword_files:",
-            hotwordFilesBlock,
             $"ui:",
             $"  opacity: {YamlNumber(config.UI.Opacity)}",
             $"  width: {YamlNumber(config.UI.Width)}",
@@ -262,18 +154,9 @@ internal sealed class ConfigStore
           modifiers:
             - "ctrl"
           key: "f2"
-        hotword_files:
-          - "hotwords.txt"
         ui:
           opacity: 0.85
           width: 320
           height: 90
-        """;
-
-    private const string DefaultHotwordsContent = """
-        # VoiceTyper 用户词库
-        FunASR
-        OpenAI
-        ChatGPT
         """;
 }

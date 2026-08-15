@@ -21,8 +21,6 @@ internal sealed class AppCoordinator : IDisposable
     private VoiceTyperController? _controller;
 
     private AppConfig _config = new();
-    private IReadOnlyList<string> _hotwords = Array.Empty<string>();
-    private string _managedHotwordsText = "";
 
     private AppStateInfo _currentState = AppStateInfo.Booting;
     private bool _serverReady;
@@ -66,7 +64,7 @@ internal sealed class AppCoordinator : IDisposable
     public void OpenSetup()
     {
         EnsureSetupForm();
-        _setupForm!.LoadEditableContent(_config, _managedHotwordsText, _configStore.AdditionalHotwordFileCount(_config));
+        _setupForm!.LoadEditableContent(_config);
         _setupForm!.UpdateServerStatus(_serverReady, ServerDisplay(), _micPermissionDenied);
         _setupForm!.Present();
     }
@@ -76,8 +74,6 @@ internal sealed class AppCoordinator : IDisposable
     private void ReloadConfigurationFromDisk()
     {
         _config = _configStore.LoadOrCreate();
-        _hotwords = _configStore.LoadHotwords(_config);
-        _managedHotwordsText = _configStore.LoadManagedHotwordsText(_config);
 
         // 重建 HUD（UI 配置可能变了）
         _hud?.Dispose();
@@ -87,12 +83,6 @@ internal sealed class AppCoordinator : IDisposable
     private async Task ApplyConfigAndReloadAsync(AppConfig draft)
     {
         _configStore.Save(draft);
-        await ReloadAndReevaluateAsync().ConfigureAwait(true);
-    }
-
-    private async Task ApplyHotwordsAndReloadAsync(string text)
-    {
-        _configStore.SaveManagedHotwordsText(text, _config);
         await ReloadAndReevaluateAsync().ConfigureAwait(true);
     }
 
@@ -107,7 +97,7 @@ internal sealed class AppCoordinator : IDisposable
 
         if (_setupForm is { } form)
         {
-            form.LoadEditableContent(_config, _managedHotwordsText, _configStore.AdditionalHotwordFileCount(_config));
+            form.LoadEditableContent(_config);
         }
         UpdateTray();
         await ReevaluateReadinessAsync().ConfigureAwait(true);
@@ -179,7 +169,7 @@ internal sealed class AppCoordinator : IDisposable
     private void EnsureController()
     {
         if (_controller is not null) return;
-        var controller = new VoiceTyperController(_config, _hotwords);
+        var controller = new VoiceTyperController(_config);
 
         controller.StateChanged = state =>
         {
@@ -228,7 +218,6 @@ internal sealed class AppCoordinator : IDisposable
         var form = new SetupForm();
         form.OnTestServerConnection = async server => await ASRClient.HealthCheckAsync(server).ConfigureAwait(true);
         form.OnSaveConfig = async draft => await ApplyConfigAndReloadAsync(draft).ConfigureAwait(true);
-        form.OnSaveHotwords = async text => await ApplyHotwordsAndReloadAsync(text).ConfigureAwait(true);
         form.OnRetryServerCheck = () => _ = RefreshServerStatusAsync();
         _setupForm = form;
     }

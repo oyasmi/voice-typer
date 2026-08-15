@@ -10,7 +10,6 @@ import signal
 import sys
 import time
 from typing import Optional
-from urllib.parse import unquote
 
 import numpy as np
 import tornado.httpserver
@@ -27,7 +26,7 @@ logger = logging.getLogger("VoiceTyper")
 
 
 def is_sensevoice_model(model_name: Optional[str]) -> bool:
-    """SenseVoice 系模型走独立的识别器实现（自带标点、不支持热词）。"""
+    """SenseVoice 系模型走独立的识别器实现（自带标点）。"""
     return bool(model_name) and model_name.lower().startswith("sensevoice")
 
 
@@ -72,9 +71,6 @@ class HealthHandler(BaseAuthenticatedHandler):
             "protocol_version":  2,
             "streaming":         streaming,
             "llm_enabled":       llm_client is not None,
-            # 产出最终文本的模型是否真的支持热词。当前两条 ONNX 路径都不支持：
-            # SenseVoice 无 contextual biasing，普通 paraformer 会静默忽略 hotword。
-            "hotwords_supported": models.get("hotwords_supported", False),
             "asr_model":         models.get("asr"),
             "offline_model":     models.get("offline"),
             "punc_model":        models.get("punc"),
@@ -93,23 +89,21 @@ class RecognizeHandler(BaseAuthenticatedHandler):
         ct = self.request.headers.get("Content-Type", "").lower()
         if ct.startswith("application/octet-stream"):
             audio_bytes = self.request.body
-            hotwords    = unquote(self.request.headers.get("X-Hotwords", ""))
             llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
-            return audio_bytes, hotwords, llm_recorrect
+            return audio_bytes, llm_recorrect
         if "audio" not in self.request.files:
             raise tornado.web.HTTPError(400, reason="缺少 audio 文件")
         audio_file    = self.request.files["audio"][0]
         audio_bytes   = audio_file["body"]
-        hotwords      = self.get_argument("hotwords", "")
         llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
-        return audio_bytes, hotwords, llm_recorrect
+        return audio_bytes, llm_recorrect
 
     async def post(self):
         recognizer = self.application.settings.get("recognizer")
         llm_client  = self.application.settings.get("llm_client")
 
         try:
-            audio_bytes, hotwords, llm_recorrect = self._parse_request()
+            audio_bytes, llm_recorrect = self._parse_request()
 
             if len(audio_bytes) > 64 * 1024 * 1024:
                 self.set_status(413)
@@ -138,7 +132,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
             loop = asyncio.get_running_loop()
             t0 = time.time()
             text = await loop.run_in_executor(
-                executor, recognizer.recognize, audio, hotwords
+                executor, recognizer.recognize, audio
             )
             elapsed = round(time.time() - t0, 3)
 
@@ -180,7 +174,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 
     协议（详见仓库根目录 PROTOCOL.md）：
       Client → Server:
-        连接后立即  text:   {"type":"start","hotwords":"词1 词2","sample_rate":16000}
+        连接后立即  text:   {"type":"start","sample_rate":16000}
         录音中每 600ms  binary: float32 PCM，9600 samples = 38400 bytes
         松开热键   text:   {"type":"finalize"}
       Server → Client:
@@ -213,7 +207,6 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             return
         self.llm_recorrect = self.get_argument("llm_recorrect", "false").lower() == "true"
         self.session = None
-        self.hotwords = ""
         self.seq = 0
         self.last_preview = ""
         self.preview_task: Optional[asyncio.Task] = None
@@ -293,12 +286,11 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         msg_type = msg.get("type")
         if msg_type == "start":
             recognizer = self.application.settings["recognizer"]
-            self.hotwords = msg.get("hotwords", "")
             self.session = recognizer.new_session()
             self.seq = 0
             self.last_preview = ""
             self.finalizing = False
-            logger.info(f"会话开始，hotwords='{self.hotwords}' llm={self.llm_recorrect}")
+            logger.info(f"会话开始，llm={self.llm_recorrect}")
         elif msg_type == "finalize":
             await self._do_finalize()
         else:
@@ -320,7 +312,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         executor = self.application.settings.get("offline_executor")
 
         t0 = time.time()
-        text = await loop.run_in_executor(executor, self.session.finalize, self.hotwords)
+        text = await loop.run_in_executor(executor, self.session.finalize)
         asr_elapsed = round(time.time() - t0, 3)
         logger.info(f"离线复识别耗时: {asr_elapsed}s")
         logger.debug(f"离线复识别文本: {text!r}")
@@ -536,22 +528,18 @@ def create_server(args) -> ServerContext:
     logger.info(f"初始化完成，耗时 {time.time() - t0:.1f}s")
 
     # 最终文本由 offline_recognizer（流式）或 recognizer（非流式）产出；
-    # 标点是内置还是外挂 ct-punc、热词是否可用，都取决于它。
+    # 标点是内置还是外挂 ct-punc，取决于它。
     final_recognizer = offline_recognizer if streaming else recognizer
     builtin_punc = isinstance(final_recognizer, SenseVoiceRecognizer)
     effective_punc = None if builtin_punc else punc_model
-    hotwords_supported = final_recognizer.supports_hotwords
 
     logger.info(f"标点: {'内置（SenseVoice）' if builtin_punc else (effective_punc or '已禁用')}")
-    if not hotwords_supported:
-        logger.info("热词: 当前模型不支持，客户端传入的热词将被忽略")
 
     models_meta = {
-        "asr":                model_name,
-        "offline":            offline_model_name if streaming else None,
-        "punc":               effective_punc,
-        "device":             args.device,
-        "hotwords_supported": hotwords_supported,
+        "asr":     model_name,
+        "offline": offline_model_name if streaming else None,
+        "punc":    effective_punc,
+        "device":  args.device,
     }
 
     # 单 worker executor：ONNX 推理与 funasr 前端都有可变状态，必须串行。

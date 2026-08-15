@@ -30,7 +30,6 @@
   "protocol_version": 2,
   "streaming": true,
   "llm_enabled": false,
-  "hotwords_supported": false,
   "asr_model":     "paraformer-zh-streaming",
   "offline_model": "sensevoice-small",
   "punc_model":    null,
@@ -42,10 +41,6 @@
 - `version`：服务端语义化版本，客户端可记录到日志辅助诊断。
 - `protocol_version`：本文档版本号。后续不兼容变更会递增。
 - `streaming`：当前服务端处于流式（WebSocket）还是兼容（HTTP）模式。
-- `hotwords_supported`：产出最终文本的模型是否真的支持热词。**当前两条 ONNX
-  路径都是 `false`**——SenseVoice 没有 contextual biasing 通路，而普通
-  paraformer 的 `__call__(wav, **kwargs)` 会把 `hotword=` 静默吞掉。客户端仍可
-  照常发送热词（会被忽略），但不应据此向用户承诺热词生效。
 - `asr_model` / `offline_model` / `punc_model` / `device`：模型实测元信息。
   `punc_model` 为 `null` 表示不需要独立标点模型（SenseVoice 自带标点与 ITN）。
 
@@ -55,7 +50,6 @@
 
 请求：
 - `Content-Type: application/octet-stream`，body 为 16kHz / float32 / mono PCM。
-- 可选 `X-Hotwords` 头（URL encoded 空格分隔）。
 - query 可选 `llm_recorrect=true`。
 
 响应：
@@ -75,7 +69,7 @@
 
 | 时机 | 类型 | 负载 |
 | --- | --- | --- |
-| 连接后立即 | text | `{"type":"start","hotwords":"词1 词2","sample_rate":16000}` |
+| 连接后立即 | text | `{"type":"start","sample_rate":16000}` |
 | 录音中 ~600ms 一帧 | binary | float32 mono PCM，建议 9600 samples = 38400 bytes |
 | 松开热键 | text | `{"type":"finalize"}` |
 

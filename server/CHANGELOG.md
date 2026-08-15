@@ -47,13 +47,16 @@
 
 想回到旧行为：`--offline-model paraformer-zh`（流式）或 `--model paraformer-zh`（非流式）。
 
-### 热词状态更正
+### 移除热词功能
 
-热词在两条 ONNX 路径上**都不生效**，此前是静默失败：普通 `funasr_onnx.Paraformer.__call__(wav, **kwargs)` 会把 `hotword=` 直接吞掉（只有 `ContextualParaformer` / `SeacoParaformer` 才实现），而原先的 `try/except TypeError` 探测永远不会触发。SenseVoice 同样没有 contextual biasing 通路。
+热词在两条 ONNX 路径上**都不生效**，且是静默失败：普通 `funasr_onnx.Paraformer.__call__(wav, **kwargs)` 会把 `hotword=` 直接吞掉（只有 `ContextualParaformer` / `SeacoParaformer` 才实现），而原先的 `try/except TypeError` 探测永远不会触发。SenseVoice 同样没有 contextual biasing 通路。
 
-- 改为按模型能力显式判定（`hasattr(model, "proc_hotword")`），不再依赖异常探测。
-- `GET /health` 新增 `hotwords_supported` 字段，如实上报。
-- 收到热词但模型不支持时记一条 WARNING。
+与其保留一个看起来能用、实际无效的设置项，直接整体移除：
+
+- 服务端不再接受 `X-Hotwords` 头、`hotwords` 查询参数与 WebSocket `start` 帧的 `hotwords` 字段。老客户端继续发送不会报错，只是被忽略。
+- 配置中的 `hotword_files` 与 `hotwords.txt` 不再读取，新写回的配置也不再包含该字段；遗留字段会被静默忽略。
+- 三个客户端同步移除相关配置、文件管理与设置界面（macOS/Windows 的「用户热词」设置页已删除）。
+- 恢复该能力需要把识别模型换成支持 contextual biasing 的变体（如 SeaCo-Paraformer）。历史说明保留在根 `README.md`。
 
 ### 修复
 

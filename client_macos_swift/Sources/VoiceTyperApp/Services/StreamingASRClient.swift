@@ -67,7 +67,7 @@ final class StreamingASRClient {
 
     // MARK: - 连接
 
-    func connect(server: ServerConfig, hotwords: [String], llmRecorrect: Bool) throws {
+    func connect(server: ServerConfig, llmRecorrect: Bool) throws {
         var components = URLComponents()
         components.scheme = server.wsScheme
         components.host = server.host
@@ -95,7 +95,6 @@ final class StreamingASRClient {
         // 发送 start 帧
         let startPayload: [String: Any] = [
             "type": "start",
-            "hotwords": hotwords.joined(separator: " "),
             "sample_rate": 16000,
         ]
         sendJSON(startPayload)

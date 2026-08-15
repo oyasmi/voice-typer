@@ -9,7 +9,6 @@ internal static class AppConstants
     public const string AppName = "VoiceTyper";
     public const string ConfigDirectoryName = "voice_typer";
     public const string ConfigFileName = "config.yaml";
-    public const string DefaultHotwordsFileName = "hotwords.txt";
     public const string LogFileName = "client.log";
 
     public const int TargetSampleRate = 16_000;
@@ -37,6 +36,5 @@ internal static class AppConstants
     );
 
     public static string ConfigFilePath => Path.Combine(ConfigDirectory, ConfigFileName);
-    public static string DefaultHotwordsPath => Path.Combine(ConfigDirectory, DefaultHotwordsFileName);
     public static string LogFilePath => Path.Combine(ConfigDirectory, LogFileName);
 }

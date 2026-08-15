@@ -7,7 +7,6 @@ enum AppConstants {
     static let targetSampleRate: Double = 16_000
     static let configDirectoryName = "voice_typer"
     static let configFileName = "config.yaml"
-    static let defaultHotwordsFileName = "hotwords.txt"
 }
 
 enum SystemSettingsURL {

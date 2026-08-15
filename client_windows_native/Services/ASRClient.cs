@@ -33,7 +33,7 @@ internal sealed class ASRClient : IDisposable
         };
     }
 
-    public async Task<string> RecognizeAsync(byte[] audioData, string hotwords, bool llmRecorrect, CancellationToken ct = default)
+    public async Task<string> RecognizeAsync(byte[] audioData, bool llmRecorrect, CancellationToken ct = default)
     {
         var url = $"http://{_server.Host}:{_server.Port}/recognize?llm_recorrect={(llmRecorrect ? "true" : "false")}";
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
@@ -44,11 +44,6 @@ internal sealed class ASRClient : IDisposable
         if (trimmedKey.Length > 0)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", trimmedKey);
-        }
-
-        if (!string.IsNullOrEmpty(hotwords))
-        {
-            request.Headers.Add("X-Hotwords", Uri.EscapeDataString(hotwords));
         }
 
         HttpResponseMessage response;

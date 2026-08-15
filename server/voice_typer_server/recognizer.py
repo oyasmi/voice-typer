@@ -142,7 +142,6 @@ class SpeechRecognizer:
         self._model = None
         self._punc_model = None
         self._initialized = False
-        self._hotword_supported = False
 
     def initialize(self):
         paraformer_mod = _bypass_load("funasr_onnx.paraformer_bin")
@@ -160,12 +159,6 @@ class SpeechRecognizer:
             quantize=asr_q,
             intra_op_num_threads=self.intra_op_num_threads,
         )
-        # 只有 ContextualParaformer / SeacoParaformer 才有热词通路；
-        # 普通 Paraformer.__call__(wav, **kwargs) 会把 hotword= 静默吞掉，
-        # 既不报错也不生效，所以这里按能力显式判定而不是靠 try/TypeError。
-        self._hotword_supported = hasattr(self._model, "proc_hotword")
-        if not self._hotword_supported:
-            logger.info(f"热词: 当前模型 {self.model_name} 不支持，将被忽略")
 
         if punc_dir:
             logger.info(f"[2/2] 加载 ONNX 标点恢复模型: {punc_dir}")
@@ -187,17 +180,13 @@ class SpeechRecognizer:
     def is_ready(self) -> bool:
         return self._initialized and self._model is not None
 
-    @property
-    def supports_hotwords(self) -> bool:
-        return self._hotword_supported
-
-    def recognize(self, audio: np.ndarray, hotwords: str = "") -> str:
+    def recognize(self, audio: np.ndarray) -> str:
         if not self.is_ready:
             raise RuntimeError("ONNX 模型未初始化")
         if len(audio) == 0:
             return ""
 
-        result = self._call_with_hotword(audio, hotwords)
+        result = self._model(audio)
         if not result:
             return ""
 
@@ -211,11 +200,6 @@ class SpeechRecognizer:
             except Exception as exc:
                 logger.warning(f"标点恢复失败: {exc}")
         return text
-
-    def _call_with_hotword(self, audio, hotwords):
-        if not hotwords or not self._hotword_supported:
-            return self._model(audio)
-        return self._model(audio, hotword=hotwords)
 
     def _extract_asr_text(self, asr_result) -> str:
         return _extract_preds_text(asr_result)
@@ -257,7 +241,6 @@ class SenseVoiceRecognizer:
 
     与 paraformer 方案的关键差异：
     - **自带标点与 ITN**（textnorm=withitn），不需要额外的 ct-punc 模型；
-    - CTC 贪心解码，**不支持热词**（没有 contextual biasing 通路）；
     - 单模型覆盖 zh/en/yue/ja/ko，language="auto" 时由模型自行判定。
 
     这里没有直接复用 funasr_onnx.SenseVoiceSmall：该模块在 import 阶段就依赖
@@ -303,7 +286,6 @@ class SenseVoiceRecognizer:
         self._session = None
         self._tokens: List[str] = []
         self._initialized = False
-        self._hotword_warned = False
 
     # -- 生命周期 ----------------------------------------------------------
 
@@ -364,21 +346,13 @@ class SenseVoiceRecognizer:
     def is_ready(self) -> bool:
         return self._initialized and self._session is not None
 
-    @property
-    def supports_hotwords(self) -> bool:
-        return False  # CTC 贪心解码，没有 contextual biasing 通路
-
     # -- 推理 --------------------------------------------------------------
 
-    def recognize(self, audio: np.ndarray, hotwords: str = "") -> str:
+    def recognize(self, audio: np.ndarray) -> str:
         if not self.is_ready:
             raise RuntimeError("SenseVoice 模型未初始化")
         if len(audio) == 0:
             return ""
-
-        if hotwords and not self._hotword_warned:
-            logger.warning("SenseVoice 不支持热词，本次及后续请求的热词将被忽略")
-            self._hotword_warned = True
 
         feats, feats_len = self._extract_feat(audio)
         if feats_len < 1:
@@ -454,25 +428,22 @@ class SenseVoiceSession:
         """对目前累积到的全部音频重跑一次，返回**全量**预览文本。"""
         return self._recognize()
 
-    def finalize(self, hotwords: str = "") -> str:
+    def finalize(self) -> str:
         """松手后调用。与 preview 是同一次计算，只是可能多了尾音。
 
         客户端若在 finalize 前没有再补音频（尾块为空），这里会直接复用上一次
         预览的结果，省掉一次整段重跑——直接砍掉上屏前的等待。
         """
-        return self._recognize(hotwords)
+        return self._recognize()
 
-    def _recognize(self, hotwords: str = "") -> str:
+    def _recognize(self) -> str:
         audio = self._audio()
-        # 会话内音频只增不减，样本数足以唯一标识缓冲区状态。
-        # 热词一旦真的生效就不能跨调用复用（当前 SenseVoice 恒为不支持）。
-        reusable = not (hotwords and self._owner.supports_hotwords)
-        if reusable and self._cached is not None and self._cached[0] == len(audio):
+        # 会话内音频只增不减，样本数足以唯一标识缓冲区状态
+        if self._cached is not None and self._cached[0] == len(audio):
             return self._cached[1]
 
-        text = self._owner.recognize(audio, hotwords)
-        if reusable:
-            self._cached = (len(audio), text)
+        text = self._owner.recognize(audio)
+        self._cached = (len(audio), text)
         return text
 
     def _audio(self) -> np.ndarray:
@@ -622,7 +593,7 @@ class Session:
 
         return "".join(self._fragments)
 
-    def finalize(self, hotwords: str = "") -> str:
+    def finalize(self) -> str:
         """松手后调用：用离线模型对完整音频复识别，得到准确的最终文本。"""
         full_audio = (
             np.concatenate(self._audio_buffer)
@@ -633,7 +604,7 @@ class Session:
         offline = self._owner._offline_recognizer
         if offline is not None and offline.is_ready and len(full_audio) > 0:
             try:
-                return offline.recognize(full_audio, hotwords)
+                return offline.recognize(full_audio)
             except Exception as exc:
                 logger.warning(f"离线复识别失败，回退到流式拼接结果: {exc}")
 

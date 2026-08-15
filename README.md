@@ -7,7 +7,7 @@
 - 🎤 **按住录音** - 按住热键开始录音，松开自动识别
 - 🔒 **完全离线** - 无需联网，本地处理，保护隐私
 - ⚡ **流式实时预览** - 原生客户端默认流式模式，边说边在 HUD 浮窗中显示识别结果，松手后离线整段复识别产出准确文本
-- ⚙️ **自定义配置** - 支持自定义热键、用户词库
+- ⚙️ **自定义配置** - 支持自定义热键
 - 🌐 **Fn 键支持** - macOS 支持绑定 Fn（地球仪）键作为热键
 - ⏱️ **短录音过滤** - 自动丢弃 0.3 秒以下的误触录音
 - 🤖 **LLM 智能纠错** - 可选的大语言模型智能纠错
@@ -128,7 +128,7 @@ bash ./voice_typer_server.sh run --no-streaming
 - **安装**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-macOS.dmg`，将 `VoiceTyper.app` 拖入「应用程序」后打开
 - **首次授权**：应用会自动检查并引导完成三项权限——麦克风、辅助功能 (Accessibility)、输入监控 (Input Monitoring)，以及服务端连通性；存在未完成项时会自动弹出「权限与设置」窗口
 - **默认热键**：`Fn`（地球仪）键，可在「权限与设置」窗口改为组合键
-- **配置**：常用项均已 UI 化（服务地址/端口/API Key、LLM 纠错、热键、用户热词），底层仍保存于 `~/.config/voice_typer/config.yaml`
+- **配置**：常用项均已 UI 化（服务地址/端口/API Key、LLM 纠错、热键），底层仍保存于 `~/.config/voice_typer/config.yaml`
 
 👉 详细安装、授权与构建说明请参阅 [client_macos_swift/README.md](client_macos_swift/README.md)。
 
@@ -190,27 +190,13 @@ server:
   llm_recorrect: true
 ```
 
-## 自定义词库
+## 关于热词（已移除）
 
-编辑热词文件，每行一个词，`#` 开头为注释：
+早期版本支持用户自定义热词（`hotwords.txt` + 配置中的 `hotword_files`），用于提升专有名词的识别准确率。
 
-```text
-# 专业术语
-FunASR
-Python
-GitHub
+该功能**已完整移除**。原因是它在当前的 ONNX 识别链路上从未真正生效：默认的 SenseVoice 模型没有 contextual biasing 通路，而此前使用的普通 paraformer 封装会把热词参数静默丢弃——既不报错，也不影响结果。与其保留一个看起来能用、实际无效的设置项，不如去掉。
 
-# 自定义词汇
-你的名字
-公司名称
-```
-
-热词文件位置：
-
-- macOS / Linux：`~/.config/voice_typer/hotwords.txt`
-- Windows：`%APPDATA%\voice_typer\hotwords.txt`
-
-> **注意**：热词仅在**非流式模式**下生效（流式预览模型本身不支持热词）。原生客户端默认走流式，可在客户端设置中关闭「流式识别」以启用热词。
+配置文件里遗留的 `hotword_files` 字段会被忽略，`hotwords.txt` 可自行删除。若将来要恢复该能力，需要把识别模型换成支持 contextual biasing 的变体（如 SeaCo-Paraformer）。
 
 ## 致谢
 

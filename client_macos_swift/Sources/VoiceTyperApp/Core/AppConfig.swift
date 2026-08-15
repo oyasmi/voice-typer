@@ -3,18 +3,15 @@ import Foundation
 struct AppConfig: Codable {
     var server: ServerConfig
     var hotkey: HotkeyConfig
-    var hotwordFiles: [String]
     var ui: UIConfig
 
     init(
         server: ServerConfig = .init(),
         hotkey: HotkeyConfig = .init(),
-        hotwordFiles: [String] = [AppConstants.defaultHotwordsFileName],
         ui: UIConfig = .init()
     ) {
         self.server = server
         self.hotkey = hotkey
-        self.hotwordFiles = hotwordFiles
         self.ui = ui
     }
 
@@ -22,14 +19,12 @@ struct AppConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.server = try container.decodeIfPresent(ServerConfig.self, forKey: .server) ?? .init()
         self.hotkey = try container.decodeIfPresent(HotkeyConfig.self, forKey: .hotkey) ?? .init()
-        self.hotwordFiles = try container.decodeIfPresent([String].self, forKey: .hotwordFiles) ?? [AppConstants.defaultHotwordsFileName]
         self.ui = try container.decodeIfPresent(UIConfig.self, forKey: .ui) ?? .init()
     }
 
     enum CodingKeys: String, CodingKey {
         case server
         case hotkey
-        case hotwordFiles = "hotword_files"
         case ui
     }
 }

@@ -29,7 +29,7 @@ internal sealed class StreamingASRClient : IDisposable
     private bool _closed;
     private bool _finalReceived;
 
-    public async Task ConnectAsync(ServerConfig server, IReadOnlyList<string> hotwords, bool llmRecorrect, CancellationToken ct = default)
+    public async Task ConnectAsync(ServerConfig server, bool llmRecorrect, CancellationToken ct = default)
     {
         if (_ws is not null) throw new InvalidOperationException("StreamingASRClient 已连接");
 
@@ -64,7 +64,6 @@ internal sealed class StreamingASRClient : IDisposable
         var startPayload = new Dictionary<string, object?>
         {
             ["type"] = "start",
-            ["hotwords"] = string.Join(" ", hotwords),
             ["sample_rate"] = AppConstants.TargetSampleRate,
         };
         await SendJsonAsync(startPayload, linkedCt).ConfigureAwait(false);

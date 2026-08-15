@@ -9,22 +9,19 @@ using VoiceTyper.Support;
 
 namespace VoiceTyper.UI;
 
-internal enum SetupTab { Connection = 0, Hotkey = 1, Hotwords = 2 }
+internal enum SetupTab { Connection = 0, Hotkey = 1 }
 
 /// <summary>
-/// 设置窗口：连接 / 热键 / 用户热词 三个 Tab。
+/// 设置窗口：连接 / 热键 两个 Tab。
 /// 所有方法必须在 UI 线程调用。
 /// </summary>
 internal sealed class SetupForm : Form
 {
     public Func<ServerConfig, Task<bool>>? OnTestServerConnection;
     public Func<AppConfig, Task>? OnSaveConfig;
-    public Func<string, Task>? OnSaveHotwords;
     public Action? OnRetryServerCheck;
 
     private AppConfig _loadedConfig = new();
-    private string _loadedHotwordsText = "";
-    private int _additionalHotwordFileCount;
 
     // ─ 顶部状态横幅 ────────────────────────────────────────────
     private readonly Panel _bannerPanel = new();
@@ -53,14 +50,6 @@ internal sealed class SetupForm : Form
     private readonly Button _saveHotkeyButton = new();
     private readonly Label _hotkeyMessage = new();
 
-    // ─ Tab 3：热词 ────────────────────────────────────────────
-    private readonly TextBox _hotwordsArea = new();
-    private readonly Label _hotwordsInfo = new();
-    private readonly Label _hotwordsCount = new();
-    private readonly Button _reloadHotwordsButton = new();
-    private readonly Button _saveHotwordsButton = new();
-    private readonly Label _hotwordsMessage = new();
-
     private readonly TabControl _tabs = new();
     private readonly Label _versionLabel = new();
 
@@ -83,11 +72,9 @@ internal sealed class SetupForm : Form
         Controls.Add(_versionLabel);
     }
 
-    public void LoadEditableContent(AppConfig config, string managedHotwordsText, int additionalHotwordFileCount)
+    public void LoadEditableContent(AppConfig config)
     {
         _loadedConfig = config.Clone();
-        _loadedHotwordsText = managedHotwordsText;
-        _additionalHotwordFileCount = additionalHotwordFileCount;
 
         _hostField.Text = config.Server.Host;
         _portField.Value = Math.Clamp(config.Server.Port, 1, 65535);
@@ -103,12 +90,8 @@ internal sealed class SetupForm : Form
         _hotkeyKey.Text = config.Hotkey.Key;
         UpdateHotkeyPreview();
 
-        _hotwordsArea.Text = managedHotwordsText;
-        UpdateHotwordsMeta();
-
         _connectionMessage.Text = "";
         _hotkeyMessage.Text = "";
-        _hotwordsMessage.Text = "";
     }
 
     public void UpdateServerStatus(bool ready, string display, bool micPermissionDenied)
@@ -213,15 +196,12 @@ internal sealed class SetupForm : Form
 
         var connectionPage = new TabPage("连接") { BackColor = SystemColors.Control };
         var hotkeyPage = new TabPage("热键") { BackColor = SystemColors.Control };
-        var hotwordsPage = new TabPage("用户热词") { BackColor = SystemColors.Control };
 
         BuildConnectionPage(connectionPage);
         BuildHotkeyPage(hotkeyPage);
-        BuildHotwordsPage(hotwordsPage);
 
         _tabs.TabPages.Add(connectionPage);
         _tabs.TabPages.Add(hotkeyPage);
-        _tabs.TabPages.Add(hotwordsPage);
     }
 
     private void BuildFooter()
@@ -397,75 +377,6 @@ internal sealed class SetupForm : Form
         page.Controls.Add(layout);
     }
 
-    private void BuildHotwordsPage(TabPage page)
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 20, 20, 16),
-            ColumnCount = 1,
-            RowCount = 5,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-
-        _hotwordsInfo.AutoSize = false;
-        _hotwordsInfo.Dock = DockStyle.Fill;
-        _hotwordsInfo.ForeColor = Color.Gray;
-        layout.Controls.Add(_hotwordsInfo, 0, 0);
-
-        _hotwordsArea.Multiline = true;
-        _hotwordsArea.AcceptsReturn = true;
-        _hotwordsArea.AcceptsTab = false;
-        _hotwordsArea.ScrollBars = ScrollBars.Vertical;
-        _hotwordsArea.WordWrap = false;
-        _hotwordsArea.Dock = DockStyle.Fill;
-        _hotwordsArea.Font = new Font("Consolas", 10f);
-        _hotwordsArea.TextChanged += (_, _) => UpdateHotwordsMeta();
-        layout.Controls.Add(_hotwordsArea, 0, 1);
-
-        _hotwordsCount.AutoSize = false;
-        _hotwordsCount.Dock = DockStyle.Fill;
-        _hotwordsCount.ForeColor = Color.Gray;
-        _hotwordsCount.TextAlign = ContentAlignment.MiddleLeft;
-        layout.Controls.Add(_hotwordsCount, 0, 2);
-
-        _reloadHotwordsButton.Text = "重新加载";
-        _reloadHotwordsButton.AutoSize = true;
-        _reloadHotwordsButton.Padding = new Padding(10, 4, 10, 4);
-        _reloadHotwordsButton.Click += (_, _) =>
-        {
-            _hotwordsArea.Text = _loadedHotwordsText;
-            SetHotwordsMessage("已重新加载磁盘内容", Color.Gray);
-            UpdateHotwordsMeta();
-        };
-
-        _saveHotwordsButton.Text = "保存并应用";
-        _saveHotwordsButton.AutoSize = true;
-        _saveHotwordsButton.Padding = new Padding(10, 4, 10, 4);
-        _saveHotwordsButton.Click += async (_, _) => await HandleSaveHotwords();
-
-        var btnRow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.RightToLeft,
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-        };
-        btnRow.Controls.Add(_saveHotwordsButton);
-        btnRow.Controls.Add(_reloadHotwordsButton);
-        layout.Controls.Add(btnRow, 0, 3);
-
-        _hotwordsMessage.AutoSize = false;
-        _hotwordsMessage.Dock = DockStyle.Fill;
-        _hotwordsMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_hotwordsMessage, 0, 4);
-
-        page.Controls.Add(layout);
-    }
 
     private static Label MakeFieldLabel(string text) => new()
     {
@@ -491,21 +402,6 @@ internal sealed class SetupForm : Form
         _hotkeyPreview.Text = parts.Count == 0 ? "—" : string.Join("+", parts);
     }
 
-    private void UpdateHotwordsMeta()
-    {
-        var count = 0;
-        foreach (var raw in _hotwordsArea.Text.Split('\n'))
-        {
-            var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith("#")) continue;
-            count++;
-        }
-        _hotwordsCount.Text = $"词条数：{count}";
-
-        _hotwordsInfo.Text = _additionalHotwordFileCount > 0
-            ? $"这里编辑的是主热词文件。当前还有 {_additionalHotwordFileCount} 个附加词库会继续加载，但不在此处编辑。"
-            : "这里编辑的是主热词文件，保存后立即写回并重新加载。";
-    }
 
     private ServerConfig? TryBuildServerConfig()
     {
@@ -622,29 +518,6 @@ internal sealed class SetupForm : Form
         }
     }
 
-    private async Task HandleSaveHotwords()
-    {
-        if (OnSaveHotwords is null) return;
-
-        _saveHotwordsButton.Enabled = false;
-        _reloadHotwordsButton.Enabled = false;
-        SetHotwordsMessage("保存中...", Color.Gray);
-        try
-        {
-            await OnSaveHotwords(_hotwordsArea.Text).ConfigureAwait(true);
-            SetHotwordsMessage("热词已保存并重新加载。", Color.SeaGreen);
-        }
-        catch (Exception ex)
-        {
-            SetHotwordsMessage($"保存失败：{ex.Message}", Color.Firebrick);
-        }
-        finally
-        {
-            _saveHotwordsButton.Enabled = true;
-            _reloadHotwordsButton.Enabled = true;
-        }
-    }
-
     private void SetConnectionMessage(string text, Color color)
     {
         _connectionMessage.Text = text;
@@ -657,11 +530,6 @@ internal sealed class SetupForm : Form
         _hotkeyMessage.ForeColor = color;
     }
 
-    private void SetHotwordsMessage(string text, Color color)
-    {
-        _hotwordsMessage.Text = text;
-        _hotwordsMessage.ForeColor = color;
-    }
 
     private void SetConnectionButtonsEnabled(bool enabled)
     {

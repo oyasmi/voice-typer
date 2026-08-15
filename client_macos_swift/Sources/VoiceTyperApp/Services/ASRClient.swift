@@ -8,7 +8,7 @@ final class ASRClient {
         self.server = server
     }
 
-    func recognize(audioData: Data, hotwords: String, llmRecorrect: Bool) async throws -> String {
+    func recognize(audioData: Data, llmRecorrect: Bool) async throws -> String {
         guard let url = URL(string: "\(server.httpScheme)://\(server.host):\(server.port)/recognize?llm_recorrect=\(llmRecorrect)") else {
             throw URLError(.badURL)
         }
@@ -21,11 +21,6 @@ final class ASRClient {
         let trimmedKey = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedKey.isEmpty {
             request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-        }
-
-        if !hotwords.isEmpty {
-            let encoded = hotwords.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? hotwords
-            request.setValue(encoded, forHTTPHeaderField: "X-Hotwords")
         }
 
         request.httpBody = audioData

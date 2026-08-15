@@ -6,7 +6,6 @@ enum SetupTab: Int, CaseIterable {
     case permissions
     case connection
     case hotkey
-    case hotwords
     case general
 
     var title: String {
@@ -14,7 +13,6 @@ enum SetupTab: Int, CaseIterable {
         case .permissions: return "权限"
         case .connection: return "连接"
         case .hotkey: return "热键"
-        case .hotwords: return "热词"
         case .general: return "通用"
         }
     }
@@ -24,7 +22,6 @@ enum SetupTab: Int, CaseIterable {
         case .permissions: return "checkmark.shield"
         case .connection: return "network"
         case .hotkey: return "keyboard"
-        case .hotwords: return "text.book.closed"
         case .general: return "gearshape"
         }
     }
@@ -37,7 +34,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onRetryServerCheck: (() -> Void)?
     var onTestServerConnection: ((ServerConfig) async -> Bool)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
-    var onSaveHotwords: ((String) async throws -> Void)?
     /// 热键录制期间挂起 / 恢复全局热键监听。
     var onSuspendHotkey: ((Bool) -> Void)?
     /// 实时预览 HUD 背景不透明度。
@@ -72,14 +68,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - 对外接口（保持 AppCoordinator 调用不变）
 
-    func loadEditableContent(config: AppConfig, managedHotwordsText: String, additionalHotwordFileCount: Int) {
+    func loadEditableContent(config: AppConfig) {
         ensureUIBuilt()
-        viewModel.load(
-            config: config,
-            managedHotwordsText: managedHotwordsText,
-            additionalHotwordFileCount: additionalHotwordFileCount,
-            launchAtLogin: LaunchAtLogin.isEnabled
-        )
+        viewModel.load(config: config, launchAtLogin: LaunchAtLogin.isEnabled)
     }
 
     func updatePermissions(snapshot: PermissionSnapshot, serviceReady: Bool, hotkeyDisplay: String, serverStatus: String) {
@@ -138,9 +129,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
         viewModel.onSaveConfig = { [weak self] config in
             try await self?.onSaveConfig?(config)
-        }
-        viewModel.onSaveHotwords = { [weak self] text in
-            try await self?.onSaveHotwords?(text)
         }
         viewModel.onSuspendHotkey = { [weak self] suspend in self?.onSuspendHotkey?(suspend) }
         viewModel.onPreviewHUDOpacity = { [weak self] opacity in self?.onPreviewHUDOpacity?(opacity) }
@@ -201,8 +189,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return sized(ConnectionSettingsView(vm: viewModel))
         case .hotkey:
             return sized(HotkeySettingsView(vm: viewModel))
-        case .hotwords:
-            return sized(HotwordsSettingsView(vm: viewModel))
         case .general:
             return sized(GeneralSettingsView(vm: viewModel))
         }

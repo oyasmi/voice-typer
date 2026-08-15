@@ -4,7 +4,6 @@ import Foundation
 @MainActor
 final class VoiceTyperController {
     private let config: AppConfig
-    private let hotwords: [String]
     private let hotkeyService: HotkeyService
     private let audioCaptureService: AudioCaptureService
     private let textInsertionService: TextInsertionService
@@ -33,13 +32,11 @@ final class VoiceTyperController {
 
     init(
         config: AppConfig,
-        hotwords: [String],
         hotkeyService: HotkeyService = HotkeyService(),
         audioCaptureService: AudioCaptureService = AudioCaptureService(),
         textInsertionService: TextInsertionService = TextInsertionService()
     ) {
         self.config = config
-        self.hotwords = hotwords
         self.hotkeyService = hotkeyService
         self.audioCaptureService = audioCaptureService
         self.textInsertionService = textInsertionService
@@ -204,7 +201,6 @@ final class VoiceTyperController {
         do {
             try client.connect(
                 server: config.server,
-                hotwords: hotwords,
                 llmRecorrect: config.server.llmRecorrect
             )
         } catch {
@@ -295,12 +291,10 @@ final class VoiceTyperController {
         onStateChange?(.recognizing)
 
         let client = ASRClient(server: config.server)
-        let hotwordsString = hotwords.joined(separator: " ")
 
         do {
             let text = try await client.recognize(
                 audioData: combinedData,
-                hotwords: hotwordsString,
                 llmRecorrect: config.server.llmRecorrect
             )
             teardownASRClient()

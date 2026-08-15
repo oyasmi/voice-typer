@@ -11,9 +11,6 @@ internal sealed class AppConfig
     [YamlMember(Alias = "hotkey")]
     public HotkeyConfig Hotkey { get; set; } = new();
 
-    [YamlMember(Alias = "hotword_files")]
-    public List<string> HotwordFiles { get; set; } = new() { Support.AppConstants.DefaultHotwordsFileName };
-
     [YamlMember(Alias = "ui")]
     public UIConfig UI { get; set; } = new();
 
@@ -21,7 +18,6 @@ internal sealed class AppConfig
     {
         Server = Server.Clone(),
         Hotkey = Hotkey.Clone(),
-        HotwordFiles = new List<string>(HotwordFiles),
         UI = UI.Clone(),
     };
 }

@@ -18,8 +18,7 @@ Swift 版优先解决以下问题：
 - 🌐 **Fn 键支持** - 支持绑定 macOS `Fn`（地球仪）键作为热键
 - ⚡ **流式实时预览** - 默认流式模式，识别结果边说边显示在 HUD 浮窗中
 - 🔐 **权限集中引导** - 首次启动自动检查麦克风、辅助功能、输入监控与服务连接
-- ⚙️ **设置 UI 化** - 可直接在界面中修改服务地址、热键与用户热词
-- 📚 **用户热词编辑** - 在应用内直接编辑主热词文件并立即生效（作用于离线识别：非流式全程、流式松手后的复识别）
+- ⚙️ **设置 UI 化** - 可直接在界面中修改服务地址与热键
 
 ## 系统要求
 
@@ -67,21 +66,14 @@ Swift 版默认通过 UI 管理常用配置，不再要求手工编辑 YAML。
 在”权限与设置”窗口中，可以直接配置：
 
 - 服务地址、端口、API Key
-- 是否启用流式识别（默认开启，推荐；关闭后切换为非流式 HTTP 模式，支持热词）
+- 是否启用流式识别（默认开启，推荐；关闭后切换为非流式 HTTP 模式）
 - 是否启用 `LLM` 纠错
 - 热键模式（`Fn` 或组合键）
-- 用户热词（作用于离线识别：非流式全程、流式松手后的复识别；不影响流式实时预览）
 
 配置文件仍然保存在：
 
 ```text
 ~/.config/voice_typer/config.yaml
-```
-
-用户热词主文件默认位于：
-
-```text
-~/.config/voice_typer/hotwords.txt
 ```
 
 当前写回的配置格式类似：
@@ -93,12 +85,10 @@ server:
   timeout: 60
   api_key: ""
   llm_recorrect: true
-  streaming: true        # true=流式WebSocket（默认），false=非流式HTTP（支持热词）
+  streaming: true        # true=流式WebSocket（默认），false=非流式HTTP
 hotkey:
   modifiers: []
   key: "fn"
-hotword_files:
-  - "hotwords.txt"
 ui:
   opacity: 0.85
   width: 240

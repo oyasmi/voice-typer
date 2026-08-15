@@ -19,7 +19,6 @@ internal sealed class VoiceTyperController : IDisposable
     public Action<string>? RecognizedText;
 
     private readonly AppConfig _config;
-    private readonly IReadOnlyList<string> _hotwords;
     private readonly HotkeyService _hotkeyService;
     private readonly AudioCaptureService _audioService;
     private readonly TextInsertionService _textInsertion;
@@ -32,10 +31,9 @@ internal sealed class VoiceTyperController : IDisposable
 
     public bool IsRunning => _isRunning;
 
-    public VoiceTyperController(AppConfig config, IReadOnlyList<string> hotwords)
+    public VoiceTyperController(AppConfig config)
     {
         _config = config;
-        _hotwords = hotwords;
         _hotkeyService = new HotkeyService();
         _audioService = new AudioCaptureService();
         _textInsertion = new TextInsertionService();
@@ -159,7 +157,7 @@ internal sealed class VoiceTyperController : IDisposable
     {
         try
         {
-            await client.ConnectAsync(_config.Server, _hotwords, _config.Server.LlmRecorrect).ConfigureAwait(true);
+            await client.ConnectAsync(_config.Server, _config.Server.LlmRecorrect).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -284,12 +282,11 @@ internal sealed class VoiceTyperController : IDisposable
             offset += c.Length;
         }
 
-        var hotwordsString = string.Join(" ", _hotwords);
 
         try
         {
             using var client = new ASRClient(_config.Server);
-            var text = await client.RecognizeAsync(combined, hotwordsString, _config.Server.LlmRecorrect).ConfigureAwait(true);
+            var text = await client.RecognizeAsync(combined, _config.Server.LlmRecorrect).ConfigureAwait(true);
             HandleFinalText(text);
         }
         catch (Exception ex)

@@ -63,12 +63,6 @@ final class SettingsViewModel {
     var hotkeyMessage = ""
     var hotkeyMessageKind: SettingsMessageKind = .info
 
-    // MARK: 热词（自动保存）
-    var hotwordsText = ""
-    var additionalHotwordFileCount = 0
-    var hotwordsMessage = ""
-    var hotwordsMessageKind: SettingsMessageKind = .info
-
     // MARK: 通用
     var launchAtLogin = false
     var hudOpacity = 0.85
@@ -79,19 +73,16 @@ final class SettingsViewModel {
     var onRetryServerCheck: (() -> Void)?
     var onTestServerConnection: ((ServerConfig) async -> Bool)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
-    var onSaveHotwords: ((String) async throws -> Void)?
     var onSuspendHotkey: ((Bool) -> Void)?
     var onPreviewHUDOpacity: ((Double) -> Void)?
     var onToggleLaunchAtLogin: ((Bool) -> Void)?
 
     /// 已落盘的基线配置。即时保存（热键/透明度）以它为基准，避免带上未保存的连接草稿。
     private(set) var loadedConfig = AppConfig()
-    private var savedHotwordsText = ""
-    private var hotwordsSaveTask: Task<Void, Never>?
 
     // MARK: - 加载
 
-    func load(config: AppConfig, managedHotwordsText: String, additionalHotwordFileCount: Int, launchAtLogin: Bool) {
+    func load(config: AppConfig, launchAtLogin: Bool) {
         loadedConfig = config
         scheme = config.server.httpScheme
         host = config.server.host
@@ -104,13 +95,8 @@ final class SettingsViewModel {
         hudOpacity = config.ui.opacity
         self.launchAtLogin = launchAtLogin
 
-        hotwordsText = managedHotwordsText
-        savedHotwordsText = managedHotwordsText
-        self.additionalHotwordFileCount = additionalHotwordFileCount
-
         connectionMessage = ""
         hotkeyMessage = ""
-        hotwordsMessage = ""
     }
 
     // MARK: - 连接
@@ -229,42 +215,6 @@ final class SettingsViewModel {
     func cancelHotkeyRecording() {
         onSuspendHotkey?(false)
         hotkeyMessage = ""
-    }
-
-    // MARK: - 热词
-
-    var hotwordCount: Int {
-        hotwordsText
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-            .count
-    }
-
-    /// 文本变化时调用：防抖 1s 后自动保存。
-    func hotwordsChanged() {
-        guard hotwordsText != savedHotwordsText else { return }
-        hotwordsMessage = "编辑中…"
-        hotwordsMessageKind = .info
-        hotwordsSaveTask?.cancel()
-        hotwordsSaveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let self, !Task.isCancelled else { return }
-            await self.saveHotwordsNow()
-        }
-    }
-
-    private func saveHotwordsNow() async {
-        let text = hotwordsText
-        do {
-            try await onSaveHotwords?(text)
-            savedHotwordsText = text
-            hotwordsMessage = "已保存 · 词条数 \(hotwordCount)"
-            hotwordsMessageKind = .success
-        } catch {
-            hotwordsMessage = "保存失败：\(error.localizedDescription)"
-            hotwordsMessageKind = .error
-        }
     }
 
     // MARK: - 通用

@@ -7,7 +7,7 @@ import threading
 import logging
 from typing import Optional, Callable
 
-from config import AppConfig, get_hotwords_string
+from config import AppConfig
 from recorder import AudioRecorder
 from asr_client import ASRClient
 from hotkey_listener import HotkeyListener
@@ -35,7 +35,6 @@ class VoiceTyperController:
         self._recording = False
         self._lock = threading.Lock()
         self._stats_lock = threading.Lock()  # 统计变量专用锁
-        self._hotwords = get_hotwords_string(config.hotwords)
 
         self._input_count = 0
         self._char_count = 0
@@ -177,7 +176,7 @@ class VoiceTyperController:
 
             def do_recognize():
                 try:
-                    text = self._asr_client.recognize(audio, self._hotwords)
+                    text = self._asr_client.recognize(audio)
                     if text and text.strip():
                         insert_text(text)
                         logger.info(f"识别: {text}")

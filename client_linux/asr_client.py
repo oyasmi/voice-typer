@@ -5,7 +5,6 @@ import json
 import logging
 import numpy as np
 from typing import Optional
-from urllib.parse import quote
 from tornado.httpclient import HTTPClient, HTTPError
 
 
@@ -46,14 +45,12 @@ class ASRClient:
         except (json.JSONDecodeError, Exception):
             return False
     
-    def recognize(self, audio: np.ndarray, hotwords: str = "") -> Optional[str]:
+    def recognize(self, audio: np.ndarray) -> Optional[str]:
         """识别音频"""
         try:
             # 发送请求
             headers = self._get_auth_headers()
             headers["Content-Type"] = "application/octet-stream"
-            if hotwords:
-                headers["X-Hotwords"] = quote(hotwords, safe="")
 
             response = self._client.fetch(
                 f"{self.base_url}/recognize?llm_recorrect={'true' if self.llm_recorrect else 'false'}",

@@ -212,7 +212,7 @@ WebSocket 端点，客户端与服务端保持长连接，边发音频边获取�
 
 协议概要：
 
-1. 连接后发送 `{"type":"start","hotwords":"","sample_rate":16000}`
+1. 连接后发送 `{"type":"start","sample_rate":16000}`
 2. 录音期间持续发送 binary 帧（float32 PCM，每帧约 600ms = 9600 samples）
 3. 松开热键后发送 `{"type":"finalize"}`
 4. 服务端返回若干 `{"type":"partial","text":"...","seq":N}`（逐字预览，来自流式模型）和最终 `{"type":"final","text":"...","asrElapsed":0.82}`（准确结果，来自对完整音频的离线整段复识别）
@@ -230,8 +230,6 @@ WebSocket 端点，客户端与服务端保持长连接，边发音频边获取�
 >
 > 用 `--offline-model paraformer-zh` 可回到双模型流式，此时 `--model` 与 `--chunk-size` 恢复生效。
 
-> **热词目前不生效**：`hotwords` 字段仍会被接收，但 SenseVoice 没有 contextual biasing 通路，普通 paraformer 的 ONNX 封装也会静默忽略 `hotword=`。`GET /health` 的 `hotwords_supported` 字段如实反映这一点。
-
 ### 非流式模式（`--no-streaming`）：`/recognize`（HTTP POST）
 
 提交整段音频，返回完整识别结果。
@@ -243,7 +241,6 @@ WebSocket 端点，客户端与服务端保持长连接，边发音频边获取�
 
 可选参数：
 
-- 请求头 `X-Hotwords`：URL-encoded 热词（空格分隔）
 - 查询参数 `llm_recorrect=true|false`
 
 同时也兼容旧版 `multipart/form-data` 上传。

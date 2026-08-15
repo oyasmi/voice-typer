@@ -7,7 +7,7 @@
 - **流式识别（默认）**：WebSocket 实时回传，HUD 上同步显示逐字预览。
 - **非流式兼容**：服务端使用 `--no-streaming` 时自动走 HTTP `/recognize`（在设置里取消勾选"流式识别"即可）。
 - **完全原生**：仅依赖 `NAudio` 与 `YamlDotNet` 两个 NuGet 包，无 Python 运行时。
-- **托盘 + 设置窗口**：托盘单击打开设置；设置窗口含连接、热键、用户热词三页。
+- **托盘 + 设置窗口**：托盘单击打开设置；设置窗口含连接、热键两页。
 - **并发会话**：可以在前一次识别尚未完成时再次按下热键开始新一段录音；旧会话回来时静默插入。
 
 ## 系统要求
@@ -62,15 +62,11 @@ hotkey:
   modifiers:
     - "ctrl"            # 支持: ctrl / alt / shift / win
   key: "f2"
-hotword_files:
-  - "hotwords.txt"
 ui:
   opacity: 0.85
   width: 320
   height: 90
 ```
-
-热词：`%APPDATA%\voice_typer\hotwords.txt`，每行一个词，`#` 开头为注释。
 
 ## 日志
 
@@ -86,7 +82,7 @@ App/
 Core/
   AppConfig.cs                      YAML 模型
   AppState.cs                       状态枚举 + 显示信息
-  ConfigStore.cs                    YAML 读写 + 热词管理
+  ConfigStore.cs                    YAML 读写
   VoiceTyperController.cs           核心状态机 + 流式/非流式双路
 Services/
   HotkeyService.cs                  SetWindowsHookEx(WH_KEYBOARD_LL)
