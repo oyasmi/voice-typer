@@ -39,7 +39,6 @@ final class RecordingHUDController: NSWindowController {
     private var phase: Phase = .hidden
     private var hasBuiltUI = false
     private var hudOpacity: Double = 0.85
-    private var accumulatedPreview = ""
 
     /// 展开态（显示 preview 行）与否。
     private var isExpanded = false
@@ -91,7 +90,6 @@ final class RecordingHUDController: NSWindowController {
         startDate = Date()
         isExpanded = false
         currentHudWidth = Self.defaultHudWidth
-        accumulatedPreview = ""
 
         statusLabel.stringValue = "录音中"
         timeLabel.stringValue = ""
@@ -116,19 +114,18 @@ final class RecordingHUDController: NSWindowController {
         phase = .hidden
         dotView.stopPulse()
         waveformView.stop()
-        accumulatedPreview = ""
         dismiss()
     }
 
-    /// 追加流式 partial 文本。有内容时展开 HUD，短暂清空时防抖收起。
-    func showPreview(_ accumulated: String) {
-        accumulatedPreview = accumulated
-        previewLabel.stringValue = displayText(for: accumulated)
+    /// 显示流式 partial 文本。服务端发来的是**全量**预览（协议 v2），
+    /// 这里整体替换而非追加。有内容时展开 HUD，短暂清空时防抖收起。
+    func showPreview(_ text: String) {
+        previewLabel.stringValue = displayText(for: text)
 
-        let hasText = !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasText {
             cancelCollapse()
-            updateHudWidth(for: accumulated, animated: true)
+            updateHudWidth(for: text, animated: true)
             setExpanded(true)
         } else {
             updateHudWidth(for: "", animated: true)
@@ -138,7 +135,6 @@ final class RecordingHUDController: NSWindowController {
 
     /// 清空预览文本（final 上屏后调用），立即收起。
     func clearPreview() {
-        accumulatedPreview = ""
         previewLabel.stringValue = displayText(for: "")
         cancelCollapse()
         updateHudWidth(for: "", animated: true)

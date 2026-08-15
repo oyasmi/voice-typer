@@ -12,7 +12,7 @@ final class VoiceTyperController {
     private var asrClient: StreamingASRClient?
     private var isRecording = false
     private var isRunning = false
-    private var accumulatedPreview = ""
+    private var previewText = ""
     private var batchAudioChunks: [Data] = []
     private var recordingStartedAt: Date?
 
@@ -118,7 +118,7 @@ final class VoiceTyperController {
     private func resetRecording() {
         audioCaptureService.stopWithoutResult()
         teardownASRClient()
-        accumulatedPreview = ""
+        previewText = ""
         onPreviewUpdate?("")
         recordingStartedAt = nil
         isRecording = false
@@ -151,8 +151,8 @@ final class VoiceTyperController {
         // 服务端整段重跑会修正先前的文字，所以不能再做拼接。
         client.onPartial = { [weak self] text in
             guard let self else { return }
-            self.accumulatedPreview = text
-            self.onPreviewUpdate?(self.accumulatedPreview)
+            self.previewText = text
+            self.onPreviewUpdate?(self.previewText)
         }
 
         // [weak client] 而非 self.asrClient：onFinal 触发时 asrClient 可能已指向更新的会话，
@@ -161,7 +161,7 @@ final class VoiceTyperController {
             guard let self else { return }
             if let c = client, self.asrClient === c {
                 // 当前（最新）会话完成：清理预览、完整拆解、状态转换
-                self.accumulatedPreview = ""
+                self.previewText = ""
                 self.onPreviewUpdate?("")
                 self.teardownASRClient()
                 self.handleFinalText(text)
@@ -191,7 +191,7 @@ final class VoiceTyperController {
                 // 并防止残留音频混入下一次录音。
                 self.audioCaptureService.stopWithoutResult()
                 self.teardownASRClient()
-                self.accumulatedPreview = ""
+                self.previewText = ""
                 self.onPreviewUpdate?("")
                 self.isRecording = false
                 self.onStateChange?(.error(message))
@@ -244,7 +244,7 @@ final class VoiceTyperController {
 
         asrClient = client
         isRecording = true
-        accumulatedPreview = ""
+        previewText = ""
         onStateChange?(.recording)
     }
 
