@@ -2,7 +2,15 @@
 
 > 分支：`feat/streaming`
 > 目标范围：macOS Swift 客户端 + Python 服务端
-> 状态：设计稿，待按里程碑实现
+> 状态：**历史设计稿，已被后续实现取代**，保留作为背景资料。
+
+> ⚠️ **本文描述的两处设计已经改变**，以 [`PROTOCOL.md`](../../PROTOCOL.md) 与
+> [`server/CHANGELOG.md`](../../server/CHANGELOG.md) 为准：
+>
+> 1. **预览模型**：本文假设用 `paraformer-zh-streaming` 逐块推理 + ct-punc。现在默认由
+>    SenseVoice 对已累积音频整段重跑产出预览，流式模型与 ct-punc 均不再加载。
+> 2. **partial 语义**：本文假设增量拼接。现在 `partial` 是全量文本，客户端直接替换
+>    （协议 v2）——整段重跑会回溯修正先前的文字，增量无法表达。
 
 ---
 

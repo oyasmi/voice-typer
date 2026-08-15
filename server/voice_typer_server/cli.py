@@ -4,7 +4,7 @@
 import argparse
 import sys
 
-from . import __version__
+from . import DEFAULT_OFFLINE_MODEL, DEFAULT_STREAMING_MODEL, __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help=(
-            "ASR 模型（默认：流式模式用 paraformer-zh-streaming，"
-            "非流式模式用 paraformer-zh）"
+            f"ASR 模型（默认：流式模式用 {DEFAULT_STREAMING_MODEL} 做预览，"
+            f"非流式模式用 {DEFAULT_OFFLINE_MODEL}）"
         ),
     )
     parser.add_argument(
@@ -41,13 +41,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "流式模式下用于松手后复识别的离线模型，最终结果由它产出 "
-            "(默认: paraformer-zh)"
+            f"(默认: {DEFAULT_OFFLINE_MODEL}；可选 sensevoice-small-fp32 / paraformer-zh)"
         ),
     )
     parser.add_argument(
         "--punc-model",
         default="ct-punc",
-        help="标点模型，使用 none 可禁用 (默认: %(default)s)",
+        help=(
+            "标点模型，使用 none 可禁用 (默认: %(default)s)。"
+            "仅对 paraformer 生效——SenseVoice 自带标点，会忽略本参数"
+        ),
+    )
+    parser.add_argument(
+        "--sensevoice-language",
+        default="auto",
+        choices=["auto", "zh", "en", "yue", "ja", "ko"],
+        help="SenseVoice 识别语言，仅对 sensevoice-* 模型生效 (默认: %(default)s)",
     )
     parser.add_argument("--device", default="cpu", help="设备: cpu/cuda/cuda:N (默认: %(default)s)")
     parser.add_argument(

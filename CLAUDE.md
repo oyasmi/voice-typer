@@ -33,7 +33,7 @@ There are three clients, each in its own directory:
 **Key Design Patterns:**
 - **Single controller state machine**: each client funnels all state into one controller — `Idle → Recording → Recognizing → Inserting`.
 - **Service decomposition**: hotkey, audio capture, ASR client, and text insertion are independent services.
-- **Streaming dual-channel** (native clients): a partial preview channel feeds the HUD live while a final offline re-recognition produces the inserted text.
+- **Streaming dual-channel** (native clients): a partial preview channel feeds the HUD live while a final re-recognition produces the inserted text. With the default SenseVoice model both channels are the *same* model re-running over the accumulated audio, so previews self-correct and match the final wording. `partial` frames carry **full text** (replace, don't append) — see `PROTOCOL.md` §4.3.
 - **Client-Server**: separate processes over the network (default: `127.0.0.1:6008`).
 
 ### Technology Stack
@@ -71,8 +71,10 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 - `--host HOST` - Listen address (default: 127.0.0.1)
 - `--port PORT` - Listen port (default: 6008)
 - `--no-streaming` - Disable WebSocket streaming, serve HTTP `/recognize` only
-- `--model MODEL` - ASR model (default: paraformer-zh)
-- `--punc-model M` - Punctuation model (default: ct-punc, "none" to disable)
+- `--model MODEL` - ASR model (default: `paraformer-zh-streaming` in streaming mode, where it only drives the live preview; `sensevoice-small` in non-streaming mode)
+- `--offline-model M` - Model that produces the final text in streaming mode (default: `sensevoice-small`; also accepts `sensevoice-small-fp32`, `paraformer-zh`)
+- `--punc-model M` - Punctuation model (default: ct-punc, "none" to disable). **Only applies to paraformer** — SenseVoice carries its own punctuation and ITN, and ignores this flag
+- `--sensevoice-language L` - `auto`/`zh`/`en`/`yue`/`ja`/`ko` (default: auto), SenseVoice only
 - `--device DEVICE` - Computing device (cpu, cuda, cuda:N)
 - `--api-keys K` - API keys (comma-separated)
 - `--llm-base-url URL` / `--llm-api-key KEY` / `--llm-model MODEL` - LLM correction
@@ -129,7 +131,7 @@ Both share the same layout (`.swift` / `.cs`):
 ### Server (`server/`)
 
 - `asr_server.py` - Tornado entry point: `GET /health`, `POST /recognize` (HTTP), WebSocket streaming endpoint
-- `recognizer.py` - FunASR/ONNX model wrapper
+- `recognizer.py` - FunASR/ONNX model wrappers: `SpeechRecognizer` (paraformer + ct-punc), `SenseVoiceRecognizer` (SenseVoice-Small, punctuation/ITN built in), `StreamingSpeechRecognizer` (streaming preview)
 - `auth.py` - API authentication (`Authorization: Bearer <key>` header)
 - `llm_client.py` - OpenAI-compatible LLM client for text correction
 - `scripts/voice_typer_server.sh` - setup/run helper
@@ -162,7 +164,9 @@ ui:
   height: 70            # 同上
 ```
 
-Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` starts a comment. Hotwords apply to the **offline recognition pass**: the full HTTP `/recognize` in non-streaming mode, and the post-release re-recognition (`Session.finalize`) that produces the final text in streaming mode. They do **not** influence the live streaming preview (partials).
+Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` starts a comment.
+
+> **Hotwords are currently inert on every ONNX path.** SenseVoice (the default final-text model) has no contextual-biasing path, and the plain `funasr_onnx` `Paraformer.__call__(wav, **kwargs)` silently swallows `hotword=`. Only `ContextualParaformer` / `SeacoParaformer` implement it. Clients still send hotwords and the server still accepts them, but `GET /health` reports the truth in `hotwords_supported` (see `PROTOCOL.md` §2). Restoring hotwords means switching the offline model to a contextual variant.
 
 **Server configuration:** command-line arguments only (see "Server Options").
 
@@ -173,7 +177,7 @@ Hotword file lives next to the config (`hotwords.txt`); one word per line, `#` s
 2. Client captures audio at 16kHz / float32 / mono.
 3. **Streaming (default, native clients):** raw frames are pushed over WebSocket; partial text is shown live in the HUD. On key release, the server runs an offline re-recognition pass for the accurate final text.
 4. **Non-streaming (Linux, or `--no-streaming`):** the full clip is sent via HTTP `POST /recognize` on key release.
-5. Server pipeline: ASR → punctuation restoration → optional LLM correction.
+5. Server pipeline: ASR → punctuation restoration → optional LLM correction. With the default SenseVoice model, punctuation and inverse text normalization (「六十四兆」→「64兆」) come out of the ASR model itself, so there is no separate punctuation pass.
 6. Final text is inserted at the cursor.
 
 > **Short-recording filter:** clients discard sessions shorter than **300ms** before any network call — see `PROTOCOL.md` §5.1 and `VoiceTyperController.minimumRecordingDuration` on macOS. This is a client-side convention; the server does not enforce it.

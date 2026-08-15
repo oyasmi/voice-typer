@@ -100,9 +100,11 @@ internal sealed class VoiceTyperController : IDisposable
     {
         var client = new StreamingASRClient();
 
-        client.OnPartial = fragment =>
+        // partial 是全量预览文本，直接替换（协议 v2，见 PROTOCOL.md §4.3）。
+        // 服务端整段重跑会修正先前的文字，所以不能再做拼接。
+        client.OnPartial = text =>
         {
-            _accumulatedPreview += fragment;
+            _accumulatedPreview = text;
             PreviewUpdate?.Invoke(_accumulatedPreview);
         };
 
