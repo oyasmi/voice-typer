@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VoiceTyper is a **cross-platform offline speech-to-text input tool** built on FunASR (Alibaba's speech recognition toolkit). It uses a **client-server architecture**: a per-platform desktop client captures audio and inserts recognized text, while a local (or shared) ASR server runs the speech models.
+VoiceTyper is a **cross-platform offline speech-to-text input tool** built on SenseVoice-Small, run through the `funasr-onnx` ONNX runtime. It uses a **client-server architecture**: a per-platform desktop client captures audio and inserts recognized text, while a local (or shared) ASR server runs the speech models.
 
 There are three clients, each in its own directory:
 
@@ -21,11 +21,11 @@ There are three clients, each in its own directory:
 ```
 ┌─────────────────────┐   WebSocket (streaming, default)   ┌───────────────────┐
 │   Platform Client   │  ───────────────────────────────▶ │   ASR Server      │
-│                     │   or HTTP POST (--no-streaming)    │   (FunASR/ONNX)   │
+│                     │   or HTTP POST (--no-streaming)    │  (SenseVoice/ONNX)│
 │  - Hotkey listener  │  ◀──────────────────────────────  │                   │
 │  - Audio recording  │              JSON / partials       │  - Speech model   │
-│  - Status HUD / UI  │                                    │  - Punctuation    │
-│  - Text insertion   │                                    │  - Punctuation    │
+│  - Status HUD / UI  │                                    │    (punctuation + │
+│  - Text insertion   │                                    │     ITN built in) │
 └─────────────────────┘                                    │  - LLM correction │
                                                            └───────────────────┘
 ```
@@ -44,7 +44,7 @@ There are three clients, each in its own directory:
 
 **Linux client (`client_linux/`):** Python 3, `PyGObject`/GTK4 (indicator), `evdev` (global hotkey, requires udev rule), `wl-clipboard` (`wl-copy`) for text insertion, `sounddevice` capture.
 
-**Server (`server/`):** `onnxruntime`-based FunASR runtime, `tornado` web/WebSocket server, OpenAI-compatible LLM client for optional correction, `PyYAML`.
+**Server (`server/`):** `onnxruntime`-based `funasr-onnx` runtime (default model SenseVoice-Small), `tornado` web/WebSocket server, OpenAI-compatible LLM client for optional correction, `PyYAML`.
 
 ## Common Commands
 
@@ -71,7 +71,7 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 - `--host HOST` - Listen address (default: 127.0.0.1)
 - `--port PORT` - Listen port (default: 6008)
 - `--no-streaming` - Disable WebSocket streaming, serve HTTP `/recognize` only
-- `--model MODEL` - ASR model (default: `paraformer-zh-streaming` in streaming mode, where it only drives the live preview; `sensevoice-small` in non-streaming mode)
+- `--model MODEL` - ASR model (default: `sensevoice-small`). In the default single-model streaming setup it is **ignored** — SenseVoice produces both preview and final; it only takes effect as the preview model when `--offline-model` is a paraformer variant (then defaulting to `paraformer-zh-streaming`)
 - `--offline-model M` - Model that produces the final text in streaming mode (default: `sensevoice-small`; also accepts `sensevoice-small-fp32`, `paraformer-zh`)
 - `--punc-model M` - Punctuation model (default: ct-punc, "none" to disable). **Only applies to paraformer** — SenseVoice carries its own punctuation and ITN, and ignores this flag
 - `--sensevoice-language L` - `auto`/`zh`/`en`/`yue`/`ja`/`ko` (default: auto), SenseVoice only
@@ -131,7 +131,7 @@ Both share the same layout (`.swift` / `.cs`):
 ### Server (`server/`)
 
 - `asr_server.py` - Tornado entry point: `GET /health`, `POST /recognize` (HTTP), WebSocket streaming endpoint
-- `recognizer.py` - FunASR/ONNX model wrappers: `SpeechRecognizer` (paraformer + ct-punc), `SenseVoiceRecognizer` (SenseVoice-Small, punctuation/ITN built in), `StreamingSpeechRecognizer` (streaming preview)
+- `recognizer.py` - ONNX model wrappers: `SenseVoiceRecognizer` (SenseVoice-Small, default, punctuation/ITN built in, serves both preview and final), `SpeechRecognizer` (paraformer + ct-punc, opt-in), `StreamingSpeechRecognizer` (paraformer streaming preview, only loaded in the two-model fallback)
 - `auth.py` - API authentication (`Authorization: Bearer <key>` header)
 - `llm_client.py` - OpenAI-compatible LLM client for text correction
 - `scripts/voice_typer_server.sh` - setup/run helper

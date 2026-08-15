@@ -1,6 +1,6 @@
 # VoiceTyper Server
 
-`voice-typer-server` 是 VoiceTyper 的语音识别服务端。它负责接收客户端上传的音频，完成识别、标点恢复，并可选调用 LLM 做二次纠错。
+`voice-typer-server` 是 VoiceTyper 的语音识别服务端。它负责接收客户端上传的音频，完成识别（默认模型自带标点与 ITN），并可选调用 LLM 做二次纠错。
 
 ## 亮点
 
@@ -145,10 +145,11 @@ scripts\voice_typer_server.bat uninstall
 - `--port`：监听端口，默认 `6008`
 - `--streaming` / `--no-streaming`：识别模式，默认流式（WebSocket）；`--no-streaming` 切换为非流式（HTTP）
 - `--device`：`cpu` / `cuda` / `cuda:N`
-- `--model`：流式预览模型（默认 `paraformer-zh-streaming`）或非流式识别模型（默认 `paraformer-zh`）
-- `--offline-model`：**仅流式模式**，松手后用于整段复识别的离线模型，默认 `paraformer-zh`
-- `--chunk-size`：流式 chunk 大小，格式 `left,current,right`（单位 60ms 帧），默认 `0,10,5`
-- `--punc-model`：标点模型，默认 `ct-punc`，设为 `none` 可禁用
+- `--model`：非流式识别模型（默认 `sensevoice-small`）；流式模式下是预览模型，默认 SenseVoice 单模型模式会忽略它（仅当 `--offline-model` 指定为 paraformer 时才生效，默认 `paraformer-zh-streaming`）
+- `--offline-model`：**仅流式模式**，松手后用于整段复识别、产出最终文本的模型，默认 `sensevoice-small`
+- `--chunk-size`：流式 chunk 大小，格式 `left,current,right`（单位 60ms 帧），默认 `0,10,5`；同样只在 paraformer 双模型流式下生效
+- `--sensevoice-language`：SenseVoice 识别语种，`auto`/`zh`/`en`/`yue`/`ja`/`ko`，默认 `auto`
+- `--punc-model`：标点模型，默认 `ct-punc`，设为 `none` 可禁用；**只对 paraformer 生效**，SenseVoice 自带标点会忽略它
 - `--onnx-threads`：ONNX Runtime 线程数，默认 `4`
 - `--api-keys`：API Key 列表，逗号分隔
 - `--llm-base-url`、`--llm-api-key`、`--llm-model`：启用 LLM 纠错
@@ -204,7 +205,7 @@ voice-typer-server \
 
 ### `/health`（GET）
 
-通用健康检查，返回 `{"status":"ok","ready":bool,"streaming":bool,"llm_enabled":bool}`。
+通用健康检查，返回 `status` / `ready` / `version` / `protocol_version` / `streaming` / `llm_enabled`，以及 `asr_model`、`offline_model`、`punc_model`、`device` 等模型元信息（默认 SenseVoice 时 `punc_model` 为 `null`）。字段说明见 [`PROTOCOL.md`](../PROTOCOL.md) §2。
 
 ### 流式模式（默认）：`/recognize/stream`（WebSocket）
 
@@ -215,7 +216,7 @@ WebSocket 端点，客户端与服务端保持长连接，边发音频边获取�
 1. 连接后发送 `{"type":"start","sample_rate":16000}`
 2. 录音期间持续发送 binary 帧（float32 PCM，每帧约 600ms = 9600 samples）
 3. 松开热键后发送 `{"type":"finalize"}`
-4. 服务端返回若干 `{"type":"partial","text":"...","seq":N}`（逐字预览，来自流式模型）和最终 `{"type":"final","text":"...","asrElapsed":0.82}`（准确结果，来自对完整音频的离线整段复识别）
+4. 服务端返回若干 `{"type":"partial","text":"...","seq":N}`（**全量**预览文本，默认由 SenseVoice 对已累积音频整段重跑产出）和最终 `{"type":"final","text":"...","asrElapsed":0.82}`（准确结果，来自对完整音频的整段复识别）
 
 **两通道说明**
 
@@ -316,13 +317,15 @@ voice-typer-server --device cuda:1
 
 ### 内存优化
 
-流式模式同时加载流式预览模型和离线识别模型，内存占用约比非流式多 220MB。如果内存紧张，可以：
+默认配置下流式与非流式模式都只加载 `sensevoice-small` 一个模型（约 241MB），两者内存占用相当。
 
-- 切换到非流式模式（`--no-streaming`），仅加载一个模型
-- 关闭标点模型，可降低部分资源占用：
+只有显式用 `--offline-model paraformer-zh` 回到双模型流式时，才会额外加载流式预览模型（约 227MB）和 `ct-punc`（约 1.0GB）。这种情况下如果内存紧张，可以：
+
+- 切换回默认的 SenseVoice 单模型
+- 或关闭标点模型（仅对 paraformer 有意义）：
 
 ```bash
-voice-typer-server --punc-model none
+voice-typer-server --offline-model paraformer-zh --punc-model none
 ```
 
 ## 常见问题

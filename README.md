@@ -1,18 +1,19 @@
 # VoiceTyper - 本地语音输入工具
 
-基于 FunASR 的离线语音识别应用，支持 macOS、Windows 和 Linux 平台，采用客户端/服务端分离架构。
+基于 SenseVoice-Small（ONNX 推理）的离线语音识别应用，支持 macOS、Windows 和 Linux 平台，采用客户端/服务端分离架构。
 
 ## 功能特性
 
 - 🎤 **按住录音** - 按住热键开始录音，松开自动识别
 - 🔒 **完全离线** - 无需联网，本地处理，保护隐私
-- ⚡ **流式实时预览** - 原生客户端默认流式模式，边说边在 HUD 浮窗中显示识别结果，松手后离线整段复识别产出准确文本
+- ⚡ **流式实时预览** - 原生客户端默认流式模式，边说边在 HUD 浮窗中显示识别结果；预览与最终文本出自同一个 SenseVoice 模型，松手时措辞不会跳变
+- ✍️ **自带标点与 ITN** - SenseVoice 直接输出带标点的文本，并做逆文本规整（「六十四兆」→「64兆」），无需外挂标点模型
 - ⚙️ **自定义配置** - 支持自定义热键
 - 🌐 **Fn 键支持** - macOS 支持绑定 Fn（地球仪）键作为热键
 - ⏱️ **短录音过滤** - 自动丢弃 0.3 秒以下的误触录音
 - 🤖 **LLM 智能纠错** - 可选的大语言模型智能纠错
 - 🚀 **硬件加速** - 服务端当前支持 CPU 与 NVIDIA CUDA
-- 🌍 **多语言** - 支持中文、英文语音识别
+- 🌍 **多语言** - 单模型支持中文、英文、粤语、日语、韩语识别（默认自动判别语种）
 - 🖥️ **多平台** - 支持 macOS、Windows 和 Linux (Wayland)
 
 ## 系统架构
@@ -27,20 +28,19 @@
  │  ─────────────────────────────────────────  │         │
  │  macOS : Swift+AppKit  原生录音  剪贴板/AX  │         │
  │  Windows: .NET8+WinForms 原生录音 剪贴板   │         ▼
- │  Linux : evdev      GTK4     wl-copy       │  ┌─────────────┐
- │                                            │  │ Server :6008│
- │  配置: ~/.config/voice_typer/config.yaml   │  │  (Tornado)  │
- └────────────────────────────────────────────┘  │             │
-                                                 │  ┌───────┐  │
-     ┌───────────────────────────────────────────┤  │  ASR  │  │
-     │   partial 实时预览 / final 准确结果       │  │(ONNX) │  │
-     ▼                                           │  └───┬───┘  │
- 光标处插入文本                                    │      ▼      │
-                                                 │  标点恢复   │
-                                                 │      ▼      │
-                                                 │  LLM 纠错?  │
-                                                 │  (可选)     │
-                                                 └─────────────┘
+ │  Linux : evdev      GTK4     wl-copy       │  ┌──────────────────┐
+ │                                            │  │ Server :6008     │
+ │  配置: ~/.config/voice_typer/config.yaml   │  │  (Tornado)       │
+ └────────────────────────────────────────────┘  │                  │
+                                                 │  ┌────────────┐  │
+     ┌───────────────────────────────────────────┤  │ SenseVoice │  │
+     │   partial 实时预览 / final 准确结果       │  │   (ONNX)   │  │
+     ▼                                           │  │ 标点 + ITN │  │
+ 光标处插入文本                                    │  └─────┬──────┘  │
+                                                 │        ▼         │
+                                                 │    LLM 纠错?     │
+                                                 │     (可选)       │
+                                                 └──────────────────┘
 ```
 
 ## 客户端支持平台
@@ -200,6 +200,7 @@ server:
 
 ## 致谢
 
-- [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 阿里达摩院开源的语音识别工具包
+- [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) - 默认使用的多语言语音识别模型（自带标点与 ITN）
+- [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 阿里达摩院开源的语音识别工具包，服务端基于其 `funasr-onnx` 运行时
 - [PyGObject](https://pygobject.readthedocs.io/) - Python GTK 绑定（Linux 客户端）
 - [evdev](https://python-evdev.readthedocs.io/) - Linux 输入设备处理

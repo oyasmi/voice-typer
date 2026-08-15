@@ -1,10 +1,10 @@
 # VoiceTyper Linux Client
 
-Linux Wayland 语音输入客户端，使用 FunASR 进行离线语音识别。
+Linux Wayland 语音输入客户端，通过本地 VoiceTyper 服务端（默认 SenseVoice-Small 模型）进行离线语音识别。
 
 ## 特性
 
-- 🎤 **离线语音识别** - 使用 FunASR 进行本地语音识别，无需网络连接
+- 🎤 **离线语音识别** - 由本地服务端完成识别（默认 SenseVoice-Small，自带标点与 ITN），无需联网
 - ⌨️ **全局热键** - 按住热键开始录音，释放自动识别并插入文本
 - 🖥️ **Wayland 原生支持** - 专为 Wayland + GNOME 环境设计，使用 evdev 和 GTK4
 - 📋 **智能文本插入** - 自动将识别结果插入到当前光标位置
@@ -242,5 +242,5 @@ client_linux/
 ## 相关链接
 
 - [VoiceTyper 主项目](../README.md)
-- [FunASR 文档](https://github.com/alibaba-damo-academy/FunASR)
+- [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) / [FunASR 文档](https://github.com/alibaba-damo-academy/FunASR)
 - [evdev 文档](https://python-evdev.readthedocs.io/)

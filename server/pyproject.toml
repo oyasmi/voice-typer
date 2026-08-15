@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "voice-typer-server"
 dynamic = ["version"]
-description = "VoiceTyper speech recognition server based on FunASR ONNX and Tornado."
+description = "VoiceTyper speech recognition server based on SenseVoice-Small (FunASR ONNX) and Tornado."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [

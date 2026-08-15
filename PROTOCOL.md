@@ -1,6 +1,6 @@
 # VoiceTyper Client ↔ Server 协议
 
-`protocol_version = 1`
+`protocol_version = 2`
 
 本仓库的桌面客户端与 ASR 服务端通过 HTTP / WebSocket 通信。本文是**唯一**的协议来源——服务端、所有平台客户端必须遵守，遇到行为冲突以本文为准。
 
@@ -30,7 +30,7 @@
   "protocol_version": 2,
   "streaming": true,
   "llm_enabled": false,
-  "asr_model":     "paraformer-zh-streaming",
+  "asr_model":     "sensevoice-small",
   "offline_model": "sensevoice-small",
   "punc_model":    null,
   "device":        "cpu"
@@ -43,6 +43,8 @@
 - `streaming`：当前服务端处于流式（WebSocket）还是兼容（HTTP）模式。
 - `asr_model` / `offline_model` / `punc_model` / `device`：模型实测元信息。
   `punc_model` 为 `null` 表示不需要独立标点模型（SenseVoice 自带标点与 ITN）。
+  默认的 SenseVoice 单模型流式下 `asr_model` 与 `offline_model` 相同（预览与终稿同源）；
+  只有 `--offline-model paraformer-zh` 的双模型流式才会出现两者不同。
 
 ---
 
@@ -145,3 +147,4 @@
 | protocol_version | 主要变更 |
 | --- | --- |
 | 1 | 首版稳定协议：鉴权统一；partial 明确为增量；warning 帧；`/health` 含版本与模型；scheme 可选 `https/wss`；短录音 ≤0.3s 客户端过滤 |
+| 2 | 服务端 1.5.0：`partial.text` 改为**全量文本**，客户端替换而非拼接（见 §4.3）；默认改用 SenseVoice 单模型同时产出预览与终稿，`punc_model` 可为 `null` |

@@ -1,8 +1,8 @@
 # VoiceTyper - Agent Instructions
 
 ## 项目概述
-VoiceTyper 是一个基于 ONNX 模型的跨平台语音输入工具，采用 HTTP/JSON 客户端-服务端架构。
-- **Server** (`server/`)：Python ASR 服务，基于 `onnxruntime`。
+VoiceTyper 是一个跨平台语音输入工具，采用客户端-服务端架构：原生客户端默认走 WebSocket 流式，Linux 客户端走 HTTP/JSON 非流式。
+- **Server** (`server/`)：Python ASR 服务，基于 `onnxruntime`，默认模型 SenseVoice-Small（自带标点与 ITN）。
 - **Clients**：macOS 原生 (`client_macos_swift/`，Swift + AppKit)、Windows 原生 (`client_windows_native/`，.NET 8 + WinForms)、Linux (`client_linux/`，Python + GTK4 + evdev)。
 
 ## 安装与运行
@@ -44,7 +44,7 @@ dotnet restore && dotnet run   # 详见 client_windows_native/README.md
 - **Python**：使用 4 个空格缩进，函数/变量 `snake_case`，类 `PascalCase`，强制使用类型提示（`typing`）。
 - **语言**：代码注释和文档使用**中文**。
 - **错误处理**：避免静默忽略异常，统一使用 `logging`（格式：`%(asctime)s - %(levelname)s - %(message)s`）。
-- **音频流**：客户端录音格式为 **16kHz float32** 单声道，随 HTTP POST 发至 `/recognize` 接口。
+- **音频流**：客户端录音格式为 **16kHz float32** 单声道；流式模式经 WebSocket `/recognize/stream` 分帧上送，非流式模式随 HTTP POST 发至 `/recognize`。协议细节以 `PROTOCOL.md` 为准。
 - **文本输入机制**：通过剪贴板 + 键盘模拟（macOS: 原生 NSPasteboard/AX; Linux: wl-copy; Windows: 原生剪贴板）。
 
 > **注意**：
