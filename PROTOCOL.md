@@ -26,13 +26,14 @@
 {
   "status": "ok",
   "ready": true,
-  "version": "1.2.0",
-  "protocol_version": 1,
+  "version": "1.5.0",
+  "protocol_version": 2,
   "streaming": true,
   "llm_enabled": false,
+  "hotwords_supported": false,
   "asr_model":     "paraformer-zh-streaming",
-  "offline_model": "paraformer-zh",
-  "punc_model":    "ct-punc",
+  "offline_model": "sensevoice-small",
+  "punc_model":    null,
   "device":        "cpu"
 }
 ```
@@ -41,7 +42,12 @@
 - `version`：服务端语义化版本，客户端可记录到日志辅助诊断。
 - `protocol_version`：本文档版本号。后续不兼容变更会递增。
 - `streaming`：当前服务端处于流式（WebSocket）还是兼容（HTTP）模式。
+- `hotwords_supported`：产出最终文本的模型是否真的支持热词。**当前两条 ONNX
+  路径都是 `false`**——SenseVoice 没有 contextual biasing 通路，而普通
+  paraformer 的 `__call__(wav, **kwargs)` 会把 `hotword=` 静默吞掉。客户端仍可
+  照常发送热词（会被忽略），但不应据此向用户承诺热词生效。
 - `asr_model` / `offline_model` / `punc_model` / `device`：模型实测元信息。
+  `punc_model` 为 `null` 表示不需要独立标点模型（SenseVoice 自带标点与 ITN）。
 
 ---
 
@@ -77,26 +83,33 @@
 
 | 类型 | 负载 | 含义 |
 | --- | --- | --- |
-| `partial` | `{"type":"partial","text":"今天","seq":N}` | **增量**预览片段；见 §4.3 |
+| `partial` | `{"type":"partial","text":"今天天气","seq":N}` | **全量**预览文本；见 §4.3 |
 | `warning` | `{"type":"warning","code":"feed_failed","message":"..."}` | 非致命，连接保留，仍可 finalize |
 | `final` | `{"type":"final","text":"今天天气不错。","asrElapsed":0.82,"llmElapsed":0.31?}` | 最终结果。随后服务端发送 close(1000) |
 | `error` | `{"type":"error","code":"...","message":"..."}` | 致命，服务端随即关闭连接 |
 
-### 4.3 partial 是"纯增量" — 客户端只需 append
+### 4.3 partial 是"全量文本" — 客户端只需替换
 
-**核心约定**：每条 `partial.text` 是**自上一次 partial 以来新增的字符串**，**不是**累计转写。
+> **协议 v2 变更（服务端 1.5.0）**：此前 `partial.text` 是增量片段，客户端做字符串拼接。
+> 现在是全量文本，客户端直接替换。旧客户端连新服务端会看到预览重复堆叠——
+> 但**仅影响预览显示**，实际上屏的文本永远来自 `final` 帧，不受影响。
+
+**核心约定**：每条 `partial.text` 是**当前完整的预览转写**，**不是**增量。
 
 > 客户端实现示例（Swift）：
 > ```swift
-> self.accumulatedPreview += fragment   // 直接拼接即可
+> self.accumulatedPreview = text   // 直接替换
 > ```
 
-服务端责任（`server/voice_typer_server/recognizer.py:Session.feed`）：
+之所以不能再用增量：默认的 SenseVoice 预览是**对已累积音频整段重跑**，后一次结果会
+**修正**前一次的文字（"识别功能和并" → "识别功能合并"），增量语义无法表达这种回溯修改。
 
-- 模型偶发返回包含历史前缀的累计串时，服务端会做**差分**裁掉已发部分，再向客户端发送。
-- 客户端**永远**只看到 delta；不需要做去重、prefix 检测之类的逻辑。
+服务端责任（`server/voice_typer_server/recognizer.py`，`SenseVoiceSession.preview` /
+`Session.preview`）：
 
-这样选择是因为流式数据通道只增长不回退，做最简单"append"语义对客户端最友好；任何"全量替换"或"乱序覆盖"都明确禁止。
+- 无论底层是整段重跑还是逐块流式模型，向客户端发出的都是全量文本。
+- 文本没有变化时不发 `partial`，客户端不必去重。
+- `seq` 单调递增，仅用于诊断；客户端不需要靠它排序（WebSocket 本身保序）。
 
 ### 4.4 warning vs error
 

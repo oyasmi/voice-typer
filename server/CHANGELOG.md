@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.5.0
+
+### 单模型流式：SenseVoice 自己产出预览，去掉 paraformer-zh-streaming
+
+流式模式下不再加载独立的流式模型。预览改为**对已累积音频整段重跑 SenseVoice**——RTF 约 0.01，重跑 15s 音频只要约 165ms，远在 600ms 的送帧周期内。
+
+- **少一个模型**：不再下载/加载 `paraformer-zh-streaming`（约 227MB），流式模式的模型总占用从约 468MB 降到 241MB。
+- **预览质量大幅提升，且会自我修正**。同一段音频，旧流式模型给出 `把一百和五十的两个限制都给成六十十四兆赫兆`；现在预览逐步收敛并回溯改正错字（`识别功能和并` → `识别功能合并`，`初自安装` → `初次安装`），还带标点。
+- **预览与终稿不再跳变**：两者出自同一个模型，松手瞬间文字不会整段变样。
+- **finalize 常见情况下是零成本**：若松手前最后一次预览已覆盖全部音频，finalize 直接复用其结果（实测 166ms → 0.1ms）。
+- 少了一整套流式 cache 状态机（`Session` 的 `_cache` / 增量差分逻辑仅在 paraformer 回退路径保留）。
+
+想回到双模型流式：`--offline-model paraformer-zh`，此时 `--model` 与 `--chunk-size` 恢复生效。
+
+### 协议 v2：partial 改为全量文本（**破坏性变更**）
+
+`protocol_version` 由 `1` 升到 `2`。`partial.text` 从"增量片段"改为"当前完整预览文本"，客户端由拼接改为替换。
+
+整段重跑会**修正**先前的文字，增量语义无法表达这种回溯修改，因此必须改。
+
+- macOS / Windows 客户端已同步更新（各一行）。
+- 旧客户端连新服务端只会看到预览重复堆叠——**影响范围仅限预览显示**，实际上屏文本永远来自 `final` 帧，不受影响。
+- 文本无变化时不再发 `partial`。
+
+### 其他
+
+- WebSocket 预览改到后台任务执行。Tornado 会等 `on_message` 的协程结束才读下一条消息，若把逐渐变长的预览推理放在里面，音频会堵在接收缓冲区、预览越拖越远。
+- 预览做合并（coalescing）：上一次还没跑完就跳过本次，积压音频在下一次一并处理。长录音下预览自然变稀疏，推理队列不会无限堆积。
+- 单模型模式下预览与终稿共用一个 executor——它们是同一个 ONNX session 和同一份 fbank 前端（`WavFrontend` 持有可变状态），必须串行。
+- 已知特性：预览耗时随录音长度线性增长。60s 以上的长录音，finalize 可能要排在一次在途预览之后（实测约 1.2s）；5–20s 的常规口述为 50–170ms。
+
+### 默认识别模型改为 SenseVoice-Small
+
+产出最终文本的模型从 `paraformer-zh + ct-punc` 换成 `sensevoice-small`（`iic/SenseVoiceSmall-onnx`，int8，241MB）。流式预览仍用 `paraformer-zh-streaming`——SenseVoice 不支持流式。
+
+- **自带标点与 ITN**，不再需要独立的 `ct-punc` 模型。模型总占用从约 1.23GB 降到 241MB。
+- **数字与英文术语明显更准**：口述「一二七点零点零点一的六零零八端口」现在上屏为 `127.0.0.1的6008端口`，此前是逐字的「一二七点零点零点一」。
+- **启动更快**：模型加载从约 8.6s 降到约 1.0s。
+- **速度基本持平**：59s 语料的推理总耗时 0.56s vs 0.53s（RTF 0.010 vs 0.009）。
+- 新增 `--sensevoice-language`（`auto`/`zh`/`en`/`yue`/`ja`/`ko`，默认 `auto`）。
+- 新增 `--offline-model sensevoice-small-fp32`（社区 fp32 导出，893MB）。实测质量与 int8 持平而速度慢约 1.6 倍，因此不作默认值。
+- `--punc-model` 现在只对 paraformer 生效；用 SenseVoice 时会被忽略并记一条日志。
+- 推理阶段固定 `dither=0`，同一段音频的识别结果不再随机抖动。
+- 新增 `scripts/bench_asr.py`：三方模型对比基准，输出耗时、RTF 与 CER。
+
+想回到旧行为：`--offline-model paraformer-zh`（流式）或 `--model paraformer-zh`（非流式）。
+
+### 热词状态更正
+
+热词在两条 ONNX 路径上**都不生效**，此前是静默失败：普通 `funasr_onnx.Paraformer.__call__(wav, **kwargs)` 会把 `hotword=` 直接吞掉（只有 `ContextualParaformer` / `SeacoParaformer` 才实现），而原先的 `try/except TypeError` 探测永远不会触发。SenseVoice 同样没有 contextual biasing 通路。
+
+- 改为按模型能力显式判定（`hasattr(model, "proc_hotword")`），不再依赖异常探测。
+- `GET /health` 新增 `hotwords_supported` 字段，如实上报。
+- 收到热词但模型不支持时记一条 WARNING。
+
+### 修复
+
+- **Dockerfile 强制传入离线模型**：`ENV MODEL=paraformer-zh` 加上始终传 `--model "$MODEL"`，会把离线模型当成流式预览模型塞给流式识别器（CLI 默认是流式模式）。现在 `MODEL` / `OFFLINE_MODEL` / `PUNC_MODEL` 都改为不设置时不传，交由 CLI 按模式选默认值。
+
 ## 1.4.0
 
 ### 并发与可靠性

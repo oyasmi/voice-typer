@@ -6,8 +6,8 @@
 
 - 本地运行，默认不依赖云端 ASR
 - **流式识别（默认）**：WebSocket 双通道——录音时 HUD 实时预览（跟嘴），松手后离线整段复识别产出准确最终结果
-- **非流式识别（兼容）**：HTTP POST，支持热词，供 Linux 客户端及非流式场景使用
-- 内置中文识别和标点恢复默认模型
+- **非流式识别（兼容）**：HTTP POST，供 Linux 客户端及非流式场景使用
+- 默认最终识别模型为 **SenseVoice-Small**：自带标点与 ITN（「六十四兆」→「64兆」），单模型覆盖中英粤日韩
 - 可选启用 API Key
 - 可选接入 OpenAI 兼容 LLM 做纠错
 - 支持 `python -m`、命令行和脚本三种启动方式
@@ -159,7 +159,7 @@ scripts\voice_typer_server.bat uninstall
 # 流式模式（默认）
 voice-typer-server --host 0.0.0.0 --device cpu --api-keys akey
 
-# 非流式兼容模式（支持热词）
+# 非流式兼容模式
 voice-typer-server --no-streaming --host 0.0.0.0 --device cpu --api-keys akey
 ```
 
@@ -221,14 +221,20 @@ WebSocket 端点，客户端与服务端保持长连接，边发音频边获取�
 
 | 消息类型 | 识别模型 | 用途 | 是否插入目标程序 |
 | --- | --- | --- | --- |
-| `partial` | 流式模型（`paraformer-zh-streaming`） | HUD 实时预览，跟嘴显示 | 否 |
-| `final` | 离线整段模型（`paraformer-zh`） | 准确最终结果，含标点和 LLM 纠错 | 是 |
+| `partial` | `sensevoice-small`（对已累积音频整段重跑） | HUD 实时预览，跟嘴显示 | 否 |
+| `final` | `sensevoice-small`（同一个模型） | 准确最终结果，含标点和 LLM 纠错 | 是 |
 
-> **注意**：热词（`hotwords`）仅对离线整段模型（`final`）生效；流式模型本身不支持热词。
+> 默认只加载**一个**模型。SenseVoice 的 RTF 约 0.01，重跑 15s 音频约 165ms，远在 600ms 送帧周期内，因此预览直接复用它，不再需要独立的流式模型。
+>
+> 好处是预览会**自我修正**（`识别功能和并` → `识别功能合并`）并自带标点，松手时也不会整段跳变。代价是 `partial` 必须是全量文本而非增量——见 [`PROTOCOL.md`](../PROTOCOL.md) §4.3。
+>
+> 用 `--offline-model paraformer-zh` 可回到双模型流式，此时 `--model` 与 `--chunk-size` 恢复生效。
+
+> **热词目前不生效**：`hotwords` 字段仍会被接收，但 SenseVoice 没有 contextual biasing 通路，普通 paraformer 的 ONNX 封装也会静默忽略 `hotword=`。`GET /health` 的 `hotwords_supported` 字段如实反映这一点。
 
 ### 非流式模式（`--no-streaming`）：`/recognize`（HTTP POST）
 
-提交整段音频，返回完整识别结果。支持热词。
+提交整段音频，返回完整识别结果。
 
 推荐方式：
 
@@ -261,16 +267,43 @@ curl -X POST http://127.0.0.1:6008/recognize \
 ## 模型与运行说明
 
 - 服务端使用 `onnxruntime`
-- **流式模式**同时加载两个模型：
-  - `paraformer-zh-streaming`（`--model`）：产出 `partial` 预览
-  - `paraformer-zh`（`--offline-model`）：松手后对完整音频复识别，产出 `final`，支持热词，含标点
+- **流式模式**默认只加载一个模型：
+  - `sensevoice-small`（`--offline-model`）：预览期整段重跑产出 `partial`，松手后产出 `final`，自带标点与 ITN
+  - 若 `--offline-model` 指定为 paraformer，则回到双模型：`--model`（默认 `paraformer-zh-streaming`）负责预览
 - **非流式模式**仅加载一个模型：
-  - `paraformer-zh`（`--model`）：整段识别，支持热词，含标点
-- 默认标点模型：`ct-punc`（仅挂在最终识别模型上，不重复加载）
+  - `sensevoice-small`（`--model`）：整段识别，自带标点与 ITN
+- `--punc-model`（默认 `ct-punc`）**只对 paraformer 生效**；用 SenseVoice 时会被忽略并记一条日志
 
-短名会自动映射到官方 ONNX 模型，首次使用会从 ModelScope 自动下载。
+短名会自动映射到 ONNX 模型仓库，首次使用会从 ModelScope 自动下载。
 
 如果模型目录中只有 `model_quant.onnx`，服务端会自动使用量化模型。
+
+### 可选的最终识别模型
+
+| 短名 | 仓库 | 体积 | 说明 |
+| --- | --- | --- | --- |
+| `sensevoice-small`（默认） | `iic/SenseVoiceSmall-onnx` | 241MB | 官方 int8 导出。自带标点/ITN，无需 ct-punc |
+| `sensevoice-small-fp32` | `manyeyes/sensevoice-small-onnx` | 893MB | 社区 fp32 导出。实测质量与 int8 持平，速度慢约 1.6 倍 |
+| `paraformer-zh` | `damo/speech_paraformer-large...onnx` | 227MB + ct-punc 1.0GB | 旧默认值。需要外挂 `ct-punc` 才有标点，且数字保持「六十四兆」这样的口语形式 |
+
+切换模型：
+
+```bash
+voice-typer-server --offline-model paraformer-zh        # 流式模式
+voice-typer-server --no-streaming --model paraformer-zh # 非流式模式
+```
+
+### 模型对比基准
+
+想自己验证选型（强烈建议用**你自己的录音**，TTS 语料太干净，测不出真实口音与噪声下的差距）：
+
+```bash
+# 内置 TTS 语料（macOS）
+python scripts/bench_asr.py
+
+# 自己的录音：16k 单声道 wav，同名 .txt 存参考文本才会算 CER
+python scripts/bench_asr.py --audio-dir ~/my_recordings
+```
 
 ## 性能优化
 

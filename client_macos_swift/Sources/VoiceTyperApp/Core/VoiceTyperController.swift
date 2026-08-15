@@ -147,9 +147,11 @@ final class VoiceTyperController {
     private func beginStreamingRecording() {
         let client = StreamingASRClient()
 
-        client.onPartial = { [weak self] fragment in
+        // partial 是全量预览文本，直接替换（协议 v2，见 PROTOCOL.md §4.3）。
+        // 服务端整段重跑会修正先前的文字，所以不能再做拼接。
+        client.onPartial = { [weak self] text in
             guard let self else { return }
-            self.accumulatedPreview += fragment
+            self.accumulatedPreview = text
             self.onPreviewUpdate?(self.accumulatedPreview)
         }
 
