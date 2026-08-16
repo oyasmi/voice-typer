@@ -280,14 +280,23 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 
 ## 日志与排障
 
-日志走统一日志系统（`os.Logger`），subsystem 为 `com.voicetyper.app`，分
-`app` / `permissions` / `hotkey` / `audio` / `network` / `asr` / `llm` / `model` / `input` 几个 category。
+日志走统一日志系统（`os.Logger`），不落地为独立的 `.log` 文件，subsystem 为
+`com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `network` / `asr` / `llm` /
+`model` / `input` 几个 category。
+
+**命令行**（`log` 是系统自带工具）：
 
 ```bash
+# 实时跟踪
 log stream --predicate 'subsystem == "com.voicetyper.app"' --level debug
 log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "asr"'
+
+# 查看历史（过去 10 分钟）
 log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
 ```
+
+**图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，
+搜索框输入 `com.voicetyper.app` 过滤即可；也可以按 category 进一步筛选（如 `llm`、`hotkey`）。
 
 ### 模型下载失败
 
