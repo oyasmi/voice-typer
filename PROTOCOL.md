@@ -135,7 +135,9 @@
 
 阈值常量在客户端代码中显式标注：
 
-- Swift：`VoiceTyperController.minimumRecordingDuration`
+- Swift（macOS）：`VoiceTyperController.minimumRecordingDuration`
+- C#（Windows）：`VoiceTyperController.MinimumRecordingDuration`
+- Python（Linux）：`controller.py` 中按样本数判断（4800 samples @ 16kHz）
 
 ### 5.2 scheme
 

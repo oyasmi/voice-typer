@@ -8,6 +8,7 @@ import sys
 import os
 import gi
 import logging
+import logging.handlers
 import threading
 import time
 from pathlib import Path
@@ -20,12 +21,42 @@ from config import load_config, get_config_dir, ensure_config_dir, APP_VERSION
 from controller import VoiceTyperController
 
 
+LOG_FILE_NAME = 'app.log'
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
+
+def _build_log_handlers():
+    """stdout + 滚动文件双通道。
+
+    终端只输出消息正文（状态提示要短），文件带时间戳便于事后排查。
+    文件路径与 Makefile 的 `make log` / `make log-f` 保持一致。
+    """
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(logging.Formatter('%(message)s'))
+    handlers = [stdout_handler]
+
+    try:
+        log_path = ensure_config_dir() / LOG_FILE_NAME
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_path,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding='utf-8',
+        )
+        file_handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        )
+        handlers.append(file_handler)
+    except OSError as exc:
+        # 配置目录不可写时不能让客户端起不来：退化成只有 stdout。
+        print(f'警告: 无法写入日志文件，仅输出到终端: {exc}', file=sys.stderr)
+
+    return handlers
+
+
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+logging.basicConfig(level=logging.INFO, handlers=_build_log_handlers())
 logger = logging.getLogger('VoiceTyper')
 
 

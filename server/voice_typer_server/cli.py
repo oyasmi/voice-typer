@@ -170,8 +170,8 @@ def _handle_service_command(argv):
 
 def main(argv=None):
     """CLI 主入口"""
-    if sys.version_info < (3, 9):
-        raise SystemExit("voice-typer-server requires Python 3.9 or newer")
+    if sys.version_info < (3, 10):
+        raise SystemExit("voice-typer-server requires Python 3.10 or newer")
 
     # 预处理参数：检测 service 子命令
     raw_argv = argv if argv is not None else sys.argv[1:]

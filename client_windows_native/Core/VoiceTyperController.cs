@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,12 @@ namespace VoiceTyper.Core;
 /// </summary>
 internal sealed class VoiceTyperController : IDisposable
 {
+    /// <summary>
+    /// 短于此时长的录音视为误触，直接丢弃：流式不发 finalize，非流式不发 HTTP 请求。
+    /// 客户端侧约定，服务端不做强制校验。见 PROTOCOL.md §5.1。
+    /// </summary>
+    private static readonly TimeSpan MinimumRecordingDuration = TimeSpan.FromMilliseconds(300);
+
     public Action<AppStateInfo>? StateChanged;
     public Action<string>? PreviewUpdate;
     public Action<string>? RecognizedText;
@@ -28,6 +35,10 @@ internal sealed class VoiceTyperController : IDisposable
     private string _accumulatedPreview = "";
     private bool _isRecording;
     private bool _isRunning;
+    /// <summary>本轮录音真正开始的时间戳（Stopwatch tick），用于短录音过滤。</summary>
+    private long _recordingStartedTicks;
+    /// <summary>本轮录音因过短被判定丢弃；由 OnTailChunk 回调消费。</summary>
+    private bool _discardCurrentSession;
 
     public bool IsRunning => _isRunning;
 
@@ -62,6 +73,7 @@ internal sealed class VoiceTyperController : IDisposable
         TeardownStreamingClient();
         _batchChunks = null;
         _isRecording = false;
+        _discardCurrentSession = false;
         AppLog.Info("controller", "Controller stopped");
     }
 
@@ -80,6 +92,8 @@ internal sealed class VoiceTyperController : IDisposable
     private void BeginRecording()
     {
         if (!_isRunning || _isRecording) return;
+        // 上一轮的丢弃标记若因异常路径未被 OnTailChunk 消费，这里兜底清掉。
+        _discardCurrentSession = false;
         if (_config.Server.Streaming) BeginStreamingRecording();
         else BeginBatchRecording();
     }
@@ -88,8 +102,39 @@ internal sealed class VoiceTyperController : IDisposable
     {
         if (!_isRecording) return;
         _isRecording = false;
+
+        // 短录音（误触）在这里就判定，交给 OnTailChunk 执行丢弃：
+        // 走同一条收尾路径，避免录音流没被正常停掉。
+        var elapsed = Stopwatch.GetElapsedTime(_recordingStartedTicks);
+        _discardCurrentSession = elapsed < MinimumRecordingDuration;
+        if (_discardCurrentSession)
+        {
+            AppLog.Info("controller", $"录音过短（{elapsed.TotalMilliseconds:F0}ms），已丢弃");
+        }
+
         // 录音停止 → 触发 OnTailChunk → 流式：sendAudio(tail) + finalize；非流式：拼接整段后 POST
         _audioService.Stop();
+    }
+
+    /// <summary>
+    /// 丢弃本轮过短录音的共同收尾：清预览、断连接、回到就绪。
+    /// <paramref name="client"/> 为流式会话的连接，非流式路径传 null。
+    /// </summary>
+    private void DiscardShortSession(StreamingASRClient? client)
+    {
+        _discardCurrentSession = false;
+
+        // 会话可能已被新一轮录音取代：只关掉自己的连接，不触碰当前会话的状态。
+        if (client is not null && !ReferenceEquals(_streamingClient, client))
+        {
+            client.Close();
+            return;
+        }
+
+        _accumulatedPreview = "";
+        PreviewUpdate?.Invoke("");
+        TeardownStreamingClient();
+        if (!_isRecording) StateChanged?.Invoke(AppStateInfo.Idle);
     }
 
     // ─── 流式路径 ────────────────────────────────────────────────
@@ -198,6 +243,13 @@ internal sealed class VoiceTyperController : IDisposable
         {
             UiDispatcher.Post(() =>
             {
+                // 误触录音：不发 finalize，直接断开连接。服务端会随连接关闭丢掉会话。
+                if (_discardCurrentSession)
+                {
+                    DiscardShortSession(client);
+                    return;
+                }
+
                 if (data.Length > 0) client.SendAudio(data);
                 client.FinalizeStream();
                 StateChanged?.Invoke(AppStateInfo.Recognizing);
@@ -218,6 +270,8 @@ internal sealed class VoiceTyperController : IDisposable
             return;
         }
 
+        // 计时从音频真正开始采集起算，不含 WebSocket 连接耗时。
+        _recordingStartedTicks = Stopwatch.GetTimestamp();
         _isRecording = true;
         StateChanged?.Invoke(AppStateInfo.Recording);
     }
@@ -237,6 +291,13 @@ internal sealed class VoiceTyperController : IDisposable
         {
             UiDispatcher.Post(() =>
             {
+                // 误触录音：不发出 HTTP 请求，直接丢掉已累积的音频。
+                if (_discardCurrentSession)
+                {
+                    DiscardShortSession(null);
+                    return;
+                }
+
                 if (data.Length > 0) _batchChunks?.Add(data);
                 _ = PerformBatchRecognitionAsync();
             });
@@ -254,6 +315,7 @@ internal sealed class VoiceTyperController : IDisposable
             return;
         }
 
+        _recordingStartedTicks = Stopwatch.GetTimestamp();
         _isRecording = true;
         StateChanged?.Invoke(AppStateInfo.Recording);
     }
