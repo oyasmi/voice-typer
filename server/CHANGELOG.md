@@ -1,5 +1,22 @@
 # Changelog
 
+## 未发布
+
+- 代码组织与部署侧的一批清理：容器镜像改为构建期烘入 SenseVoice 模型（首启不
+  再现下 241MB），移除未使用的 `ffmpeg` / `libsndfile1` / `jieba` 依赖，新增
+  `.dockerignore`（此前 `COPY . .` 会把本地 `.venv-release/`、`dist/`、
+  `nohup.out` 一并打进镜像层）与容器 `HEALTHCHECK`。
+- 新增免模型的测试骨架（`server/tests/`）：鉴权矩阵、后处理正则、运行时参数
+  决策（`resolve_runtime_plan`）、WebSocket 协议状态机。
+- `create_server` 里「哪个参数在哪种模式下生效」的判断抽成纯函数
+  `resolve_runtime_plan`；顺带补全此前 `--offline-model`（非流式下）和
+  `--sensevoice-language`（配 paraformer 时）被静默忽略却无提示的两处。
+- 标点模型加载逻辑（两个 recognizer 间重复的 13 行）抽成 `_load_punc_model`；
+  `Session` 更名为 `ParaformerStreamingSession`，与同文件的
+  `SenseVoiceSession` 对称。
+- 监听非 loopback 地址且未配置 `--api-keys` 时的警告更醒目（容器默认场景），
+  不再淹没在启动横幅里。
+
 ## 1.5.1
 
 服务端性能与稳定性修复，覆盖内部审查发现的六类问题。无破坏性变更，`protocol_version` 仍为 `2`。
@@ -34,8 +51,8 @@ SenseVoice 预览此前对**全部**已累积音频整段重跑，单会话预�
 
 ### 其他
 
-- 服务端不再在 INFO 级别打印 LLM 修正前后的完整用户文本（此前 HTTP 路径已是
-  DEBUG，WS 路径漏改）；统一降到 DEBUG。
+- WS 路径的 LLM 修正日志此前遗漏降级，与 HTTP 路径不一致，已补齐（两者均为
+  INFO，打印修正前后文本，便于直接从 stdout 核对修正效果）。
 - 极短音频（< 400 采样点 / 25ms）不再触发 funasr 前端的 `IndexError`，直接返回
   空字符串。
 - 新增 `--llm-timeout`（默认 5s，原硬编码 8s），控制 LLM 纠错的最长等待。

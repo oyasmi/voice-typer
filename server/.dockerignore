@@ -1,0 +1,16 @@
+# 白名单式：默认排除一切，只放行 pip install . 与容器运行真正需要的文件。
+# README.md 不能少——pyproject 的 readme 字段指着它，缺了构建直接失败。
+#
+# 目录排除后其内容不会被子级 "!" 规则自动找回，因此每一层都要显式放行
+# （已知的 .dockerignore 陷阱，见 Docker 文档 "Exception rules"）。
+*
+!voice_typer_server/
+!voice_typer_server/**
+!pyproject.toml
+!README.md
+!scripts/
+!scripts/healthcheck.py
+
+# 放行目录后仍要挡掉它里面的缓存/产物
+voice_typer_server/**/__pycache__/
+voice_typer_server/**/*.pyc

@@ -121,6 +121,25 @@ def _extract_punc_text(punc_result) -> str:
     return str(punc_result)
 
 
+def _load_punc_model(punc_mod, punc_dir: Optional[str], punc_q: bool,
+                      device_id, threads: int):
+    """加载 ct-punc；失败或未配置都不致命，返回 None 表示跳过标点。"""
+    if not punc_dir:
+        logger.info("[2/2] ONNX 标点恢复模型: 已禁用")
+        return None
+    logger.info(f"[2/2] 加载 ONNX 标点恢复模型: {punc_dir}")
+    try:
+        return punc_mod.CT_Transformer(
+            punc_dir,
+            device_id=device_id,
+            quantize=punc_q,
+            intra_op_num_threads=threads,
+        )
+    except Exception as exc:
+        logger.warning(f"标点模型加载失败，将跳过标点: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 离线整段识别器
 # ---------------------------------------------------------------------------
@@ -165,19 +184,8 @@ class SpeechRecognizer:
             intra_op_num_threads=self.intra_op_num_threads,
         )
 
-        if punc_dir:
-            logger.info(f"[2/2] 加载 ONNX 标点恢复模型: {punc_dir}")
-            try:
-                self._punc_model = punc_mod.CT_Transformer(
-                    punc_dir,
-                    device_id=device_id,
-                    quantize=punc_q,
-                    intra_op_num_threads=self.intra_op_num_threads,
-                )
-            except Exception as exc:
-                logger.warning(f"标点模型加载失败，将跳过标点: {exc}")
-        else:
-            logger.info("[2/2] ONNX 标点恢复模型: 已禁用")
+        self._punc_model = _load_punc_model(
+            punc_mod, punc_dir, punc_q, device_id, self.intra_op_num_threads)
 
         self._initialized = True
 
@@ -550,19 +558,8 @@ class StreamingSpeechRecognizer:
             intra_op_num_threads=self.intra_op_num_threads,
         )
 
-        if punc_dir:
-            logger.info(f"[2/2] 加载 ONNX 标点恢复模型: {punc_dir}")
-            try:
-                self._punc_model = punc_mod.CT_Transformer(
-                    punc_dir,
-                    device_id=device_id,
-                    quantize=punc_q,
-                    intra_op_num_threads=self.intra_op_num_threads,
-                )
-            except Exception as exc:
-                logger.warning(f"标点模型加载失败，将跳过标点: {exc}")
-        else:
-            logger.info("[2/2] ONNX 标点恢复模型: 已禁用")
+        self._punc_model = _load_punc_model(
+            punc_mod, punc_dir, punc_q, device_id, self.intra_op_num_threads)
 
         self._initialized = True
 
@@ -570,10 +567,10 @@ class StreamingSpeechRecognizer:
     def is_ready(self) -> bool:
         return self._initialized and self._model is not None
 
-    def new_session(self) -> "Session":
+    def new_session(self) -> "ParaformerStreamingSession":
         if not self.is_ready:
             raise RuntimeError("ONNX 模型未初始化")
-        return Session(self)
+        return ParaformerStreamingSession(self)
 
     def _extract_fragment(self, asr_result) -> str:
         return _extract_preds_text(asr_result)
@@ -588,7 +585,7 @@ class StreamingSpeechRecognizer:
             return text
 
 
-class Session:
+class ParaformerStreamingSession:
     """单次录音会话，对应一个 WebSocket 连接。每次新建，用完即弃。
 
     preview() 用流式模型产出预览（跟嘴）；同时累积原始音频，

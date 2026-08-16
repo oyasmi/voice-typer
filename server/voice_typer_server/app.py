@@ -9,7 +9,8 @@ import logging
 import signal
 import sys
 import time
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 import numpy as np
 import tornado.httpserver
@@ -33,12 +34,11 @@ def is_sensevoice_model(model_name: Optional[str]) -> bool:
 def build_offline_recognizer(model_name: str, punc_model: Optional[str], args):
     """构造离线整段识别器。
 
-    SenseVoice 自带标点与 ITN，会忽略 --punc-model；paraformer 则需要
-    外挂 ct-punc 才有标点。
+    SenseVoice 自带标点与 ITN，会忽略 punc_model；paraformer 则需要
+    外挂 ct-punc 才有标点。是否忽略、要不要提示用户，由调用方按
+    RuntimePlan.ignored 统一处理，这里只管造对象。
     """
     if is_sensevoice_model(model_name):
-        if punc_model:
-            logger.info(f"标点: SenseVoice 自带，已忽略 --punc-model {punc_model}")
         return SenseVoiceRecognizer(
             model_name=model_name,
             device=args.device,
@@ -51,6 +51,92 @@ def build_offline_recognizer(model_name: str, punc_model: Optional[str], args):
         punc_model=punc_model,
         device=args.device,
         intra_op_num_threads=args.onnx_threads,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 运行时参数决策
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CHUNK_SIZE = "0,10,5"
+
+
+@dataclass(frozen=True)
+class RuntimePlan:
+    """「哪个参数在哪种模式下生效」的决策结果。
+
+    纯函数 resolve_runtime_plan() 的输出：不加载模型、不打日志，因此可以
+    脱离 ONNX / funasr_onnx 单独测试。调用方（create_server）只管照着
+    这份计划造对象、把 ignored 列表统一 warning 出去。
+    """
+    streaming:      bool
+    offline_model:  str                  # 产出最终文本的模型
+    preview_model:  Optional[str]        # 流式 partial 用；非流式下为 None
+    single_model:   bool                 # 流式下预览是否复用 offline_model（SenseVoice）
+    punc_model:     Optional[str]        # 实际生效的标点模型；SenseVoice 恒为 None
+    ignored:        List[Tuple[str, str]] = field(default_factory=list)  # (flag及取值, 原因)
+
+
+def resolve_runtime_plan(args) -> RuntimePlan:
+    ignored: List[Tuple[str, str]] = []
+    streaming = args.streaming
+    punc_arg = args.punc_model if args.punc_model != "none" else None
+
+    if streaming:
+        offline_model = args.offline_model or DEFAULT_OFFLINE_MODEL
+        single_model = is_sensevoice_model(offline_model)
+        if single_model:
+            preview_model = offline_model
+            if args.model:
+                ignored.append((
+                    f"--model {args.model}",
+                    "SenseVoice 单模型模式下预览与终稿共用同一模型",
+                ))
+            if args.chunk_size != _DEFAULT_CHUNK_SIZE:
+                ignored.append((
+                    f"--chunk-size {args.chunk_size}",
+                    "SenseVoice 单模型模式下没有独立的流式 chunk 概念",
+                ))
+        else:
+            preview_model = args.model or DEFAULT_STREAMING_MODEL
+    else:
+        offline_model = args.model or DEFAULT_OFFLINE_MODEL
+        single_model = is_sensevoice_model(offline_model)
+        preview_model = None
+        if args.offline_model:
+            ignored.append((
+                f"--offline-model {args.offline_model}",
+                "非流式模式下最终文本直接由 --model 产出",
+            ))
+        if args.chunk_size != _DEFAULT_CHUNK_SIZE:
+            ignored.append((
+                f"--chunk-size {args.chunk_size}",
+                "仅在流式模式下生效，当前为非流式模式",
+            ))
+
+    builtin_punc = is_sensevoice_model(offline_model)
+    if builtin_punc:
+        if punc_arg:
+            ignored.append((
+                f"--punc-model {punc_arg}",
+                "SenseVoice 自带标点与 ITN",
+            ))
+        effective_punc = None
+    else:
+        effective_punc = punc_arg
+        if args.sensevoice_language != "auto":
+            ignored.append((
+                f"--sensevoice-language {args.sensevoice_language}",
+                "仅对 sensevoice-* 模型生效，当前离线模型非 SenseVoice",
+            ))
+
+    return RuntimePlan(
+        streaming=streaming,
+        offline_model=offline_model,
+        preview_model=preview_model,
+        single_model=single_model,
+        punc_model=effective_punc,
+        ignored=ignored,
     )
 
 
@@ -145,7 +231,7 @@ class RecognizeHandler(BaseAuthenticatedHandler):
                     llm_elapsed = round(time.time() - t1, 3)
                     if original != text:
                         logger.info(f"LLM 修正完成 ({llm_elapsed}s)")
-                        logger.debug(f"LLM 修正: {original!r} → {text!r}")
+                        logger.info(f"LLM 修正: {original!r} → {text!r}")
                     else:
                         logger.info(f"LLM 修正: 无需改动 ({llm_elapsed}s)")
                 except Exception as exc:
@@ -362,7 +448,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
                 llm_elapsed = round(time.time() - t1, 3)
                 if original != text:
                     logger.info(f"LLM 修正完成 ({llm_elapsed}s)")
-                    logger.debug(f"LLM 修正: {original!r} → {text!r}")
+                    logger.info(f"LLM 修正: {original!r} → {text!r}")
                 else:
                     logger.info(f"LLM 修正: 无需改动 ({llm_elapsed}s)")
             except Exception as exc:
@@ -475,12 +561,18 @@ class ServerContext:
 
 def create_server(args) -> ServerContext:
     api_keys = load_api_keys(args.api_keys)
-    streaming = args.streaming
+    plan = resolve_runtime_plan(args)
+    streaming = plan.streaming
 
     if api_keys:
         logger.info(f"API密钥: 已配置 {len(api_keys)} 个")
     elif args.host != "127.0.0.1":
-        logger.warning("远程访问未配置 API 密钥，建议使用 --api-keys 参数")
+        logger.warning("!" * 50)
+        logger.warning(
+            f"监听 {args.host} 且未配置 --api-keys："
+            "任何能访问本端口的人都能免费使用你的识别算力"
+        )
+        logger.warning("!" * 50)
 
     logger.info("=" * 50)
     logger.info("VoiceTyper 语音识别服务")
@@ -495,8 +587,6 @@ def create_server(args) -> ServerContext:
     logger.info(f"设备: {args.device}")
     if streaming:
         logger.info(f"Chunk: {args.chunk_size}")
-    elif args.chunk_size != "0,10,5":
-        logger.warning("--chunk-size 仅在流式模式下生效，当前为非流式模式，已忽略")
     logger.info(f"Python: {sys.version.split()[0]}")
     if args.host == "127.0.0.1":
         logger.info("鉴权: 本地地址，已跳过")
@@ -517,49 +607,35 @@ def create_server(args) -> ServerContext:
     else:
         logger.info("LLM: 未启用")
 
-    punc_model = args.punc_model if args.punc_model != "none" else None
+    for flag, reason in plan.ignored:
+        logger.warning(f"{flag} 已忽略：{reason}")
 
-    # --model 未指定时按模式选默认值。
-    # 非流式模式的最终结果直接由 --model 产出，因此默认用 SenseVoice；
-    # 流式模式的 --model 只负责 partial 预览，仍用 paraformer 流式模型。
-    model_name = args.model
-    if not model_name:
-        model_name = DEFAULT_STREAMING_MODEL if streaming else DEFAULT_OFFLINE_MODEL
-    if not streaming:
-        logger.info(f"模型: {model_name}")
-    # 流式模式下预览用哪个模型要等离线模型定下来才知道（SenseVoice 会复用自己），
-    # 因此那条日志推迟到下面的分支里打。
+    if streaming:
+        logger.info(f"离线复识别模型: {plan.offline_model}（最终结果由它产出）")
+    else:
+        logger.info(f"模型: {plan.offline_model}")
 
     logger.info("初始化模型...")
     t0 = time.time()
 
-    offline_model_name: Optional[str] = None
-    single_model_streaming = False
+    offline_recognizer = None
     if streaming:
-        offline_model_name = args.offline_model or DEFAULT_OFFLINE_MODEL
-        logger.info(f"离线复识别模型: {offline_model_name}（最终结果由它产出）")
         # 离线整段识别器：负责松手后的准确识别（含标点）
-        offline_recognizer = build_offline_recognizer(offline_model_name, punc_model, args)
+        offline_recognizer = build_offline_recognizer(plan.offline_model, plan.punc_model, args)
         offline_recognizer.initialize()
 
         # SenseVoice 的 RTF 约 0.01，重跑整段音频做预览比再加载一个流式模型更划算：
         # 少一个模型（约 227MB）、少一套流式 cache 逻辑，而且预览与最终文本出自
         # 同一个模型，措辞不会在松手瞬间跳变。
-        single_model_streaming = isinstance(offline_recognizer, SenseVoiceRecognizer)
-        if single_model_streaming:
+        if plan.single_model:
             recognizer = offline_recognizer
-            model_name = offline_model_name
             logger.info("流式预览: 复用 SenseVoice 整段重跑，不加载独立流式模型")
-            for flag, value in (("--model", args.model),
-                                ("--chunk-size", args.chunk_size if args.chunk_size != "0,10,5" else None)):
-                if value:
-                    logger.warning(f"{flag} {value} 在 SenseVoice 单模型模式下被忽略")
         else:
-            logger.info(f"流式预览模型: {model_name}")
+            logger.info(f"流式预览模型: {plan.preview_model}")
             chunk_size = [int(x) for x in args.chunk_size.split(",")]
             # 流式识别器：仅产出 partial 预览，标点交给离线模型
             recognizer = StreamingSpeechRecognizer(
-                model_name=model_name,
+                model_name=plan.preview_model,
                 punc_model=None,
                 device=args.device,
                 chunk_size=chunk_size,
@@ -568,23 +644,17 @@ def create_server(args) -> ServerContext:
             )
             recognizer.initialize()
     else:
-        recognizer = build_offline_recognizer(model_name, punc_model, args)
+        recognizer = build_offline_recognizer(plan.offline_model, plan.punc_model, args)
         recognizer.initialize()
 
     logger.info(f"初始化完成，耗时 {time.time() - t0:.1f}s")
-
-    # 最终文本由 offline_recognizer（流式）或 recognizer（非流式）产出；
-    # 标点是内置还是外挂 ct-punc，取决于它。
-    final_recognizer = offline_recognizer if streaming else recognizer
-    builtin_punc = isinstance(final_recognizer, SenseVoiceRecognizer)
-    effective_punc = None if builtin_punc else punc_model
-
-    logger.info(f"标点: {'内置（SenseVoice）' if builtin_punc else (effective_punc or '已禁用')}")
+    builtin_punc = is_sensevoice_model(plan.offline_model)
+    logger.info(f"标点: {'内置（SenseVoice）' if builtin_punc else (plan.punc_model or '已禁用')}")
 
     models_meta = {
-        "asr":     model_name,
-        "offline": offline_model_name if streaming else None,
-        "punc":    effective_punc,
+        "asr":     plan.preview_model if streaming else plan.offline_model,
+        "offline": plan.offline_model if streaming else None,
+        "punc":    plan.punc_model,
         "device":  args.device,
     }
 
@@ -594,7 +664,7 @@ def create_server(args) -> ServerContext:
     )
     if not streaming:
         stream_executor = None
-    elif single_model_streaming:
+    elif plan.single_model:
         # 预览与终稿是同一个 SenseVoice 实例（同一份 ONNX session 和 fbank 前端），
         # 必须共用一个 worker 串行执行，不能各跑各的。
         stream_executor = offline_executor
