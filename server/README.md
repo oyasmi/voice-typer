@@ -1,306 +1,317 @@
 # VoiceTyper Server
 
-`voice-typer-server` 是 VoiceTyper 的语音识别服务端。它负责接收客户端上传的音频，完成识别（默认模型自带标点与 ITN），并可选调用 LLM 做二次纠错。
+[← 返回主项目](../README.md)
 
-## 亮点
+`voice-typer-server` 是 VoiceTyper 的语音识别服务端：接收客户端上传的音频，跑 ASR 推理，把文本返回给客户端。客户端只负责录音和上屏，所有模型都跑在这里。
 
-- 本地运行，默认不依赖云端 ASR
-- **流式识别（默认）**：WebSocket 双通道——录音时 HUD 实时预览（跟嘴），松手后离线整段复识别产出准确最终结果
-- **非流式识别（兼容）**：HTTP POST，供 Linux 客户端及非流式场景使用
-- 默认最终识别模型为 **SenseVoice-Small**：自带标点与 ITN（「六十四兆」→「64兆」），单模型覆盖中英粤日韩
-- 可选启用 API Key
-- 可选接入 OpenAI 兼容 LLM 做纠错
-- 支持 `python -m`、命令行和脚本三种启动方式
+当前版本 **1.5.1**，协议版本 **2**（见 [`PROTOCOL.md`](../PROTOCOL.md)）。
 
-## 适合谁
+**本文适合**：要部署、调参、排障或二次开发服务端的人。只想把 VoiceTyper 用起来的话，[主项目 README](../README.md) 的「快速开始」就够了。
 
-如果你只是想把 VoiceTyper 跑起来，这个 README 已经够用。
+---
 
-如果你要改代码、打包发布或二次开发，文末有开发者入口。
+## 目录
 
-## Python 版本
+- [设计要点](#设计要点)
+- [环境要求](#环境要求)
+- [安装与启动](#安装与启动)
+- [两种运行模式](#两种运行模式)
+- [命令行参数完整清单](#命令行参数完整清单)
+- [模型](#模型)
+- [接口](#接口)
+- [鉴权](#鉴权)
+- [LLM 纠错](#llm-纠错)
+- [并发与资源模型](#并发与资源模型)
+- [部署形态](#部署形态)
+- [性能调优](#性能调优)
+- [故障排查](#故障排查)
+- [开发者说明](#开发者说明)
 
-- 最低支持：Python 3.10
-- 推荐版本：Python 3.12+
+---
 
-## 快速开始
+## 设计要点
 
-最常见的用法是：
+- **纯本地推理**：`onnxruntime` + `funasr-onnx`，模型文件落在本机磁盘，音频不出机器。唯一可能的外部调用是可选的 LLM 纠错，且只发送识别出的文本。
+- **单模型双通道**：默认用一个 SenseVoice-Small 实例同时产出流式预览（`partial`）和最终文本（`final`）。预览是对已累积音频的整段重跑，所以会自我修正，松手时措辞不跳变。
+- **标点与 ITN 内置**：SenseVoice 直接输出带标点的文本并做逆文本规整（「六十四兆」→「64兆」），不需要外挂 `ct-punc`。
+- **单用户设计**：推理串行执行，一台服务端同一时刻只服务一个正在说话的人（见[并发与资源模型](#并发与资源模型)）。
+- **模式二选一**：启动时决定跑流式还是非流式，两种模式注册**不同的路由**，不会同时提供。
 
-1. 安装服务端
-2. 启动服务端
-3. 让客户端连接 `127.0.0.1:6008`
+---
+
+## 环境要求
+
+| 项 | 要求 |
+| --- | --- |
+| Python | 最低 **3.10**，推荐 3.12+ |
+| 操作系统 | macOS / Linux / Windows |
+| 设备 | CPU（默认）或 NVIDIA CUDA |
+| 磁盘 | 默认模型约 241MB，首次运行自动下载 |
+| 内存 | 默认单模型约 1GB 常驻起步 |
+
+运行时依赖（`pip` 自动装）：`funasr-onnx`、`modelscope`、`onnxruntime>=1.24`、`tornado`、`numpy<2`。
+
+> Windows 服务功能额外需要 `pywin32`：`pip install voice-typer-server[windows-service]`。
+
+---
 
 ## 安装与启动
 
-### 推荐方式：使用脚本
-
-适合 Linux 和 macOS 用户。
+### 方式一：helper 脚本（macOS / Linux 推荐）
 
 ```bash
 cd server
-./scripts/voice_typer_server.sh setup
-./scripts/voice_typer_server.sh run
+./scripts/voice_typer_server.sh setup     # 建 ~/.venvs/voice-typer 并安装
+./scripts/voice_typer_server.sh run       # 启动
 ```
 
-脚本会：
+`setup` 会校验 Python ≥ 3.10、创建虚拟环境 `~/.venvs/voice-typer`、升级 pip/setuptools/wheel，再从 PyPI 安装 `voice-typer-server`。
 
-- 创建虚拟环境 `~/.venvs/voice-typer`
-- 安装 `voice-typer-server`
-- 用一组默认参数启动服务
+`run` 以这组固定默认值启动，后面追加的参数会拼到命令行末尾（同名参数后写的生效）：
 
-默认启动参数：
-
-- `--host 127.0.0.1`
-- `--port 6008`
-- `--device cpu`
-
-命令行覆盖示例：
+```
+--host 127.0.0.1 --port 6008 --device cpu
+```
 
 ```bash
+# 覆盖示例
 ./scripts/voice_typer_server.sh run --host 0.0.0.0 --onnx-threads 2
 ```
 
-### 直接使用 Python 包
-
-如果你已经安装了 `voice-typer-server`，可以直接运行：
+从本地源码装（开发用）：
 
 ```bash
-python -m voice_typer_server --host 127.0.0.1 --port 6008
+./scripts/voice_typer_server.sh setup --local          # 默认取 server/ 目录
+./scripts/voice_typer_server.sh setup --local /path/to/server
 ```
 
-或：
+### 方式二：直接用 Python 包
 
 ```bash
+pip install voice-typer-server
+
 voice-typer-server --host 127.0.0.1 --port 6008
-```
-
-查看帮助：
-
-```bash
+python -m voice_typer_server --host 127.0.0.1 --port 6008   # 等价
 voice-typer-server --help
+voice-typer-server --version
 ```
 
-### Docker
+### 方式三：Docker
 
-如果你更喜欢容器方式：
+镜像分两阶段构建：第一阶段预下载模型（只依赖 `MODEL_REPO`，改源码不会触发重下），第二阶段装包。所以镜像开箱即用，不会在首次启动时才去拉模型。
 
 ```bash
 docker build -t voice-typer-server:latest .
 docker run -d -p 6008:6008 --name voice-typer voice-typer-server:latest
 ```
 
-### Windows 服务
+容器通过环境变量传参，未设置的变量不会出现在命令行上：
 
-在 Windows 上可将 VoiceTyper Server 注册为系统服务，实现开机自启和后台运行。
+| 环境变量 | 默认 | 对应参数 |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | `--host` |
+| `PORT` | `6008` | `--port` |
+| `DEVICE` | `cpu` | `--device` |
+| `ONNX_THREADS` | `4` | `--onnx-threads` |
+| `MODEL` / `OFFLINE_MODEL` / `PUNC_MODEL` | 不设置 | 同名参数 |
+| `API_KEYS` | 不设置 | `--api-keys` |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` | 不设置 | 同名参数 |
 
-#### 安装与注册
+```bash
+docker run -d -p 6008:6008 \
+  -e API_KEYS=your_key \
+  -e LLM_BASE_URL=https://api.openai.com/v1 \
+  -e LLM_API_KEY=sk-xxx \
+  --name voice-typer voice-typer-server:latest
+```
+
+镜像自带 `HEALTHCHECK`（每 30s 调 `scripts/healthcheck.py`），`docker ps` 的 health 状态即服务就绪状态。
+
+> 容器默认 `HOST=0.0.0.0`。端口一旦映射出去就等于对外开放，务必同时设置 `API_KEYS`。
+
+### 方式四：Windows 服务
+
+把服务端注册成 Windows 服务，实现开机自启与后台常驻。
 
 ```bat
-REM 1. 安装环境（自动安装 pywin32 依赖）
+REM 1. 安装环境（--local 从当前源码装，并带上 pywin32）
 scripts\voice_typer_server.bat setup --local
 
-REM 2. 注册为 Windows 服务（需管理员权限，默认开机自启、默认流式模式）
-REM    Windows 原生客户端支持流式，无需额外参数；若连接的是 Linux 等非流式客户端，请追加 --no-streaming
+REM 2. 注册服务（需管理员权限，默认开机自启）
 scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu
 
-REM 启用 LLM 校对（推荐，可显著提升识别准确率）
+REM 带 LLM 纠错
 scripts\voice_typer_server.bat install -- --host 127.0.0.1 --port 6008 --device cpu ^
     --llm-base-url https://api.openai.com/v1 ^
     --llm-api-key sk-xxx ^
     --llm-model gpt-4o-mini
 
-REM 手动启动模式（不随系统启动）
+REM 改为手动启动
 scripts\voice_typer_server.bat install --startup manual -- --host 127.0.0.1 --port 6008
 ```
 
-#### 管理服务
+管理：
 
 ```bat
-REM 启动服务
 scripts\voice_typer_server.bat start
-
-REM 停止服务
 scripts\voice_typer_server.bat stop
-
-REM 卸载服务
 scripts\voice_typer_server.bat uninstall
 ```
 
-也可以通过 `services.msc`（服务管理器）图形化操作，服务名为 **VoiceTyper 语音识别服务**。
+也可以在 `services.msc` 里操作，服务名为 **VoiceTyper 语音识别服务**。等价的 CLI 子命令是 `voice-typer-server service {install|uninstall|start|stop}`，`--` 之后的内容原样作为服务运行参数。
 
-#### 服务日志
+**注意事项**
 
-服务模式下日志写入文件：`%USERPROFILE%\.voice-typer\server.log`，最大 10MB，保留 3 个备份。
+- 安装 / 卸载 / 启停都需要**管理员权限**。
+- 服务默认以 `LocalSystem` 运行。模型缓存在你的用户目录下时，服务首次启动会以另一个身份重新下载一份。
+- 修改运行参数必须先 `uninstall` 再 `install`，没有原地改参数的路径。
+- 服务模式的日志写文件：`%USERPROFILE%\.voice-typer\server.log`，10MB 滚动，保留 3 份。前台运行时日志走 stdout。
 
-#### 注意事项
+---
 
-- 安装、卸载、启停服务均需要**管理员权限**
-- 服务默认以 `LocalSystem` 账户运行。如果模型已缓存在当前用户目录下，首次启动可能需要重新下载
-- 修改运行参数需先卸载再重新安装服务
+## 两种运行模式
 
-## 常用启动参数
+启动时二选一，**不能同时提供**——两种模式注册的路由不同：
 
-- `--host`：监听地址，默认 `127.0.0.1`
-- `--port`：监听端口，默认 `6008`
-- `--streaming` / `--no-streaming`：识别模式，默认流式（WebSocket）；`--no-streaming` 切换为非流式（HTTP）
-- `--device`：`cpu` / `cuda` / `cuda:N`
-- `--model`：非流式识别模型（默认 `sensevoice-small`）；流式模式下是预览模型，默认 SenseVoice 单模型模式会忽略它（仅当 `--offline-model` 指定为 paraformer 时才生效，默认 `paraformer-zh-streaming`）
-- `--offline-model`：**仅流式模式**，松手后用于整段复识别、产出最终文本的模型，默认 `sensevoice-small`
-- `--chunk-size`：流式 chunk 大小，格式 `left,current,right`（单位 60ms 帧），默认 `0,10,5`；同样只在 paraformer 双模型流式下生效
-- `--sensevoice-language`：SenseVoice 识别语种，`auto`/`zh`/`en`/`yue`/`ja`/`ko`，默认 `auto`
-- `--punc-model`：标点模型，默认 `ct-punc`，设为 `none` 可禁用；**只对 paraformer 生效**，SenseVoice 自带标点会忽略它
-- `--onnx-threads`：ONNX Runtime 线程数，默认 `4`
-- `--api-keys`：API Key 列表，逗号分隔
-- `--llm-base-url`、`--llm-api-key`、`--llm-model`：启用 LLM 纠错
-- `--llm-timeout`：LLM 请求超时（秒），默认 `5.0`；决定启用 LLM 纠错后松手到上屏的最长等待
-- `--llm-max-tokens`：LLM 最大生成 token 数，默认 `600`；实际生效值取本值与「输入长度×2+128」的较大者（防止长听写被截断），因此调小它不会降低短句场景的实际上限
+| | 流式（默认） | 非流式（`--no-streaming`） |
+| --- | --- | --- |
+| 传输 | WebSocket 长连接 | 单次 HTTP POST |
+| 注册的路由 | `/health`、`/recognize/stream` | `/health`、`/recognize` |
+| 录音时反馈 | 有，`partial` 全量预览文本 | 无 |
+| 上屏文本来源 | 松手后整段复识别的 `final` | HTTP 响应 |
+| 支持的客户端 | macOS Swift、Windows 原生 | 全部客户端（Linux 只支持这个） |
 
-示例：
+**谁需要 `--no-streaming`**：Linux 客户端。它是纯 HTTP 实现，连不上 WebSocket 端点。
 
 ```bash
-# 流式模式（默认）
-voice-typer-server --host 0.0.0.0 --device cpu --api-keys akey
-
-# 非流式兼容模式
-voice-typer-server --no-streaming --host 0.0.0.0 --device cpu --api-keys akey
+voice-typer-server                 # 流式，给 macOS / Windows 客户端
+voice-typer-server --no-streaming  # 非流式，给 Linux 客户端
 ```
 
-## 常见使用场景
+> 流式模式下**没有** `POST /recognize` 这个路由，请求它会 404。想用 `curl` 测识别，得先用 `--no-streaming` 启动。
 
-### 仅本机使用
+---
 
-这是默认场景：
+## 命令行参数完整清单
+
+很多参数只在特定模式 / 特定模型下生效。被忽略的参数**不会静默丢弃**：启动日志里会打一条 `<参数> 已忽略：<原因>` 的 warning。
+
+### 网络
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | 监听地址。设为 `0.0.0.0` 且未配 `--api-keys` 时会打显眼的安全警告 |
+| `--port` | `6008` | 监听端口 |
+
+### 模式
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--streaming` | 开启 | 流式（WebSocket）。默认值，通常不必显式写 |
+| `--no-streaming` | — | 非流式（HTTP）。与 `--streaming` 互斥 |
+
+### 模型
+
+| 参数 | 默认 | 生效条件 |
+| --- | --- | --- |
+| `--offline-model` | `sensevoice-small` | **仅流式**。产出最终文本的模型。非流式下写了会被忽略 |
+| `--model` | 见右 | 流式下是**预览模型**（默认 `paraformer-zh-streaming`）；非流式下是**唯一模型**（默认 `sensevoice-small`）。SenseVoice 单模型流式下会被忽略 |
+| `--punc-model` | `ct-punc` | **仅 paraformer**。SenseVoice 自带标点，会忽略此参数。`none` 表示禁用 |
+| `--sensevoice-language` | `auto` | **仅 sensevoice-\* 模型**。可选 `auto`/`zh`/`en`/`yue`/`ja`/`ko` |
+| `--chunk-size` | `0,10,5` | **仅 paraformer 双模型流式**。格式 `left,current,right`，单位 60ms 帧 |
+
+默认配置（SenseVoice 单模型流式）下，`--model`、`--chunk-size`、`--punc-model` **全都不生效**。要让它们生效，得先用 `--offline-model paraformer-zh` 切回双模型。
+
+### 性能
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--device` | `cpu` | `cpu` / `cuda` / `cuda:N` |
+| `--onnx-threads` | `4` | ONNX Runtime intra-op 线程数 |
+
+### 鉴权
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--api-keys` | 无 | 逗号分隔的多个 key。监听 `127.0.0.1` 时不会强制校验，见[鉴权](#鉴权) |
+
+### LLM 纠错
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--llm-base-url` | 无 | OpenAI 兼容的 API 基址。与 `--llm-api-key` **同时**提供才会启用 |
+| `--llm-api-key` | 无 | API 密钥 |
+| `--llm-model` | `gpt-4o-mini` | 模型名 |
+| `--llm-temperature` | `0.0` | 温度。纠错任务不需要发散 |
+| `--llm-max-tokens` | `600` | 实际生效值取本值与「输入长度×2+128」的**较大者**，防止长听写被截断。因此调小它不会降低短句场景的实际上限 |
+| `--llm-timeout` | `5.0` | 请求超时（秒）。直接决定松手到上屏的最长额外等待 |
+
+### 其他
+
+`--version` 打印版本后退出。`service` 子命令见 [Windows 服务](#方式四windows-服务)。
+
+### 示例
 
 ```bash
-voice-typer-server --host 127.0.0.1 --port 6008
+# 本机、默认配置
+voice-typer-server
+
+# 局域网 + 鉴权
+voice-typer-server --host 0.0.0.0 --api-keys akey,bkey
+
+# 给 Linux 客户端
+voice-typer-server --no-streaming
+
+# GPU + 更高线程数
+voice-typer-server --device cuda --onnx-threads 8
+
+# 切回 paraformer 双模型流式（此时 --model / --chunk-size / --punc-model 才生效）
+voice-typer-server --offline-model paraformer-zh --model paraformer-zh-streaming --chunk-size 0,10,5
 ```
 
-此时本机客户端可直接访问，一般不需要额外配置鉴权。
+---
 
-### 局域网远程使用
+## 模型
 
-如果客户端和服务端不在同一台机器上，建议启用 API Key：
-
-```bash
-voice-typer-server --host 0.0.0.0 --api-keys your_key
-```
-
-然后在客户端配置中填入：
-
-- 服务端 IP
-- 对应端口
-
-> **服务端按单用户设计**。识别流水线（ONNX 推理与 fbank 前端）内部单线程串行执行，
-> 一次只服务一个正在说话的客户端；多个客户端连接同一服务端时，彼此的预览 / finalize
-> 会互相排队。局域网远程场景应理解为「换个位置访问自己的那台服务端」，而不是「一台
-> 服务端供多人同时使用」。
-- `api_key`
-
-### 启用 LLM 纠错
-
-```bash
-voice-typer-server \
-  --llm-base-url https://api.openai.com/v1 \
-  --llm-api-key sk-xxx \
-  --llm-model gpt-4o-mini
-```
-
-客户端再启用 `llm_recorrect` 即可。
-
-## 接口
-
-### `/health`（GET）
-
-通用健康检查，返回 `status` / `ready` / `version` / `protocol_version` / `streaming` / `llm_enabled`，以及 `asr_model`、`offline_model`、`punc_model`、`device` 等模型元信息（默认 SenseVoice 时 `punc_model` 为 `null`）。字段说明见 [`PROTOCOL.md`](../PROTOCOL.md) §2。
-
-### 流式模式（默认）：`/recognize/stream`（WebSocket）
-
-WebSocket 端点，客户端与服务端保持长连接，边发音频边获取识别片段。
-
-协议概要：
-
-1. 连接后发送 `{"type":"start","sample_rate":16000}`
-2. 录音期间持续发送 binary 帧（float32 PCM，每帧约 600ms = 9600 samples）
-3. 松开热键后发送 `{"type":"finalize"}`
-4. 服务端返回若干 `{"type":"partial","text":"...","seq":N}`（**全量**预览文本，默认由 SenseVoice 对已累积音频整段重跑产出）和最终 `{"type":"final","text":"...","asrElapsed":0.82}`（准确结果，来自对完整音频的整段复识别）
-
-**两通道说明**
-
-| 消息类型 | 识别模型 | 用途 | 是否插入目标程序 |
-| --- | --- | --- | --- |
-| `partial` | `sensevoice-small`（对已累积音频整段重跑） | HUD 实时预览，跟嘴显示 | 否 |
-| `final` | `sensevoice-small`（同一个模型） | 准确最终结果，含标点和 LLM 纠错 | 是 |
-
-> 默认只加载**一个**模型。SenseVoice 的 RTF 约 0.01，重跑 15s 音频约 165ms，远在 600ms 送帧周期内，因此预览直接复用它，不再需要独立的流式模型。
->
-> 好处是预览会**自我修正**（`识别功能和并` → `识别功能合并`）并自带标点，松手时也不会整段跳变。代价是 `partial` 必须是全量文本而非增量——见 [`PROTOCOL.md`](../PROTOCOL.md) §4.3。
->
-> 用 `--offline-model paraformer-zh` 可回到双模型流式，此时 `--model` 与 `--chunk-size` 恢复生效。
-
-### 非流式模式（`--no-streaming`）：`/recognize`（HTTP POST）
-
-提交整段音频，返回完整识别结果。
-
-推荐方式：
-
-- `Content-Type: application/octet-stream`
-- 请求体直接放 16kHz `float32` 原始音频字节
-
-可选参数：
-
-- 查询参数 `llm_recorrect=true|false`
-
-同时也兼容旧版 `multipart/form-data` 上传。
-
-示例：
-
-```bash
-curl -X POST "http://127.0.0.1:6008/recognize?llm_recorrect=false" \
-     -H "Content-Type: application/octet-stream" \
-     --data-binary @test.float32
-```
-
-带 API Key：
-
-```bash
-curl -X POST http://127.0.0.1:6008/recognize \
-     -H "Authorization: Bearer your-api-key" \
-     -F "audio=@test.wav"
-```
-
-## 模型与运行说明
-
-- 服务端使用 `onnxruntime`
-- **流式模式**默认只加载一个模型：
-  - `sensevoice-small`（`--offline-model`）：预览期整段重跑产出 `partial`，松手后产出 `final`，自带标点与 ITN
-  - 若 `--offline-model` 指定为 paraformer，则回到双模型：`--model`（默认 `paraformer-zh-streaming`）负责预览
-- **非流式模式**仅加载一个模型：
-  - `sensevoice-small`（`--model`）：整段识别，自带标点与 ITN
-- `--punc-model`（默认 `ct-punc`）**只对 paraformer 生效**；用 SenseVoice 时会被忽略并记一条日志
-
-短名会自动映射到 ONNX 模型仓库，首次使用会从 ModelScope 自动下载。
-
-如果模型目录中只有 `model_quant.onnx`，服务端会自动使用量化模型。
+短名会映射到 ModelScope 仓库，首次使用自动下载并缓存到 `~/.cache/modelscope`。如果模型目录里只有 `model_quant.onnx`，服务端会自动使用量化版本。
 
 ### 可选的最终识别模型
 
 | 短名 | 仓库 | 体积 | 说明 |
 | --- | --- | --- | --- |
-| `sensevoice-small`（默认） | `iic/SenseVoiceSmall-onnx` | 241MB | 官方 int8 导出。自带标点/ITN，无需 ct-punc |
+| `sensevoice-small`（默认） | `iic/SenseVoiceSmall-onnx` | 241MB | 官方 int8 导出。自带标点与 ITN，覆盖中 / 英 / 粤 / 日 / 韩 |
 | `sensevoice-small-fp32` | `manyeyes/sensevoice-small-onnx` | 893MB | 社区 fp32 导出。实测质量与 int8 持平，速度慢约 1.6 倍 |
-| `paraformer-zh` | `damo/speech_paraformer-large...onnx` | 227MB + ct-punc 1.0GB | 旧默认值。需要外挂 `ct-punc` 才有标点，且数字保持「六十四兆」这样的口语形式 |
+| `paraformer-zh` | `damo/speech_paraformer-large...onnx` | 227MB + ct-punc 1.0GB | 旧默认值。需外挂 `ct-punc` 才有标点，数字保持「六十四兆」这样的口语形式 |
 
-切换模型：
+流式预览模型（仅双模型模式用）：`paraformer-zh-streaming`。标点模型：`ct-punc`。
 
 ```bash
-voice-typer-server --offline-model paraformer-zh        # 流式模式
-voice-typer-server --no-streaming --model paraformer-zh # 非流式模式
+voice-typer-server --offline-model paraformer-zh          # 流式
+voice-typer-server --no-streaming --model paraformer-zh   # 非流式
 ```
 
-### 模型对比基准
+### 模型加载矩阵
 
-想自己验证选型（强烈建议用**你自己的录音**，TTS 语料太干净，测不出真实口音与噪声下的差距）：
+| 配置 | 加载的模型 | 常驻内存量级 |
+| --- | --- | --- |
+| 流式 + SenseVoice（默认） | 1 个：`sensevoice-small` | ~241MB |
+| 非流式 + SenseVoice | 1 个：`sensevoice-small` | ~241MB |
+| 流式 + paraformer | 3 个：`paraformer-zh-streaming` + `paraformer-zh` + `ct-punc` | ~1.5GB |
+| 非流式 + paraformer | 2 个：`paraformer-zh` + `ct-punc` | ~1.2GB |
+
+### 为什么默认不用独立的流式模型
+
+SenseVoice 的 RTF 约 0.01，重跑 15 秒音频约 165ms，远小于客户端 600ms 的送帧周期。所以预览直接复用同一个模型对已累积音频整段重跑，比再加载一个流式模型划算：
+
+- 少一个模型（约 227MB）和一整套流式 cache 逻辑；
+- 预览会**自我修正**（`识别功能和并` → `识别功能合并`）并自带标点；
+- 预览和最终文本出自同一个模型，松手瞬间措辞不跳变。
+
+代价是 `partial` 必须是**全量文本**而非增量——客户端收到后直接替换，见 [`PROTOCOL.md`](../PROTOCOL.md) §4.3。
+
+> 长录音下预览不会越来越慢：1.5.1 起 SenseVoice 预览改为滑动窗口重跑，预览与 finalize 延迟不随录音时长增长。
+
+### 自测选型
 
 ```bash
 # 内置 TTS 语料（macOS）
@@ -310,70 +321,311 @@ python scripts/bench_asr.py
 python scripts/bench_asr.py --audio-dir ~/my_recordings
 ```
 
-## 性能优化
+强烈建议用**你自己的录音**测。TTS 语料太干净，测不出真实口音和噪声下的差距。
 
-### NVIDIA GPU 加速
+---
 
-使用 CUDA 加速识别：
+## 接口
 
-```bash
-voice-typer-server --device cuda
-# 多卡指定：
-voice-typer-server --device cuda:1
+完整的帧定义、字段语义和版本变更以 [`PROTOCOL.md`](../PROTOCOL.md) 为准，本节是实现侧的补充。
+
+### `GET /health`
+
+两种模式下都注册。
+
+```json
+{
+  "status": "ok",
+  "ready": true,
+  "version": "1.5.1",
+  "protocol_version": 2,
+  "streaming": true,
+  "llm_enabled": false,
+  "asr_model": "sensevoice-small",
+  "offline_model": "sensevoice-small",
+  "punc_model": null,
+  "device": "cpu"
+}
 ```
 
-### 内存优化
+| 字段 | 含义 |
+| --- | --- |
+| `ready` | 模型是否加载完成。为 `false` 时识别请求会返回 503 / WS 直接被关闭（code 4503） |
+| `streaming` | 当前是流式还是非流式模式。客户端据此判断自己的配置是否匹配 |
+| `llm_enabled` | 是否配好了 LLM。为 `false` 时客户端传 `llm_recorrect=true` 也不会有纠错 |
+| `asr_model` | 流式下是预览模型，非流式下是唯一模型 |
+| `offline_model` | 流式下产出最终文本的模型；非流式下为 `null` |
+| `punc_model` | `null` 表示不需要独立标点模型（SenseVoice 自带） |
 
-默认配置下流式与非流式模式都只加载 `sensevoice-small` 一个模型（约 241MB），两者内存占用相当。
+默认单模型流式下 `asr_model` 与 `offline_model` 相同，这是预览与终稿同源的标志。
 
-只有显式用 `--offline-model paraformer-zh` 回到双模型流式时，才会额外加载流式预览模型（约 227MB）和 `ct-punc`（约 1.0GB）。这种情况下如果内存紧张，可以：
+### `WS /recognize/stream`（流式模式）
 
-- 切换回默认的 SenseVoice 单模型
-- 或关闭标点模型（仅对 paraformer 有意义）：
+时序：
+
+```
+客户端                                          服务端
+  │  ── connect ?llm_recorrect=true|false ──▶     │
+  │  ── {"type":"start","sample_rate":16000} ─▶   │
+  │                                               │
+  │  ── binary float32 PCM (~600ms/帧) ────────▶  │  累积音频
+  │  ◀────── {"type":"partial","text":..,"seq":N} │  整段重跑（后台任务）
+  │  ── binary ───────────────────────────────▶   │
+  │  ◀────── {"type":"partial", ...}              │
+  │                                               │
+  │  ── {"type":"finalize"} ───────────────────▶  │  停预览 → 整段复识别 →（可选）LLM
+  │  ◀────── {"type":"final","text":..,"asrElapsed":0.82}
+  │  ◀────── close(1000)                          │
+```
+
+实现上的几个要点：
+
+- **预览不阻塞收音**。音频帧只做累积，推理丢到后台任务。已有预览在跑时新的预览请求直接跳过，积压音频留到下一次一并处理——慢机器上预览自然变稀疏，而不会让推理队列无限堆积。
+- **文本没变化就不发 `partial`**，客户端不必去重。`seq` 单调递增，仅用于诊断。
+- **finalize 会取消在途预览**，`final` 之后不会再冒出过期的 `partial`。
+- **浏览器连不上**。`check_origin` 恒返回 `False`：原生客户端建立 WS 时不发 `Origin` 头，带 `Origin` 的连接基本来自网页，一律拒绝，防止任意页面连上本机端口白嫖识别算力。
+- **心跳**：`websocket_ping_interval=10`。客户端崩溃或网络半开时，一个 ping 周期内收不到 pong 就回收连接及其缓冲音频。
+- **单帧上限** 1MB（客户端每帧 38400 字节，冗余充足）。
+
+会话上限与非致命提示：
+
+| code | 类型 | 触发 | 服务端行为 |
+| --- | --- | --- | --- |
+| `no_session` | warning | 没发 `start` 就发音频 | 丢弃该帧，连接保留 |
+| `bad_frame` | warning | 二进制帧长度不是 4 的倍数 | 丢弃该帧，已累积音频不受影响 |
+| `feed_failed` | warning | 单次预览推理抛异常 | 保留连接，finalize 仍能对累积音频兜底 |
+| `session_capped` | warning | 单会话累计音频达 **300 秒** | 停止录入新音频，已累积部分仍可正常 finalize |
+| `bad_request` | error | JSON 解析失败，或 `start` 里 `sample_rate ≠ 16000` | 关闭连接 |
+| `bad_state` | error | 未 `start` 就 `finalize` | 关闭连接 |
+| `internal` | error | 未预期异常 | 关闭连接 |
+
+### `POST /recognize`（非流式模式）
+
+推荐用裸 PCM：
 
 ```bash
+curl -X POST "http://127.0.0.1:6008/recognize?llm_recorrect=false" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @test.float32
+```
+
+- Body：16kHz / float32 / mono 原始 PCM。
+- Query：`llm_recorrect=true|false`（默认 `false`）。
+
+也兼容旧版 `multipart/form-data`（字段名 `audio`）：
+
+```bash
+curl -X POST http://127.0.0.1:6008/recognize \
+     -H "Authorization: Bearer your-api-key" \
+     -F "audio=@test.wav"
+```
+
+响应：
+
+```json
+{ "text": "你好世界。", "duration": 1.23, "elapsed": 0.42, "llmElapsed": 0.31 }
+```
+
+`llmElapsed` 只在实际调用了 LLM 时出现。
+
+错误码：
+
+| 状态码 | 场景 |
+| --- | --- |
+| 400 | 缺 `audio` 字段 / 音频不是合法 float32 / 音频为空 |
+| 401 | 鉴权失败 |
+| 413 | 音频超过 64MB |
+| 503 | 模型尚未加载完成 |
+
+---
+
+## 鉴权
+
+HTTP 与 WebSocket 走**同一套**规则（`auth.py:authorize_request`）：
+
+| `--api-keys` | `--host` | 结果 |
+| --- | --- | --- |
+| 未配置 | 任意 | 全部放行 |
+| 已配置 | `127.0.0.1` | 放行，**不校验** Bearer |
+| 已配置 | 其他（含 `0.0.0.0`） | 必须带 `Authorization: Bearer <key>`，否则 401 |
+
+判断依据是**服务端的监听地址**，不是请求来源 IP。逻辑是：只监听 loopback 时外部本来就连不进来，本机进程视为受信，客户端不必配 key。
+
+Key 比对用 `hmac.compare_digest`（常数时间），多个 key 任一匹配即通过。鉴权失败会记一条含来源 IP 的 warning。
+
+> 监听非 loopback 地址却没配 `--api-keys` 时，启动日志会打一段醒目的警告：任何能访问该端口的人都能免费用你的识别算力。
+
+---
+
+## LLM 纠错
+
+在 ASR 之后加一道文本纠正，处理同音字、口语词、标点等问题。**只发送识别出的文本，不发送音频。**
+
+启用条件：`--llm-base-url` 和 `--llm-api-key` **同时**提供。少一个就是未启用，`/health` 的 `llm_enabled` 会是 `false`。
+
+```bash
+voice-typer-server \
+  --llm-base-url https://api.openai.com/v1 \
+  --llm-api-key sk-xxx \
+  --llm-model gpt-4o-mini
+```
+
+客户端侧还要打开 `llm_recorrect`（配置文件或设置界面），服务端才会对该请求走纠错。两端都开才生效。
+
+实现要点：
+
+- 提示词在 `voice_typer_server/prompts/correction.md`，随包分发，可以改。除 system prompt 外还带了 few-shot 示例——对小模型而言，例子比文字禁令更能约束输出格式。
+- **纠错失败不影响上屏**：超时或报错都会记 warning 并回退到原始 ASR 文本。
+- 纠错耗时算在松手到上屏的等待里，上限由 `--llm-timeout`（默认 5s）决定。想要低延迟就把它调小。
+- 想完全本地？把 `--llm-base-url` 指向本机的 Ollama / vLLM 等 OpenAI 兼容端点即可，此时依然是全程离线。
+
+---
+
+## 并发与资源模型
+
+**服务端按单用户设计。**
+
+ONNX 推理和 funasr 的 fbank 前端都带可变状态，必须串行执行，因此推理跑在 `max_workers=1` 的线程池里：
+
+| 配置 | executor | 效果 |
+| --- | --- | --- |
+| 流式 + SenseVoice（默认） | 预览与 finalize **共用同一个** worker | 全局串行：任何一次预览或复识别都会让其他会话排队 |
+| 流式 + paraformer | 预览与 finalize 各占一个 worker | 预览不会排在别的会话漫长的离线 finalize 后面 |
+| 非流式 | 单个 worker | 请求逐个处理 |
+
+所以「局域网远程使用」应理解为**换个位置访问自己的那台服务端**，而不是一台服务端供多人同时使用。多人同时说话时，彼此的预览和 finalize 会互相排队，表现为预览卡顿、松手后等待变长。
+
+其他资源限制：
+
+- HTTP 请求体上限 64MB（约 17 分钟音频），超出返回 413。
+- 单个 WS 会话音频上限 300 秒，超出后停止录入但仍可 finalize。
+- WS 单帧上限 1MB。
+
+---
+
+## 部署形态
+
+| 场景 | 命令 | 要点 |
+| --- | --- | --- |
+| 只在本机用（默认） | `voice-typer-server` | 不需要 key，客户端连 `127.0.0.1:6008` |
+| 局域网内自己的另一台机器 | `voice-typer-server --host 0.0.0.0 --api-keys your_key` | 客户端填服务端 IP、端口和同一个 key |
+| 公网暴露 | 不建议直连 | 前面放 nginx / Caddy 做 TLS，客户端把 `scheme` 设为 `https`（仅 macOS 客户端支持） |
+| 服务器有 GPU | `--device cuda` | 见[性能调优](#性能调优) |
+
+客户端侧需要填的就三项：`host`、`port`、`api_key`。
+
+> HTTPS / WSS 目前只有 macOS 客户端支持（`server.scheme` 配置项）。Windows 与 Linux 客户端硬编码明文 `http` / `ws`。
+
+---
+
+## 性能调优
+
+### GPU 加速
+
+```bash
+voice-typer-server --device cuda      # 默认 0 号卡
+voice-typer-server --device cuda:1    # 指定卡
+```
+
+需要自行装好匹配的 `onnxruntime-gpu` 与 CUDA 运行时。
+
+### CPU 线程数
+
+```bash
+voice-typer-server --onnx-threads 8
+```
+
+`--onnx-threads` 是 ONNX Runtime 的 intra-op 线程数，默认 4。核多的机器可以调高；和别的服务抢 CPU 时调低。注意它不提高并发能力——推理本身仍是串行的（见[并发与资源模型](#并发与资源模型)）。
+
+### 内存
+
+默认单模型配置下流式与非流式内存占用相当（约 241MB 模型 + 运行时开销）。显式切到 `--offline-model paraformer-zh` 才会额外加载流式预览模型和 `ct-punc`（约 1.2GB）。内存紧张时：
+
+```bash
+# 首选：回到 SenseVoice 单模型
+voice-typer-server
+
+# 或者：用 paraformer 但砍掉标点模型（省约 1.0GB，代价是没有标点）
 voice-typer-server --offline-model paraformer-zh --punc-model none
 ```
 
-## 常见问题
+### 延迟构成
 
-### 服务启动了，但客户端连不上
+松手到上屏的时间 =「整段复识别」+「LLM 纠错（若启用）」+ 网络往返。前者可以在日志里看 `离线复识别耗时`，后者由 `--llm-timeout` 封顶。嫌慢先关 LLM 纠错。
 
-- 检查服务端实际监听地址
-- 检查客户端配置中的 `host` 和 `port`
-- 本机部署时，应优先使用 `127.0.0.1:6008`
+---
 
-### 远程调用返回 401
+## 故障排查
 
-- 检查是否配置了 `--api-keys`
-- 检查客户端是否正确带上 `Authorization: Bearer ...`
+### 服务起来了，客户端连不上
 
-### 首次启动较慢
+1. 看启动日志最后一行打印的实际监听地址。
+2. 核对客户端配置的 `host` / `port`。
+3. 本机部署优先用 `127.0.0.1:6008`，别写 `localhost`（可能解析到 IPv6）。
+4. 确认客户端的流式开关和服务端模式一致——服务端跑流式时 `POST /recognize` 是 404，跑非流式时 WS 端点不存在。
 
-首次运行可能会下载模型，这是正常现象。
+### 返回 401
 
-### Apple Silicon 为什么没有 MPS
+配了 `--api-keys` 且监听地址不是 `127.0.0.1` 时才会校验。检查客户端是否填了 key，以及是否与服务端某一个 key 完全一致。
 
-当前服务端只支持：
+### 首次启动很慢
 
-- `cpu`
-- `cuda`
-- `cuda:N`
+在下载模型（241MB 起）。日志会停在「初始化模型...」，下完会打印 `初始化完成，耗时 Ns`。用 Docker 镜像可以跳过这一步（模型已烘进镜像）。
 
-在 Apple Silicon 上建议直接使用 `cpu`。
+### 参数好像没生效
+
+看启动日志有没有 `<参数> 已忽略：<原因>`。默认的 SenseVoice 单模型流式会忽略 `--model`、`--chunk-size`、`--punc-model`，这是预期行为，不是 bug。
+
+### 识别结果没有标点
+
+用了 `--offline-model paraformer-zh` 且 `--punc-model none`。要么去掉 `--punc-model none`，要么换回 SenseVoice（自带标点）。
+
+### 浏览器 / 网页连不上 WebSocket
+
+设计如此。`check_origin` 拒绝一切带 `Origin` 头的连接。要加 Web 客户端得改 `app.py` 里的 `check_origin` 放行同源。
+
+### Apple Silicon 上没有 MPS
+
+当前只支持 `cpu` / `cuda` / `cuda:N`。Apple Silicon 上用 `cpu` 即可——SenseVoice 的 RTF 约 0.01，M 系 CPU 上完全够用。
+
+### 想看更详细的日志
+
+日志默认 INFO 级走 stdout（Windows 服务模式写文件）。预览文本、复识别文本等在 DEBUG 级，目前需要改 `configure_logging()` 的 level 才能看到。
+
+---
 
 ## 开发者说明
 
-如果你要修改代码或发布包，请查看：
+### 代码结构
 
-- [RELEASING.md](./RELEASING.md)
-- [CHANGELOG.md](./CHANGELOG.md)
+| 文件 | 职责 |
+| --- | --- |
+| [`cli.py`](voice_typer_server/cli.py) | 参数解析、`service` 子命令分发 |
+| [`app.py`](voice_typer_server/app.py) | Tornado 应用：`resolve_runtime_plan` 决策 + 三个 handler + 启动装配 |
+| [`recognizer.py`](voice_typer_server/recognizer.py) | `SenseVoiceRecognizer` / `SpeechRecognizer` / `StreamingSpeechRecognizer` 三个 ONNX 封装 |
+| [`llm_client.py`](voice_typer_server/llm_client.py) | OpenAI 兼容客户端，提示词来自 `prompts/correction.md` |
+| [`auth.py`](voice_typer_server/auth.py) | `authorize_request` + HTTP 鉴权基类 |
+| [`win_service.py`](voice_typer_server/win_service.py) | Windows 服务包装（仅 Windows，需 pywin32） |
 
-主要代码位置：
+`resolve_runtime_plan()` 是纯函数：只输出「哪个参数在哪种模式下生效」的决策，不加载模型也不打日志，因此可以脱离 ONNX / funasr 单独跑测试。改参数生效规则时优先改它。
 
-- [voice_typer_server/cli.py](voice_typer_server/cli.py)
-- [voice_typer_server/app.py](voice_typer_server/app.py)
-- [voice_typer_server/recognizer.py](voice_typer_server/recognizer.py)
-- [voice_typer_server/llm_client.py](voice_typer_server/llm_client.py)
-- [voice_typer_server/auth.py](voice_typer_server/auth.py)
-- [voice_typer_server/win_service.py](voice_typer_server/win_service.py) — Windows 服务包装（仅 Windows）
+### 脚本
+
+| 脚本 | 用途 |
+| --- | --- |
+| `scripts/voice_typer_server.sh` | macOS / Linux 的 setup + run |
+| `scripts/voice_typer_server.bat` | Windows 的 setup + 服务管理 |
+| `scripts/bench_asr.py` | 模型对比基准，支持自带录音算 CER |
+| `scripts/healthcheck.py` | Docker HEALTHCHECK 用 |
+| `scripts/spike_streaming.py` | 流式链路的实验脚本 |
+
+### 测试与发布
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+发布流程见 [RELEASING.md](./RELEASING.md)，版本历史见 [CHANGELOG.md](./CHANGELOG.md)。版本号单一来源是 `voice_typer_server/__init__.py` 的 `__version__`。
+
+改动线上行为（帧格式、字段、错误码）时，必须同步更新 [`PROTOCOL.md`](../PROTOCOL.md) —— 它是客户端与服务端的唯一契约来源。
