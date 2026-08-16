@@ -84,7 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--llm-max-tokens",
         type=int,
         default=600,
-        help="LLM 最大生成 token 数 (默认: %(default)s)",
+        help="LLM 最大生成 token 数 (默认: %(default)s)。"
+             "实际生效值取本值与「输入长度×2+128」的较大者，用于防止长听写被截断",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=5.0,
+        help="LLM 请求超时（秒），影响松手后到上屏的等待上限 (默认: %(default)s)",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser

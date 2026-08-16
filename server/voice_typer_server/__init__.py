@@ -2,7 +2,7 @@
 VoiceTyper 服务端包
 """
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 #: 产出最终文本的离线模型默认值。SenseVoice-Small 自带标点与 ITN，
 #: 无需外挂 ct-punc，详见 recognizer.SenseVoiceRecognizer。

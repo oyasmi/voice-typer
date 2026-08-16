@@ -9,6 +9,7 @@
 无论 HTTP 还是 WS，都通过 `authorize_request()` 走同一条决策路径，
 避免之前 HTTP/WS 两套实现语义不一致导致的鉴权绕过隐患。
 """
+import hmac
 import logging
 
 import tornado.web
@@ -30,7 +31,7 @@ def authorize_request(request, settings) -> bool:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[len("Bearer "):]
-        if token in api_keys:
+        if any(hmac.compare_digest(token, key) for key in api_keys):
             return True
 
     logger.warning("鉴权失败 | %s", request.remote_ip)

@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.5.1
+
+服务端性能与稳定性修复，覆盖内部审查发现的六类问题。无破坏性变更，`protocol_version` 仍为 `2`。
+
+### 预览改为滑动窗口，长录音不再拖慢自己
+
+SenseVoice 预览此前对**全部**已累积音频整段重跑，单会话预览 CPU 随录音时长呈平方增长
+（60s 录音约 30s 累计 CPU），且送帧间隔越拖越长。现在 `SenseVoiceSession` 维护一条
+15 秒的滑动窗口：窗口左侧的音频只识别一次并固化成文本，预览只重跑窗口内的尾巴，
+窗口滚动时在音频能量最低处下刀以减少接缝瑕疵。
+
+- 预览成本从 O(录音时长²) 降到 O(录音时长 × 窗口)，且与录音总时长无关。
+- finalize 排队等待的在途预览规模同步从"整段"降到"半个窗口"（约 100ms 量级）。
+- `finalize()` 不再复用 preview 的拼接结果，永远对完整音频重新整段识别，
+  上屏文本不受窗口化影响。
+- 顺带修掉一个陈旧假设：原以为客户端 finalize 前不补发尾块、缓存能让 finalize
+  常态命中；实测客户端总是先发尾块再 finalize，缓存实际上几乎不命中，因此这次
+  一并移除。
+
+### WebSocket 会话容量与健壮性
+
+- 新增服务端侧 300 秒会话时长上限，超限后停止收音但保留会话，`finalize` 仍可用
+  已累积部分产出结果（见 `PROTOCOL.md` §5.3，新 warning code `session_capped`）。
+- 新增 `websocket_ping_interval`（10s）：客户端崩溃或网络半开时，一个 ping 周期
+  内收不到 pong 就回收连接与其缓冲音频，不再需要等 TCP 超时。
+- 畸形二进制帧（长度不是 4 的倍数）不再让整段录音判死刑，改为丢弃该帧并发
+  `warning`（新 code `bad_frame`），连接与已累积音频不受影响。
+- `start` 帧的 `sample_rate` 非 16000 时明确拒绝，不再静默按 16kHz 处理产出乱码。
+- 修复 `open()` 提前返回（recognizer 未就绪）时 `on_close()` 访问未初始化实例属性
+  导致的 AttributeError（相关状态改为类属性兜底）。
+- 预览帧发送不再是裸调用：客户端中途断开时不再产生未捕获的 Task 异常。
+
+### 其他
+
+- 服务端不再在 INFO 级别打印 LLM 修正前后的完整用户文本（此前 HTTP 路径已是
+  DEBUG，WS 路径漏改）；统一降到 DEBUG。
+- 极短音频（< 400 采样点 / 25ms）不再触发 funasr 前端的 `IndexError`，直接返回
+  空字符串。
+- 新增 `--llm-timeout`（默认 5s，原硬编码 8s），控制 LLM 纠错的最长等待。
+- API Key 校验改为常量时间比较（`hmac.compare_digest`），避免理论上的计时攻击。
+- Ctrl+C 处理迁移到 `asyncio`（POSIX 用 `add_signal_handler`，Windows 回退
+  `signal.signal` + `call_soon_threadsafe`），加载模型阶段的 Ctrl+C 也不再抛出
+  裸 traceback；`ServerContext.shutdown()` 补上此前遗漏的 `server.stop()`。
+
 ## 1.5.0
 
 ### 单模型流式：SenseVoice 自己产出预览，去掉 paraformer-zh-streaming

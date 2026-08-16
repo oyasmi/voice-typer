@@ -37,6 +37,7 @@ class LLMClient:
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 800,
+        timeout: float = 5.0,
     ):
         """初始化 LLM 客户端"""
         self.base_url = base_url.rstrip("/")
@@ -44,6 +45,7 @@ class LLMClient:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.timeout = timeout
         self.http_client = AsyncHTTPClient()
         self.system_prompt = self._load_system_prompt()
 
@@ -94,7 +96,7 @@ class LLMClient:
                 method="POST",
                 headers=headers,
                 body=json.dumps(payload),
-                request_timeout=8.0,
+                request_timeout=self.timeout,
             )
             response = await self.http_client.fetch(request)
             result = json.loads(response.body.decode("utf-8"))

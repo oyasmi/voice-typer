@@ -20,6 +20,11 @@ import numpy as np
 
 logger = logging.getLogger("VoiceTyper")
 
+#: 不足一帧 fbank（25ms @16kHz）的输入会让 funasr 前端 WavFrontend.lfr_cmvn 里的
+#: apply_lfr 对空数组取 inputs[0]，抛 IndexError。PROTOCOL.md §5.1 的 300ms 过滤
+#: 只是客户端约定、服务端不校验，因此这里需要一道硬下限兜底。
+_MIN_SAMPLES = 400
+
 
 # ---------------------------------------------------------------------------
 # 公共工具
@@ -183,7 +188,7 @@ class SpeechRecognizer:
     def recognize(self, audio: np.ndarray) -> str:
         if not self.is_ready:
             raise RuntimeError("ONNX 模型未初始化")
-        if len(audio) == 0:
+        if len(audio) < _MIN_SAMPLES:
             return ""
 
         result = self._model(audio)
@@ -351,7 +356,7 @@ class SenseVoiceRecognizer:
     def recognize(self, audio: np.ndarray) -> str:
         if not self.is_ready:
             raise RuntimeError("SenseVoice 模型未初始化")
-        if len(audio) == 0:
+        if len(audio) < _MIN_SAMPLES:
             return ""
 
         feats, feats_len = self._extract_feat(audio)
@@ -406,51 +411,93 @@ class SenseVoiceRecognizer:
 class SenseVoiceSession:
     """单次录音会话，对应一个 WebSocket 连接。每次新建，用完即弃。
 
-    SenseVoice 本身是非流式模型，这里靠"对已累积音频整段重跑"来产出预览：
-    RTF 约 0.01，重跑 10s 音频只要百毫秒量级，比维护一套流式 cache 简单得多，
-    而且预览与最终文本出自同一个模型，措辞不会在松手瞬间跳变。
+    SenseVoice 本身是非流式模型，这里靠"对已累积音频整段重跑"来产出预览。
+    但对**全部**累积音频重跑的成本随录音时长线性增长，而预览频率固定
+    （客户端约 600ms 一帧），于是单会话累计 CPU 随录音时长呈平方增长
+    （60s 录音约 30s CPU）。为此这里维护一条滚动窗口：
 
-    代价是预览会**修正**先前的文字（这正是它更准的原因），所以 partial 只能是
-    全量文本而非增量——见仓库根目录 PROTOCOL.md。
+    - 窗口左侧的音频只识别一次，识别结果固化进 ``_committed_text``，
+      之后的预览不再重跑这部分；
+    - 预览只对窗口右侧（最近 ``PREVIEW_WINDOW`` 个采样点）重跑。
+
+    代价：预览在窗口内仍会**修正**先前的文字（这是它更准的原因），
+    partial 因此只能是全量文本而非增量——见仓库根目录 PROTOCOL.md。
+    窗口边界处的固化文本不再回溯修正，可能有轻微的接缝瑕疵，但这
+    只影响预览观感——finalize 永远对完整音频重新整段识别，不复用
+    任何预览结果，上屏文本不受影响。
     """
+
+    #: 预览窗口（采样点，16kHz）。稳态预览 CPU 占用 ≈ RTF × PREVIEW_WINDOW / 0.6s
+    #: （0.6s 为客户端送帧间隔）。SenseVoice RTF≈0.01 时，15s 窗口约合 25% 占用，
+    #: 且与录音总时长无关。换模型或想调整占用比例时，按这个公式重新选值。
+    PREVIEW_WINDOW = 15 * 16000
+
+    #: 窗口滚动时，在目标切点附近 ±100ms 内挑能量最低的 10ms 处下刀，
+    #: 尽量避免把一个字切在正中间。
+    SEAM_SEARCH_RADIUS = 1600
+    SEAM_STEP = 160  # 10ms @16kHz
 
     def __init__(self, owner: SenseVoiceRecognizer):
         self._owner = owner
         self._chunks: List[np.ndarray] = []
-        self._cached: Optional[Tuple[int, str]] = None  # (已识别的样本数, 文本)
+        self._n = 0                  # 累计样本数
+        self._joined: Optional[np.ndarray] = None  # _chunks 的拼接缓存
+        self._committed_text = ""    # 窗口左侧已固化的预览文本
+        self._committed_n = 0        # 已固化的样本数（窗口左边界）
+
+    @property
+    def n_samples(self) -> int:
+        """累计接收的样本数，供调用方做会话时长上限判断。"""
+        return self._n
 
     def append(self, audio_chunk: np.ndarray) -> None:
         """累积音频。必须足够便宜——它跑在 WS 读取的主循环上。"""
         if len(audio_chunk):
             self._chunks.append(audio_chunk)
+            self._n += len(audio_chunk)
+            self._joined = None  # 拼接缓存失效，下次访问时才重建
 
     def preview(self) -> str:
-        """对目前累积到的全部音频重跑一次，返回**全量**预览文本。"""
-        return self._recognize()
+        """返回全量预览文本 = 已固化前缀 + 当前窗口的识别结果。"""
+        audio = self._audio()
+        if len(audio) - self._committed_n > self.PREVIEW_WINDOW:
+            self._roll(audio)
+        return self._committed_text + self._owner.recognize(audio[self._committed_n:])
 
     def finalize(self) -> str:
-        """松手后调用。与 preview 是同一次计算，只是可能多了尾音。
+        """松手后调用：对完整音频重新整段识别。
 
-        客户端若在 finalize 前没有再补音频（尾块为空），这里会直接复用上一次
-        预览的结果，省掉一次整段重跑——直接砍掉上屏前的等待。
+        刻意不复用 preview 的拼接结果——窗口边界处的固化文本可能有
+        接缝瑕疵，finalize 产出的是要上屏的最终文本，必须整段重跑。
         """
-        return self._recognize()
+        return self._owner.recognize(self._audio())
 
-    def _recognize(self) -> str:
-        audio = self._audio()
-        # 会话内音频只增不减，样本数足以唯一标识缓冲区状态
-        if self._cached is not None and self._cached[0] == len(audio):
-            return self._cached[1]
+    def _roll(self, audio: np.ndarray) -> None:
+        """把窗口前半段识别成文本固化，之后的预览不再重复识别这段音频。"""
+        target = self._committed_n + self.PREVIEW_WINDOW // 2
+        cut = self._find_seam(audio, target)
+        self._committed_text += self._owner.recognize(audio[self._committed_n:cut])
+        self._committed_n = cut
 
-        text = self._owner.recognize(audio)
-        self._cached = (len(audio), text)
-        return text
+    @classmethod
+    def _find_seam(cls, audio: np.ndarray, target: int) -> int:
+        """在 target 附近找能量最低的一小段作为切点。"""
+        lo = max(0, target - cls.SEAM_SEARCH_RADIUS)
+        hi = min(len(audio), target + cls.SEAM_SEARCH_RADIUS)
+        n = ((hi - lo) // cls.SEAM_STEP) * cls.SEAM_STEP
+        if n <= 0:
+            return target
+        window = audio[lo:lo + n].reshape(-1, cls.SEAM_STEP)
+        energy = np.mean(window.astype(np.float64) ** 2, axis=1)
+        return lo + int(energy.argmin()) * cls.SEAM_STEP
 
     def _audio(self) -> np.ndarray:
         if not self._chunks:
             return np.zeros(0, dtype=np.float32)
-        # 累积块数不多（每 600ms 一块），每次重新拼接的开销远小于一次推理
-        return np.concatenate(self._chunks)
+        if self._joined is None:
+            # append 之间只增不减，只有新块到达时才需要重新拼接
+            self._joined = np.concatenate(self._chunks)
+        return self._joined
 
 
 # ---------------------------------------------------------------------------
@@ -557,12 +604,19 @@ class Session:
         self._fragments: List[str] = []
         self._audio_buffer: List[np.ndarray] = []  # 累积原始音频，供离线复识别
         self._pending: List[np.ndarray] = []       # 尚未喂给流式模型的块
+        self._n = 0                                 # 累计样本数
+
+    @property
+    def n_samples(self) -> int:
+        """累计接收的样本数，供调用方做会话时长上限判断。"""
+        return self._n
 
     def append(self, audio_chunk: np.ndarray) -> None:
         """累积音频。必须足够便宜——它跑在 WS 读取的主循环上。"""
         if len(audio_chunk):
             self._audio_buffer.append(audio_chunk)
             self._pending.append(audio_chunk)
+            self._n += len(audio_chunk)
 
     def preview(self) -> str:
         """把积压的块依次喂给流式模型，返回**全量**预览文本。

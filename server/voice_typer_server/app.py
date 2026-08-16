@@ -182,11 +182,26 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
                        注意：text 是**全量文本**，客户端直接替换预览即可。
                        整段重跑会修正先前的文字，因此不能是增量。
         非致命提示 text: {"type":"warning","code":"...","message":"..."}
-                       feed 阶段单帧异常等，连接保持，finalize 仍可继续。
+                       feed 阶段单帧异常、畸形音频帧、会话超限等，连接保持，finalize 仍可继续。
         完成时     text: {"type":"final","text":"今天天气不错。","asrElapsed":0.82}
         致命错误   text: {"type":"error","code":"...","message":"..."}（之后 close）
         正常结束   close (1000)
     """
+
+    #: 单会话最长录音时长（16kHz 采样点数）。超过后停止接收新音频但保留会话——
+    #: 用户仍能松手拿到前 MAX_SESSION_SAMPLES 秒的识别结果，而不是被强制断开。
+    MAX_SESSION_SAMPLES = 300 * 16000
+
+    # 类属性兜底：open() 在 recognizer 未就绪时会提前 close() 并 return，
+    # 不会走到下面的实例属性赋值；但 on_close() 仍会被调用一次。
+    # 类属性保证此时访问这些名字不会 AttributeError。
+    session = None
+    preview_task: Optional[asyncio.Task] = None
+    finalizing = False
+    capped = False
+    llm_recorrect = False
+    seq = 0
+    last_preview = ""
 
     def check_origin(self, origin):
         # 原生客户端（macOS/Windows URLSession/WinHTTP）建立 WS 时不发送 Origin 头，
@@ -209,8 +224,9 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         self.session = None
         self.seq = 0
         self.last_preview = ""
-        self.preview_task: Optional[asyncio.Task] = None
+        self.preview_task = None
         self.finalizing = False
+        self.capped = False
         logger.info("WS 连接建立")
 
     async def on_message(self, message):
@@ -228,6 +244,21 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         if self.session is None:
             await self._send_warning("no_session", "audio received before start")
             return
+
+        if len(data) % 4:
+            # float32 PCM 必然是 4 字节的倍数；丢这一帧远好过按 S-03 的老行为
+            # 把整段录音判死刑——连接保留，finalize 仍可用已累积的音频兜底。
+            await self._send_warning(
+                "bad_frame", f"音频帧长度 {len(data)} 不是 4 的倍数，已丢弃")
+            return
+
+        if self.session.n_samples >= self.MAX_SESSION_SAMPLES:
+            if not self.capped:
+                self.capped = True
+                await self._send_warning(
+                    "session_capped",
+                    f"录音已达 {self.MAX_SESSION_SAMPLES // 16000} 秒上限，后续音频不再录入")
+            return  # 丢弃后续音频，但已累积的部分仍可 finalize
 
         # Tornado 会等 on_message 的协程跑完才读下一条消息，所以这里只做
         # 便宜的累积，推理放到后台任务里——否则一次慢预览会把后续音频
@@ -270,10 +301,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
             return
         if text and text != self.last_preview:
             self.last_preview = text
-            await self.write_message(json.dumps(
-                {"type": "partial", "text": text, "seq": self.seq},
-                ensure_ascii=False,
-            ))
+            await self._send({"type": "partial", "text": text, "seq": self.seq})
             self.seq += 1
 
     async def _handle_control(self, raw: str):
@@ -285,11 +313,18 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
 
         msg_type = msg.get("type")
         if msg_type == "start":
+            sample_rate = msg.get("sample_rate", 16000)
+            if sample_rate != 16000:
+                await self._send_error(
+                    "bad_request", f"仅支持 16000Hz，收到 sample_rate={sample_rate}")
+                self.close(code=4400)
+                return
             recognizer = self.application.settings["recognizer"]
             self.session = recognizer.new_session()
             self.seq = 0
             self.last_preview = ""
             self.finalizing = False
+            self.capped = False
             logger.info(f"会话开始，llm={self.llm_recorrect}")
         elif msg_type == "finalize":
             await self._do_finalize()
@@ -326,7 +361,8 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
                 text = await llm_client.correct_text(text)
                 llm_elapsed = round(time.time() - t1, 3)
                 if original != text:
-                    logger.info(f"LLM 修正 ({llm_elapsed}s): {original!r} → {text!r}")
+                    logger.info(f"LLM 修正完成 ({llm_elapsed}s)")
+                    logger.debug(f"LLM 修正: {original!r} → {text!r}")
                 else:
                     logger.info(f"LLM 修正: 无需改动 ({llm_elapsed}s)")
             except Exception as exc:
@@ -335,27 +371,27 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
         payload = {"type": "final", "text": text, "asrElapsed": asr_elapsed}
         if llm_elapsed is not None:
             payload["llmElapsed"] = llm_elapsed
-        await self.write_message(json.dumps(payload, ensure_ascii=False))
+        await self._send(payload)
         self.close(code=1000)
 
-    async def _send_error(self, code: str, message: str):
+    async def _send(self, payload: dict) -> bool:
+        """发一帧 JSON。连接已关闭（客户端中途断开等）时静默失败并返回 False，
+        不让异常逃逸出 _run_preview 的后台任务。"""
         try:
-            await self.write_message(json.dumps(
-                {"type": "error", "code": code, "message": message},
-                ensure_ascii=False,
-            ))
+            await self.write_message(json.dumps(payload, ensure_ascii=False))
+            return True
+        except tornado.websocket.WebSocketClosedError:
+            logger.debug("WS 写入失败：连接已关闭 type=%s", payload.get("type"))
         except Exception as exc:
-            logger.debug(f"_send_error 写入失败（连接可能已关闭）: {exc}")
+            logger.debug(f"WS 写入失败: {exc}")
+        return False
+
+    async def _send_error(self, code: str, message: str):
+        await self._send({"type": "error", "code": code, "message": message})
 
     async def _send_warning(self, code: str, message: str):
         """非致命提示帧；连接保持，客户端可继续 finalize。"""
-        try:
-            await self.write_message(json.dumps(
-                {"type": "warning", "code": code, "message": message},
-                ensure_ascii=False,
-            ))
-        except Exception as exc:
-            logger.debug(f"_send_warning 写入失败（连接可能已关闭）: {exc}")
+        await self._send({"type": "warning", "code": code, "message": message})
 
     def on_close(self):
         self.finalizing = True
@@ -383,7 +419,15 @@ def make_app(api_keys=None, server_host="127.0.0.1",
             (r"/health",    HealthHandler),
             (r"/recognize", RecognizeHandler),
         ]
-    app = tornado.web.Application(handlers)
+    app = tornado.web.Application(
+        handlers,
+        # 客户端每 600ms 送 38400 字节一帧，1MB 上限留了足够冗余
+        websocket_max_message_size=1 << 20,
+        # 客户端崩溃 / 网络半开时，一个 ping 周期内收不到 pong 就回收连接及其
+        # 缓冲音频，不必等到 TCP 超时。Tornado 要求 ping_timeout <= ping_interval
+        # （不设置 timeout 时默认等于 interval），所以这里只设置 interval。
+        websocket_ping_interval=10,
+    )
     app.settings["api_keys"]    = api_keys or []
     app.settings["server_host"] = server_host
     app.settings["recognizer"]  = recognizer
@@ -421,6 +465,7 @@ class ServerContext:
 
     def shutdown(self):
         logger.info("停止服务...")
+        self.server.stop()  # 停止接受新连接
         if self.llm_client:
             self.llm_client.close()
         for executor in self.executors:
@@ -467,6 +512,7 @@ def create_server(args) -> ServerContext:
             model=args.llm_model,
             temperature=args.llm_temperature,
             max_tokens=args.llm_max_tokens,
+            timeout=args.llm_timeout,
         )
     else:
         logger.info("LLM: 未启用")
@@ -579,15 +625,34 @@ def create_server(args) -> ServerContext:
     return ServerContext(server, [stream_executor, offline_executor], llm_client)
 
 
+def _install_signal_handlers(ctx: "ServerContext") -> None:
+    loop = tornado.ioloop.IOLoop.current().asyncio_loop
+    try:
+        # POSIX：交给 asyncio 的信号处理，在事件循环内安全执行，
+        # 不像 signal.signal 的回调那样受限于"仅能做异步安全的事"。
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, ctx.shutdown)
+    except NotImplementedError:
+        # Windows 没有 add_signal_handler；signal.signal 的回调跑在任意线程，
+        # 用 call_soon_threadsafe 把 shutdown 调度回事件循环线程执行。
+        def _handler(signum, frame):
+            loop.call_soon_threadsafe(ctx.shutdown)
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, _handler)
+
+
 def run_server(args):
     configure_logging()
-    ctx = create_server(args)
+    try:
+        # 首次运行需要下载模型（数十 MB 到近 1GB），加载可能耗时数十秒到数分钟；
+        # 这段时间信号处理器尚未注册，用 try/except 兜住 Ctrl+C 而不是让它
+        # 冒出一截裸 KeyboardInterrupt traceback。
+        ctx = create_server(args)
+    except KeyboardInterrupt:
+        logger.info("初始化被中断，已退出")
+        return
+
+    _install_signal_handlers(ctx)
     logger.info("按 Ctrl+C 停止服务")
-
-    def shutdown(signum, frame):
-        ctx.shutdown()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
     tornado.ioloop.IOLoop.current().start()

@@ -113,7 +113,13 @@
 | --- | --- | --- |
 | 连接 | 保留 | 服务端关闭 |
 | 客户端处理 | HUD 闪烁提示，继续录音 | 终止会话，HUD 显示错误，回到 idle |
-| 已知 code | `feed_failed`、`no_session` | `bad_request`、`bad_state`、`internal` |
+| 已知 code | `feed_failed`、`no_session`、`bad_frame`、`session_capped` | `bad_request`、`bad_state`、`internal` |
+
+补充说明（服务端 1.5.1）：
+
+- `bad_frame`：二进制帧长度不是 4 的倍数（不是合法的 float32 PCM），服务端丢弃这一帧，连接与已累积音频不受影响。
+- `session_capped`：会话录音时长达到 §5.3 的服务端上限，此后音频不再录入，但仍可正常 `finalize`。
+- `bad_request`：除原有的「JSON 解析失败」外，也用于 `start` 帧携带非 16000 的 `sample_rate`（此时服务端随即关闭连接，属于 error 语义）。
 
 ---
 
@@ -140,6 +146,17 @@
 
 客户端构造 URL 时**必须**经过 `ServerConfig.httpScheme` / `ServerConfig.wsScheme` 派生，禁止硬编码 `http://` 或 `ws://`。
 
+### 5.3 服务端侧的会话时长上限（300s）
+
+与 §5.1 不同，这一条服务端**会**强制校验：单个 WS 会话累计接收音频达到 300 秒后，
+服务端不再接受新的音频帧，直到该会话 `finalize` 或断开：
+
+- 达到上限时服务端发一次 `warning`（`code: "session_capped"`），此后每帧新音频被静默丢弃。
+- 会话已累积的部分不受影响，`finalize` 仍会对前 300 秒音频产出正常的 `final`。
+- 客户端无需为此改动：即使不处理这条 warning，超限只是让预览与最终文本停在 300 秒处，不会报错断连。
+
+这道上限只保护服务端资源，不替代 §5.1 的客户端最短录音过滤。
+
 ---
 
 ## 6. 版本变更
@@ -148,3 +165,4 @@
 | --- | --- |
 | 1 | 首版稳定协议：鉴权统一；partial 明确为增量；warning 帧；`/health` 含版本与模型；scheme 可选 `https/wss`；短录音 ≤0.3s 客户端过滤 |
 | 2 | 服务端 1.5.0：`partial.text` 改为**全量文本**，客户端替换而非拼接（见 §4.3）；默认改用 SenseVoice 单模型同时产出预览与终稿，`punc_model` 可为 `null` |
+| 2（追加） | 服务端 1.5.1（非破坏性）：新增 `bad_frame`/`session_capped` warning、`start.sample_rate` 校验、服务端侧 300s 会话上限（§5.3）；SenseVoice 预览改为滑动窗口重跑，长录音下预览与 finalize 延迟不再随时长增长 |

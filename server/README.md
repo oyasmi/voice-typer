@@ -153,6 +153,8 @@ scripts\voice_typer_server.bat uninstall
 - `--onnx-threads`：ONNX Runtime 线程数，默认 `4`
 - `--api-keys`：API Key 列表，逗号分隔
 - `--llm-base-url`、`--llm-api-key`、`--llm-model`：启用 LLM 纠错
+- `--llm-timeout`：LLM 请求超时（秒），默认 `5.0`；决定启用 LLM 纠错后松手到上屏的最长等待
+- `--llm-max-tokens`：LLM 最大生成 token 数，默认 `600`；实际生效值取本值与「输入长度×2+128」的较大者（防止长听写被截断），因此调小它不会降低短句场景的实际上限
 
 示例：
 
@@ -188,6 +190,11 @@ voice-typer-server --host 0.0.0.0 --api-keys your_key
 
 - 服务端 IP
 - 对应端口
+
+> **服务端按单用户设计**。识别流水线（ONNX 推理与 fbank 前端）内部单线程串行执行，
+> 一次只服务一个正在说话的客户端；多个客户端连接同一服务端时，彼此的预览 / finalize
+> 会互相排队。局域网远程场景应理解为「换个位置访问自己的那台服务端」，而不是「一台
+> 服务端供多人同时使用」。
 - `api_key`
 
 ### 启用 LLM 纠错
