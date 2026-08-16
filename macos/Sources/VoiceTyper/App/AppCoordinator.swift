@@ -1,0 +1,409 @@
+import AppKit
+import Foundation
+
+@MainActor
+final class AppCoordinator {
+    private let configStore = ConfigStore()
+    private let permissionCenter = PermissionCenter()
+    private let statusBarController = StatusBarController()
+    private let asrService = ASRService()
+
+    private var setupWindowController: SetupWindowController?
+    private var recordingHUDController: RecordingHUDController?
+    private var voiceTyperController: VoiceTyperController?
+
+    private var config = AppConfig()
+    private var permissions = PermissionSnapshot(
+        microphone: .notDetermined,
+        accessibility: .denied,
+        inputMonitoring: .denied
+    )
+    private var currentState: AppState = .booting
+    /// 用户是否已从菜单主动暂停听写。暂停时不监听热键。
+    private var isPaused = false
+    /// 用户是否主动打开了设置窗口。为 true 时保存设置不会自动关闭窗口。
+    private var userOpenedSetup = false
+
+    private var modelDownloader: ModelDownloader?
+    private var isDownloadingModel = false
+
+    func start() {
+        bindStatusBarActions()
+        asrService.onStateChange = { [weak self] _ in
+            Task { @MainActor in await self?.reevaluateReadiness() }
+        }
+
+        do {
+            try reloadConfigurationFromDisk()
+        } catch {
+            AppLog.app.error("配置加载失败: \(error.localizedDescription, privacy: .public)")
+            currentState = .error("配置加载失败")
+            updateStatusUI()
+            return
+        }
+
+        permissions = permissionCenter.snapshot()
+        if !permissions.allRequiredGranted {
+            currentState = .setupRequired
+        }
+        updateStatusUI()
+
+        if !permissions.allRequiredGranted {
+            setupControllerIfNeeded(forceShow: true, preferredTab: .permissions)
+        }
+
+        // 权限与模型是两条互不依赖的准备线：权限没给全时模型照样在后台加载，
+        // 用户授权完立刻可用。
+        asrService.updateConfig(config.asr)
+        Task {
+            await asrService.preload()
+            await reevaluateReadiness()
+        }
+    }
+
+    func openSetupWindow() {
+        userOpenedSetup = true
+        setupControllerIfNeeded(forceShow: true, preferredTab: nil)
+    }
+
+    private func bindStatusBarActions() {
+        statusBarController.onOpenSetup = { [weak self] in
+            self?.openSetupWindow()
+        }
+        statusBarController.onTogglePause = { [weak self] in
+            self?.togglePause()
+        }
+        statusBarController.onOpenConfigDirectory = { [weak self] in
+            self?.configStore.openConfigDirectory()
+        }
+        statusBarController.onQuit = {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func setupControllerIfNeeded(forceShow: Bool = false, preferredTab: SetupTab? = nil) {
+        if setupWindowController == nil {
+            let controller = SetupWindowController()
+            controller.onRequestPermission = { [weak self] kind in
+                Task {
+                    guard let self else { return }
+                    _ = await self.permissionCenter.request(kind)
+                    self.permissions = self.permissionCenter.snapshot()
+                    await self.reevaluateReadiness()
+                }
+            }
+            controller.onOpenSystemSettings = { [weak self] kind in
+                self?.permissionCenter.openSystemSettings(for: kind)
+            }
+            controller.onRetryServerCheck = { [weak self] in
+                Task { await self?.reevaluateReadiness() }
+            }
+            controller.onSaveConfig = { [weak self] updatedConfig in
+                guard let self else { return }
+                try await self.applyConfig(updatedConfig)
+            }
+            controller.onSuspendHotkey = { [weak self] suspend in
+                guard let self else { return }
+                if suspend {
+                    // 录制热键期间停掉全局监听，避免按 Fn 当场触发录音。
+                    self.voiceTyperController?.stop()
+                } else {
+                    Task { await self.reevaluateReadiness() }
+                }
+            }
+            controller.onPreviewHUDOpacity = { [weak self] opacity in
+                self?.recordingHUDController?.previewOpacity(opacity)
+            }
+            controller.onClose = { [weak self] in
+                self?.userOpenedSetup = false
+            }
+            controller.onStartModelDownload = { [weak self] in
+                self?.startModelDownload()
+            }
+            controller.onCancelModelDownload = { [weak self] in
+                self?.modelDownloader?.cancel()
+            }
+            controller.onReloadModel = { [weak self] in
+                Task { await self?.asrService.reload() }
+            }
+            controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
+                await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? false
+            }
+            controller.loadWindow()
+            setupWindowController = controller
+            refreshSetupWindowEditorContent()
+        }
+
+        guard let setupWindowController else { return }
+
+        syncSetupWindow()
+
+        if forceShow || !permissions.allRequiredGranted || !isModelReady {
+            if let preferredTab {
+                setupWindowController.selectTab(preferredTab)
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            setupWindowController.presentWindow()
+        }
+    }
+
+    private func hideSetupWindowIfVisible() {
+        guard !userOpenedSetup else { return }
+        setupWindowController?.window?.orderOut(nil)
+    }
+
+    private func togglePause() {
+        if isPaused {
+            isPaused = false
+            Task { await reevaluateReadiness() }
+        } else {
+            isPaused = true
+            voiceTyperController?.stop()
+            recordingHUDController?.hideHUD()
+            currentState = .paused
+            updateStatusUI()
+        }
+    }
+
+    private var isModelReady: Bool { asrService.state == .ready }
+
+    /// 重新评估权限与模型就绪状态，并驱动状态机。
+    ///
+    /// - 权限缺失：必须用户介入，强制弹出设置窗口（权限页）。
+    /// - 权限齐全但模型缺失/加载中/失败：进入对应状态，不打扰用户（除非模型缺失需要用户触发下载）。
+    /// - 权限齐全且模型就绪：启动热键监听并进入 `.idle`。
+    private func reevaluateReadiness() async {
+        guard !isPaused else {
+            currentState = .paused
+            updateStatusUI()
+            return
+        }
+
+        permissions = permissionCenter.snapshot()
+
+        guard permissions.allRequiredGranted else {
+            currentState = .setupRequired
+            voiceTyperController?.stop()
+            recordingHUDController?.hideHUD()
+            setupControllerIfNeeded(forceShow: true, preferredTab: .permissions)
+            syncSetupWindow()
+            updateStatusUI()
+            return
+        }
+
+        if isDownloadingModel {
+            syncSetupWindow()
+            updateStatusUI()
+            return
+        }
+
+        switch asrService.state {
+        case .unloaded:
+            Task { await asrService.preload() }
+            currentState = .modelLoading
+        case .loading:
+            currentState = .modelLoading
+        case .modelMissing:
+            currentState = .modelMissing
+            setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
+        case .failed(let message):
+            currentState = .error("模型加载失败: \(message)")
+        case .ready:
+            activateReadyState()
+        }
+
+        syncSetupWindow()
+        updateStatusUI()
+    }
+
+    private func activateReadyState() {
+        ensureController()
+        if let controller = voiceTyperController, !controller.isStarted {
+            do {
+                try controller.start()
+            } catch {
+                currentState = .error("热键监听失败: \(error.localizedDescription)")
+                AppLog.hotkey.error("热键监听启动失败: \(error.localizedDescription, privacy: .public)")
+                recordingHUDController?.hideHUD()
+                return
+            }
+        }
+
+        switch currentState {
+        case .recording, .recognizing, .inserting:
+            break
+        default:
+            currentState = .idle
+        }
+        hideSetupWindowIfVisible()
+    }
+
+    private func ensureController() {
+        if voiceTyperController == nil {
+            voiceTyperController = VoiceTyperController(config: config, asrService: asrService)
+            bindControllerEvents()
+        }
+    }
+
+    // MARK: - 模型下载
+
+    private func startModelDownload() {
+        guard !isDownloadingModel else { return }
+        isDownloadingModel = true
+        currentState = .downloadingModel(0)
+        updateStatusUI()
+        syncSetupWindow()
+
+        let downloader = ModelDownloader()
+        modelDownloader = downloader
+
+        Task {
+            do {
+                try await downloader.downloadAll { [weak self] progress in
+                    guard let self, self.isDownloadingModel else { return }
+                    self.currentState = .downloadingModel(progress)
+                    self.updateStatusUI()
+                    self.syncSetupWindow()
+                }
+                self.isDownloadingModel = false
+                self.modelDownloader = nil
+                await self.asrService.reload()
+                await self.reevaluateReadiness()
+            } catch {
+                self.isDownloadingModel = false
+                self.modelDownloader = nil
+                AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
+                self.currentState = .error("模型下载失败: \(error.localizedDescription)")
+                self.updateStatusUI()
+                self.syncSetupWindow()
+            }
+        }
+    }
+
+    private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Bool {
+        let corrector = LLMCorrector(config: LLMCorrector.Config(
+            baseURL: llmConfig.baseURL,
+            apiKey: apiKey,
+            model: llmConfig.model,
+            temperature: llmConfig.temperature,
+            maxTokens: llmConfig.maxTokens,
+            timeout: llmConfig.timeout
+        ))
+        let sample = "呃，这个功能和并之后应该可以用了吧"
+        let result = await corrector.correct(sample)
+        return result != sample && !result.isEmpty
+    }
+
+    // MARK: - 事件绑定
+
+    private func bindControllerEvents() {
+        voiceTyperController?.onStateChange = { [weak self] state in
+            guard let self else { return }
+            let previous = self.currentState
+            self.currentState = state
+            switch state {
+            case .recording:
+                self.recordingHUDController?.showHUD()
+            case .recognizing:
+                self.recordingHUDController?.setRecognizing()
+            case .inserting:
+                break
+            case .error(let message):
+                self.recordingHUDController?.showError(message)
+            case .idle:
+                if previous == .inserting {
+                    self.recordingHUDController?.showSuccess()
+                } else {
+                    self.recordingHUDController?.hideHUD()
+                }
+            default:
+                self.recordingHUDController?.hideHUD()
+            }
+            self.updateStatusUI()
+        }
+
+        voiceTyperController?.onPreviewUpdate = { [weak self] accumulated in
+            self?.recordingHUDController?.showPreview(accumulated)
+        }
+
+        voiceTyperController?.onAudioLevel = { [weak self] level in
+            self?.recordingHUDController?.updateLevel(level)
+        }
+
+        voiceTyperController?.onPreviewWarning = { [weak self] message in
+            self?.recordingHUDController?.flashWarning(message)
+        }
+
+        voiceTyperController?.onCancelled = { [weak self] in
+            guard let self else { return }
+            self.currentState = .idle
+            self.recordingHUDController?.showCanceled()
+            self.updateStatusUI()
+        }
+
+        voiceTyperController?.onRecognizedText = { text in
+            AppLog.app.info("识别结果: \(text, privacy: .public)")
+        }
+    }
+
+    private func updateStatusUI() {
+        statusBarController.update(
+            state: currentState,
+            hotkeyDisplay: config.hotkey.displayString,
+            serverStatus: engineStatusText()
+        )
+    }
+
+    private func reloadConfigurationFromDisk() throws {
+        config = try configStore.loadOrCreate()
+        recordingHUDController = RecordingHUDController(config: config.ui)
+    }
+
+    private func refreshSetupWindowEditorContent() {
+        setupWindowController?.loadEditableContent(config: config)
+    }
+
+    private func applyConfig(_ updatedConfig: AppConfig) async throws {
+        try configStore.save(config: updatedConfig)
+        try await reloadAndReevaluateAfterSettingsChange()
+    }
+
+    private func reloadAndReevaluateAfterSettingsChange() async throws {
+        voiceTyperController?.stop()
+        voiceTyperController = nil
+        try reloadConfigurationFromDisk()
+        asrService.updateConfig(config.asr)
+        refreshSetupWindowEditorContent()
+        await reevaluateReadiness()
+    }
+
+    private func syncSetupWindow() {
+        setupWindowController?.updateStatus(
+            permissions: permissions,
+            asrState: asrService.state,
+            downloadProgress: isDownloadingModel ? currentDownloadProgress() : nil,
+            hotkeyDisplay: config.hotkey.displayString,
+            engineStatus: engineStatusText()
+        )
+    }
+
+    private func currentDownloadProgress() -> Double {
+        if case .downloadingModel(let p) = currentState { return p }
+        return 0
+    }
+
+    private func engineStatusText() -> String {
+        switch asrService.state {
+        case .ready:
+            return "引擎已就绪"
+        case .loading:
+            return "模型加载中…"
+        case .modelMissing:
+            return "需要下载语音模型"
+        case .unloaded:
+            return "引擎未加载"
+        case .failed(let message):
+            return "模型加载失败: \(message)"
+        }
+    }
+}

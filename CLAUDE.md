@@ -4,17 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VoiceTyper is a **cross-platform offline speech-to-text input tool** built on SenseVoice-Small, run through the `funasr-onnx` ONNX runtime. It uses a **client-server architecture**: a per-platform desktop client captures audio and inserts recognized text, while a local (or shared) ASR server runs the speech models.
+VoiceTyper is a **cross-platform offline speech-to-text input tool** built on SenseVoice-Small, run through the `funasr-onnx` (server) or a native ONNX Runtime binding (macOS app) runtime.
 
-There are three clients, each in its own directory:
+There are **two distinct architectures** in this repo, both shipping today:
+
+1. **`macos/` — unified macOS app (primary distribution for macOS)**: a single-process app (product name `VoiceTyper`, bundle id `com.voicetyper.app`) that embeds the SenseVoice recognition engine directly (Swift + `onnxruntime-swift-package-manager`), with no separate server process and no network hop. First launch downloads the model (~230MB) once, then runs fully offline. See [`macos/DESIGN.md`](macos/DESIGN.md) for the full design rationale and [`macos/README.md`](macos/README.md) for usage.
+2. **Client-server architecture (Windows, Linux, and macOS split-deployment)**: a per-platform desktop client captures audio and inserts recognized text, while a local (or shared) ASR server runs the speech models over HTTP/WebSocket. Governed by [`PROTOCOL.md`](PROTOCOL.md).
+
+Client-server directories:
 
 | Platform | Directory | Stack | Status |
 | --- | --- | --- | --- |
-| macOS | `client_macos_swift/` | Swift + AppKit | Native, recommended |
+| macOS (split-deployment) | `client_macos_swift/` | Swift + AppKit | Product name `VoiceTyperClient`, bundle id `com.voicetyper.client` — secondary to `macos/` for most users |
 | Windows | `client_windows_native/` | .NET 8 + WinForms | Native, recommended |
 | Linux | `client_linux/` | Python + GTK4 + evdev (Wayland) | Maintained |
 
-> The two native clients (macOS Swift, Windows .NET) share the same state machine and a **streaming-first** architecture. The Linux client is Python and runs in non-streaming (HTTP) mode.
+> The two native split-deployment clients (macOS Swift, Windows .NET) share the same state machine and a **streaming-first** architecture. The Linux client is Python and runs in non-streaming (HTTP) mode. The `macos/` unified app shares that same state machine lineage (it was forked from `client_macos_swift/`) but talks to a local `ASRService` instead of a network client — see `macos/DESIGN.md` §5.3 for the exact diff.
 
 ### Architecture
 
@@ -38,7 +43,9 @@ There are three clients, each in its own directory:
 
 ### Technology Stack
 
-**macOS client (`client_macos_swift/`):** Swift, `AppKit` (menu bar + HUD + setup window), `AVAudioEngine`/`AVAudioConverter` (16kHz/float32/mono capture), `CGEventTap` (hotkeys incl. Fn), Accessibility + clipboard text injection.
+**Unified macOS app (`macos/`):** Swift, `AppKit` + SwiftUI (menu bar + HUD + setup window), `AVAudioEngine`/`AVAudioConverter` (16kHz/float32/mono capture), `CGEventTap` (hotkeys incl. Fn), Accessibility + clipboard text injection — all shared lineage with `client_macos_swift/`. Recognition-specific: `onnxruntime-swift-package-manager` (SPM, pinned to tag `1.24.2`) for ONNX Runtime, a hand-written Accelerate/vDSP Kaldi-compatible fbank frontend (`ASR/FbankFrontend.swift`), CTC greedy decode, and `Yams` for YAML config. No `funasr-onnx`/Python involved at runtime.
+
+**macOS split-deployment client (`client_macos_swift/`):** Swift, `AppKit` (menu bar + HUD + setup window), `AVAudioEngine`/`AVAudioConverter` (16kHz/float32/mono capture), `CGEventTap` (hotkeys incl. Fn), Accessibility + clipboard text injection.
 
 **Windows client (`client_windows_native/`):** .NET 8, WinForms, `NAudio` (WASAPI capture), `YamlDotNet` (config). Hotkeys via `SetWindowsHookEx(WH_KEYBOARD_LL)`, text injection via clipboard + `SendInput`.
 
@@ -80,11 +87,25 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 - `--llm-base-url URL` / `--llm-api-key KEY` / `--llm-model MODEL` - LLM correction
 - `--llm-temperature T` / `--llm-max-tokens N` - LLM tuning
 
-### macOS client (from `client_macos_swift/`)
+### Unified macOS app (from `macos/`)
 
 ```bash
-open VoiceTyper.xcodeproj      # develop in Xcode
-./build_xcode.sh               # CLI build → dist/VoiceTyper.app + .zip + .dmg
+ruby scripts/generate_xcodeproj.rb   # (re)generate VoiceTyper.xcodeproj — run after adding/removing files
+open VoiceTyper.xcodeproj            # develop in Xcode
+./build_xcode.sh                     # CLI build (arm64 only) → dist/VoiceTyper.app + .zip + .dmg
+xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platform=macOS' test  # run XCTest suite
+```
+
+Model files are **not** committed (gitignored) and not bundled into the app; the app downloads them on
+first launch, or you can pre-seed `~/Library/Application Support/VoiceTyper/models/sensevoice-small/`
+via `scripts/fetch_model.sh` before running tests that need a real model (`FbankParityTests`,
+`EndToEndRecognitionTests` — they `XCTSkip` if no model is found via `ModelLocator`).
+
+### macOS split-deployment client (from `client_macos_swift/`)
+
+```bash
+open VoiceTyperClient.xcodeproj      # develop in Xcode
+./build_xcode.sh                     # CLI build → dist/VoiceTyperClient.app + .zip + .dmg (3 arch variants)
 ```
 
 ### Windows client (from `client_windows_native/`)
@@ -106,7 +127,17 @@ make log            # view logs (also make log-f to follow)
 
 ## Code Structure
 
-### Native clients (macOS Swift / Windows .NET)
+### Unified macOS app (`macos/Sources/VoiceTyper/`)
+
+Forked from `client_macos_swift/` — `App/`, `Services/`, `UI/`, `Support/` are ~85% unchanged.
+Differs at `Core/` and adds `ASR/` + `LLM/`:
+
+- `App/` — `AppCoordinator` (wires permissions + model readiness as two parallel tracks; no server polling), platform entry point.
+- `Core/` — `AppConfig` (new schema: `asr`/`llm`/`hotkey`/`ui`, no `server` block), `AppState` (adds `.modelMissing`/`.downloadingModel`/`.modelLoading`, no `.connecting`), `ConfigStore` (`~/Library/Application Support/VoiceTyper/`, not `~/.config/`), `ConfigMigrator` (one-time hotkey/opacity import from the old client's config), `KeychainStore` (LLM API key), `VoiceTyperController` (same state machine, network client swapped for `LocalASRSession`), `PermissionCenter` (unchanged).
+- `ASR/` — `ModelLocator` (finds model dir: explicit config → app download dir → `~/.cache/modelscope/...` from `server/`), `ModelDownloader` (first-launch download from ModelScope, resumable, sha256-pinned), `FbankFrontend`/`LFRCMVN` (Kaldi-compatible feature extraction, Accelerate/vDSP — validated to ~1e-5 vs. the Python reference), `SenseVoiceEngine` (ONNX Runtime session wrapper), `CTCDecoder`, `TextPostprocessor`, `RecognitionBuffer` (sliding-window preview, ported from `server/recognizer.py`'s `SenseVoiceSession`), `ASRService` (lifecycle facade: load/unload/idle-timeout), `LocalASRSession` (interface-compatible replacement for the old `StreamingASRClient`).
+- `LLM/` — `LLMCorrector` (direct port of `server/voice_typer_server/llm_client.py`).
+
+### Native split-deployment clients (macOS Swift / Windows .NET)
 
 Both share the same layout (`.swift` / `.cs`):
 
@@ -139,10 +170,11 @@ Both share the same layout (`.swift` / `.cs`):
 ## Configuration
 
 **Client config location:**
-- macOS / Linux: `~/.config/voice_typer/config.yaml`
+- `macos/` unified app: `~/Library/Application Support/VoiceTyper/config.yaml` (own schema — `asr`/`llm`/`hotkey`/`ui`, no `server` block; see `macos/DESIGN.md` §5.5. One-time migration imports `hotkey`/`ui.opacity` from the split-deployment client's config on first launch if present.)
+- Split-deployment macOS client / Linux: `~/.config/voice_typer/config.yaml`
 - Windows: `%APPDATA%\voice_typer\config.yaml`
 
-The format is shared across all clients (so server config migrates between them):
+The format below is shared across the three split-deployment clients (so server config migrates between them); it does **not** apply to the `macos/` unified app:
 
 ```yaml
 server:
@@ -193,8 +225,16 @@ ui:
 - **Accessibility** - text insertion / system interaction
 - **Input Monitoring** - global hotkey, especially the Fn key
 
-The Swift client checks all of these plus server connectivity on first launch and opens a setup window if anything is missing.
+Applies to both macOS apps. `client_macos_swift/` (VoiceTyperClient) checks all three plus server
+connectivity on first launch. `macos/` (VoiceTyper) checks the same three permissions plus local
+model readiness (download/load state) — two independent readiness tracks, no server connectivity
+check exists there. Both open a setup window if anything is missing.
 
 ## Version Management
 
 The server version lives in the Python package metadata (`server/`). Each native client tracks its own version constant (`Support/Constants`) and bundle metadata (`Info.plist` on macOS, `.csproj` on Windows).
+
+The `macos/` unified app is versioned independently starting at **3.0.0** (its own product/bundle-id
+epoch, unrelated to the server's or `client_macos_swift/`'s version numbers); `client_macos_swift/`
+(now `VoiceTyperClient`) kept its existing **2.7.0** unchanged through the rename. Both live in the
+same `MARKETING_VERSION` build setting pattern, set in each `scripts/generate_xcodeproj.rb`.

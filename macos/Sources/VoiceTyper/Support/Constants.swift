@@ -1,11 +1,11 @@
 import Foundation
 
 enum AppConstants {
-    static let appName = "VoiceTyperClient"
-    static let bundleIdentifier = "com.voicetyper.client"
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.7.0"
+    static let appName = "VoiceTyper"
+    static let bundleIdentifier = "com.voicetyper.app"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.0.0"
     static let targetSampleRate: Double = 16_000
-    static let configDirectoryName = "voice_typer"
+    static let appSupportDirectoryName = "VoiceTyper"
     static let configFileName = "config.yaml"
 }
 

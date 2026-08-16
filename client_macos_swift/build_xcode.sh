@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_PATH="$ROOT_DIR/VoiceTyper.xcodeproj"
+PROJECT_PATH="$ROOT_DIR/VoiceTyperClient.xcodeproj"
 BUILD_DIR="$ROOT_DIR/build/xcode"
 DIST_DIR="$ROOT_DIR/dist"
-APP_NAME="VoiceTyper"
+APP_NAME="VoiceTyperClient"
 INSTALL_GUIDE_PATH="$ROOT_DIR/packaging/INSTALL.txt"
 EXECUTABLE_REL="Contents/MacOS/$APP_NAME"
 

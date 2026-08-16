@@ -1,0 +1,7 @@
+{
+  "n_samples": 9920,
+  "fbank_frames": 60,
+  "fbank_dim": 80,
+  "lfr_frames": 10,
+  "lfr_dim": 560
+}

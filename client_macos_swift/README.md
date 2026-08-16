@@ -1,12 +1,19 @@
-# VoiceTyper macOS Client (Swift)
+# VoiceTyperClient — macOS 分体式客户端 (Swift)
 
-[← 返回主项目](../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md)
+[← 返回主项目](../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md) · [一体化 App](../macos/README.md)
 
-基于 Swift + AppKit 的原生 macOS 菜单栏客户端，是 macOS 上推荐的实现。当前版本 **2.7.0**。
+基于 Swift + AppKit 的原生 macOS 菜单栏客户端。当前版本 **2.7.0**，应用名 **VoiceTyperClient**，
+Bundle ID `com.voicetyper.client`。
+
+> **大多数 macOS 用户应该用 [`macos/`](../macos/README.md) 下的一体化 VoiceTyper**：
+> 拖进 Applications、打开即用，不需要单独部署 Python 服务端。本目录（`client_macos_swift/`）
+> 是分体式架构下的客户端一半，配合独立部署的 [服务端](../server/README.md) 使用，适合：
+> 已有远程/局域网 GPU 服务端、需要多设备共享一份服务端、或需要 paraformer / 热词等
+> 一体化 App 未提供的能力的场景。
 
 它负责的事只有四件：监听热键、录音、把音频送给服务端、把返回的文本插到光标处。识别模型全部跑在[服务端](../server/README.md)。
 
-**本文适合**：macOS 用户，以及要自行编译或二次开发的人。
+**本文适合**：需要分体式部署的 macOS 用户，以及要自行编译或二次开发的人。
 
 ---
 
@@ -65,16 +72,16 @@
 
 ### 从 Release 安装
 
-1. 从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载对应架构的 `VoiceTyper-<版本>-macOS-<arch>.dmg`。拿不准就选 `universal`。
-2. 打开 DMG，把 `VoiceTyper.app` 拖进 `Applications`。
-3. 从「应用程序」打开 VoiceTyper。
+1. 从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载对应架构的 `VoiceTyperClient-<版本>-macOS-<arch>.dmg`。拿不准就选 `universal`。
+2. 打开 DMG，把 `VoiceTyperClient.app` 拖进 `Applications`。
+3. 从「应用程序」打开 VoiceTyperClient。
 4. 首次打开若被系统拦截，到「系统设置 → 隐私与安全性」点「仍要打开」。
 
 第 4 步是因为应用只做了 ad-hoc 签名，没有 Apple 开发者签名和公证。DMG 里附了一份精简的 `INSTALL.txt` 说明同样的流程，另见 [docs/install.md](docs/install.md)。
 
 ### 卸载
 
-删掉 `/Applications/VoiceTyper.app`，再删配置目录 `~/.config/voice_typer/`。权限授予记录留在系统设置里，可手动移除。
+删掉 `/Applications/VoiceTyperClient.app`，再删配置目录 `~/.config/voice_typer/`。权限授予记录留在系统设置里，可手动移除。
 
 ---
 
@@ -90,21 +97,21 @@
 
 设置页的「授权」按钮走系统请求弹窗（`AVCaptureDevice.requestAccess` / `AXIsProcessTrustedWithOptions` / `CGRequestListenEventAccess`）；已被拒绝过的权限系统不会二次弹窗，此时按钮改为直接跳转到对应的系统设置面板。
 
-**权限没生效时的常规手段**：在「系统设置 → 隐私与安全性 → 对应项」里把 VoiceTyper 移除再重新添加，然后**完全退出并重启应用**。辅助功能和输入监控的授权状态是按可执行文件签名记录的，替换 app 后（比如覆盖安装新版本）经常需要重来一次。
+**权限没生效时的常规手段**：在「系统设置 → 隐私与安全性 → 对应项」里把 VoiceTyperClient 移除再重新添加，然后**完全退出并重启应用**。辅助功能和输入监控的授权状态是按可执行文件签名记录的，替换 app 后（比如覆盖安装新版本）经常需要重来一次。
 
 彻底重置某项授权：
 
 ```bash
-tccutil reset Microphone com.voicetyper.app
-tccutil reset Accessibility com.voicetyper.app
-tccutil reset ListenEvent com.voicetyper.app
+tccutil reset Microphone com.voicetyper.client
+tccutil reset Accessibility com.voicetyper.client
+tccutil reset ListenEvent com.voicetyper.client
 ```
 
 ---
 
 ## 使用
 
-1. 启动后菜单栏出现 VoiceTyper 图标。
+1. 启动后菜单栏出现 VoiceTyperClient 图标。
 2. **按住热键**（默认 `Fn` / 地球仪键）开始录音，HUD 浮窗出现。
 3. 说话。流式模式下 HUD 会实时显示识别文本，并随着你继续说而自我修正。
 4. **松开热键**，服务端做一次整段复识别，最终文本插入当前光标位置。
@@ -285,7 +292,7 @@ self.accumulatedPreview = text   // 直接替换
 
 ```bash
 cd client_macos_swift
-open VoiceTyper.xcodeproj
+open VoiceTyperClient.xcodeproj
 ```
 
 依赖只有一个：[Yams](https://github.com/jpsim/Yams)（YAML 解析），走 SwiftPM。
@@ -304,12 +311,12 @@ cd client_macos_swift
 产物（`dist/`，共 6 个文件）：
 
 ```
-VoiceTyper-<版本>-macOS-arm64.zip / .dmg
-VoiceTyper-<版本>-macOS-x86_64.zip / .dmg
-VoiceTyper-<版本>-macOS-universal.zip / .dmg
+VoiceTyperClient-<版本>-macOS-arm64.zip / .dmg
+VoiceTyperClient-<版本>-macOS-x86_64.zip / .dmg
+VoiceTyperClient-<版本>-macOS-universal.zip / .dmg
 ```
 
-每个 DMG 内含 `VoiceTyper.app`、指向 `/Applications` 的软链，以及一份 `INSTALL.txt`（源文件在 `packaging/INSTALL.txt`）。
+每个 DMG 内含 `VoiceTyperClient.app`、指向 `/Applications` 的软链，以及一份 `INSTALL.txt`（源文件在 `packaging/INSTALL.txt`）。
 
 ### 改版本号
 
@@ -319,17 +326,17 @@ VoiceTyper-<版本>-macOS-universal.zip / .dmg
 
 ## 日志与排障
 
-日志走统一日志系统（`os.Logger`），subsystem 为 `com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `network` / `input` 六个 category。
+日志走统一日志系统（`os.Logger`），subsystem 为 `com.voicetyper.client`，分 `app` / `permissions` / `hotkey` / `audio` / `network` / `input` 六个 category。
 
 ```bash
 # 实时看
-log stream --predicate 'subsystem == "com.voicetyper.app"' --level debug
+log stream --predicate 'subsystem == "com.voicetyper.client"' --level debug
 
 # 只看热键
-log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "hotkey"'
+log stream --predicate 'subsystem == "com.voicetyper.client" AND category == "hotkey"'
 
 # 回看最近 10 分钟
-log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
+log show --predicate 'subsystem == "com.voicetyper.client"' --last 10m
 ```
 
 也可以在「控制台.app」里按 subsystem 过滤。
@@ -362,6 +369,7 @@ log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
 ## 相关链接
 
 - [VoiceTyper 主项目](../README.md)
+- [一体化 macOS App（推荐）](../macos/README.md)
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [Windows 原生客户端](../client_windows_native/README.md)

@@ -1,10 +1,11 @@
-VoiceTyper 安装说明
+VoiceTyperClient 安装说明
 
-1. 将 VoiceTyper.app 拖到 Applications。
-2. 从“应用程序”中打开 VoiceTyper，不要直接在 DMG 中运行。
-3. 如果首次打开被 macOS 拦截，请到“系统设置 > 隐私与安全性”点击“仍要打开”。
+1. 将 VoiceTyperClient.app 拖到 Applications。
+2. 从"应用程序"中打开 VoiceTyperClient，不要直接在 DMG 中运行。
+3. 如果首次打开被 macOS 拦截，请到"系统设置 > 隐私与安全性"点击"仍要打开"。
 4. 进入应用后，按窗口提示完成麦克风、辅助功能、输入监控等授权。
 
 提示：
 - 首次安全放行通常只需要一次。
-- 如果服务端尚未启动，请先启动本地 server，再使用 VoiceTyper。
+- 如果服务端尚未启动，请先启动本地 server，再使用 VoiceTyperClient。
+- 大多数用户更适合使用一体化的 VoiceTyper App（macos/ 目录），无需单独部署服务端。

@@ -1,0 +1,40 @@
+VoiceTyper 第三方组件与模型声明
+================================
+
+语音识别模型
+------------
+Powered by SenseVoice-Small (FunAudioLLM / 阿里达摩院 FunASR)
+
+- 模型代码：MIT License
+  https://github.com/FunAudioLLM/SenseVoice/blob/main/LICENSE
+- 模型权重：FunASR Model Open Source License Agreement
+  https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE
+  模型权重不随本应用分发，由用户在首次启动时从 ModelScope 自行下载：
+  https://modelscope.cn/models/iic/SenseVoiceSmall-onnx
+
+推理引擎
+--------
+ONNX Runtime
+Copyright (c) Microsoft Corporation.
+MIT License
+https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+
+onnxruntime-swift-package-manager
+Copyright (c) Microsoft Corporation.
+MIT License
+https://github.com/microsoft/onnxruntime-swift-package-manager
+
+特征提取算法参考
+----------------
+本应用的 Kaldi 兼容 fbank 特征提取用 Swift/Accelerate 独立实现，算法与参数对齐
+kaldi-native-fbank（未直接引用其源码）：
+Copyright (c) 2022 Xiaomi Corporation
+Apache License 2.0
+https://github.com/csukuangfj/kaldi-native-fbank
+
+配置文件解析
+------------
+Yams
+Copyright (c) 2016 JP Simard
+MIT License
+https://github.com/jpsim/Yams/blob/main/LICENSE

@@ -6,6 +6,12 @@
 
 支持 macOS、Windows、Linux。
 
+> **macOS 用户看这里**：有一个**一体化 App**（`macos/` 目录），把识别引擎直接内置进客户端，
+> 拖进「应用程序」打开即用，**不需要**再单独装下面说的服务端。首次启动会引导下载一次模型
+> （约 230MB），之后完全离线。见 [一体化 macOS App 文档](macos/README.md)。
+> 下面「先装服务端、再装客户端」的路径面向 Windows / Linux，或者想让多台 macOS
+> 设备共用一台服务端（比如局域网里一台带显卡的机器）的场景。
+
 ---
 
 ## 为什么用它
@@ -149,15 +155,18 @@ curl http://127.0.0.1:6008/health
 
 ### macOS
 
+这一节是给**已经决定用分体式部署**（远程/共享服务端）的 macOS 用户看的。大多数人应该
+直接用[一体化 App](macos/README.md)，跳过这一步和上面的服务端安装。
+
 - **系统要求**：macOS 14.0 (Sonoma) 或更高，Apple Silicon 和 Intel 都支持
-- **下载**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-<版本>-macOS-<架构>.dmg`。拿不准就选 `universal`
-- **安装**：打开 DMG，把 `VoiceTyper.app` 拖进「应用程序」，然后打开它
+- **下载**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyperClient-<版本>-macOS-<架构>.dmg`。拿不准就选 `universal`
+- **安装**：打开 DMG，把 `VoiceTyperClient.app` 拖进「应用程序」，然后打开它
 - **首次打开被拦截**：到「系统设置 → 隐私与安全性」点「仍要打开」（应用未做 Apple 签名公证）
 - **授权**：首次启动会引导你完成三项授权——麦克风、辅助功能、输入监控。缺一项都不能正常工作，应用会自动弹出设置窗口提示
 - **默认热键**：`Fn`（地球仪）键。也可以改成组合键
 - **取消录音**：录音时按 `Esc`
 
-👉 [macOS 客户端完整文档](client_macos_swift/README.md)
+👉 [macOS 分体式客户端完整文档](client_macos_swift/README.md)
 
 ### Windows
 
@@ -237,7 +246,7 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 在下载语音模型（约 241MB）。只有第一次会这样，之后是秒开。
 
 **macOS 上热键完全没反应**
-「输入监控」权限没给，或者更新版本后授权失效了。到「系统设置 → 隐私与安全性 → 输入监控」把 VoiceTyper 移除再加回去，然后完全退出应用重开。
+「输入监控」权限没给，或者更新版本后授权失效了。到「系统设置 → 隐私与安全性 → 输入监控」把对应的 App（一体化版是 VoiceTyper，分体式客户端是 VoiceTyperClient）移除再加回去，然后完全退出应用重开。
 
 **识别出来了但文字没插进去**
 少数应用不接受模拟粘贴（部分终端、密码框）。这种情况下文字还在剪贴板里，手动粘贴一次就行。macOS 用户还要确认「辅助功能」权限已授予。
@@ -257,11 +266,12 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 
 | 文档 | 内容 |
 | --- | --- |
+| [一体化 macOS App](macos/README.md) | 单进程架构、内置识别引擎、模型下载、构建（推荐大多数 macOS 用户阅读这份） |
 | [服务端](server/README.md) | 参数详解、模型选型、部署（Docker / Windows 服务）、性能调优、接口 |
-| [macOS 客户端](client_macos_swift/README.md) | 权限机制、Fn 键实现、文本插入策略、构建 |
+| [macOS 分体式客户端](client_macos_swift/README.md) | 权限机制、Fn 键实现、文本插入策略、构建 |
 | [Windows 客户端](client_windows_native/README.md) | 热键钩子、音频采集、并发会话、构建 |
 | [Linux 客户端](client_linux/README.md) | evdev 权限模型、Wayland 限制、故障排查 |
-| [通信协议](PROTOCOL.md) | 客户端与服务端的完整契约 |
+| [通信协议](PROTOCOL.md) | 客户端与服务端的完整契约（不含一体化 macOS App，它没有独立服务端进程） |
 
 ---
 
