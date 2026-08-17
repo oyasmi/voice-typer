@@ -6,11 +6,13 @@
 
 支持 macOS、Windows、Linux。
 
-> **macOS 用户看这里**：有一个**一体化 App**（`macos/` 目录），把识别引擎直接内置进客户端，
-> 拖进「应用程序」打开即用，**不需要**再单独装下面说的服务端。首次启动会引导下载一次模型
-> （约 230MB），之后完全离线。见 [一体化 macOS App 文档](macos/README.md)。
-> 下面「先装服务端、再装客户端」的路径面向 Windows / Linux，或者想让多台 macOS
-> 设备共用一台服务端（比如局域网里一台带显卡的机器）的场景。
+> **macOS / Windows 用户看这里**：有**一体化 App**（[`macos/`](macos/README.md) /
+> [`windows/`](windows/README.md) 目录），把识别引擎直接内置进客户端，安装即用，**不需要**
+> 再单独装下面说的服务端。首次启动会引导下载一次模型（约 230MB），之后完全离线。
+> ⚠️ `windows/` 版本刚完成实现，尚未在真实 Windows 机器上编译/跑分验证，见其
+> [`DESIGN.md`](windows/DESIGN.md) §10（P0）。
+> 下面「先装服务端、再装客户端」的路径面向 Linux，或者想让多台设备共用一台服务端
+> （比如局域网里一台带显卡的机器）的场景。
 
 ---
 
@@ -267,11 +269,12 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 | 文档 | 内容 |
 | --- | --- |
 | [一体化 macOS App](macos/README.md) | 单进程架构、内置识别引擎、模型下载、构建（推荐大多数 macOS 用户阅读这份） |
+| [一体化 Windows App](windows/README.md) | 同上思路的 Windows 实现，识别管线从 macOS 版 Swift 代码直译而来（⚠️ 尚未真机验证） |
 | [服务端](server/README.md) | 参数详解、模型选型、部署（Docker / Windows 服务）、性能调优、接口 |
 | [macOS 分体式客户端](client_macos_swift/README.md) | 权限机制、Fn 键实现、文本插入策略、构建 |
-| [Windows 客户端](client_windows_native/README.md) | 热键钩子、音频采集、并发会话、构建 |
+| [Windows 分体式客户端](client_windows_native/README.md) | 热键钩子、音频采集、并发会话、构建 |
 | [Linux 客户端](client_linux/README.md) | evdev 权限模型、Wayland 限制、故障排查 |
-| [通信协议](PROTOCOL.md) | 客户端与服务端的完整契约（不含一体化 macOS App，它没有独立服务端进程） |
+| [通信协议](PROTOCOL.md) | 客户端与服务端的完整契约（不含两个一体化 App，它们没有独立服务端进程） |
 
 ---
 

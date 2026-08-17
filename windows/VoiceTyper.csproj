@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <AssemblyName>VoiceTyper</AssemblyName>
+    <RootNamespace>VoiceTyper</RootNamespace>
+    <Version>3.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Company>VoiceTyper</Company>
+    <Product>VoiceTyper</Product>
+    <Description>VoiceTyper —— 前后端一体的离线语音输入工具（Windows 原生，内嵌 SenseVoice-Small 识别引擎）</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!-- 目录式部署（见 windows/DESIGN.md §7 D9）：不启用 PublishSingleFile —— 一个常驻自启的
+         菜单栏工具不该在每个新版本首启时把 14MB 的 onnxruntime.dll 解压到 %TEMP%，
+         这既拖慢启动又是 AV 误报高发路径。build.bat 用普通 dotnet publish 产出目录，
+         Inno Setup 负责打成单文件安装包。 -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <!-- WinForms 大量依赖反射；裁剪风险远大于省下的体积，本项目不做 IL 裁剪。 -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 与 macos/ 钉的版本一致，消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量。
+         升级 ORT 应作为一次独立的、带金标准复测的变更。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\correction.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

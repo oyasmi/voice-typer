@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>VoiceTyper.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\VoiceTyper.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 复用 macos/ 已入库的金标准夹具：两个平台的 fbank 实现共用同一份 Python 参考输出，
+         不需要各自造一遍。缺失（未 checkout 到该子目录，或未来被移走）时用 Condition 跳过，
+         对应测试内部再用 Skip 兜底。 -->
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_input.f32"
+          Link="Fixtures\fbank_input.f32" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_input.f32')" />
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_reference.f32"
+          Link="Fixtures\fbank_reference.f32" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_reference.f32')" />
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\lfrcmvn_reference.f32"
+          Link="Fixtures\lfrcmvn_reference.f32" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\..\macos\Tests\VoiceTyperTests\Fixtures\lfrcmvn_reference.f32')" />
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_parity_shapes.json"
+          Link="Fixtures\fbank_parity_shapes.json" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_parity_shapes.json')" />
+  </ItemGroup>
+</Project>
