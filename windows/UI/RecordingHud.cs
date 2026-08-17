@@ -13,7 +13,7 @@ namespace VoiceTyper.UI;
 /// 上方一行：呼吸红点 + 状态文字（"录音中..." / "识别中..."）+ 计时。
 /// 下方一行：右对齐流式预览，超长右起截断（保留尾部）。
 ///
-/// 与 <c>client_windows_native/UI/RecordingHud.cs</c> 相比的两处增量（见 windows/DESIGN.md §4.1）：
+/// 与 <c>client-server/client_windows_native/UI/RecordingHud.cs</c> 相比的两处增量（见 windows/DESIGN.md §4.1）：
 /// 跟随前台窗口所在屏幕定位（而非总在主屏），Win11 上用 DWM 圆角替代 Region 硬边裁剪。
 /// </summary>
 internal sealed class RecordingHud : Form

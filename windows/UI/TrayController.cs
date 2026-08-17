@@ -14,7 +14,7 @@ namespace VoiceTyper.UI;
 /// <summary>
 /// 系统托盘图标 + 上下文菜单。所有方法必须在 UI 线程调用。
 ///
-/// 与 <c>client_windows_native/UI/TrayController.cs</c> 相比：删掉"重新连接服务"（本地引擎没有
+/// 与 <c>client-server/client_windows_native/UI/TrayController.cs</c> 相比：删掉"重新连接服务"（本地引擎没有
 /// 连接概念），新增"开机自启"复选与"关于"（见 windows/DESIGN.md §5.6）。
 /// </summary>
 internal sealed class TrayController : IDisposable

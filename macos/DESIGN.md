@@ -1,9 +1,9 @@
 # VoiceTyper macOS 一体化应用 · 设计方案
 
 > 目标产物：`macos/` 下一个**前后端一体**的 macOS 应用，拖进 `Applications` 打开即用，不需要单独跑 Python 服务端。
-> 它以 `client_macos_swift/` 为蓝本，把 `server/` 的 SenseVoice 推理链路用 Swift 重写并内联进来。
+> 它以 `client-server/client_macos_swift/` 为蓝本，把 `client-server/server/` 的 SenseVoice 推理链路用 Swift 重写并内联进来。
 >
-> 本文只覆盖 macOS。Windows / Linux 客户端与 `server/` 保持现状不动。
+> 本文只覆盖 macOS。旧架构的 Windows / Linux 客户端与 `client-server/server/` 保持现状不动。
 
 ---
 
@@ -14,7 +14,7 @@
 | # | 目标 | 验收标准 |
 | --- | --- | --- |
 | G1 | 单进程、零外部依赖 | 全新 Mac 上拖入 Applications → 打开 → 授权三项权限 → **App 内引导下载一次模型** → 按热键即可听写。全程不接触终端、不装 Python，此后完全离线 |
-| G2 | 识别质量与现有链路一致 | 同一段音频，Swift 特征提取（fbank/LFR/CMVN）与 `server/` 输出逐点误差 < 1e-3；完整识别文本与 Python 输出编辑距离 ≤ 2（金标准测试，详见 §8 的实测结论） |
+| G2 | 识别质量与现有链路一致 | 同一段音频，Swift 特征提取（fbank/LFR/CMVN）与 `client-server/server/` 输出逐点误差 < 1e-3；完整识别文本与 Python 输出编辑距离 ≤ 2（金标准测试，详见 §8 的实测结论） |
 | G3 | 延迟不劣化 | 松手到上屏 ≤ 现有本地 server 方案（去掉了 WS 往返，理论上更快） |
 | G4 | 配置面收敛 | 用户可见配置项从 12 项降到 6 项左右，且没有一项与"服务端在哪"有关 |
 | G5 | LLM 纠错开箱可配 | 在设置面板里填 base_url / api_key / model 即可启用，无需改服务端启动参数 |
@@ -24,14 +24,14 @@
 - 不支持 paraformer / ct-punc / 流式 paraformer——**只留 SenseVoice-Small**。
 - 不做 API Key 鉴权（进程内直调，没有攻击面）。
 - 不做 GPU / CUDA / 远程服务端连接。
-- 不改动 `server/`、`client_windows_native/`、`client_linux/` 的行为（仅同步文档表述）。
+- 不改动 `client-server/server/`、`client-server/client_windows_native/`、`client-server/client_linux/` 的行为（仅同步文档表述）。
 - 不做自动更新（Sparkle）、不做公证（notarization），沿用现有 adhoc 签名分发方式。
 
 ### 1.3 命名与版本
 
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
-| `client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
+| `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
 | `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.0.0**（新纪元） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
@@ -42,7 +42,7 @@
 
 ## 2. 现状盘点
 
-### 2.1 客户端侧（`client_macos_swift/`，~3.5k 行 Swift）
+### 2.1 客户端侧（`client-server/client_macos_swift/`，~3.5k 行 Swift）
 
 | 模块 | 处理 |
 | --- | --- |
@@ -55,7 +55,7 @@
 | `AppConfig.ServerConfig` | **删除**，改为 `ASRConfig` + `LLMConfig` |
 | `SetupWindowController` / `ConnectionSettingsView` | 「连接」页删除，替换为「识别」页 |
 
-### 2.2 服务端侧（`server/`，需要用 Swift 重写的部分）
+### 2.2 服务端侧（`client-server/server/`，需要用 Swift 重写的部分）
 
 只有下面这条链路需要移植，其余（tornado、auth、CLI、Windows 服务、paraformer、ct-punc）全部丢弃：
 
@@ -281,12 +281,12 @@ macos/
 ├── Resources/
 │   ├── Info.plist                     # LSUIElement=1, NSMicrophoneUsageDescription
 │   ├── AppIcon.icns
-│   ├── correction.md                  # 从 server/voice_typer_server/prompts/ 搬运
+│   ├── correction.md                  # 从 client-server/server/voice_typer_server/prompts/ 搬运
 │   └── THIRD_PARTY_LICENSES.txt
 ├── scripts/
 │   ├── generate_xcodeproj.rb          # 沿用现有 xcodeproj 生成方式
 │   ├── fetch_model.sh                 # 开发期/测试用：命令行下载同一份模型
-│   └── dump_reference_fixtures.py     # 用 server/ 生成金标准测试数据
+│   └── dump_reference_fixtures.py     # 用 client-server/server/ 生成金标准测试数据
 ├── Sources/VoiceTyper/
 │   ├── App/            VoiceTyperAppMain, AppDelegate, AppCoordinator
 │   ├── Core/           AppConfig, AppState, ConfigStore, ConfigMigrator,
@@ -312,7 +312,7 @@ macos/
     └── ConfigStoreTests.swift
 ```
 
-**关于与 `client_macos_swift/` 的代码重复**：`HotkeyService` / `AudioCaptureService` /
+**关于与 `client-server/client_macos_swift/` 的代码重复**：`HotkeyService` / `AudioCaptureService` /
 `TextInsertionService` / `RecordingHUDController` 等约 1600 行会被复制一份。这是**有意的**：
 两个工程的配置模型、状态机、UI 结构都会分叉，抽公共 SwiftPM 包会过早冻结接口，
 还要反向改造已进入维护期的老客户端。若老客户端在一年后仍在维护，再考虑抽 `VoiceTyperKit`。
@@ -419,7 +419,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
    （包括 `[weak client]` 身份比较那套并发会话处理——它对本地会话同样必要）。
 3. `healthCheck()` 删除，改为观察 `ASRService.state`。
 4. `minimumRecordingDuration = 0.3` **保留**。它现在纯粹是"防误触"，不再是"省流量"，
-   但语义仍然成立（`PROTOCOL.md` §5.1 的约定在一体化 App 里变成内部约定）。
+   但语义仍然成立（`client-server/PROTOCOL.md` §5.1 的约定在一体化 App 里变成内部约定）。
 
 `AppCoordinator` 改动：
 - 删除 `serverPollTask` / `startServerPolling` / `beginConnecting` / `ServerHealthProbe` 相关全部逻辑
@@ -594,7 +594,7 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 
 | 测试 | 内容 | 通过标准 |
 | --- | --- | --- |
-| **FbankParityTests** | `dump_reference_fixtures.py` 用 `server/` 导出 3 段音频（0.5s 静音 / 3s 中文 / 15s 中英混合）的 `[T,80]` fbank 与 `[T',560]` LFR+CMVN 特征 | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3` |
+| **FbankParityTests** | `dump_reference_fixtures.py` 用 `client-server/server/` 导出 3 段音频（0.5s 静音 / 3s 中文 / 15s 中英混合）的 `[T,80]` fbank 与 `[T',560]` LFR+CMVN 特征 | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3` |
 | **EndToEndRecognitionTests** | 同 3 段音频跑完整 Swift 链路 | 编辑距离 ≤ 2（G2 的正式验收，见下方实测结论） |
 | **TextPostprocessorTests** | `<\|...\|>` 剥离、中英间距、纯标点丢弃、`▁` 还原 | 覆盖 `_postprocess` 每条规则 |
 | **RecognitionBufferTests** | 合成音频驱动滑窗：窗口滚动、切点能量最小、`finalize` 走完整音频 | 预览单调增长不回退为空；finalize 输入长度 == 总样本数 |
@@ -617,7 +617,7 @@ Swift 侧的特征提取本身是正确的（逐点误差 2.9e-4，长音频下�
 
 ---
 
-## 9. 老客户端改名（`client_macos_swift/`）
+## 9. 老客户端改名（`client-server/client_macos_swift/`）
 
 | 文件 | 改动 |
 | --- | --- |
@@ -645,7 +645,7 @@ Swift 侧的特征提取本身是正确的（逐点误差 2.9e-4，长音频下�
 | **P3.5 模型获取** | `ModelDownloader`（串行下载、断点续传、sha256 校验、原子落盘）+ 模型卡片 UI + `.modelMissing` / `.downloadingModel` 状态 | 删掉本机所有模型副本后重新走一遍：下载→校验→加载→可听写；中途断网可续 |
 | **P4 纠错** | `LLMCorrector` + 设置页 + 「测试纠错」 | 开关纠错前后文本差异符合预期；断网/错 key 不丢文本 |
 | **P5 打包** | `build_xcode.sh`（arm64 单变体）、ORT 框架瘦身与重签名、图标、许可证声明、`fetch_model.sh` 辅助脚本 | 在**干净的另一台 Mac** 上装 DMG 走通 G1（含首启下载） |
-| **P6 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` / `PROTOCOL.md` 同步；`macos/README.md` | 文档与实现一致，`PROTOCOL.md` 标注其适用范围不含 `macos/` |
+| **P6 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` 与 `client-server/PROTOCOL.md` 同步；`macos/README.md` | 文档与实现一致，`client-server/PROTOCOL.md` 标注其适用范围不含 `macos/` |
 
 P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标准测试再写实现**（先落 fixtures，
 再让 Swift 去追平），这样每一步都有明确的数值反馈。
@@ -662,7 +662,7 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | **ModelScope 接口变更** | 首启下载全面失效 | URL 与 sha256 都是常量，改起来是一次小版本发布；`asr.model_dir` 手动指定是永久逃生口 |
 | **模型权重许可** | 分发合规 | 改为用户自行下载后 App 不再分发权重，压力大幅下降；仍在「关于」面板署名 |
 | **ORT SPM 包版本漂移** | 构建不可复现 | `Package.resolved` 入库；SPM 依赖锁 `upToNextMinor` |
-| **不支持 Intel Mac** | Intel 用户完全无法使用 | 已定：只出 arm64。README 明确写明最低要求为 Apple Silicon；Intel 用户继续用 `VoiceTyperClient` + `server/` 方案 |
+| **不支持 Intel Mac** | Intel 用户完全无法使用 | 已定：只出 arm64。README 明确写明最低要求为 Apple Silicon；Intel 用户继续用 `VoiceTyperClient` + `client-server/server/` 方案 |
 | **ORT 崩溃拖垮整个 App** | 菜单栏应用退出 | 首版接受（进程内）；`SenseVoiceEngine` 已按可 `load/unload` 设计，将来若需要可平移到 XPC 子进程 |
 | 两个 App 同时安装 | 热键互抢、双份权限 | 配置目录已隔离；README 明确写"装了新版请删掉 VoiceTyperClient" |
 

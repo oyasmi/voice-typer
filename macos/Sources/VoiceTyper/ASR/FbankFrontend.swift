@@ -2,7 +2,7 @@ import Accelerate
 import Foundation
 
 /// Kaldi 兼容的 fbank 特征前端，参数对齐 `kaldi_native_fbank`（knf 1.22.3）在
-/// `server/voice_typer_server/recognizer.py` 里的生效配置：
+/// `client-server/server/voice_typer_server/recognizer.py` 里的生效配置：
 ///
 /// ```
 /// frame_opts: samp_freq=16000  frame_length_ms=25  frame_shift_ms=10

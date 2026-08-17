@@ -18,7 +18,7 @@ struct ModelBundle {
 /// 1. 用户在设置里显式指定的 `asr.model_dir`（换 fp32 版本或手动放置）
 /// 2. App 首启下载的落点 `~/Library/Application Support/VoiceTyper/models/sensevoice-small/`
 /// 3. Python 服务端已下载过的 ModelScope 缓存
-///    `~/.cache/modelscope/hub/models/iic/SenseVoiceSmall-onnx/`（跑过 server/ 的机器零下载）
+///    `~/.cache/modelscope/hub/models/iic/SenseVoiceSmall-onnx/`（跑过 client-server/server/ 的机器零下载）
 ///
 /// 都没有命中时返回 nil，调用方据此进入 `.modelMissing` 状态触发首启下载引导。
 enum ModelLocator {

@@ -12,7 +12,7 @@ namespace VoiceTyper.App;
 /// <summary>
 /// 中央调度器。负责装配、生命周期、配置变更处理、模型下载编排。
 /// C# 直译自 <c>macos/Sources/VoiceTyper/App/AppCoordinator.swift</c>，并保留
-/// <c>client_windows_native/App/AppCoordinator.cs</c> 的托盘/HUD 装配骨架。
+/// <c>client-server/client_windows_native/App/AppCoordinator.cs</c> 的托盘/HUD 装配骨架。
 ///
 /// 与两者的关键差异：Windows 没有 macOS TCC 式的强制权限门（无法阻止热键监听），
 /// 也没有 Windows 原生的"申请麦克风权限"API——麦克风可用性只能靠实际尝试打开设备判断

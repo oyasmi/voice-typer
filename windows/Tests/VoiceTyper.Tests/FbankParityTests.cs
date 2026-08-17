@@ -67,7 +67,7 @@ public class FbankParityTests
         var shapesPath = FixturePath("fbank_parity_shapes.json");
         if (!File.Exists(inputPath) || !File.Exists(refPath) || !File.Exists(shapesPath)) return;
 
-        // 需要本机已有 am.mvn（下载过模型，或跑过 server/ 留下 ModelScope 缓存）。
+        // 需要本机已有 am.mvn（下载过模型，或跑过 client-server/server/ 留下 ModelScope 缓存）。
         var bundle = ModelLocator.Locate("");
         if (bundle is null) return;
 

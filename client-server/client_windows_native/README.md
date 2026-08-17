@@ -1,6 +1,6 @@
 # VoiceTyper Windows 原生客户端
 
-[← 返回主项目](../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md)
+[← 返回分体式项目](../README.md) · [VoiceTyper 主项目](../../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md)
 
 基于 .NET 8 + WinForms 的 Windows 原生托盘客户端，与 macOS Swift 版共用同一套状态机模型和流式优先架构。当前版本 **3.0.0**。
 
@@ -291,7 +291,7 @@ curl http://127.0.0.1:6008/health
 
 ## 相关链接
 
-- [VoiceTyper 主项目](../README.md)
+- [VoiceTyper 主项目](../../README.md)
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [macOS Swift 原生客户端](../client_macos_swift/README.md)

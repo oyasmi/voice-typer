@@ -50,7 +50,7 @@ enum ASRLanguage: String, Codable, CaseIterable {
         }
     }
 
-    /// SenseVoice 词表里的语言 id，与 server/recognizer.py:_SENSEVOICE_LID 保持一致。
+    /// SenseVoice 词表里的语言 id，与 client-server/server/voice_typer_server/recognizer.py:_SENSEVOICE_LID 保持一致。
     var tokenID: Int32 {
         switch self {
         case .auto: return 0

@@ -207,7 +207,7 @@ UI/Settings/HotwordsSettingsView.swift     热词页
 PBXFileReference / PBXBuildFile / group children / Sources build phase 四处；
 构建失败时优先怀疑漏登记。
 
-**验证方式**：每阶段 `cd client_macos_swift && ./build_xcode.sh`（或
+**验证方式**：每阶段 `cd client-server/client_macos_swift && ./build_xcode.sh`（或
 `xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper build` 快速迭代），
 再按该阶段"验证清单"手测。回归基线（每阶段都要过）：
 Fn 按住说话 → partial 预览 → 松键 → 文本插入；Esc 取消；服务端关掉后的

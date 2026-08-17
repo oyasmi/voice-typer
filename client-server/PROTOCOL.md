@@ -2,14 +2,14 @@
 
 `protocol_version = 2`
 
-本仓库的桌面客户端与 ASR 服务端通过 HTTP / WebSocket 通信。本文是**唯一**的协议来源——服务端、
+本目录的分体式桌面客户端与 ASR 服务端通过 HTTP / WebSocket 通信。本文是**唯一**的协议来源——服务端、
 所有分体式客户端（`client_macos_swift/` VoiceTyperClient、`client_windows_native/`、`client_linux/`）
 必须遵守，遇到行为冲突以本文为准。
 
-> **不适用于 `macos/` 下的一体化 VoiceTyper App**：它把识别引擎内置进同一进程，没有独立的
-> 服务端连接，因此不产生本文档描述的任何网络交互。它的等价内部接口是
-> `macos/Sources/VoiceTyper/ASR/LocalASRSession.swift`，语义上镜像本协议的流式部分（§4），
-> 但不是网络协议。详见 [`macos/DESIGN.md`](macos/DESIGN.md) §5.2。
+> **不适用于根目录的 `macos/` 与 `windows/` 一体化 App**：它们把识别引擎内置进应用进程，
+> 没有独立的服务端连接，因此不产生本文描述的网络交互。其本地会话在语义上镜像本协议的流式
+> 部分（§4），但不是网络协议。详见 [macOS 设计文档](../macos/DESIGN.md) 与
+> [Windows 设计文档](../windows/DESIGN.md)。
 
 ---
 

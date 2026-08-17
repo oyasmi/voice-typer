@@ -1,9 +1,9 @@
 # VoiceTyper Windows 一体化应用 · 设计方案
 
 > 目标产物：`windows/` 下一个**前后端一体**的 Windows 桌面应用，安装即用，不需要单独跑 Python 服务端。
-> 它以 `client_windows_native/` 为蓝本，把 `macos/` 已经验证过的 SenseVoice 推理链路从 Swift 直译为 C#。
+> 它以 `client-server/client_windows_native/` 为蓝本，把 `macos/` 已经验证过的 SenseVoice 推理链路从 Swift 直译为 C#。
 >
-> 本文只覆盖 Windows。`macos/`、`client_linux/`、`server/` 保持现状不动。
+> 本文只覆盖 Windows。`macos/`、`client-server/client_linux/`、`client-server/server/` 保持现状不动。
 >
 > **本文档的证据分级**：标注「✅ 实测」的结论是在本次调研中真实验证过的（NuGet 包内容、
 > ModelScope 端点、托管 API 表面、金标准夹具）；标注「⚠️ 估算」的是从 macOS/M4 实测数据外推的，
@@ -19,7 +19,7 @@
 | # | 目标 | 验收标准 |
 | --- | --- | --- |
 | G1 | 单进程、零外部依赖 | 全新 Windows 上装完 → 打开 → **App 内引导下载一次模型** → 按热键即可听写。全程不接触命令行、不装 Python，此后完全离线 |
-| G2 | 识别质量与现有链路一致 | 同一段音频，C# 特征提取（fbank/LFR/CMVN）与 `server/` 输出逐点误差 < 1e-3（复用 `macos/` 已入库的金标准夹具）；完整识别文本编辑距离 ≤ 2 |
+| G2 | 识别质量与现有链路一致 | 同一段音频，C# 特征提取（fbank/LFR/CMVN）与 `client-server/server/` 输出逐点误差 < 1e-3（复用 `macos/` 已入库的金标准夹具）；完整识别文本编辑距离 ≤ 2 |
 | G3 | 延迟不劣化 | 松手到上屏 ≤ 现有本地 server 方案（去掉了 WS 往返 + Python 解释器开销） |
 | G4 | 配置面收敛 | 用户可见配置项从 12 项降到 6 项左右，且没有一项与"服务端在哪"有关 |
 | G5 | LLM 纠错开箱可配 | 设置面板里填 base_url / api_key / model 即可启用 |
@@ -30,7 +30,7 @@
 - 不支持 paraformer / ct-punc / 流式 paraformer——**只留 SenseVoice-Small**。
 - 不做 API Key 鉴权（进程内直调，没有攻击面）。
 - 不做 GPU / DirectML / NPU 加速（理由见 §4.2），不做远程服务端连接。
-- 不改动 `server/`、`macos/`、`client_linux/` 的行为（仅同步文档表述）。
+- 不改动 `client-server/server/`、`macos/`、`client-server/client_linux/` 的行为（仅同步文档表述）。
 - 不做自动更新、不做代码签名/MSIX（沿用现有免签分发方式，SmartScreen 提示作为已知问题记录）。
 - 不做 UI Automation 直插文本（沿用剪贴板 + SendInput，理由见 §4.6）。
 
@@ -38,7 +38,7 @@
 
 | 项目 | 产品名 | 配置目录 | 版本 |
 | --- | --- | --- | --- |
-| `client_windows_native/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `%APPDATA%\voice_typer\`（**不变**） | 3.0.0（**不变**） |
+| `client-server/client_windows_native/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `%APPDATA%\voice_typer\`（**不变**） | 3.0.0（**不变**） |
 | `windows/`（新，主分发版本） | **`VoiceTyper`** | **`%APPDATA%\VoiceTyper\`** | **3.0.0**（与 `macos/` 对齐，见 D3） |
 
 > 与 macOS 同构：老客户端改名让位，新一体化 App 接管 `VoiceTyper` 这个名字。
@@ -49,7 +49,7 @@
 
 ## 2. 现状盘点
 
-### 2.1 客户端侧（`client_windows_native/`，3,426 行 C#）
+### 2.1 客户端侧（`client-server/client_windows_native/`，3,426 行 C#）
 
 | 模块 | 行数 | 处理 |
 | --- | ---: | --- |
@@ -73,7 +73,7 @@
 
 ### 2.2 推理侧（从 `macos/Sources/VoiceTyper/` 直译）
 
-**这次不用再从 Python 移植了**——`macos/` 已经把 `server/recognizer.py` 的链路翻成 Swift 并用
+**这次不用再从 Python 移植了**——`macos/` 已经把 `client-server/server/recognizer.py` 的链路翻成 Swift 并用
 金标准测试验证过。Windows 侧只需 **Swift → C# 的机械直译**，参考实现和期望输出都是现成的：
 
 | macOS 源文件 | 行数 | C# 目标 | 直译难度 |
@@ -147,7 +147,7 @@
 ORT 托管程序集提供 `lib/net8.0/` 与 `lib/netstandard2.0/` 资产（✅ 实测，见 §4.2），
 在 `net10.0-windows` 下走 `net8.0` 资产，兼容无碍；NAudio 2.2.1 / YamlDotNet 16.x 同理。
 
-> `client_windows_native/` 是否也升 .NET 10：本轮**不动**。它已进入维护期，
+> `client-server/client_windows_native/` 是否也升 .NET 10：本轮**不动**。它已进入维护期，
 > 升级要重新回归全部 UI，收益不抵风险。在其 README 里记一笔 EOL 时间即可。
 
 **UI 栈：继续 WinForms**
@@ -369,7 +369,7 @@ windows/
 ├── VoiceTyper.csproj                  # net10.0-windows
 ├── app.manifest                       # PerMonitorV2 DPI 感知
 ├── Assets/icon.ico
-├── Resources/correction.md            # 从 server/voice_typer_server/prompts/ 搬运（与 macOS 同一份）
+├── Resources/correction.md            # 从 client-server/server/voice_typer_server/prompts/ 搬运（与 macOS 同一份）
 ├── installer/VoiceTyper.iss           # Inno Setup 脚本
 ├── scripts/fetch_model.ps1            # 开发/测试用：命令行下载同一份模型
 ├── App/            Program, TrayApplicationContext, AppCoordinator
@@ -389,7 +389,7 @@ windows/
         EndToEndRecognitionTests
 ```
 
-**关于与 `client_windows_native/` 的代码重复**：约 1,500 行会被复制一份。
+**关于与 `client-server/client_windows_native/` 的代码重复**：约 1,500 行会被复制一份。
 与 macOS 的判断相同，这是**有意的**——两个工程的配置模型、状态机、UI 结构都会分叉，
 抽公共类库会过早冻结接口，还要反向改造已进入维护期的老客户端。
 
@@ -652,7 +652,7 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 
 **关键决策：放弃 `PublishSingleFile` + `IncludeNativeLibrariesForSelfExtract`。**
 
-现有 `client_windows_native/build.bat` 用的就是这套。加进 14MB 的 `onnxruntime.dll` 之后它变成负担：
+现有 `client-server/client_windows_native/build.bat` 用的就是这套。加进 14MB 的 `onnxruntime.dll` 之后它变成负担：
 自解压模式会在每个新版本首次启动时把原生库解压到 `%TEMP%\.net\...`，
 对一个**开机自启的常驻工具**来说，这既拖慢启动，又是杀毒软件误报的高发路径。
 改为**目录式部署 + 安装包**：Inno Setup 生成的安装器同样是"双击就装完"的体验，
@@ -700,7 +700,7 @@ GitHub Actions 的 `windows-latest` 上。这是复用 macOS 已入库夹具带�
 
 ---
 
-## 9. 老客户端改名（`client_windows_native/`）
+## 9. 老客户端改名（`client-server/client_windows_native/`）
 
 | 文件 | 改动 |
 | --- | --- |
@@ -727,7 +727,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | **P5 模型获取** | `ModelDownloader`（串行、Range 续传、sha256、原子落盘）+ 模型卡片 UI + `ModelMissing`/`DownloadingModel` 状态 + 预览窗口自校准 | 删掉本机所有模型副本后重走一遍：下载 → 校验 → 加载 → 可听写；中途断网可续 |
 | **P6 纠错** | `LlmCorrector` + 设置页 +「测试纠错」 | 开关纠错前后差异符合预期；断网/错 key 不丢文本 |
 | **P7 打包** | `build.bat`（x64 + arm64 × portable + installer）、Inno Setup 脚本、图标、许可证声明、`fetch_model.ps1` | 在**干净的另一台 Windows** 上装安装包走通 G1（含首启下载） |
-| **P8 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` / `PROTOCOL.md` 同步；`windows/README.md` | 文档与实现一致，`PROTOCOL.md` 标注适用范围不含 `windows/` 与 `macos/` |
+| **P8 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` 与 `client-server/PROTOCOL.md` 同步；`windows/README.md` | 文档与实现一致，`client-server/PROTOCOL.md` 标注适用范围不含 `windows/` 与 `macos/` |
 
 ---
 

@@ -1,6 +1,6 @@
 # VoiceTyper Linux Client
 
-[← 返回主项目](../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md)
+[← 返回分体式项目](../README.md) · [VoiceTyper 主项目](../../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md)
 
 Linux Wayland 语音输入客户端，Python + GTK4 + evdev 实现。当前版本 **1.4.1**。
 
@@ -112,7 +112,7 @@ sudo pacman -S python python-pip gtk4 wl-clipboard portaudio
 ### 2. Python 依赖
 
 ```bash
-cd client_linux
+cd client-server/client_linux
 make install          # 等价于 pip3 install -r requirements.txt
 ```
 
@@ -148,7 +148,7 @@ KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
 ### 4. 启动服务端
 
 ```bash
-curl -O -L https://github.com/oyasmi/voice-typer/raw/refs/heads/master/server/scripts/voice_typer_server.sh
+curl -O -L https://github.com/oyasmi/voice-typer/raw/refs/heads/master/client-server/server/scripts/voice_typer_server.sh
 bash ./voice_typer_server.sh setup
 bash ./voice_typer_server.sh run --no-streaming
 
@@ -404,7 +404,7 @@ make help          # 列出所有 target
 
 ## 相关链接
 
-- [VoiceTyper 主项目](../README.md)
+- [VoiceTyper 主项目](../../README.md)
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) / [FunASR](https://github.com/alibaba-damo-academy/FunASR)

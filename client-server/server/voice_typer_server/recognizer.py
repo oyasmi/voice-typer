@@ -429,7 +429,7 @@ class SenseVoiceSession:
     - 预览只对窗口右侧（最近 ``PREVIEW_WINDOW`` 个采样点）重跑。
 
     代价：预览在窗口内仍会**修正**先前的文字（这是它更准的原因），
-    partial 因此只能是全量文本而非增量——见仓库根目录 PROTOCOL.md。
+    partial 因此只能是全量文本而非增量——见 client-server/PROTOCOL.md。
     窗口边界处的固化文本不再回溯修正，可能有轻微的接缝瑕疵，但这
     只影响预览观感——finalize 永远对完整音频重新整段识别，不复用
     任何预览结果，上屏文本不受影响。
@@ -618,7 +618,7 @@ class ParaformerStreamingSession:
     def preview(self) -> str:
         """把积压的块依次喂给流式模型，返回**全量**预览文本。
 
-        协议约定（详见仓库根目录 PROTOCOL.md）：partial 是全量文本而非增量，
+        协议约定（详见 client-server/PROTOCOL.md）：partial 是全量文本而非增量，
         客户端直接替换即可。流式模型本身只吐增量，这里拼成全量再返回。
 
         每块都必须喂进去以维持 cache 连续性，因此调用方跳过若干次 preview

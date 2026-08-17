@@ -14,7 +14,7 @@ internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General =
 
 /// <summary>
 /// 设置窗口：识别 / 热键 / 权限 / 通用 四个 Tab（见 windows/DESIGN.md §5.6）。
-/// 与 <c>client_windows_native/UI/SetupForm.cs</c> 相比："连接"Tab 被"识别"顶替（模型卡片 +
+/// 与 <c>client-server/client_windows_native/UI/SetupForm.cs</c> 相比："连接"Tab 被"识别"顶替（模型卡片 +
 /// 语言 + LLM 纠错），新增"通用"（开机自启 / HUD 透明度 / 空闲卸载）。
 /// 所有方法必须在 UI 线程调用。
 /// </summary>

@@ -214,9 +214,9 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
-# FunASR model files and cache (server-side)
+# FunASR model files and cache (client-server server-side)
 .funasr_cache/
-server/models/
+client-server/server/models/
 ~/.modelscope/
 *.onnx
 *.pth
@@ -228,26 +228,26 @@ server/models/
 *.flac
 temp_audio/
 recordings/
-server/temp_audio/
-server/recordings/
+client-server/server/temp_audio/
+client-server/server/recordings/
 
 # Configuration files with sensitive data
 config_local.yaml
-server/config_local.yaml
+client-server/server/config_local.yaml
 client/config_local.yaml
 *.env
 .env.local
 .pypirc
-server/.pypirc
+client-server/server/.pypirc
 .secrets
 client/.secrets
-server/.secrets
+client-server/server/.secrets
 
 # Log files
 *.log
 logs/
 client/logs/
-server/logs/
+client-server/server/logs/
 
 # Py2app build artifacts (client-side)
 *.app
@@ -262,7 +262,7 @@ DerivedData/
 *.profraw
 
 # Tornado server artifacts
-server/.tornado_cache/
+client-server/server/.tornado_cache/
 
 # Temporary runtime files
 *.tmp
@@ -271,10 +271,10 @@ server/.tornado_cache/
 *.rej
 .cache/
 client/.cache/
-server/.cache/
+client-server/server/.cache/
 nohup.out
-server/.venv*/
-server/dist/
-server/build/
-server/.pytest_cache/
-server/.mypy_cache/
+client-server/server/.venv*/
+client-server/server/dist/
+client-server/server/build/
+client-server/server/.pytest_cache/
+client-server/server/.mypy_cache/

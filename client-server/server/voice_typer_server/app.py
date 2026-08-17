@@ -258,7 +258,7 @@ class StreamRecognizeHandler(tornado.websocket.WebSocketHandler):
     """
     流式语音识别 WebSocket 端点。
 
-    协议（详见仓库根目录 PROTOCOL.md）：
+    协议（详见 client-server/PROTOCOL.md）：
       Client → Server:
         连接后立即  text:   {"type":"start","sample_rate":16000}
         录音中每 600ms  binary: float32 PCM，9600 samples = 38400 bytes

@@ -2,7 +2,7 @@ import XCTest
 @testable import VoiceTyper
 
 /// 完整识别链路（fbank → LFR/CMVN → 真实 ONNX 推理 → CTC 解码 → 文本后处理）
-/// 对真实语音样本的逐字校验——这是 G2「与 server/ 输出逐字相同」的正式验收。
+/// 对真实语音样本的逐字校验——这是 G2「与 client-server/server/ 输出逐字相同」的正式验收。
 /// 需要本机已下载 SenseVoice 模型，无模型环境下用 XCTSkip 跳过。
 final class EndToEndRecognitionTests: XCTestCase {
     func testMatchesPythonReferenceOnRealSpeech() throws {

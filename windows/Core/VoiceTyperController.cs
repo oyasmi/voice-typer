@@ -10,7 +10,7 @@ namespace VoiceTyper.Core;
 /// <summary>
 /// 中央状态机。串起热键 → 录音 → 本地 ASR → 文本插入。所有公共方法和事件回调都在 UI 线程上完成。
 ///
-/// 与 <c>client_windows_native/Core/VoiceTyperController.cs</c> 相比，改动只有 4 处
+/// 与 <c>client-server/client_windows_native/Core/VoiceTyperController.cs</c> 相比，改动只有 4 处
 /// （见 windows/DESIGN.md §5.3）：删除非流式批量识别路径（本地引擎天然只有一条路径）、
 /// <c>StreamingASRClient</c>（WebSocket）换成 <see cref="LocalAsrSession"/>（本地引擎，
 /// 且不再需要"先连接再录音"的异步握手）、健康检查改为观察 <see cref="AsrService.State"/>、
@@ -20,7 +20,7 @@ internal sealed class VoiceTyperController : IDisposable
 {
     /// <summary>
     /// 短于此时长的录音视为误触，直接丢弃。单进程架构下这不再是"省流量"的约定，
-    /// 纯粹是防误触。见 PROTOCOL.md §5.1（该约定的历史出处）。
+    /// 纯粹是防误触。见 client-server/PROTOCOL.md §5.1（该约定的历史出处）。
     /// </summary>
     private static readonly TimeSpan MinimumRecordingDuration = TimeSpan.FromMilliseconds(300);
 

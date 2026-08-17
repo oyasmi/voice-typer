@@ -5,7 +5,7 @@ namespace VoiceTyper.Asr;
 
 /// <summary>
 /// Kaldi 兼容的 fbank 特征前端。C# 直译自 <c>macos/Sources/VoiceTyper/ASR/FbankFrontend.swift</c>，
-/// 参数对齐 <c>kaldi_native_fbank</c>（knf 1.22.3）在 <c>server/voice_typer_server/recognizer.py</c>
+/// 参数对齐 <c>kaldi_native_fbank</c>（knf 1.22.3）在 <c>client-server/server/voice_typer_server/recognizer.py</c>
 /// 里的生效配置：
 ///
 /// <code>

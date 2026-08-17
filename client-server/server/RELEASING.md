@@ -78,8 +78,8 @@ TWINE_NON_INTERACTIVE=1 python3 -m twine upload dist/*
 
 ## 推荐发布前检查项
 
-- 确认 [__init__.py](/home/oyasmi/projects/voice-typer/server/voice_typer_server/__init__.py) 中 `__version__` 已更新
-- 确认 [README.md](/home/oyasmi/projects/voice-typer/server/README.md) 与实际 CLI 一致
+- 确认 [`__init__.py`](voice_typer_server/__init__.py) 中 `__version__` 已更新
+- 确认 [`README.md`](README.md) 与实际 CLI 一致
 - 运行 `python3 -m voice_typer_server --help`
 - 在干净虚拟环境中执行一次 `pip install .`
 - 正式发 PyPI 前先过一遍 TestPyPI

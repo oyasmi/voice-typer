@@ -5,7 +5,7 @@ namespace VoiceTyper.Asr;
 /// <summary>
 /// SenseVoice CTC 解码后的文本清洗。C# 直译自
 /// <c>macos/Sources/VoiceTyper/ASR/TextPostprocessor.swift</c>，逐条对齐
-/// <c>server/voice_typer_server/recognizer.py</c> 的 <c>SenseVoiceRecognizer._postprocess</c>，
+/// <c>client-server/server/voice_typer_server/recognizer.py</c> 的 <c>SenseVoiceRecognizer._postprocess</c>，
 /// 两侧规则必须保持一致。
 /// </summary>
 internal static class TextPostprocessor

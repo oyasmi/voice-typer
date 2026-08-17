@@ -1,6 +1,6 @@
 import Foundation
 
-/// OpenAI 兼容的 LLM 纠错客户端。`server/voice_typer_server/llm_client.py` 的直译，
+/// OpenAI 兼容的 LLM 纠错客户端。`client-server/server/voice_typer_server/llm_client.py` 的直译，
 /// 逻辑保持不变：few-shot 消息固定（可命中前缀缓存）、`<asr_text>` 标签隔离输入、
 /// 动态放大 max_tokens 防止长听写被截断、`finish_reason=="length"` 时放弃修正。
 ///

@@ -16,7 +16,7 @@ final class VoiceTyperController {
     private var recordingStartedAt: Date?
 
     /// 录音时长低于此阈值的会话直接丢弃，避免误触上传无意义音频。
-    /// 见仓库根目录 PROTOCOL.md "短录音过滤"。
+    /// 见 client-server/PROTOCOL.md “短录音过滤”。
     private static let minimumRecordingDuration: TimeInterval = 0.3
 
     var onStateChange: ((AppState) -> Void)?

@@ -1,11 +1,11 @@
 # VoiceTyperClient — macOS 分体式客户端 (Swift)
 
-[← 返回主项目](../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md) · [一体化 App](../macos/README.md)
+[← 返回分体式项目](../README.md) · [VoiceTyper 主项目](../../README.md) · [服务端文档](../server/README.md) · [线上协议](../PROTOCOL.md) · [一体化 App](../../macos/README.md)
 
 基于 Swift + AppKit 的原生 macOS 菜单栏客户端。当前版本 **2.7.0**，应用名 **VoiceTyperClient**，
 Bundle ID `com.voicetyper.client`。
 
-> **大多数 macOS 用户应该用 [`macos/`](../macos/README.md) 下的一体化 VoiceTyper**：
+> **大多数 macOS 用户应该用 [`macos/`](../../macos/README.md) 下的一体化 VoiceTyper**：
 > 拖进 Applications、打开即用，不需要单独部署 Python 服务端。本目录（`client_macos_swift/`）
 > 是分体式架构下的客户端一半，配合独立部署的 [服务端](../server/README.md) 使用，适合：
 > 已有远程/局域网 GPU 服务端、需要多设备共享一份服务端、或需要 paraformer / 热词等
@@ -291,7 +291,7 @@ self.accumulatedPreview = text   // 直接替换
 ### Xcode
 
 ```bash
-cd client_macos_swift
+cd client-server/client_macos_swift
 open VoiceTyperClient.xcodeproj
 ```
 
@@ -300,7 +300,7 @@ open VoiceTyperClient.xcodeproj
 ### 命令行
 
 ```bash
-cd client_macos_swift
+cd client-server/client_macos_swift
 ./build_xcode.sh
 ```
 
@@ -368,8 +368,8 @@ log show --predicate 'subsystem == "com.voicetyper.client"' --last 10m
 
 ## 相关链接
 
-- [VoiceTyper 主项目](../README.md)
-- [一体化 macOS App（推荐）](../macos/README.md)
+- [VoiceTyper 主项目](../../README.md)
+- [一体化 macOS App（推荐）](../../macos/README.md)
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [Windows 原生客户端](../client_windows_native/README.md)

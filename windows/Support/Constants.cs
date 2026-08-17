@@ -56,7 +56,7 @@ internal static class AppConstants
 
     public static string ModelDownloadDestination => Path.Combine(LocalDataDirectory, ModelSubdirectory);
 
-    /// <summary>Python 服务端下载模型的缓存位置；跑过 server/ 的机器可零下载复用。</summary>
+    /// <summary>Python 服务端下载模型的缓存位置；跑过 client-server/server/ 的机器可零下载复用。</summary>
     public static string ModelScopeCacheDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".cache", "modelscope", "hub", "models", "iic", "SenseVoiceSmall-onnx"

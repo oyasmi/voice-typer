@@ -1,7 +1,7 @@
 import Foundation
 
 /// SenseVoice CTC 解码后的文本清洗。逐条对齐
-/// `server/voice_typer_server/recognizer.py` 的 `SenseVoiceRecognizer._postprocess`
+/// `client-server/server/voice_typer_server/recognizer.py` 的 `SenseVoiceRecognizer._postprocess`
 /// 与相关正则常量，两侧规则必须保持一致（见金标准测试 EndToEndRecognitionTests）。
 enum TextPostprocessor {
     /// SenseVoice 把语言/情感/事件/文本规整信息以 <|xxx|> 形式混在 CTC 输出里，剥离之。

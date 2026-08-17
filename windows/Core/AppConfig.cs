@@ -26,7 +26,7 @@ internal sealed class AppConfig
     };
 }
 
-/// <summary>支持的 SenseVoice 识别语言。与 server/recognizer.py 的 _SENSEVOICE_LID 表一一对应。</summary>
+/// <summary>支持的 SenseVoice 识别语言。与 client-server/server/voice_typer_server/recognizer.py 的 _SENSEVOICE_LID 表一一对应。</summary>
 internal enum AsrLanguage
 {
     Auto,
@@ -61,7 +61,7 @@ internal static class AsrLanguageExtensions
         _ => lang.ToString(),
     };
 
-    /// <summary>SenseVoice 词表里的语言 id，与 server/recognizer.py:_SENSEVOICE_LID 保持一致。</summary>
+    /// <summary>SenseVoice 词表里的语言 id，与 client-server/server/voice_typer_server/recognizer.py:_SENSEVOICE_LID 保持一致。</summary>
     public static int TokenId(this AsrLanguage lang) => lang switch
     {
         AsrLanguage.Auto => 0,

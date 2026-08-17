@@ -1,8 +1,8 @@
 # VoiceTyper — 一体化 Windows 应用
 
-[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client_windows_native/README.md)
+[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
-单进程 Windows 桌面应用：把 [`server/`](../server/README.md) 的 SenseVoice 识别链路用 C# 重写并
+单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
 内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.0.0**，应用名 **VoiceTyper**。
 
 **本文适合**：想在自己 Windows 电脑上直接用的用户，以及要自行编译或二次开发的人。深入的架构
@@ -46,7 +46,7 @@
 - 热键主键限于字母、数字、`space`/`tab`/`enter`/`esc`、`F1`–`F12`、方向键等命名键
 - 安装包未做代码签名，首次运行可能被 SmartScreen 拦截，需要点「更多信息 → 仍要运行」
 - 只支持 SenseVoice-Small 模型，不支持 paraformer / 热词（如需这些能力，用
-  [分体式客户端](../client_windows_native/README.md) + [服务端](../server/README.md)）
+  [分体式客户端](../client-server/client_windows_native/README.md) + [服务端](../client-server/server/README.md)）
 - 不支持远程/共享服务端——识别永远在本机跑
 - **UIPI 限制**：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，这是 Windows 安全
   机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动 `Ctrl+V`
@@ -93,7 +93,7 @@
 
 配置目录（`%APPDATA%\VoiceTyper\` vs `%APPDATA%\voice_typer\`）是隔离的，技术上可以同时安装。
 但两者默认都注册 `Ctrl+F2`，**同时运行会抢热键**，建议只保留一个。若之前装过
-[`client_windows_native/` 的 VoiceTyperClient](../client_windows_native/README.md)，迁移过来时
+[`client-server/client_windows_native/` 的 VoiceTyperClient](../client-server/client_windows_native/README.md)，迁移过来时
 热键与 HUD 不透明度会在首次启动时自动继承。
 
 ---
@@ -102,7 +102,7 @@
 
 首次启动会检测本地是否已有 SenseVoice-Small 模型：
 
-- 若这台机器之前跑过 [`server/`](../server/README.md)（`%USERPROFILE%\.cache\modelscope\` 下已有
+- 若这台机器之前跑过 [`client-server/server/`](../client-server/server/README.md)（`%USERPROFILE%\.cache\modelscope\` 下已有
   模型缓存），App 会自动复用，**零下载**。
 - 否则设置窗口的「识别」页会显示模型卡片，点「开始下载模型」即可：显示进度条、已下载/总量，
   支持取消。下载的四个文件（`config.yaml`、`am.mvn`、`tokens.json`、`model_quant.onnx`）来自
@@ -262,7 +262,7 @@ dotnet test
 | 测试 | 内容 | 需要模型？ |
 | --- | --- | --- |
 | `FftTests` | 自写 FFT 与朴素 DFT 比对 | 否 |
-| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `server/` 产出的金标准（阈值 1e-3，复用 `macos/` 已入库夹具） | LFR/CMVN 部分需要（缺失自动跳过） |
+| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3，复用 `macos/` 已入库夹具） | LFR/CMVN 部分需要（缺失自动跳过） |
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 | 否 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） | 否 |
 | `ConfigStoreTests` | 配置模型与 YAML 序列化往返（不接触真实 `%APPDATA%`） | 否 |
@@ -301,7 +301,7 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 
 - 检查目标窗口是否以管理员身份运行——这是 Windows UIPI 的已知限制（见上文"功能与限制"），
   文本已经在剪贴板里，手动 `Ctrl+V` 即可。
-- 其余情况参考[分体式客户端文档的对应章节](../client_windows_native/README.md)，文本插入实现
+- 其余情况参考[分体式客户端文档的对应章节](../client-server/client_windows_native/README.md)，文本插入实现
   代码原样搬运，行为一致。
 
 ---
@@ -310,6 +310,6 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 
 - [VoiceTyper 主项目](../README.md)
 - [设计方案](DESIGN.md)
-- [分体式客户端（多设备共享服务端场景）](../client_windows_native/README.md)
-- [服务端](../server/README.md)（本 App 不使用，但识别管线移植自此）
+- [分体式客户端（多设备共享服务端场景）](../client-server/client_windows_native/README.md)
+- [服务端](../client-server/server/README.md)（本 App 不使用，但识别管线移植自此）
 - [macOS 一体化应用](../macos/README.md)（同一套架构思路的姊妹实现，Windows 侧从其 Swift 代码直译而来）

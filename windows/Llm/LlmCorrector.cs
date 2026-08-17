@@ -19,7 +19,7 @@ internal sealed class LlmException : Exception
 
 /// <summary>
 /// OpenAI 兼容的 LLM 纠错客户端。C# 直译自
-/// <c>macos/Sources/VoiceTyper/LLM/LLMCorrector.swift</c>（本身是 <c>server/voice_typer_server/llm_client.py</c>
+/// <c>macos/Sources/VoiceTyper/LLM/LLMCorrector.swift</c>（本身是 <c>client-server/server/voice_typer_server/llm_client.py</c>
 /// 的直译），逻辑保持不变：few-shot 消息固定（可命中前缀缓存）、<c>&lt;asr_text&gt;</c> 标签隔离输入、
 /// 动态放大 max_tokens 防止长听写被截断、<c>finish_reason=="length"</c> 时放弃修正。
 ///

@@ -1,12 +1,12 @@
 # VoiceTyper Server
 
-[← 返回主项目](../README.md)
+[← 返回分体式项目](../README.md) · [VoiceTyper 主项目](../../README.md)
 
 `voice-typer-server` 是 VoiceTyper 的语音识别服务端：接收客户端上传的音频，跑 ASR 推理，把文本返回给客户端。客户端只负责录音和上屏，所有模型都跑在这里。
 
 当前版本 **1.5.1**，协议版本 **2**（见 [`PROTOCOL.md`](../PROTOCOL.md)）。
 
-**本文适合**：要部署、调参、排障或二次开发服务端的人。只想把 VoiceTyper 用起来的话，[主项目 README](../README.md) 的「快速开始」就够了。
+**本文适合**：要部署、调参、排障或二次开发服务端的人。只想在 macOS 或 Windows 上使用 VoiceTyper，参见[主项目 README](../../README.md)。
 
 ---
 
@@ -60,7 +60,7 @@
 ### 方式一：helper 脚本（macOS / Linux 推荐）
 
 ```bash
-cd server
+cd client-server/server
 ./scripts/voice_typer_server.sh setup     # 建 ~/.venvs/voice-typer 并安装
 ./scripts/voice_typer_server.sh run       # 启动
 ```

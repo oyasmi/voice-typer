@@ -27,7 +27,7 @@ internal sealed class ModelBundle
 /// 2. App 首启下载的落点 <c>%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\</c>
 /// 3. Python 服务端已下载过的 ModelScope 缓存
 ///    <c>%USERPROFILE%\.cache\modelscope\hub\models\iic\SenseVoiceSmall-onnx\</c>
-///    （跑过 server/ 的机器零下载；同时探测旧版布局 <c>hub\iic\SenseVoiceSmall-onnx\</c>）
+///    （跑过 client-server/server/ 的机器零下载；同时探测旧版布局 <c>hub\iic\SenseVoiceSmall-onnx\</c>）
 ///
 /// 都没有命中时返回 null，调用方据此进入 ModelMissing 状态触发首启下载引导。
 /// </summary>
