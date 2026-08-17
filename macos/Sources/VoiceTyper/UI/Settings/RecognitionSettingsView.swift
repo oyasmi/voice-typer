@@ -88,6 +88,18 @@ struct RecognitionSettingsView: View {
                 Button("重新加载") { vm.reloadModel() }
                     .disabled(vm.modelActionBusy)
             }
+        case .suspendedForIdle:
+            HStack(spacing: 10) {
+                Image(systemName: "moon.zzz").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("引擎已空闲卸载")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("下次录音会自动重新加载，无需手动操作。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         case .loading:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)

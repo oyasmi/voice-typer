@@ -10,6 +10,11 @@ struct GeneralSettingsView: View {
                     get: { vm.launchAtLogin },
                     set: { vm.setLaunchAtLogin($0) }
                 ))
+                if !vm.generalMessage.isEmpty {
+                    Text(vm.generalMessage)
+                        .font(.caption)
+                        .foregroundStyle(vm.generalMessageKind.color)
+                }
             }
 
             Section {

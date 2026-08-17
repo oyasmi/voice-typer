@@ -27,6 +27,19 @@ private final class StartupResultBox: @unchecked Sendable {
     var error: Error?
 }
 
+/// 每次 `start()` 独立创建的 worker 生命周期句柄，替代原先跨 start/stop 复用的
+/// 对象级 `shutdownSemaphore`：陈旧的信号量计数会让下一次 `stop()` 的 wait 立即
+/// 返回，在 worker 真正退出前就清空共享引用，留下孤立监听线程与仍启用的 tap（F-09）。
+private final class WorkerLifecycle: @unchecked Sendable {
+    let shutdownSemaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var _cancelled = false
+    var cancelled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        set { lock.lock(); _cancelled = newValue; lock.unlock() }
+    }
+}
+
 /// 事件 tap 回调上下文。通过 weak 引用避免悬空指针崩溃。
 /// 内存由 `Unmanaged.passRetained` 管理，在 worker 线程退出时释放。
 private final class TapContext: @unchecked Sendable {
@@ -51,10 +64,20 @@ final class HotkeyService: @unchecked Sendable {
     private var hotkey: HotkeyConfig?
     private var isActive = false
     private var isRunning = false
-    private let shutdownSemaphore = DispatchSemaphore(value: 0)
+    /// 当前（或上一次启动超时后被放弃的）worker 对应的生命周期句柄。
+    private var workerLifecycle: WorkerLifecycle?
 
     func start(with hotkey: HotkeyConfig) throws {
         stop()
+
+        // 上一次 start() 超时留下的 worker 可能仍未退出（例如卡在 CGEvent.tapCreate
+        // 里）。必须先等它彻底退出，否则它随后完成设置时会覆盖即将创建的新 worker
+        // 的 eventTap/runLoop，导致监听线程翻倍、热键回调翻倍（F-09）。
+        if let abandoned = workerLifecycle {
+            _ = abandoned.shutdownSemaphore.wait(timeout: .now() + 2)
+            workerLifecycle = nil
+        }
+
         if hotkey.key.lowercased() != "fn", Self.keyCode(for: hotkey.key) == nil {
             throw HotkeyServiceError.unsupportedKey(hotkey.key)
         }
@@ -62,19 +85,28 @@ final class HotkeyService: @unchecked Sendable {
         self.hotkey = hotkey
         let context = TapContext(self)
         let startupBox = StartupResultBox()
+        let lifecycle = WorkerLifecycle()
+        workerLifecycle = lifecycle
         self.workerThread = Thread { [weak self] in
-            self?.runEventLoop(startupBox: startupBox, context: context)
+            self?.runEventLoop(startupBox: startupBox, lifecycle: lifecycle, context: context)
         }
         workerThread?.name = "VoiceTyper.HotkeyService"
         workerThread?.start()
 
         if startupBox.semaphore.wait(timeout: .now() + 2) == .timedOut {
-            stop()
+            // 不清空 eventTap/runLoop、不等待——worker 可能仍卡在 tapCreate 里。
+            // 标记取消：worker 会在下一个检查点（tapCreate 返回后）自行清理退出，
+            // workerLifecycle 保留给下一次 start() 在继续前等待。
+            lifecycle.cancelled = true
+            workerThread = nil
+            isRunning = false
             throw HotkeyServiceError.startupTimedOut
         }
 
         if let error = startupBox.error {
-            stop()
+            workerLifecycle = nil
+            workerThread = nil
+            isRunning = false
             throw error
         }
 
@@ -93,8 +125,8 @@ final class HotkeyService: @unchecked Sendable {
         }
 
         // 等待 worker 线程完成清理（超时 2 秒防止死锁）
-        if workerThread != nil {
-            _ = shutdownSemaphore.wait(timeout: .now() + 2)
+        if workerThread != nil, let lifecycle = workerLifecycle {
+            _ = lifecycle.shutdownSemaphore.wait(timeout: .now() + 2)
         }
 
         // worker 线程已退出，安全清理主线程侧引用
@@ -102,12 +134,13 @@ final class HotkeyService: @unchecked Sendable {
         runLoopSource = nil
         self.runLoop = nil
         workerThread = nil
+        workerLifecycle = nil
         hotkey = nil
         isActive = false
         isRunning = false
     }
 
-    private func runEventLoop(startupBox: StartupResultBox, context: TapContext) {
+    private func runEventLoop(startupBox: StartupResultBox, lifecycle: WorkerLifecycle, context: TapContext) {
         let mask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
@@ -141,9 +174,21 @@ final class HotkeyService: @unchecked Sendable {
         guard let tap else {
             AppLog.hotkey.error("无法创建事件监听，通常意味着输入监控权限缺失")
             Unmanaged<TapContext>.fromOpaque(contextPtr).release()
-            startupBox.error = HotkeyServiceError.inputMonitoringDenied
-            startupBox.semaphore.signal()
-            shutdownSemaphore.signal()
+            if !lifecycle.cancelled {
+                startupBox.error = HotkeyServiceError.inputMonitoringDenied
+                startupBox.semaphore.signal()
+            }
+            lifecycle.shutdownSemaphore.signal()
+            return
+        }
+
+        // tapCreate 可能耗时超过 start() 的 2 秒超时；若调用方已放弃等待
+        // （lifecycle.cancelled），不再触碰 self.eventTap/runLoop 等共享字段——
+        // 那些字段此时可能已被下一次 start() 的新 worker 占用（F-09）。
+        if lifecycle.cancelled {
+            CFMachPortInvalidate(tap)
+            Unmanaged<TapContext>.fromOpaque(contextPtr).release()
+            lifecycle.shutdownSemaphore.signal()
             return
         }
 
@@ -152,9 +197,18 @@ final class HotkeyService: @unchecked Sendable {
         guard let source else {
             CFMachPortInvalidate(tap)
             Unmanaged<TapContext>.fromOpaque(contextPtr).release()
-            startupBox.error = HotkeyServiceError.startupFailed("无法创建热键事件源")
-            startupBox.semaphore.signal()
-            shutdownSemaphore.signal()
+            if !lifecycle.cancelled {
+                startupBox.error = HotkeyServiceError.startupFailed("无法创建热键事件源")
+                startupBox.semaphore.signal()
+            }
+            lifecycle.shutdownSemaphore.signal()
+            return
+        }
+
+        if lifecycle.cancelled {
+            CFMachPortInvalidate(tap)
+            Unmanaged<TapContext>.fromOpaque(contextPtr).release()
+            lifecycle.shutdownSemaphore.signal()
             return
         }
 
@@ -171,7 +225,7 @@ final class HotkeyService: @unchecked Sendable {
         CFRunLoopRemoveSource(currentRunLoop, source, .commonModes)
         CFMachPortInvalidate(tap)
         Unmanaged<TapContext>.fromOpaque(contextPtr).release()
-        shutdownSemaphore.signal()
+        lifecycle.shutdownSemaphore.signal()
     }
 
     /// 重新启用被系统禁用的事件 tap。运行在 tap 回调线程（worker 线程），

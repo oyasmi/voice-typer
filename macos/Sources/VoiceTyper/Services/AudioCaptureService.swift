@@ -11,12 +11,17 @@ private final class AudioConverterInputState: @unchecked Sendable {
 /// 停止时将剩余不足一帧的尾音通过 `onTailChunk` 发出，随后调用 `onStopped`。
 final class AudioCaptureService: @unchecked Sendable {
     /// 每 600ms 触发一次，传入 float32 PCM 字节（9600 samples = 38400 bytes）
-    var onChunk: ((Data) -> Void)?
-    /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空 Data）
-    var onTailChunk: ((Data) -> Void)?
+    var onChunk: (([Float]) -> Void)?
+    /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空数组）
+    var onTailChunk: (([Float]) -> Void)?
     /// 每次音频输入回调触发一次（约 20–60ms），传入该缓冲区的线性 RMS 电平（0…1 量级，
     /// 未做分贝归一化）。在音频线程调用，消费方负责切换线程与平滑。
     var onLevel: ((Float) -> Void)?
+    /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次，
+    /// 传入用户可读的提示信息。已采到的音频仍会通过 `onTailChunk` 正常交给当前会话
+    /// 完成识别；这里只做"可见告知"，不做自动重建 converter 或自动恢复（F-15）。
+    /// 在主线程触发。
+    var onFatalError: ((String) -> Void)?
 
     let chunkSamples: Int
 
@@ -33,6 +38,8 @@ final class AudioCaptureService: @unchecked Sendable {
     private var ringBuffer: [Float] = []
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
+    /// 转换/丢帧计数：只用于诊断，日志里只记数量，不记音频内容。
+    private var droppedBufferCount = 0
 
     init(chunkSamples: Int = 9600) {
         self.chunkSamples = chunkSamples
@@ -63,22 +70,41 @@ final class AudioCaptureService: @unchecked Sendable {
         }
 
         self.converter = converter
+        droppedBufferCount = 0
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             self?.append(buffer: buffer)
         }
 
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // 启动失败时回滚已安装的 tap，避免残留一个不会再被 stop() 正常清理的挂起状态。
+            inputNode.removeTap(onBus: 0)
+            self.converter = nil
+            throw error
+        }
         isRunning = true
 
         configurationChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: nil
-        ) { _ in
+        ) { [weak self] _ in
             AppLog.audio.warning("音频引擎配置变更（设备切换），当前录音可能受影响")
+            DispatchQueue.main.async {
+                self?.handleConfigurationChangeDuringRecording()
+            }
         }
+    }
+
+    /// 保留已采到的音频交给当前会话完成识别（走与正常停止相同的尾音刷出路径），
+    /// 但明确告知用户设备已变化、本次录音已结束——不做自动重建 converter 或自动恢复。
+    private func handleConfigurationChangeDuringRecording() {
+        guard isRunning else { return }
+        stop()
+        onFatalError?("输入设备已变化，本次录音已结束")
     }
 
     /// 停止录音，将剩余尾音通过 `onTailChunk` 发出。
@@ -89,14 +115,14 @@ final class AudioCaptureService: @unchecked Sendable {
         engine.stop()
         isRunning = false
         removeConfigurationChangeObserver()
+        logDroppedBuffersIfAny()
 
         lock.lock()
         let tail = ringBuffer
         ringBuffer = []
         lock.unlock()
 
-        let tailData = floatsToData(tail)
-        onTailChunk?(tailData)
+        onTailChunk?(tail)
     }
 
     func stopWithoutResult() {
@@ -105,6 +131,7 @@ final class AudioCaptureService: @unchecked Sendable {
         engine.stop()
         isRunning = false
         removeConfigurationChangeObserver()
+        logDroppedBuffersIfAny()
         lock.lock()
         ringBuffer = []
         lock.unlock()
@@ -112,8 +139,27 @@ final class AudioCaptureService: @unchecked Sendable {
 
     // MARK: - Private
 
+    private func recordDroppedBuffer() {
+        lock.lock()
+        droppedBufferCount += 1
+        lock.unlock()
+    }
+
+    /// 只记计数与错误码，不含音频内容（AGENTS.md 日志约束）。
+    private func logDroppedBuffersIfAny() {
+        lock.lock()
+        let count = droppedBufferCount
+        droppedBufferCount = 0
+        lock.unlock()
+        guard count > 0 else { return }
+        AppLog.audio.warning("录音期间丢弃了 \(count, privacy: .public) 个音频缓冲区（转换失败）")
+    }
+
     private func append(buffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
+        guard let converter else {
+            recordDroppedBuffer()
+            return
+        }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let targetFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
@@ -121,7 +167,10 @@ final class AudioCaptureService: @unchecked Sendable {
         guard let convertedBuffer = AVAudioPCMBuffer(
             pcmFormat: targetFormat,
             frameCapacity: max(targetFrameCapacity, 1)
-        ) else { return }
+        ) else {
+            recordDroppedBuffer()
+            return
+        }
 
         let inputState = AudioConverterInputState()
         var error: NSError?
@@ -136,7 +185,10 @@ final class AudioCaptureService: @unchecked Sendable {
         }
 
         guard error == nil, status != .error,
-              let channel = convertedBuffer.floatChannelData?.pointee else { return }
+              let channel = convertedBuffer.floatChannelData?.pointee else {
+            recordDroppedBuffer()
+            return
+        }
 
         let newSamples = Array(UnsafeBufferPointer(start: channel, count: Int(convertedBuffer.frameLength)))
 
@@ -156,17 +208,10 @@ final class AudioCaptureService: @unchecked Sendable {
             let chunk = Array(ringBuffer.prefix(chunkSamples))
             ringBuffer.removeFirst(chunkSamples)
             lock.unlock()
-            onChunk?(floatsToData(chunk))
+            onChunk?(chunk)
             lock.lock()
         }
         lock.unlock()
-    }
-
-    private func floatsToData(_ samples: [Float]) -> Data {
-        samples.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return Data() }
-            return Data(bytes: base, count: ptr.count * MemoryLayout<Float>.size)
-        }
     }
 
     private func removeConfigurationChangeObserver() {

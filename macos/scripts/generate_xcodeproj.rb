@@ -23,7 +23,7 @@ project.root_object.attributes['LastSwiftUpdateCheck'] = '2600'
 project.root_object.attributes['LastUpgradeCheck'] = '2600'
 project.build_configuration_list.set_setting('SWIFT_VERSION', '6.0')
 project.build_configuration_list.set_setting('MACOSX_DEPLOYMENT_TARGET', '14.0')
-project.build_configuration_list.set_setting('MARKETING_VERSION', '3.0.0')
+project.build_configuration_list.set_setting('MARKETING_VERSION', '3.1.0')
 project.build_configuration_list.set_setting('CURRENT_PROJECT_VERSION', '1')
 
 app_target = project.new_target(:application, TARGET_NAME, :osx, '14.0')
@@ -64,7 +64,7 @@ app_target.build_configurations.each do |config|
   settings['CODE_SIGN_STYLE'] = 'Automatic'
   settings['SWIFT_VERSION'] = '6.0'
   settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
-  settings['MARKETING_VERSION'] = '3.0.0'
+  settings['MARKETING_VERSION'] = '3.1.0'
   settings['CURRENT_PROJECT_VERSION'] = '1'
   settings['ENABLE_HARDENED_RUNTIME'] = 'NO'
   # 只出 arm64：见 macos/DESIGN.md 决策记录 D2。
@@ -148,7 +148,11 @@ Dir.glob(File.join(ROOT, 'Tests/VoiceTyperTests/*.swift')).sort.each do |absolut
   test_target.add_file_references([file_ref], '-')
 end
 
-Dir.glob(File.join(ROOT, 'Tests/VoiceTyperTests/Fixtures/*')).sort.each do |absolute_path|
+FIXTURE_EXTENSIONS = %w[.f32 .json .txt .wav].freeze
+
+Dir.glob(File.join(ROOT, 'Tests/VoiceTyperTests/Fixtures/*'))
+   .select { |path| FIXTURE_EXTENSIONS.include?(File.extname(path)) }
+   .sort.each do |absolute_path|
   relative_path = Pathname.new(absolute_path).relative_path_from(Pathname.new(ROOT)).to_s
   file_name = File.basename(relative_path)
   file_ref = fixtures_group.files.find { |ref| ref.path == file_name }

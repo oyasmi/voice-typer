@@ -7,7 +7,8 @@ import Foundation
 /// 任何失败（网络/超时/鉴权/解析）都返回原文，绝不让纠错失败丢掉已经识别出的文本。
 actor LLMCorrector {
     struct Config {
-        var baseURL: String
+        /// 已通过 `LLMEndpoint.chatCompletionsURL(from:)` 校验的完整请求地址。
+        var chatCompletionsURL: URL
         var apiKey: String
         var model: String
         var temperature: Double
@@ -82,7 +83,7 @@ actor LLMCorrector {
             "max_tokens": dynamicMaxTokens,
         ]
 
-        var request = URLRequest(url: URL(string: "\(trimmedBaseURL())/chat/completions")!)
+        var request = URLRequest(url: config.chatCompletionsURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
@@ -94,8 +95,7 @@ actor LLMCorrector {
             throw LLMError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw LLMError.httpStatus(http.statusCode, body)
+            throw LLMError.httpStatus(http.statusCode)
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -112,6 +112,10 @@ actor LLMCorrector {
         }
 
         content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 空响应视为无修正，返回原文而非丢弃已识别结果。
+        if content.isEmpty {
+            return text
+        }
         // 防御：个别模型可能把输入包裹标签一并回显。
         if content.hasPrefix("<asr_text>"), content.hasSuffix("</asr_text>") {
             content = String(content.dropFirst("<asr_text>".count).dropLast("</asr_text>".count))
@@ -120,23 +124,17 @@ actor LLMCorrector {
         return content
     }
 
-    private func trimmedBaseURL() -> String {
-        var url = config.baseURL
-        while url.hasSuffix("/") { url.removeLast() }
-        return url
-    }
-
     enum LLMError: LocalizedError {
         case invalidResponse
-        case httpStatus(Int, String)
+        case httpStatus(Int)
         case malformedResponse
 
         var errorDescription: String? {
             switch self {
             case .invalidResponse:
                 return "LLM 服务响应无效"
-            case .httpStatus(let code, let body):
-                return "LLM API 错误 (\(code)): \(body)"
+            case .httpStatus(let code):
+                return "LLM API 错误 (\(code))"
             case .malformedResponse:
                 return "LLM 响应格式无法解析"
             }

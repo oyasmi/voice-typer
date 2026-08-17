@@ -92,9 +92,15 @@ enum ModelLocator {
         var lfrM = 7
         var lfrN = 6
 
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            return (opts, lfrM, lfrN)
+        }
         guard let content = try? String(contentsOf: configURL, encoding: .utf8),
               let yaml = try? Yams.load(yaml: content) as? [String: Any],
               let frontendConf = yaml["frontend_conf"] as? [String: Any] else {
+            // 文件存在但解析失败：与"文件缺失回落默认值"是不同性质的问题，记 warning
+            // 而不是静默吞掉（F-08 / AGENTS.md 不静默吞掉异常）。
+            AppLog.asr.warning("config.yaml 存在但 frontend_conf 解析失败，已回落默认 fbank 参数: \(configURL.path, privacy: .public)")
             return (opts, lfrM, lfrN)
         }
 

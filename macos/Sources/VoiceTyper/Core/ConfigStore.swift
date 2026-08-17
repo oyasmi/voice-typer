@@ -4,12 +4,20 @@ import Yams
 
 final class ConfigStore {
     private let fileManager: FileManager
+    private let legacyConfigURLOverride: URL?
     let configDirectoryURL: URL
     let configURL: URL
 
-    /// - Parameter baseDirectoryOverride: 仅供测试使用，跳过真实的 Application Support 目录。
-    init(fileManager: FileManager = .default, baseDirectoryOverride: URL? = nil) {
+    /// - Parameters:
+    ///   - baseDirectoryOverride: 仅供测试使用，跳过真实的 Application Support 目录。
+    ///   - legacyConfigURLOverride: 仅供测试使用，跳过真实的 `~/.config/voice_typer/config.yaml`。
+    init(
+        fileManager: FileManager = .default,
+        baseDirectoryOverride: URL? = nil,
+        legacyConfigURLOverride: URL? = nil
+    ) {
         self.fileManager = fileManager
+        self.legacyConfigURLOverride = legacyConfigURLOverride
         let appSupport = baseDirectoryOverride
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
@@ -20,7 +28,10 @@ final class ConfigStore {
     func loadOrCreate() throws -> AppConfig {
         if !fileManager.fileExists(atPath: configURL.path) {
             try ensureDefaultFiles()
-            if let migrated = ConfigMigrator.migrateFromLegacyClientConfig(fileManager: fileManager) {
+            if let migrated = ConfigMigrator.migrateFromLegacyClientConfig(
+                fileManager: fileManager,
+                legacyURLOverride: legacyConfigURLOverride
+            ) {
                 try save(config: migrated)
                 return migrated
             }
@@ -29,7 +40,7 @@ final class ConfigStore {
         let content = try String(contentsOf: configURL, encoding: .utf8)
 
         do {
-            return try YAMLDecoder().decode(AppConfig.self, from: content)
+            return try YAMLDecoder().decode(AppConfig.self, from: content).validated()
         } catch {
             throw NSError(
                 domain: AppConstants.bundleIdentifier,
@@ -44,7 +55,7 @@ final class ConfigStore {
 
     func save(config: AppConfig) throws {
         try ensureDefaultFiles()
-        let content = serializedYAML(for: config)
+        let content = serializedYAML(for: config.validated())
         try writeAtomically(content: content, to: configURL)
     }
 

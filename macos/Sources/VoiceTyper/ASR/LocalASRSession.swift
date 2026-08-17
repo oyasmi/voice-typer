@@ -1,15 +1,14 @@
 import Foundation
 
-/// 单次录音会话的本地识别接缝层。接口**刻意与旧的 `StreamingASRClient`（WebSocket 客户端）
-/// 逐字一致**，使 `VoiceTyperController` 的四个回调闭包可以原样搬运，只需把
-/// `client.connect(server:llmRecorrect:)` 换成 `asrService.makeSession(llmCorrector:)`。
+/// 单次录音会话的本地识别接缝层：接收流式音频、驱动滑窗预览、录音结束后离线整段
+/// 复识别、可选 LLM 纠错，通过四个回调把结果交给 `VoiceTyperController`。
 ///
-/// 职责映射（对照服务端 `app.StreamRecognizeHandler`，见 macos/DESIGN.md §5.2）：
+/// 行为：
 /// - 有预览在跑就跳过（`previewInFlight`），跳过的音频在下次预览一并处理
 /// - partial 只在文本变化时下发
 /// - `isFinalizing` 后不再补发 partial
 /// - 预览异常 → `onWarning`，会话继续
-/// - 300 秒会话上限 → 一次性 `onWarning`，之后静默丢弃新音频
+/// - 单段会话上限 → 一次性 `onWarning`，之后静默丢弃新音频
 /// - finalize → 离线整段识别 → （可选）LLM 纠错 → `onFinal`
 @MainActor
 final class LocalASRSession {
@@ -18,7 +17,10 @@ final class LocalASRSession {
     var onWarning: ((String) -> Void)?
     var onError: ((String) -> Void)?
 
-    private static let maxSessionSamples = 300 * 16000
+    /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
+    /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
+    /// 与 finalize 耗时实测（F-07b）。
+    private static let maxSessionSamples = 120 * 16000
 
     private let asrQueue: DispatchQueue
     private let engineAccessor: () -> (any SenseVoiceRecognizing)?
@@ -32,6 +34,11 @@ final class LocalASRSession {
     private var isFinalizing = false
     private var capped = false
     private var closed = false
+    /// 与 `closed` 同步置位，供 asrQueue 闭包在跑推理前短路判断（F-07d）：
+    /// `close()` 之后已入队的闭包仍会执行，但不应该真的跑一遍 CTC 解码只为丢弃结果。
+    /// 只在 close() 里写一次、单调地从 false 变 true，跨线程读取的粗粒度竞态可接受，
+    /// 与 `ASRService.engine` 的 `nonisolated(unsafe)` 约定一致。
+    private nonisolated(unsafe) var closedForQueue = false
     private var lastPreview = ""
     private var finalizeWatchdog: Task<Void, Never>?
 
@@ -41,17 +48,9 @@ final class LocalASRSession {
         self.llmCorrector = llmCorrector
     }
 
-    func sendAudio(_ data: Data) {
+    func sendAudio(_ samples: [Float]) {
         guard !closed, !isFinalizing else { return }
-        guard data.count % 4 == 0 else {
-            onWarning?("音频帧长度 \(data.count) 不是 4 的倍数，已丢弃")
-            return
-        }
-        guard !data.isEmpty else { return }
-
-        let samples: [Float] = data.withUnsafeBytes { raw in
-            Array(raw.bindMemory(to: Float.self))
-        }
+        guard !samples.isEmpty else { return }
 
         ensureBufferIfPossible()
         guard let buffer else {
@@ -102,6 +101,7 @@ final class LocalASRSession {
     func close() {
         guard !closed else { return }
         closed = true
+        closedForQueue = true
         finalizeWatchdog?.cancel()
         finalizeWatchdog = nil
         buffer = nil
@@ -123,6 +123,7 @@ final class LocalASRSession {
         guard !isFinalizing, !previewInFlight, let buffer else { return }
         previewInFlight = true
         asrQueue.async { [weak self] in
+            if self?.closedForQueue == true { return }
             let result = Result { try buffer.preview() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -166,6 +167,7 @@ final class LocalASRSession {
 
     private func runFinalize(on buffer: RecognitionBuffer) {
         asrQueue.async { [weak self] in
+            if self?.closedForQueue == true { return }
             let result = Result { try buffer.finalize() }
             Task { @MainActor [weak self] in
                 guard let self, !self.closed else { return }

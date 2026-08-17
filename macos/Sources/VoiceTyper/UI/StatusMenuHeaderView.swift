@@ -54,9 +54,9 @@ final class StatusMenuHeaderView: NSView {
         ])
     }
 
-    func update(state: AppState, hotkeyDisplay: String, serverStatus: String) {
+    func update(state: AppState, hotkeyDisplay: String, engineStatus: String) {
         titleLabel.stringValue = "\(AppConstants.appName) · \(state.menuTitle)"
-        subtitleLabel.stringValue = "\(hotkeyDisplay) · \(serverStatus)"
+        subtitleLabel.stringValue = "\(hotkeyDisplay) · \(engineStatus)"
         dotView.layer?.backgroundColor = Self.dotColor(for: state).cgColor
     }
 

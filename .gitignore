@@ -65,6 +65,7 @@ models/
 
 # 音频与运行时文件
 *.wav
+!macos/Tests/VoiceTyperTests/Fixtures/*.wav
 *.mp3
 *.m4a
 *.flac

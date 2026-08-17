@@ -13,7 +13,7 @@ final class LLMCorrectorTests: XCTestCase {
     private func makeCorrector(session: URLSession) -> LLMCorrector {
         LLMCorrector(
             config: LLMCorrector.Config(
-                baseURL: "https://stub.invalid/v1",
+                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
                 apiKey: "test-key",
                 model: "gpt-4o-mini",
                 temperature: 0,
@@ -64,6 +64,17 @@ final class LLMCorrectorTests: XCTestCase {
         let original = "原始文本"
         let result = await corrector.correct(original)
         XCTAssertEqual(result, original)
+    }
+
+    func testEmptyContentFallsBackToOriginalText() async {
+        StubURLProtocol.handler = { _ in
+            let body = #"{"choices":[{"message":{"content":"   "},"finish_reason":"stop"}]}"#
+            return (200, body)
+        }
+        let corrector = makeCorrector(session: makeSession())
+        let original = "已识别的原文"
+        let result = await corrector.correct(original)
+        XCTAssertEqual(result, original, "2xx 空 content 不应丢弃已识别文本（F-03）")
     }
 
     func testEchoedTagsAreStripped() async {

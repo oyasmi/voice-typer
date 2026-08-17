@@ -49,34 +49,49 @@ final class ModelDownloader: NSObject {
     private var activeProgressHandler: ((Double) -> Void)?
     private var isCancelled = false
 
-    override init() {
+    private let fileSpecs: [FileSpec]
+    private let downloadDestination: URL
+    private var totalBytes: Int64 { fileSpecs.reduce(0) { $0 + $1.sizeHint } }
+
+    /// - Parameters:
+    ///   - sessionConfiguration: 仅供测试注入打桩的 URLProtocol，默认使用真实网络。
+    ///   - fileSpecs: 仅供测试注入较小的假文件清单，默认使用真实的 4 个模型文件。
+    ///   - downloadDestination: 仅供测试注入临时目录，默认使用 `ModelLocator.downloadDestination`。
+    init(
+        sessionConfiguration: URLSessionConfiguration = .default,
+        fileSpecs: [FileSpec] = ModelDownloader.files,
+        downloadDestination: URL = ModelLocator.downloadDestination
+    ) {
+        self.fileSpecs = fileSpecs
+        self.downloadDestination = downloadDestination
         super.init()
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = URLSession(configuration: sessionConfiguration, delegate: self, delegateQueue: nil)
     }
 
-    /// 下载全部 4 个文件到 `ModelLocator.downloadDestination`；已存在且校验通过的文件跳过。
+    /// 下载全部文件到 `downloadDestination`；已存在且校验通过的文件跳过。
     /// - Parameter onProgress: 总体进度回调（0…1），在 MainActor 上触发。
     func downloadAll(onProgress: @escaping (Double) -> Void) async throws {
+        defer { session.finishTasksAndInvalidate() }
         isCancelled = false
-        let dir = ModelLocator.downloadDestination
+        let dir = downloadDestination
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         var completedBytes: Int64 = 0
-        for spec in Self.files {
+        for spec in fileSpecs {
             if isCancelled { throw DownloadError.cancelled }
             let destURL = dir.appendingPathComponent(spec.name)
-            if FileManager.default.fileExists(atPath: destURL.path), Self.sha256Matches(destURL, spec.sha256) {
+            if FileManager.default.fileExists(atPath: destURL.path), await Self.sha256Matches(destURL, spec.sha256) {
                 completedBytes += spec.sizeHint
-                onProgress(Double(completedBytes) / Double(Self.totalBytes))
+                onProgress(Double(completedBytes) / Double(totalBytes))
                 continue
             }
             let base = completedBytes
             try await downloadOne(spec, into: dir) { fileProgress in
                 let overall = Double(base) + Double(spec.sizeHint) * fileProgress
-                onProgress(min(1.0, overall / Double(Self.totalBytes)))
+                onProgress(min(1.0, overall / Double(self.totalBytes)))
             }
             completedBytes += spec.sizeHint
-            onProgress(min(1.0, Double(completedBytes) / Double(Self.totalBytes)))
+            onProgress(min(1.0, Double(completedBytes) / Double(totalBytes)))
         }
     }
 
@@ -92,6 +107,7 @@ final class ModelDownloader: NSObject {
 
         var lastError: Error?
         for attempt in 0..<2 {
+            if isCancelled { throw DownloadError.cancelled }
             do {
                 try await performDownload(
                     url: Self.remoteURL(for: spec.name),
@@ -99,14 +115,13 @@ final class ModelDownloader: NSObject {
                     resumeDataURL: resumeDataURL,
                     onProgress: onProgress
                 )
-                guard Self.sha256Matches(partURL, spec.sha256) else {
+                guard await Self.sha256Matches(partURL, spec.sha256) else {
                     try? FileManager.default.removeItem(at: partURL)
                     try? FileManager.default.removeItem(at: resumeDataURL)
                     lastError = DownloadError.checksumMismatch(spec.name)
                     continue
                 }
-                try? FileManager.default.removeItem(at: destURL)
-                try FileManager.default.moveItem(at: partURL, to: destURL)
+                _ = try FileManager.default.replaceItemAt(destURL, withItemAt: partURL)
                 try? FileManager.default.removeItem(at: resumeDataURL)
                 return
             } catch {
@@ -159,11 +174,21 @@ final class ModelDownloader: NSObject {
         return components.url!
     }
 
-    nonisolated static func sha256Matches(_ url: URL, _ expected: String) -> Bool {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
-        let digest = SHA256.hash(data: data)
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return hex == expected
+    /// 在 detached task 里跑：241 MB 文件的 SHA256（虽有硬件加速、约 0.1~0.2s）
+    /// 不应占用调用方所在的 actor（F-12）。
+    nonisolated static func sha256Matches(_ url: URL, _ expected: String) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+            let digest = SHA256.hash(data: data)
+            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            return hex == expected
+        }.value
+    }
+
+    nonisolated private static func fileName(for task: URLSessionTask) -> String? {
+        guard let url = task.originalRequest?.url else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "FilePath" })?.value
     }
 }
 
@@ -187,6 +212,16 @@ extension ModelDownloader: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // 非 2xx（如 ModelScope 返回 404/HTML）不应把响应体当模型文件落盘（F-12）。
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let name = Self.fileName(for: downloadTask) ?? "unknown"
+            Task { @MainActor in
+                self.activeContinuation?.resume(throwing: DownloadError.httpStatus(name, http.statusCode))
+                self.activeContinuation = nil
+            }
+            return
+        }
+
         // location 指向的文件在本回调返回后会被系统删除，必须同步搬到一个我们拥有的临时位置，
         // 再回到 MainActor 完成剩余流程（校验/move）。
         let stagedURL = FileManager.default.temporaryDirectory

@@ -18,6 +18,12 @@ import OnnxRuntimeBindings
 /// （见 RecognitionBufferTests）而不必加载真实 ONNX 模型。
 protocol SenseVoiceRecognizing: AnyObject, Sendable {
     func recognize(_ samples: [Float]) throws -> String
+    func setLanguage(_ language: ASRLanguage)
+}
+
+extension SenseVoiceRecognizing {
+    /// 默认空实现：并非所有假实现（测试用）都关心语言切换。
+    func setLanguage(_ language: ASRLanguage) {}
 }
 
 /// `@unchecked Sendable`：实例只应在 `ASRService.asrQueue`（单一串行队列）上访问，
@@ -36,7 +42,32 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
     private let lfrN: Int
     private var languageID: Int32
 
+    /// 侧载模型（`asr.model_dir`）的 config.yaml / am.mvn 相互独立，解析失败时各自静默
+    /// 回落默认值，二者之间此前没有任何一致性校验：`lfr_m × n_mels` 与 am.mvn 实际维度
+    /// 不匹配会在 `applyCMVN` 里数组越界崩溃，`lfr_n = 0` 会在 `applyLFR` 里除零 trap（F-08）。
+    enum ConfigurationError: LocalizedError {
+        case inconsistentDimensions(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .inconsistentDimensions(let detail):
+                return "模型参数不自洽，请检查侧载模型的 config.yaml 与 am.mvn: \(detail)"
+            }
+        }
+    }
+
     init(bundle: ModelBundle, language: ASRLanguage, threads: Int) throws {
+        let fbankOptions = bundle.fbankOptions
+        guard bundle.lfrM >= 1, bundle.lfrN >= 1,
+              fbankOptions.numMelBins > 0,
+              fbankOptions.frameLengthMs > 0, fbankOptions.frameShiftMs > 0
+        else {
+            throw ConfigurationError.inconsistentDimensions(
+                "lfr_m=\(bundle.lfrM) lfr_n=\(bundle.lfrN) n_mels=\(fbankOptions.numMelBins) "
+                    + "frame_length_ms=\(fbankOptions.frameLengthMs) frame_shift_ms=\(fbankOptions.frameShiftMs)"
+            )
+        }
+
         env = try ORTEnv(loggingLevel: .warning)
 
         let options = try ORTSessionOptions()
@@ -50,8 +81,22 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
 
         session = try ORTSession(env: env, modelPath: bundle.onnxFileURL.path, sessionOptions: options)
         frontend = FbankFrontend(opts: bundle.fbankOptions)
-        cmvn = try CMVNStats.parse(contentsOf: bundle.cmvnURL)
-        tokens = try ModelLocator.loadTokens(from: bundle.tokensURL)
+        let parsedCMVN = try CMVNStats.parse(contentsOf: bundle.cmvnURL)
+        let parsedTokens = try ModelLocator.loadTokens(from: bundle.tokensURL)
+
+        let expectedDim = bundle.lfrM * fbankOptions.numMelBins
+        guard parsedCMVN.means.count == expectedDim, parsedCMVN.vars.count == expectedDim else {
+            throw ConfigurationError.inconsistentDimensions(
+                "lfr_m(\(bundle.lfrM)) × n_mels(\(fbankOptions.numMelBins)) = \(expectedDim)，"
+                    + "但 am.mvn 维度为 means=\(parsedCMVN.means.count) vars=\(parsedCMVN.vars.count)"
+            )
+        }
+        guard parsedTokens.count > 1 else {
+            throw ConfigurationError.inconsistentDimensions("tokens.json 词表为空或只有 1 个 token")
+        }
+
+        cmvn = parsedCMVN
+        tokens = parsedTokens
         lfrM = bundle.lfrM
         lfrN = bundle.lfrN
         languageID = language.tokenID
@@ -122,11 +167,12 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         let logitsData = try logitsValue.tensorData() as Data
         let numFrames = Int(validFrames)
         let neededFloats = numFrames * vocabSize
-        let logits: [Float] = logitsData.withUnsafeBytes { raw in
-            Array(raw.bindMemory(to: Float.self).prefix(neededFloats))
+        // 直接在 ORT 输出的底层内存上解码，不构造中间 [Float] 副本：300 秒音频场景下
+        // 可省去约 500MB 的峰值内存（logits 与 Swift 副本同时驻留）（F-07a）。
+        return logitsData.withUnsafeBytes { raw -> String in
+            guard raw.count >= neededFloats * MemoryLayout<Float>.size,
+                  let base = raw.bindMemory(to: Float.self).baseAddress else { return "" }
+            return CTCDecoder.decode(logits: base, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
         }
-        guard logits.count == neededFloats else { return "" }
-
-        return CTCDecoder.decode(logits: logits, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
     }
 }

@@ -9,17 +9,24 @@ enum CTCDecoder {
     ///   - logits: `[numFrames * vocabSize]` 行主序展平的 CTC logits。
     ///   - tokens: 词表，下标即 token id。
     static func decode(logits: [Float], numFrames: Int, vocabSize: Int, tokens: [String]) -> String {
-        guard numFrames > 0, vocabSize > 0 else { return "" }
+        logits.withUnsafeBufferPointer { buf in
+            decode(logits: buf.baseAddress, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
+        }
+    }
+
+    /// 零拷贝入口：直接在 ORT 输出的底层内存上解码，不构造中间 `[Float]` 副本。
+    /// 300 秒音频场景下可省去约 500MB 的 logits 拷贝峰值（F-07a）。
+    /// - Parameter logits: 指向 `[numFrames * vocabSize]` 行主序展平数据的指针。
+    static func decode(logits: UnsafePointer<Float>?, numFrames: Int, vocabSize: Int, tokens: [String]) -> String {
+        guard numFrames > 0, vocabSize > 0, let logits else { return "" }
 
         var ids = [Int](repeating: 0, count: numFrames)
-        logits.withUnsafeBufferPointer { buf in
-            for t in 0..<numFrames {
-                var maxVal: Float = 0
-                var maxIdx: vDSP_Length = 0
-                let rowPtr = buf.baseAddress! + t * vocabSize
-                vDSP_maxvi(rowPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
-                ids[t] = Int(maxIdx)
-            }
+        for t in 0..<numFrames {
+            var maxVal: Float = 0
+            var maxIdx: vDSP_Length = 0
+            let rowPtr = logits + t * vocabSize
+            vDSP_maxvi(rowPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
+            ids[t] = Int(maxIdx)
         }
 
         // torch.unique_consecutive 的等价实现：仅保留与前一帧不同的位置。

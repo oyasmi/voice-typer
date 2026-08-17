@@ -376,10 +376,11 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 ```
 - 持有 `asrQueue`（串行，`.userInitiated`）。**所有推理串行**，与服务端单 worker executor 一致。
 - **空闲卸载**：`asr.idle_unload_minutes`（默认 10，0=永不）。计时器到点后在 `asrQueue` 上释放
-  engine，`state = .unloaded`；`makeSession()` 发现未加载时**异步重新加载并与录音并行**，
-  首个 partial 延后约 0.85s，finalize 不受影响（除非用户只说了不到 1 秒）。
+  engine，`state = .suspendedForIdle`（与"尚未加载"的 `.unloaded` 区分，避免状态变化被无差别
+  转发时又反向触发自动预加载）；热键监听不受影响，`makeSession()` 发现未加载时**异步重新
+  加载并与录音并行**，首个 partial 延后约 0.85s，finalize 不受影响（除非用户只说了不到 1 秒）。
 
-#### `LocalASRSession`（接缝层，**接口刻意与旧 `StreamingASRClient` 逐字一致**）
+#### `LocalASRSession`（单次录音会话的本地识别接缝层）
 ```swift
 @MainActor final class LocalASRSession {
     var onPartial: ((String) -> Void)?
@@ -461,7 +462,6 @@ asr:
   language: "auto"          # auto / zh / en / yue / ja / ko
   threads: 0                # 0 = 自动（min(4, 核数)）
   model_dir: ""             # 留空 = 按 ModelLocator 优先级自动定位（§5.2）
-  preview_window: 15        # 秒；预览滑窗，进阶项，UI 不暴露
   idle_unload_minutes: 10   # 0 = 常驻不卸载
 llm:
   enabled: false
@@ -525,7 +525,7 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
 | 页 | 内容 |
 | --- | --- |
 | 权限 | 麦克风 / 辅助功能 / 输入监听（原样保留）。**删掉服务端连通性检查项** |
-| 识别 | ① **模型卡片**：未就绪时显示「需要下载语音模型 · 230 MB」+「开始下载」+ 进度条（已下/总量、速度）+「取消」；就绪时显示「SenseVoice-Small · int8 · 230 MB · 已就绪」+ 模型路径 +「重新加载」<br>② 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>③ 智能纠错：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 + 「测试纠错」 |
+| 识别 | ① **模型卡片**（当前实现）：未就绪时显示「需要下载语音模型」+「开始下载」+ 下载中的百分比进度 +「取消」（下载失败/取消后可原地重试，不会永久 disabled）；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后显示「引擎已空闲卸载」，下次录音自动重新加载，无需手动操作。速度/字节数/模型路径暂未在 UI 呈现<br>② 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>③ 智能纠错：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 + 「测试纠错」 |
 | 热键 | 原样保留 |
 | 通用 | 开机自启、HUD 不透明度、**新增**「空闲 N 分钟后卸载模型」 |
 
@@ -600,7 +600,7 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 | **RecognitionBufferTests** | 合成音频驱动滑窗：窗口滚动、切点能量最小、`finalize` 走完整音频 | 预览单调增长不回退为空；finalize 输入长度 == 总样本数 |
 | **ConfigStoreTests** | YAML 读写往返、缺字段回落默认、`~/.config` 迁移 | 往返幂等；迁移只带走 hotkey/opacity |
 | **LLMCorrectorTests** | `URLProtocol` 打桩：正常 / `finish_reason=length` / 5xx / 超时 | 后三者均返回**原文**，不抛给用户 |
-| **ModelDownloaderTests** | `URLProtocol` 打桩：正常、中断后续传（206）、sha256 不匹配、磁盘满 | 续传不重下已完成部分；校验失败不留下 `.part` 以外的文件；错误信息含手动放置说明 |
+| **ModelDownloaderTests** | 纯函数校验（sha256、文件清单自洽性、下载顺序）+ `URLProtocol` 打桩：HTTP 非 2xx、sha256 校验失败重试一次后放弃、取消后不再发起下一次尝试 | 非 2xx 响应体不落盘；校验失败重试上限为 1 次；取消立即生效不残留旧尝试 |
 
 前两组依赖本机已有模型（`ModelLocator` 任一优先级命中即可），缺失时 `XCTSkip`，
 保证 CI / 无模型环境下仍能跑其余测试。

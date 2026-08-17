@@ -31,7 +31,7 @@ enum SetupTab: Int, CaseIterable {
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onRequestPermission: ((PermissionKind) -> Void)?
     var onOpenSystemSettings: ((PermissionKind) -> Void)?
-    var onRetryServerCheck: (() -> Void)?
+    var onRetryReadinessCheck: (() -> Void)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
     /// 热键录制期间挂起 / 恢复全局热键监听。
     var onSuspendHotkey: ((Bool) -> Void)?
@@ -89,7 +89,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.downloadProgress = downloadProgress
         viewModel.hotkeyDisplay = hotkeyDisplay
         viewModel.engineStatus = engineStatus
-        if asrState != .modelMissing, downloadProgress == nil {
+        // 只要不在下载中，busy 状态就必须完全由当前 asrState 决定；
+        // 不能被 asrState == .modelMissing 卡住导致下载失败/取消后按钮永久 disabled（F-11）。
+        if downloadProgress == nil {
             viewModel.modelActionBusy = (asrState == .loading)
         }
     }

@@ -95,7 +95,7 @@ final class AppCoordinator {
             controller.onOpenSystemSettings = { [weak self] kind in
                 self?.permissionCenter.openSystemSettings(for: kind)
             }
-            controller.onRetryServerCheck = { [weak self] in
+            controller.onRetryReadinessCheck = { [weak self] in
                 Task { await self?.reevaluateReadiness() }
             }
             controller.onSaveConfig = { [weak self] updatedConfig in
@@ -165,7 +165,9 @@ final class AppCoordinator {
         }
     }
 
-    private var isModelReady: Bool { asrService.state == .ready }
+    private var isModelReady: Bool {
+        asrService.state == .ready || asrService.state == .suspendedForIdle
+    }
 
     /// 重新评估权限与模型就绪状态，并驱动状态机。
     ///
@@ -208,7 +210,9 @@ final class AppCoordinator {
             setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
         case .failed(let message):
             currentState = .error("模型加载失败: \(message)")
-        case .ready:
+        case .ready, .suspendedForIdle:
+            // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
+            // 由 makeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
             activateReadyState()
         }
 
@@ -269,6 +273,19 @@ final class AppCoordinator {
                 self.modelDownloader = nil
                 await self.asrService.reload()
                 await self.reevaluateReadiness()
+            } catch let error as ModelDownloader.DownloadError {
+                self.isDownloadingModel = false
+                self.modelDownloader = nil
+                if case .cancelled = error {
+                    // 用户主动取消：回到 .modelMissing 原地重试，而不是显示为红色失败态；
+                    // resume 数据已由 ModelDownloader 落盘保留（F-11）。
+                    await self.reevaluateReadiness()
+                } else {
+                    AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
+                    self.currentState = .error("模型下载失败: \(error.localizedDescription)")
+                    self.updateStatusUI()
+                    self.syncSetupWindow()
+                }
             } catch {
                 self.isDownloadingModel = false
                 self.modelDownloader = nil
@@ -281,8 +298,11 @@ final class AppCoordinator {
     }
 
     private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Bool {
+        guard let chatURL = LLMEndpoint.chatCompletionsURL(from: llmConfig.baseURL) else {
+            return false
+        }
         let corrector = LLMCorrector(config: LLMCorrector.Config(
-            baseURL: llmConfig.baseURL,
+            chatCompletionsURL: chatURL,
             apiKey: apiKey,
             model: llmConfig.model,
             temperature: llmConfig.temperature,
@@ -342,7 +362,7 @@ final class AppCoordinator {
         }
 
         voiceTyperController?.onRecognizedText = { text in
-            AppLog.app.info("识别结果: \(text, privacy: .public)")
+            AppLog.app.info("识别完成 chars=\(text.count, privacy: .public)")
         }
     }
 
@@ -350,7 +370,7 @@ final class AppCoordinator {
         statusBarController.update(
             state: currentState,
             hotkeyDisplay: config.hotkey.displayString,
-            serverStatus: engineStatusText()
+            engineStatus: engineStatusText()
         )
     }
 
@@ -363,9 +383,33 @@ final class AppCoordinator {
         setupWindowController?.loadEditableContent(config: config)
     }
 
+    enum ConfigSaveError: LocalizedError {
+        case dictationInProgress
+
+        var errorDescription: String? {
+            "正在录音/识别/输入，请等待当前听写完成后再保存此项设置"
+        }
+    }
+
     private func applyConfig(_ updatedConfig: AppConfig) async throws {
+        let previousConfig = config
+        let onlyUIChanged = previousConfig.asr == updatedConfig.asr
+            && previousConfig.llm == updatedConfig.llm
+            && previousConfig.hotkey == updatedConfig.hotkey
+        // 会破坏性重建控制器/热键监听的保存（非 UI-only）在听写进行中会丢已录制内容，
+        // 拒绝而不是静默销毁；HUD 透明度等 UI-only 改动不受影响，可随时保存。
+        if !onlyUIChanged, currentState.isActiveDictation {
+            throw ConfigSaveError.dictationInProgress
+        }
+
         try configStore.save(config: updatedConfig)
-        try await reloadAndReevaluateAfterSettingsChange()
+        if onlyUIChanged {
+            // 只有 ui 段变化：不销毁/重建控制器，只更新内存配置与 HUD/设置窗口显示。
+            config = updatedConfig.validated()
+            refreshSetupWindowEditorContent()
+        } else {
+            try await reloadAndReevaluateAfterSettingsChange()
+        }
     }
 
     private func reloadAndReevaluateAfterSettingsChange() async throws {
@@ -396,6 +440,8 @@ final class AppCoordinator {
         switch asrService.state {
         case .ready:
             return "引擎已就绪"
+        case .suspendedForIdle:
+            return "引擎已空闲卸载，下次录音自动加载"
         case .loading:
             return "模型加载中…"
         case .modelMissing:

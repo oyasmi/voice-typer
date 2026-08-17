@@ -19,8 +19,12 @@ enum ConfigMigrator {
         var ui: UI?
     }
 
-    static func migrateFromLegacyClientConfig(fileManager: FileManager) -> AppConfig? {
-        let legacyURL = fileManager.homeDirectoryForCurrentUser
+    /// - Parameter legacyURLOverride: 仅供测试使用，跳过真实的 `~/.config/voice_typer/config.yaml`。
+    static func migrateFromLegacyClientConfig(
+        fileManager: FileManager,
+        legacyURLOverride: URL? = nil
+    ) -> AppConfig? {
+        let legacyURL = legacyURLOverride ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".config", isDirectory: true)
             .appendingPathComponent("voice_typer", isDirectory: true)
             .appendingPathComponent("config.yaml")

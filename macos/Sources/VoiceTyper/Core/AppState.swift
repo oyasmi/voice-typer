@@ -17,6 +17,16 @@ enum AppState: Equatable {
     case paused
     case error(String)
 
+    /// 录音/识别/纠错/插入进行中：此时保存设置若销毁控制器会丢已录制内容（F-13）。
+    var isActiveDictation: Bool {
+        switch self {
+        case .recording, .recognizing, .inserting:
+            return true
+        default:
+            return false
+        }
+    }
+
     var menuTitle: String {
         switch self {
         case .booting:

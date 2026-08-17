@@ -9,7 +9,10 @@ final class ConfigStoreTests: XCTestCase {
     override func setUpWithError() throws {
         tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        store = ConfigStore(baseDirectoryOverride: tempDir)
+        // 指向一个必然不存在的路径，避免在装过旧客户端的开发机上读到真实的
+        // ~/.config/voice_typer/config.yaml 导致断言随机失败（F-01b）。
+        let nonexistentLegacyURL = tempDir.appendingPathComponent("legacy-not-present.yaml")
+        store = ConfigStore(baseDirectoryOverride: tempDir, legacyConfigURLOverride: nonexistentLegacyURL)
     }
 
     override func tearDownWithError() throws {

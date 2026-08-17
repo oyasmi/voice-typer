@@ -67,6 +67,8 @@ final class SettingsViewModel {
     var launchAtLogin = false
     var hudOpacity = 0.85
     var idleUnloadMinutes = 10
+    var generalMessage = ""
+    var generalMessageKind: SettingsMessageKind = .info
 
     // MARK: 注入的回调
     var onRequestPermission: ((PermissionKind) -> Void)?
@@ -113,6 +115,11 @@ final class SettingsViewModel {
             recognitionMessageKind = .error
             return
         }
+        guard LLMEndpoint.chatCompletionsURL(from: draft.baseURL) != nil else {
+            recognitionMessage = "Base URL 格式不合法，请检查协议头（http/https）与地址。"
+            recognitionMessageKind = .error
+            return
+        }
         recognitionBusy = true
         recognitionMessage = "正在测试纠错…"
         recognitionMessageKind = .info
@@ -129,22 +136,38 @@ final class SettingsViewModel {
     }
 
     func saveRecognitionSettings() {
+        let draftLLM = draftLLMConfig()
+        if draftLLM.enabled, LLMEndpoint.chatCompletionsURL(from: draftLLM.baseURL) == nil {
+            recognitionMessage = "Base URL 格式不合法，请检查协议头（http/https）与地址，设置未保存。"
+            recognitionMessageKind = .error
+            return
+        }
         var config = loadedConfig
         config.asr.language = language
-        config.llm = draftLLMConfig()
+        config.llm = draftLLM
         recognitionBusy = true
         recognitionMessage = "正在保存并应用设置…"
         recognitionMessageKind = .info
         let apiKey = llmAPIKey
+        let previousAPIKey = KeychainStore.loadLLMAPIKey()
         Task { [weak self] in
             guard let self else { return }
+            // 先写 Keychain、检查返回值（原先被丢弃）：写失败必须中止，
+            // 否则界面显示"已保存"而纠错永远 401（F-13）。
+            guard KeychainStore.saveLLMAPIKey(apiKey) else {
+                self.recognitionMessage = "API Key 写入 Keychain 失败，设置未保存。"
+                self.recognitionMessageKind = .error
+                self.recognitionBusy = false
+                return
+            }
             do {
-                KeychainStore.saveLLMAPIKey(apiKey)
                 try await self.onSaveConfig?(config)
                 self.loadedConfig = config
                 self.recognitionMessage = "设置已保存并生效。"
                 self.recognitionMessageKind = .success
             } catch {
+                // YAML 写入失败：尽力把 Keychain 回滚到保存前的值，避免两者状态不一致。
+                _ = KeychainStore.saveLLMAPIKey(previousAPIKey)
                 self.recognitionMessage = "保存失败：\(error.localizedDescription)"
                 self.recognitionMessageKind = .error
             }
@@ -240,7 +263,10 @@ final class SettingsViewModel {
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
             } catch {
-                // 透明度保存失败不打扰用户，仅记录到内联消息位（通用页无固定消息位，静默）。
+                // 不静默吞掉异常（AGENTS.md）：失败不更新 loadedConfig（避免以错误基线覆盖
+                // 后续即时保存），并把失败告知用户，而不是只吞掉。
+                self.generalMessage = "HUD 透明度保存失败：\(error.localizedDescription)"
+                self.generalMessageKind = .error
             }
         }
     }
@@ -250,8 +276,13 @@ final class SettingsViewModel {
         updated.asr.idleUnloadMinutes = idleUnloadMinutes
         Task { [weak self] in
             guard let self else { return }
-            try? await self.onSaveConfig?(updated)
-            self.loadedConfig = updated
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+            } catch {
+                self.generalMessage = "空闲卸载时长保存失败：\(error.localizedDescription)"
+                self.generalMessageKind = .error
+            }
         }
     }
 

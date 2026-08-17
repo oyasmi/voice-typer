@@ -32,6 +32,27 @@ struct AppConfig: Codable {
         case hotkey
         case ui
     }
+
+    /// 把手改 YAML 或历史脏数据里越界的值夹逼回合法范围，避免 `timeout: -1`、
+    /// `opacity: 5.0`、`threads: 9999`、`idle_unload_minutes: -5` 之类的值进入运行态（F-13）。
+    /// 越界时记一条 warning，不静默——但也不因此拒绝整份配置。
+    func validated() -> AppConfig {
+        var config = self
+        config.asr.threads = clamp(config.asr.threads, 0, 32, field: "asr.threads")
+        config.asr.idleUnloadMinutes = clamp(config.asr.idleUnloadMinutes, 0, 24 * 60, field: "asr.idle_unload_minutes")
+        config.llm.temperature = clamp(config.llm.temperature, 0, 2, field: "llm.temperature")
+        config.llm.maxTokens = clamp(config.llm.maxTokens, 64, 8192, field: "llm.max_tokens")
+        config.llm.timeout = clamp(config.llm.timeout, 1, 120, field: "llm.timeout")
+        config.ui.opacity = clamp(config.ui.opacity, 0.1, 1.0, field: "ui.opacity")
+        return config
+    }
+}
+
+private func clamp<T: Comparable>(_ value: T, _ lower: T, _ upper: T, field: String) -> T {
+    guard value < lower || value > upper else { return value }
+    let clamped = min(max(value, lower), upper)
+    AppLog.app.warning("配置字段 \(field, privacy: .public) 越界(\(String(describing: value), privacy: .public))，已夹逼为 \(String(describing: clamped), privacy: .public)")
+    return clamped
 }
 
 /// 支持的 SenseVoice 识别语言。与 recognizer.SenseVoiceRecognizer 的
@@ -63,7 +84,7 @@ enum ASRLanguage: String, Codable, CaseIterable {
     }
 }
 
-struct ASRConfig: Codable {
+struct ASRConfig: Codable, Equatable {
     var language: ASRLanguage
     /// 0 = 自动（min(4, 核数)）
     var threads: Int
@@ -102,7 +123,7 @@ struct ASRConfig: Codable {
 }
 
 /// LLM 纠错配置。api_key 不落此结构 —— 存 Keychain，见 KeychainStore。
-struct LLMConfig: Codable {
+struct LLMConfig: Codable, Equatable {
     var enabled: Bool
     var baseURL: String
     var model: String
@@ -146,7 +167,7 @@ struct LLMConfig: Codable {
     }
 }
 
-struct HotkeyConfig: Codable {
+struct HotkeyConfig: Codable, Equatable {
     var modifiers: [String]
     var key: String
 
@@ -170,7 +191,7 @@ struct HotkeyConfig: Codable {
     }
 }
 
-struct UIConfig: Codable {
+struct UIConfig: Codable, Equatable {
     var opacity: Double
 
     init(opacity: Double = 0.85) {

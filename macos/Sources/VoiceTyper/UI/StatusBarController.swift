@@ -76,12 +76,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         appliedState = .booting
     }
 
-    func update(state: AppState, hotkeyDisplay: String, serverStatus: String) {
+    func update(state: AppState, hotkeyDisplay: String, engineStatus: String) {
         if appliedState != state {
             applyStatusAppearance(state)
             appliedState = state
         }
-        headerView.update(state: state, hotkeyDisplay: hotkeyDisplay, serverStatus: serverStatus)
+        headerView.update(state: state, hotkeyDisplay: hotkeyDisplay, engineStatus: engineStatus)
         updatePauseItem(for: state)
     }
 
