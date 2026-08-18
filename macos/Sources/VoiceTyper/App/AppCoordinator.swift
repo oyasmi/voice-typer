@@ -102,13 +102,18 @@ final class AppCoordinator {
                 guard let self else { return }
                 try await self.applyConfig(updatedConfig)
             }
-            controller.onSuspendHotkey = { [weak self] suspend in
-                guard let self else { return }
+            controller.onSuspendHotkey = { [weak self] suspend -> Bool in
+                guard let self else { return false }
                 if suspend {
-                    // 录制热键期间停掉全局监听，避免按 Fn 当场触发录音。
-                    self.voiceTyperController?.stop()
+                    // 录制热键期间停掉全局监听，避免按 Fn 当场触发录音——但绝不能销毁
+                    // 一段正在进行的听写（R2-04）：那样会在用户毫无察觉的情况下丢内容。
+                    guard !self.currentState.isActiveDictation else { return false }
+                    self.voiceTyperController?.suspendHotkeyListening()
+                    return true
                 } else {
+                    try? self.voiceTyperController?.resumeHotkeyListening()
                     Task { await self.reevaluateReadiness() }
+                    return true
                 }
             }
             controller.onPreviewHUDOpacity = { [weak self] opacity in
@@ -124,7 +129,8 @@ final class AppCoordinator {
                 self?.modelDownloader?.cancel()
             }
             controller.onReloadModel = { [weak self] in
-                Task { await self?.asrService.reload() }
+                guard let self, !self.currentState.isActiveDictation else { return }
+                Task { await self.asrService.reload() }
             }
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
                 await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? false

@@ -117,7 +117,7 @@ final class RecordingHUDController: NSWindowController {
         dismiss()
     }
 
-    /// 显示流式 partial 文本。服务端发来的是**全量**预览（协议 v2），
+    /// 显示流式 partial 文本。本地识别引擎给出的是**全量**预览，
     /// 这里整体替换而非追加。有内容时展开 HUD，短暂清空时防抖收起。
     func showPreview(_ text: String) {
         previewLabel.stringValue = displayText(for: text)

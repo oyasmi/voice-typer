@@ -3,7 +3,7 @@
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client-server/client_macos_swift/README.md)
 
 单进程 macOS 菜单栏应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 Swift 重写并
-内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.1.0**，
+内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.1.3**，
 应用名 **VoiceTyper**，Bundle ID `com.voicetyper.app`。
 
 **本文适合**：想在自己 Mac 上直接用的用户，以及要自行编译或二次开发的人。深入的架构决策、
@@ -192,9 +192,9 @@ LLM API Key 出于安全考虑不落配置文件，存在系统 Keychain 里。
 ## 架构
 
 ```
-VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting，与分体式客户端同源）
-  ├── HotkeyService / AudioCaptureService / TextInsertionService（原样搬运）
-  └── LocalASRSession ── 接口与旧 StreamingASRClient（WebSocket）完全一致
+VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting）
+  ├── HotkeyService / AudioCaptureService / TextInsertionService
+  └── LocalASRSession（进程内识别会话，取代旧架构里跨进程的 WebSocket 客户端）
          └── ASRService（asrQueue 串行队列）
                 └── SenseVoiceEngine
                        ├── FbankFrontend（Accelerate/vDSP，Kaldi 兼容 fbank）
@@ -203,9 +203,9 @@ VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting，
                        └── CTCDecoder + TextPostprocessor
 ```
 
-核心设计原则是**不发明新的状态机**：`VoiceTyperController` 与分体式客户端共享同一套状态机，
-只是把网络客户端换成了接口相同的本地会话。识别管线（fbank → LFR/CMVN → CTC 解码）是
-`client-server/server/voice_typer_server/recognizer.py` 的 Swift 移植，已用金标准测试逐点验证。
+识别管线（fbank → LFR/CMVN → CTC 解码）是 `client-server/server/voice_typer_server/recognizer.py`
+的 Swift 移植，逐点数值对齐用金标准测试持续验证（见 `Tests/VoiceTyperTests/Fixtures/`）；
+其余模块是本地一体化架构下的独立实现，不再与旧的分体式客户端共享代码或协议。
 
 完整的设计决策、实测数据（性能、内存、模型 I/O 契约）、模块职责映射见 [`DESIGN.md`](DESIGN.md)。
 

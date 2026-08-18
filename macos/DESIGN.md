@@ -3,7 +3,9 @@
 > 目标产物：`macos/` 下一个**前后端一体**的 macOS 应用，拖进 `Applications` 打开即用，不需要单独跑 Python 服务端。
 > 它以 `client-server/client_macos_swift/` 为蓝本，把 `client-server/server/` 的 SenseVoice 推理链路用 Swift 重写并内联进来。
 >
-> 本文只覆盖 macOS。旧架构的 Windows / Linux 客户端与 `client-server/server/` 保持现状不动。
+> 本文只覆盖 macOS。Windows 现已有独立的一体化实现（`windows/`，见其 DESIGN.md）；
+> Linux 一体化版本尚未实现，`client-server/`（含旧 Windows/Linux 客户端与服务端）
+> 保留用于 Linux、远程部署和共享服务端场景。
 
 ---
 
@@ -32,7 +34,7 @@
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
-| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.0.0**（新纪元） |
+| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.1.3**（当前版本，见 D3） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
 > 代价：老客户端用户升级到改名版后需要**重新授权一次**三项权限。由于两个 App 都是 adhoc 签名、
@@ -668,6 +670,20 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 
 ---
 
+## 11.1 已知限制（明确不修，记录避免重复发现）
+
+- **finalize 超时只停止等待，不停止计算**：`LocalASRSession.finalize(timeout:)` 的看门狗超时后只是提前
+  报错、放弃等待，asrQueue 上已经在跑的那次 ORT 推理不会被中断。SPM 检出的 ONNX Runtime ObjC 绑定
+  （`ORTRunOptions`，见 `objectivec/include/ort_session.h`）没有暴露 `SetTerminate`，要真正取消运行
+  只能绕到 C API 自己包 `OrtRunOptionsSetTerminate`，为一个极低频场景引入平台耦合不划算。最坏情况由单段
+  120 秒上限（`LocalASRSession.maxSessionSamples`）约束推理耗时的上界。
+- **不做同 App 内的 AX 焦点身份校验**：`TextInsertionService` 只用录音开始时记录的前台应用 pid 判断
+  焦点是否变化（跨 App），不识别"同一个 App 内切换了输入字段"。收益场景（几秒内切字段）少见，而
+  AX element 身份跨查询是否稳定因 App 实现而异，一旦误判会让正常听写被拒绝插入、退化为只复制到剪贴板，
+  代价比它防的问题更常见。
+
+---
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |
@@ -675,5 +691,5 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D1 | 模型分发方式 | ✅ **首启从 ModelScope 下载** | App 52MB；已验证端点、断点续传与 sha256（§4.4） |
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
-| D3 | 新 App 版本号 | 待定，暂按 **3.0.0** | 备选：延续 2.8.0。P5 前定即可 |
+| D3 | 新 App 版本号 | ✅ **3.1.3**（第二轮架构审查修复批次，见 `ARCHITECTURE_REVIEW_ROUND2_TRIAGE.md`） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 |
 | D4 | 空闲卸载默认值 | 待定，暂按 **10 分钟** | 备选：默认关闭（常驻 510MB）。P3 前定即可 |

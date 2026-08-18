@@ -74,7 +74,8 @@ final class SettingsViewModel {
     var onRequestPermission: ((PermissionKind) -> Void)?
     var onOpenSystemSettings: ((PermissionKind) -> Void)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
-    var onSuspendHotkey: ((Bool) -> Void)?
+    /// 返回值：暂停/恢复请求是否被接受。暂停请求在有进行中的听写时会被拒绝（R2-04）。
+    var onSuspendHotkey: ((Bool) -> Bool)?
     var onPreviewHUDOpacity: ((Double) -> Void)?
     var onToggleLaunchAtLogin: ((Bool) -> Void)?
     var onStartModelDownload: (() -> Void)?
@@ -115,8 +116,8 @@ final class SettingsViewModel {
             recognitionMessageKind = .error
             return
         }
-        guard LLMEndpoint.chatCompletionsURL(from: draft.baseURL) != nil else {
-            recognitionMessage = "Base URL 格式不合法，请检查协议头（http/https）与地址。"
+        if case .failure(let error) = LLMEndpoint.resolve(draft.baseURL) {
+            recognitionMessage = error.localizedDescription
             recognitionMessageKind = .error
             return
         }
@@ -137,8 +138,8 @@ final class SettingsViewModel {
 
     func saveRecognitionSettings() {
         let draftLLM = draftLLMConfig()
-        if draftLLM.enabled, LLMEndpoint.chatCompletionsURL(from: draftLLM.baseURL) == nil {
-            recognitionMessage = "Base URL 格式不合法，请检查协议头（http/https）与地址，设置未保存。"
+        if draftLLM.enabled, case .failure(let error) = LLMEndpoint.resolve(draftLLM.baseURL) {
+            recognitionMessage = "\(error.localizedDescription)设置未保存。"
             recognitionMessageKind = .error
             return
         }
@@ -235,10 +236,19 @@ final class SettingsViewModel {
     }
 
     /// 录制开始：挂起全局热键监听，避免录制时按 Fn 当场触发录音。
-    func beginHotkeyRecording() {
-        onSuspendHotkey?(true)
+    /// 若当前有进行中的听写，挂起请求会被拒绝——调用方需据此不要进入录制态，
+    /// 否则听写内容会被静默销毁（R2-04）。
+    /// - Returns: 是否已成功进入录制态。
+    @discardableResult
+    func beginHotkeyRecording() -> Bool {
+        guard onSuspendHotkey?(true) == true else {
+            hotkeyMessage = "正在听写中，请稍后再录制热键。"
+            hotkeyMessageKind = .error
+            return false
+        }
         hotkeyMessage = "正在录制：按下想要的快捷键（Esc 取消，Delete 恢复默认）。"
         hotkeyMessageKind = .info
+        return true
     }
 
     /// 录制取消：恢复原热键监听。

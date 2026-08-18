@@ -112,14 +112,15 @@ actor LLMCorrector {
         }
 
         content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 空响应视为无修正，返回原文而非丢弃已识别结果。
-        if content.isEmpty {
-            return text
-        }
         // 防御：个别模型可能把输入包裹标签一并回显。
         if content.hasPrefix("<asr_text>"), content.hasSuffix("</asr_text>") {
             content = String(content.dropFirst("<asr_text>".count).dropLast("</asr_text>".count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // 剥标签之后再判空：tags-only 响应（如 `<asr_text>\n</asr_text>`）剥离前非空、
+        // 剥离后才变空，若判空放在剥标签前会漏判这种情况（R2-08）。
+        if content.isEmpty {
+            return text
         }
         return content
     }

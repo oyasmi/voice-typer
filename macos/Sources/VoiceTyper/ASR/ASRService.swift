@@ -46,10 +46,13 @@ final class ASRService {
     var onStateChange: ((State) -> Void)?
 
     private let asrQueue = DispatchQueue(label: "com.voicetyper.app.asr", qos: .userInitiated)
-    /// 只应在 asrQueue 上读写；用 nonisolated(unsafe) 退出 MainActor 隔离检查，
-    /// 由调用方（本文件）自行保证只在 asrQueue 上访问，与 AudioCaptureService
-    /// 里 NSLock 保护可变缓冲的思路一致，这里改用串行队列本身做同步。
-    nonisolated(unsafe) private var engine: (any SenseVoiceRecognizing)?
+    /// 引擎引用本身的读写用 `engineLock` 保护，而不是靠"只在 asrQueue 上访问"的约定——
+    /// `currentEngine()` 会被 `LocalASRSession` 从 MainActor 直接调用（不经过 asrQueue），
+    /// 此前那条约定实际已被违反，属于无同步的跨线程读写（N-01）。`nonisolated(unsafe)`
+    /// 退出 actor 隔离检查，真正的同步靠下面 `currentEngine()`/`setEngine()` 里的锁，
+    /// 不再是"约定"。引擎推理仍然只在 asrQueue 上串行执行，这一点不变。
+    private let engineLock = NSLock()
+    private nonisolated(unsafe) var _engine: (any SenseVoiceRecognizing)?
 
     private var config = ASRConfig()
     private let idleScheduler: IdleUnloadScheduling
@@ -80,10 +83,8 @@ final class ASRService {
         config = newConfig
 
         if languageChanged {
-            // 在 asrQueue 闭包内部读取 engine，而不是在调用方（MainActor）线程的
-            // 捕获列表里读取——engine 只应在 asrQueue 上被访问（N-01）。
             asrQueue.async { [weak self] in
-                self?.engine?.setLanguage(newConfig.language)
+                self?.currentEngine()?.setLanguage(newConfig.language)
             }
         }
         if reloadNeeded {
@@ -103,11 +104,23 @@ final class ASRService {
         await load()
     }
 
-    /// 引擎当前实例（供 LocalASRSession 在 asrQueue 上读取）。可从任意线程调用；
-    /// 写入永远在 asrQueue 上发生，读取用同一队列串行化即可保证一致性——
-    /// 这个 getter 本身只应从 asrQueue 闭包内部调用。
+    /// 引擎当前实例。可从任意线程调用（`LocalASRSession` 会在 MainActor 上直接读取，
+    /// 而写入发生在 asrQueue）——引用本身由 `engineLock` 保护，可安全跨线程访问。
     nonisolated func currentEngine() -> (any SenseVoiceRecognizing)? {
-        engine
+        engineLock.lock()
+        defer { engineLock.unlock() }
+        return _engine
+    }
+
+    /// 写入引擎引用；只应在 asrQueue 上调用，与推理串行化的约定保持一致。
+    /// - Returns: 写入前是否已有旧引擎实例。
+    @discardableResult
+    private nonisolated func setEngine(_ newEngine: (any SenseVoiceRecognizing)?) -> Bool {
+        engineLock.lock()
+        defer { engineLock.unlock() }
+        let hadPrevious = _engine != nil
+        _engine = newEngine
+        return hadPrevious
     }
 
     private func load() async {
@@ -139,7 +152,7 @@ final class ASRService {
 
         switch result {
         case .success(let built):
-            asrQueue.async { [weak self] in self?.engine = built }
+            asrQueue.async { [weak self] in self?.setEngine(built) }
             state = .ready
             scheduleIdleUnloadIfNeeded()
         case .failure(let error):
@@ -153,13 +166,11 @@ final class ASRService {
     ///   误判为"尚未加载"从而立即触发自动预加载（F-04）。`reload()` 内部调用时传 false。
     private func unloadNow(dueToIdle: Bool) async {
         idleScheduler.cancel()
-        // 无条件 hop 到 asrQueue 判空，不在 MainActor 上读 engine（N-01）；
-        // 队列为空转的成本可忽略。
+        // hop 到 asrQueue 只是为了让"卸载"与"推理"在时序上不交叉；引擎引用本身
+        // 已经用 engineLock 保护，跨线程读写是安全的。
         let hadEngine: Bool = await withCheckedContinuation { continuation in
             asrQueue.async { [weak self] in
-                let hadEngine = self?.engine != nil
-                self?.engine = nil
-                continuation.resume(returning: hadEngine)
+                continuation.resume(returning: self?.setEngine(nil) ?? false)
             }
         }
         guard hadEngine else { return }

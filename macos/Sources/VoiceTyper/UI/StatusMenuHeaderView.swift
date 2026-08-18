@@ -1,7 +1,7 @@
 import AppKit
 
 /// 菜单栏下拉菜单顶部的自定义状态视图（挂在首个 NSMenuItem.view 上）。
-/// 两行布局：状态点 + 应用名·状态；副行显示热键与服务端连接情况。不可点击。
+/// 两行布局：状态点 + 应用名·状态；副行显示热键与本地识别引擎状态。不可点击。
 @MainActor
 final class StatusMenuHeaderView: NSView {
     private let dotView = NSView()

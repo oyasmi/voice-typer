@@ -56,6 +56,11 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         }
     }
 
+    /// 模型契约的输入/输出名称（见类文档顶部的 I/O 表）。加载期一次性校验，
+    /// 避免侧载模型 I/O 不齐时直到每次推理才失败（R2-09）。
+    private static let expectedInputNames: Set<String> = ["speech", "speech_lengths", "language", "textnorm"]
+    private static let expectedOutputNames: Set<String> = ["ctc_logits", "encoder_out_lens"]
+
     init(bundle: ModelBundle, language: ASRLanguage, threads: Int) throws {
         let fbankOptions = bundle.fbankOptions
         guard bundle.lfrM >= 1, bundle.lfrN >= 1,
@@ -65,6 +70,14 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             throw ConfigurationError.inconsistentDimensions(
                 "lfr_m=\(bundle.lfrM) lfr_n=\(bundle.lfrN) n_mels=\(fbankOptions.numMelBins) "
                     + "frame_length_ms=\(fbankOptions.frameLengthMs) frame_shift_ms=\(fbankOptions.frameShiftMs)"
+            )
+        }
+        // 采集链路固定 16kHz（AGENTS.md）；别的采样率的模型在这套前端下本来就不可用，
+        // 用等值判断比"大于 0"更强，同时挡掉 fs<=0 导致 FbankFrontend 里的非正
+        // frameLength 触发的数组分配 trap。
+        guard fbankOptions.sampleRate == AppConstants.targetSampleRate else {
+            throw ConfigurationError.inconsistentDimensions(
+                "fs=\(fbankOptions.sampleRate)，但采集链路固定 \(AppConstants.targetSampleRate)"
             )
         }
 
@@ -80,6 +93,19 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         try options.setLogSeverityLevel(.warning)
 
         session = try ORTSession(env: env, modelPath: bundle.onnxFileURL.path, sessionOptions: options)
+
+        let actualInputNames = Set(try session.inputNames())
+        let actualOutputNames = Set(try session.outputNames())
+        guard Self.expectedInputNames.isSubset(of: actualInputNames),
+              Self.expectedOutputNames.isSubset(of: actualOutputNames)
+        else {
+            throw ConfigurationError.inconsistentDimensions(
+                "模型 I/O 与 SenseVoice-Small 契约不符：期望输入 \(Self.expectedInputNames.sorted()) "
+                    + "输出 \(Self.expectedOutputNames.sorted())，实际输入 \(actualInputNames.sorted()) "
+                    + "输出 \(actualOutputNames.sorted())"
+            )
+        }
+
         frontend = FbankFrontend(opts: bundle.fbankOptions)
         let parsedCMVN = try CMVNStats.parse(contentsOf: bundle.cmvnURL)
         let parsedTokens = try ModelLocator.loadTokens(from: bundle.tokensURL)
@@ -153,8 +179,9 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             runOptions: nil
         )
 
+        // 输出缺失是模型契约错误，不是合法静音——用 throw 让两者可区分（R2-09）。
         guard let logitsValue = outputs["ctc_logits"], let lensValue = outputs["encoder_out_lens"] else {
-            return ""
+            throw ConfigurationError.inconsistentDimensions("推理输出缺失 ctc_logits/encoder_out_lens")
         }
 
         let lensData = try lensValue.tensorData() as Data
@@ -163,6 +190,13 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
 
         let shapeInfo = try logitsValue.tensorTypeAndShapeInfo()
         guard let vocabSize = shapeInfo.shape.last?.intValue, vocabSize > 0 else { return "" }
+        // 只有拿到推理输出的实际 shape 才能知道 vocabSize；此前不匹配时 CTCDecoder 会
+        // 静默跳过越界 id，表现为"识别成功但缺字"，比报错更难排查（R2-09）。
+        guard vocabSize == tokens.count else {
+            throw ConfigurationError.inconsistentDimensions(
+                "模型输出 vocab 维度(\(vocabSize)) 与词表大小(\(tokens.count)) 不一致"
+            )
+        }
 
         let logitsData = try logitsValue.tensorData() as Data
         let numFrames = Int(validFrames)

@@ -1,5 +1,21 @@
 import Foundation
 
+/// 跨线程读写的取消标志：`close()` 在 MainActor 上置位，asrQueue 上的推理闭包
+/// 在跑之前查询，用锁而非 `nonisolated(unsafe)` 做同步（N-01）。
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    var isSet: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return flag
+    }
+
+    func set() {
+        lock.lock(); flag = true; lock.unlock()
+    }
+}
+
 /// 单次录音会话的本地识别接缝层：接收流式音频、驱动滑窗预览、录音结束后离线整段
 /// 复识别、可选 LLM 纠错，通过四个回调把结果交给 `VoiceTyperController`。
 ///
@@ -36,9 +52,8 @@ final class LocalASRSession {
     private var closed = false
     /// 与 `closed` 同步置位，供 asrQueue 闭包在跑推理前短路判断（F-07d）：
     /// `close()` 之后已入队的闭包仍会执行，但不应该真的跑一遍 CTC 解码只为丢弃结果。
-    /// 只在 close() 里写一次、单调地从 false 变 true，跨线程读取的粗粒度竞态可接受，
-    /// 与 `ASRService.engine` 的 `nonisolated(unsafe)` 约定一致。
-    private nonisolated(unsafe) var closedForQueue = false
+    /// 用锁保护的标志跨线程读写，取代此前的 `nonisolated(unsafe)`（N-01）。
+    private let cancelFlag = CancelFlag()
     private var lastPreview = ""
     private var finalizeWatchdog: Task<Void, Never>?
 
@@ -101,7 +116,7 @@ final class LocalASRSession {
     func close() {
         guard !closed else { return }
         closed = true
-        closedForQueue = true
+        cancelFlag.set()
         finalizeWatchdog?.cancel()
         finalizeWatchdog = nil
         buffer = nil
@@ -123,7 +138,7 @@ final class LocalASRSession {
         guard !isFinalizing, !previewInFlight, let buffer else { return }
         previewInFlight = true
         asrQueue.async { [weak self] in
-            if self?.closedForQueue == true { return }
+            if self?.cancelFlag.isSet == true { return }
             let result = Result { try buffer.preview() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -167,7 +182,7 @@ final class LocalASRSession {
 
     private func runFinalize(on buffer: RecognitionBuffer) {
         asrQueue.async { [weak self] in
-            if self?.closedForQueue == true { return }
+            if self?.cancelFlag.isSet == true { return }
             let result = Result { try buffer.finalize() }
             Task { @MainActor [weak self] in
                 guard let self, !self.closed else { return }

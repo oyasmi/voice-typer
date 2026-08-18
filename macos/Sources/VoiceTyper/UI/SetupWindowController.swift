@@ -33,8 +33,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onOpenSystemSettings: ((PermissionKind) -> Void)?
     var onRetryReadinessCheck: (() -> Void)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
-    /// 热键录制期间挂起 / 恢复全局热键监听。
-    var onSuspendHotkey: ((Bool) -> Void)?
+    /// 热键录制期间挂起 / 恢复全局热键监听。返回值：请求是否被接受（R2-04）。
+    var onSuspendHotkey: ((Bool) -> Bool)?
     /// 实时预览 HUD 背景不透明度。
     var onPreviewHUDOpacity: ((Double) -> Void)?
     /// 窗口关闭时通知（用于复位"用户主动打开"标记）。
@@ -141,7 +141,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.onSaveConfig = { [weak self] config in
             try await self?.onSaveConfig?(config)
         }
-        viewModel.onSuspendHotkey = { [weak self] suspend in self?.onSuspendHotkey?(suspend) }
+        viewModel.onSuspendHotkey = { [weak self] suspend in self?.onSuspendHotkey?(suspend) ?? false }
         viewModel.onPreviewHUDOpacity = { [weak self] opacity in self?.onPreviewHUDOpacity?(opacity) }
         viewModel.onStartModelDownload = { [weak self] in self?.onStartModelDownload?() }
         viewModel.onCancelModelDownload = { [weak self] in self?.onCancelModelDownload?() }

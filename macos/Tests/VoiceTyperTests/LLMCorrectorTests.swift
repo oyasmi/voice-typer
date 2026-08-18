@@ -86,6 +86,30 @@ final class LLMCorrectorTests: XCTestCase {
         let result = await corrector.correct("原文")
         XCTAssertEqual(result, "修正后的文本")
     }
+
+    /// R2-08 回归：剥标签之后才变空的 tags-only 响应，此前会被当作"有效修正"返回空串，
+    /// 把已识别出的文本直接丢掉；必须和剥标签前就是空的情况一样回落原文。
+    func testTagsOnlyResponseFallsBackToOriginalText() async {
+        StubURLProtocol.handler = { _ in
+            let body = #"{"choices":[{"message":{"content":"<asr_text>\n</asr_text>"},"finish_reason":"stop"}]}"#
+            return (200, body)
+        }
+        let corrector = makeCorrector(session: makeSession())
+        let original = "已识别的原文"
+        let result = await corrector.correct(original)
+        XCTAssertEqual(result, original)
+    }
+
+    func testTagsWrappingOnlyWhitespaceFallsBackToOriginalText() async {
+        StubURLProtocol.handler = { _ in
+            let body = #"{"choices":[{"message":{"content":"<asr_text>\n   \n</asr_text>"},"finish_reason":"stop"}]}"#
+            return (200, body)
+        }
+        let corrector = makeCorrector(session: makeSession())
+        let original = "已识别的原文"
+        let result = await corrector.correct(original)
+        XCTAssertEqual(result, original)
+    }
 }
 
 /// 拦截所有请求，交给测试用例设置的 handler 决定响应。

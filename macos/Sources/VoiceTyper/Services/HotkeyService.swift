@@ -64,19 +64,22 @@ final class HotkeyService: @unchecked Sendable {
     private var hotkey: HotkeyConfig?
     private var isActive = false
     private var isRunning = false
-    /// 当前（或上一次启动超时后被放弃的）worker 对应的生命周期句柄。
+    /// 当前 worker 对应的生命周期句柄；`stop()` 会把它清空。
     private var workerLifecycle: WorkerLifecycle?
+    /// 上一次 start() 超时后被放弃的 worker 句柄。`stop()` 无条件清空 `workerLifecycle`，
+    /// 所以超时留下的句柄必须单独存放，否则下面等待它退出的逻辑永远拿不到值（R2-10）。
+    private var abandonedLifecycle: WorkerLifecycle?
 
     func start(with hotkey: HotkeyConfig) throws {
-        stop()
-
         // 上一次 start() 超时留下的 worker 可能仍未退出（例如卡在 CGEvent.tapCreate
         // 里）。必须先等它彻底退出，否则它随后完成设置时会覆盖即将创建的新 worker
         // 的 eventTap/runLoop，导致监听线程翻倍、热键回调翻倍（F-09）。
-        if let abandoned = workerLifecycle {
+        if let abandoned = abandonedLifecycle {
             _ = abandoned.shutdownSemaphore.wait(timeout: .now() + 2)
-            workerLifecycle = nil
+            abandonedLifecycle = nil
         }
+
+        stop()
 
         if hotkey.key.lowercased() != "fn", Self.keyCode(for: hotkey.key) == nil {
             throw HotkeyServiceError.unsupportedKey(hotkey.key)
@@ -96,8 +99,10 @@ final class HotkeyService: @unchecked Sendable {
         if startupBox.semaphore.wait(timeout: .now() + 2) == .timedOut {
             // 不清空 eventTap/runLoop、不等待——worker 可能仍卡在 tapCreate 里。
             // 标记取消：worker 会在下一个检查点（tapCreate 返回后）自行清理退出，
-            // workerLifecycle 保留给下一次 start() 在继续前等待。
+            // 存入 abandonedLifecycle 给下一次 start() 在继续前等待。
             lifecycle.cancelled = true
+            abandonedLifecycle = lifecycle
+            workerLifecycle = nil
             workerThread = nil
             isRunning = false
             throw HotkeyServiceError.startupTimedOut

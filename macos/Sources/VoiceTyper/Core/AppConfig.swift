@@ -55,6 +55,20 @@ private func clamp<T: Comparable>(_ value: T, _ lower: T, _ upper: T, field: Str
     return clamped
 }
 
+/// 浮点重载：`value < lower || value > upper` 对 NaN 两边都是 false，会让 NaN 原样穿透
+/// 通用版本（例如 `llm.temperature = .nan` 会让 JSONSerialization 抛错，每次纠错都
+/// 静默回落原文；`ui.opacity = .nan` 会污染窗口 alpha）。非有限数值直接重置为下限（R2-12）。
+private func clamp<T: Comparable & FloatingPoint>(_ value: T, _ lower: T, _ upper: T, field: String) -> T {
+    guard value.isFinite else {
+        AppLog.app.warning("配置字段 \(field, privacy: .public) 不是有限数值(\(String(describing: value), privacy: .public))，已重置为 \(String(describing: lower), privacy: .public)")
+        return lower
+    }
+    guard value < lower || value > upper else { return value }
+    let clamped = min(max(value, lower), upper)
+    AppLog.app.warning("配置字段 \(field, privacy: .public) 越界(\(String(describing: value), privacy: .public))，已夹逼为 \(String(describing: clamped), privacy: .public)")
+    return clamped
+}
+
 /// 支持的 SenseVoice 识别语言。与 recognizer.SenseVoiceRecognizer 的
 /// _SENSEVOICE_LID 表一一对应。
 enum ASRLanguage: String, Codable, CaseIterable {

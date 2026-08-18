@@ -5,7 +5,8 @@ import SwiftUI
 /// 需要 AppKit 而非纯 SwiftUI，因为要监听 flagsChanged 才能捕获 Fn🌐 键。
 @MainActor
 final class HotkeyRecorderView: NSView {
-    var onBeginRecording: (() -> Void)?
+    /// 返回 false 表示挂起全局热键的请求被拒绝（例如正在听写中）：不得进入录制态。
+    var onBeginRecording: (() -> Bool)?
     var onCapture: ((HotkeyConfig) -> Void)?
     var onCancelRecording: (() -> Void)?
 
@@ -71,8 +72,8 @@ final class HotkeyRecorderView: NSView {
 
     private func startRecording() {
         guard !isRecording else { return }
+        guard onBeginRecording?() == true else { return }
         isRecording = true
-        onBeginRecording?()
         updateAppearance()
         window?.makeFirstResponder(self)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
@@ -155,7 +156,7 @@ final class HotkeyRecorderView: NSView {
 /// SwiftUI 包装。
 struct HotkeyRecorder: NSViewRepresentable {
     let config: HotkeyConfig
-    let onBegin: () -> Void
+    let onBegin: () -> Bool
     let onCapture: (HotkeyConfig) -> Void
     let onCancel: () -> Void
 

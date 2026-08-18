@@ -50,7 +50,11 @@ final class ModelDownloader: NSObject {
     private var isCancelled = false
 
     private let fileSpecs: [FileSpec]
-    private let downloadDestination: URL
+    /// `nonisolated`：需要在 `urlSession(_:task:didCompleteWithError:)`（nonisolated 的
+    /// delegate 回调）里落盘 resume data 时使用注入的目录，而不是硬编码
+    /// `ModelLocator.downloadDestination`——否则测试注入的临时目录会被绕过，
+    /// `.resume` 碎片文件写进用户真实的模型目录（R2-11）。
+    private nonisolated let downloadDestination: URL
     private var totalBytes: Int64 { fileSpecs.reduce(0) { $0 + $1.sizeHint } }
 
     /// - Parameters:
@@ -254,7 +258,7 @@ extension ModelDownloader: URLSessionDownloadDelegate {
            let originalURL = downloadTask.originalRequest?.url,
            let fileName = URLComponents(url: originalURL, resolvingAgainstBaseURL: false)?
                .queryItems?.first(where: { $0.name == "FilePath" })?.value {
-            let resumeDataURL = ModelLocator.downloadDestination.appendingPathComponent("\(fileName).resume")
+            let resumeDataURL = downloadDestination.appendingPathComponent("\(fileName).resume")
             try? resumeData.write(to: resumeDataURL)
         }
         Task { @MainActor in

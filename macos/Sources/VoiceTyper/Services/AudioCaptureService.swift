@@ -10,18 +10,18 @@ private final class AudioConverterInputState: @unchecked Sendable {
 /// 录音期间每凑满 `chunkSamples` 个 float32 样本就通过 `onChunk` 发出一帧；
 /// 停止时将剩余不足一帧的尾音通过 `onTailChunk` 发出，随后调用 `onStopped`。
 final class AudioCaptureService: @unchecked Sendable {
-    /// 每 600ms 触发一次，传入 float32 PCM 字节（9600 samples = 38400 bytes）
+    /// 每凑满 `chunkSamples` 个 float32 样本（默认 9600 = 600ms）触发一次
     var onChunk: (([Float]) -> Void)?
     /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空数组）
     var onTailChunk: (([Float]) -> Void)?
     /// 每次音频输入回调触发一次（约 20–60ms），传入该缓冲区的线性 RMS 电平（0…1 量级，
     /// 未做分贝归一化）。在音频线程调用，消费方负责切换线程与平滑。
     var onLevel: ((Float) -> Void)?
-    /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次，
-    /// 传入用户可读的提示信息。已采到的音频仍会通过 `onTailChunk` 正常交给当前会话
+    /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次。
+    /// 已采到的音频仍会通过 `onTailChunk`（本回调触发前已同步调用）正常交给当前会话
     /// 完成识别；这里只做"可见告知"，不做自动重建 converter 或自动恢复（F-15）。
     /// 在主线程触发。
-    var onFatalError: ((String) -> Void)?
+    var onDeviceChanged: (() -> Void)?
 
     let chunkSamples: Int
 
@@ -104,7 +104,7 @@ final class AudioCaptureService: @unchecked Sendable {
     private func handleConfigurationChangeDuringRecording() {
         guard isRunning else { return }
         stop()
-        onFatalError?("输入设备已变化，本次录音已结束")
+        onDeviceChanged?()
     }
 
     /// 停止录音，将剩余尾音通过 `onTailChunk` 发出。

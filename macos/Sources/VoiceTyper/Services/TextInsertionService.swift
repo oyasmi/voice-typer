@@ -97,7 +97,13 @@ final class TextInsertionService {
 
         let currentNSString = currentValue as NSString
         let selectedRange = selectedTextRange(for: element) ?? CFRange(location: currentNSString.length, length: 0)
-        let nsRange = NSRange(location: selectedRange.location, length: selectedRange.length)
+        guard let nsRange = Self.validInsertionRange(selectedRange, in: currentNSString.length) else {
+            // AX 控件返回的 CFRange 不可信：kCFNotFound、负值、越界都可能出现，直接喂给
+            // NSString.replacingCharacters 会抛 NSRangeException（Swift 无法捕获，直接崩溃）。
+            // 放弃 AX 全量替换、回退到粘贴，而不是猜一个位置写进用户没预期的地方（R2-05a）。
+            AppLog.app.warning("AX 选区越界，放弃 AX 插入，回退到粘贴")
+            return false
+        }
         let updatedValue = currentNSString.replacingCharacters(in: nsRange, with: text)
         let setResult = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef)
 
@@ -112,6 +118,16 @@ final class TextInsertionService {
         }
 
         return true
+    }
+
+    /// AX 控件返回的 `CFRange` 不可信：`kCFNotFound`、负值、越界都可能出现，直接喂给
+    /// `NSString.replacingCharacters` 会抛 `NSRangeException`（Swift 无法捕获，直接崩溃）。
+    /// 返回 nil 表示范围非法，调用方应放弃 AX 全量替换、回退到粘贴（R2-05a）。
+    nonisolated static func validInsertionRange(_ range: CFRange, in length: Int) -> NSRange? {
+        guard range.location >= 0, range.length >= 0,
+              range.location <= length,
+              length - range.location >= range.length else { return nil }
+        return NSRange(location: range.location, length: range.length)
     }
 
     private func selectedTextRange(for element: AXUIElement) -> CFRange? {
