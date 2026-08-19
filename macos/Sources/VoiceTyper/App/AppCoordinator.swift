@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
 
+/// 每次应用进程对缺失模型至少自动尝试一次，同一进程内失败后不无限循环重试。
+/// 下次启动会再自动尝试，并复用 ModelDownloader 已保存的断点数据。
+struct AutomaticModelDownloadPolicy {
+    private(set) var hasAttempted = false
+
+    mutating func shouldStart(for state: ASRService.State, isDownloading: Bool) -> Bool {
+        guard !hasAttempted, !isDownloading, state == .modelMissing else { return false }
+        hasAttempted = true
+        return true
+    }
+}
+
 @MainActor
 final class AppCoordinator {
     private let configStore = ConfigStore()
@@ -26,6 +38,9 @@ final class AppCoordinator {
 
     private var modelDownloader: ModelDownloader?
     private var isDownloadingModel = false
+    private var modelDownloadProgress = 0.0
+    private var modelDownloadError: String?
+    private var automaticModelDownloadPolicy = AutomaticModelDownloadPolicy()
 
     func start() {
         bindStatusBarActions()
@@ -52,7 +67,7 @@ final class AppCoordinator {
             setupControllerIfNeeded(forceShow: true, preferredTab: .permissions)
         }
 
-        // 权限与模型是两条互不依赖的准备线：权限没给全时模型照样在后台加载，
+        // 权限与模型是两条互不依赖的准备线：权限没给全时模型照样在后台下载/加载，
         // 用户授权完立刻可用。
         asrService.updateConfig(config.asr)
         Task {
@@ -178,9 +193,19 @@ final class AppCoordinator {
     /// 重新评估权限与模型就绪状态，并驱动状态机。
     ///
     /// - 权限缺失：必须用户介入，强制弹出设置窗口（权限页）。
-    /// - 权限齐全但模型缺失/加载中/失败：进入对应状态，不打扰用户（除非模型缺失需要用户触发下载）。
+    /// - 模型缺失：不等待权限，每次应用启动自动尝试下载一次。
+    /// - 权限齐全但模型加载中/失败：进入对应状态。
     /// - 权限齐全且模型就绪：启动热键监听并进入 `.idle`。
     private func reevaluateReadiness() async {
+        // 模型准备与 TCC 授权完全独立。首次定位到模型缺失后立即下载，
+        // 用户只需处理必须亲自确认的系统权限；用户暂停听写也不阻断后台准备。
+        if automaticModelDownloadPolicy.shouldStart(
+            for: asrService.state,
+            isDownloading: isDownloadingModel
+        ) {
+            startModelDownload()
+        }
+
         guard !isPaused else {
             currentState = .paused
             updateStatusUI()
@@ -200,6 +225,7 @@ final class AppCoordinator {
         }
 
         if isDownloadingModel {
+            currentState = .downloadingModel(modelDownloadProgress)
             syncSetupWindow()
             updateStatusUI()
             return
@@ -260,7 +286,11 @@ final class AppCoordinator {
     private func startModelDownload() {
         guard !isDownloadingModel else { return }
         isDownloadingModel = true
-        currentState = .downloadingModel(0)
+        modelDownloadProgress = 0
+        modelDownloadError = nil
+        if !isPaused, permissions.allRequiredGranted {
+            currentState = .downloadingModel(0)
+        }
         updateStatusUI()
         syncSetupWindow()
 
@@ -271,12 +301,16 @@ final class AppCoordinator {
             do {
                 try await downloader.downloadAll { [weak self] progress in
                     guard let self, self.isDownloadingModel else { return }
-                    self.currentState = .downloadingModel(progress)
+                    self.modelDownloadProgress = progress
+                    if !self.isPaused, self.permissions.allRequiredGranted {
+                        self.currentState = .downloadingModel(progress)
+                    }
                     self.updateStatusUI()
                     self.syncSetupWindow()
                 }
                 self.isDownloadingModel = false
                 self.modelDownloader = nil
+                self.modelDownloadError = nil
                 await self.asrService.reload()
                 await self.reevaluateReadiness()
             } catch let error as ModelDownloader.DownloadError {
@@ -287,20 +321,27 @@ final class AppCoordinator {
                     // resume 数据已由 ModelDownloader 落盘保留（F-11）。
                     await self.reevaluateReadiness()
                 } else {
-                    AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
-                    self.currentState = .error("模型下载失败: \(error.localizedDescription)")
-                    self.updateStatusUI()
-                    self.syncSetupWindow()
+                    self.handleModelDownloadFailure(error)
                 }
             } catch {
                 self.isDownloadingModel = false
                 self.modelDownloader = nil
-                AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
-                self.currentState = .error("模型下载失败: \(error.localizedDescription)")
-                self.updateStatusUI()
-                self.syncSetupWindow()
+                self.handleModelDownloadFailure(error)
             }
         }
+    }
+
+    private func handleModelDownloadFailure(_ error: Error) {
+        AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
+        modelDownloadError = error.localizedDescription
+        currentState = permissions.allRequiredGranted
+            ? .error("模型下载失败: \(error.localizedDescription)")
+            : .setupRequired
+        if permissions.allRequiredGranted {
+            setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
+        }
+        updateStatusUI()
+        syncSetupWindow()
     }
 
     private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Bool {
@@ -431,15 +472,11 @@ final class AppCoordinator {
         setupWindowController?.updateStatus(
             permissions: permissions,
             asrState: asrService.state,
-            downloadProgress: isDownloadingModel ? currentDownloadProgress() : nil,
+            downloadProgress: isDownloadingModel ? modelDownloadProgress : nil,
+            modelDownloadError: modelDownloadError,
             hotkeyDisplay: config.hotkey.displayString,
             engineStatus: engineStatusText()
         )
-    }
-
-    private func currentDownloadProgress() -> Double {
-        if case .downloadingModel(let p) = currentState { return p }
-        return 0
     }
 
     private func engineStatusText() -> String {

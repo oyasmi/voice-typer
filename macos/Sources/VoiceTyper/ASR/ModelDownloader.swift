@@ -125,10 +125,17 @@ final class ModelDownloader: NSObject {
                     lastError = DownloadError.checksumMismatch(spec.name)
                     continue
                 }
-                _ = try FileManager.default.replaceItemAt(destURL, withItemAt: partURL)
+                // `replaceItemAt` 要求目标已存在；全新安装的首个文件并不存在，
+                // 因此首次部署必须走同目录 move（同样是原子的）。旧文件校验失败时才原子替换。
+                if FileManager.default.fileExists(atPath: destURL.path) {
+                    _ = try FileManager.default.replaceItemAt(destURL, withItemAt: partURL)
+                } else {
+                    try FileManager.default.moveItem(at: partURL, to: destURL)
+                }
                 try? FileManager.default.removeItem(at: resumeDataURL)
                 return
             } catch {
+                if isCancelled { throw DownloadError.cancelled }
                 lastError = error
                 if attempt == 0 { AppLog.model.warning("下载 \(spec.name, privacy: .public) 第一次尝试失败，重试: \(String(describing: error), privacy: .public)") }
             }

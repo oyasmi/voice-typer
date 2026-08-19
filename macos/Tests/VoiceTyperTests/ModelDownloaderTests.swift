@@ -40,6 +40,18 @@ final class ModelDownloaderTests: XCTestCase {
         XCTAssertEqual(onnxIndex, ModelDownloader.files.count - 1, "model_quant.onnx 应排在下载顺序最后")
     }
 
+    func testAutomaticDownloadPolicyStartsOnceWhenModelIsMissing() {
+        var policy = AutomaticModelDownloadPolicy()
+
+        XCTAssertFalse(policy.shouldStart(for: .unloaded, isDownloading: false))
+        XCTAssertFalse(policy.hasAttempted)
+        XCTAssertFalse(policy.shouldStart(for: .modelMissing, isDownloading: true))
+        XCTAssertFalse(policy.hasAttempted)
+        XCTAssertTrue(policy.shouldStart(for: .modelMissing, isDownloading: false))
+        XCTAssertTrue(policy.hasAttempted)
+        XCTAssertFalse(policy.shouldStart(for: .modelMissing, isDownloading: false))
+    }
+
     // MARK: - 打桩下载路径
 
     private func tempDestination() throws -> URL {
@@ -86,6 +98,30 @@ final class ModelDownloaderTests: XCTestCase {
             FileManager.default.fileExists(atPath: dir.appendingPathComponent(spec.name).path),
             "非 2xx 响应体不应被当成模型文件落盘"
         )
+    }
+
+    func testFirstDownloadMovesVerifiedFileIntoEmptyDestination() async throws {
+        let dir = try tempDestination()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let content = Data("valid-content".utf8)
+        let spec = ModelDownloader.FileSpec(
+            name: "config.yaml",
+            sha256: "b60048f0ad4e6c4a795cb5596f9f5246e360ebba8b7a0246a9b45c5f44ff5bec",
+            sizeHint: Int64(content.count)
+        )
+
+        DownloadStubURLProtocol.handler = { _ in (200, content) }
+        let downloader = ModelDownloader(
+            sessionConfiguration: stubbedSessionConfiguration(),
+            fileSpecs: [spec],
+            downloadDestination: dir
+        )
+
+        try await downloader.downloadAll { _ in }
+
+        let destination = dir.appendingPathComponent(spec.name)
+        XCTAssertEqual(try Data(contentsOf: destination), content)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathExtension("part").path))
     }
 
     func testChecksumMismatchIsRetriedThenFails() async throws {

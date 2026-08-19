@@ -15,7 +15,7 @@
 
 | # | 目标 | 验收标准 |
 | --- | --- | --- |
-| G1 | 单进程、零外部依赖 | 全新 Mac 上拖入 Applications → 打开 → 授权三项权限 → **App 内引导下载一次模型** → 按热键即可听写。全程不接触终端、不装 Python，此后完全离线 |
+| G1 | 单进程、零外部依赖 | 全新 Mac 上拖入 Applications → 打开 → 授权三项权限（App 同时在后台自动下载并部署模型）→ 按热键即可听写。全程不接触终端、不装 Python，此后完全离线 |
 | G2 | 识别质量与现有链路一致 | 同一段音频，Swift 特征提取（fbank/LFR/CMVN）与 `client-server/server/` 输出逐点误差 < 1e-3；完整识别文本与 Python 输出编辑距离 ≤ 2（金标准测试，详见 §8 的实测结论） |
 | G3 | 延迟不劣化 | 松手到上屏 ≤ 现有本地 server 方案（去掉了 WS 往返，理论上更快） |
 | G4 | 配置面收敛 | 用户可见配置项从 12 项降到 6 项左右，且没有一项与"服务端在哪"有关 |
@@ -229,7 +229,7 @@ C++ 互操作、通用二进制构建、上游同步三重成本，而 fbank 本
 ### 4.4 模型分发 —— 首次启动下载（已定）
 
 App 内**不含**模型，体积约 **52MB**（ORT 框架 arm64 切片 45MB + 应用本体）。
-首启引导下载 SenseVoice-Small（230MB），落到用户目录；此后完全离线，版本更新不重下模型。
+首启自动下载、校验并部署 SenseVoice-Small（230MB），落到用户目录；不等待用户点击，也不受 TCC 权限授权进度阻塞。此后完全离线，版本更新不重下模型。
 
 **已实测验证的下载契约：**
 
@@ -498,8 +498,7 @@ booting ──┬─→ setupRequired ──(授权完成)───────�
                                                                               → inserting → idle
 ```
 
-权限与模型是**两条互不依赖的准备线**，可并行推进：权限没给全时模型照样在后台下载/加载，
-用户授权完立刻可用。只有两条线都就绪才进 `.idle`。
+权限与模型是**两条互不依赖的准备线**，可并行推进：首次发现模型缺失时应用会在后台自动开始下载，权限没给全时也照常下载/加载。同一进程内失败后不无限重试，用户可在「识别」页手动重试，下次启动也会再自动续传。只有两条线都就绪才进 `.idle`。
 
 菜单栏图标：`.modelMissing` → `arrow.down.circle`（橙）；`.downloadingModel` → 同符号 + `.pulse` 动效，
 header 显示「下载模型 42% · 96/230 MB」。
@@ -522,17 +521,13 @@ header 显示「下载模型 42% · 96/230 MB」。
 
 header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模型加载中… / 模型加载失败」。
 
-**设置窗口**：仍是 4 页（数量不变，「连接」被「识别」顶替）
+**设置窗口**：3 页（「热键」并入「通用」，识别引擎配置归入「识别」）
 
 | 页 | 内容 |
 | --- | --- |
 | 权限 | 麦克风 / 辅助功能 / 输入监听（原样保留）。**删掉服务端连通性检查项** |
-| 识别 | ① **模型卡片**（当前实现）：未就绪时显示「需要下载语音模型」+「开始下载」+ 下载中的百分比进度 +「取消」（下载失败/取消后可原地重试，不会永久 disabled）；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后显示「引擎已空闲卸载」，下次录音自动重新加载，无需手动操作。速度/字节数/模型路径暂未在 UI 呈现<br>② 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>③ 智能校对：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 + 「测试校对」 |
-| 热键 | 原样保留 |
-| 通用 | 开机自启、HUD 不透明度、**新增**「空闲 N 分钟后卸载模型」 |
-
-> 备选布局：把「智能校对」拆成第 5 页。当前选择合并，因为它与识别语言同属"识别管线"，
-> 且一个 SwiftUI `Form` 放 3 个 `Section` 完全撑得住。
+| 识别 | ① **模型卡片**：首启自动下载，显示百分比进度 +「取消」；失败后显示原因 +「重试下载」；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后下次录音自动重新加载<br>② 空闲 N 分钟后卸载模型<br>③ 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>④ 智能校对：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 +「测试校对」 |
+| 通用 | 热键（Fn 或组合键，支持按键录制）、开机自启、HUD 不透明度 |
 
 ---
 
@@ -602,7 +597,7 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 | **RecognitionBufferTests** | 合成音频驱动滑窗：窗口滚动、切点能量最小、`finalize` 走完整音频 | 预览单调增长不回退为空；finalize 输入长度 == 总样本数 |
 | **ConfigStoreTests** | YAML 读写往返、缺字段回落默认、`~/.config` 迁移 | 往返幂等；迁移只带走 hotkey/opacity |
 | **LLMCorrectorTests** | `URLProtocol` 打桩：正常 / `finish_reason=length` / 5xx / 超时 | 后三者均返回**原文**，不抛给用户 |
-| **ModelDownloaderTests** | 纯函数校验（sha256、文件清单自洽性、下载顺序）+ `URLProtocol` 打桩：HTTP 非 2xx、sha256 校验失败重试一次后放弃、取消后不再发起下一次尝试 | 非 2xx 响应体不落盘；校验失败重试上限为 1 次；取消立即生效不残留旧尝试 |
+| **ModelDownloaderTests** | 纯函数校验（sha256、文件清单自洽性、下载顺序、模型缺失时的单次自动触发策略）+ `URLProtocol` 打桩：HTTP 非 2xx、sha256 校验失败重试一次后放弃、取消后不再发起下一次尝试 | 缺失模型时每进程自动触发一次；非 2xx 响应体不落盘；校验失败重试上限为 1 次；取消立即生效不残留旧尝试 |
 
 前两组依赖本机已有模型（`ModelLocator` 任一优先级命中即可），缺失时 `XCTSkip`，
 保证 CI / 无模型环境下仍能跑其余测试。
@@ -643,8 +638,8 @@ Swift 侧的特征提取本身是正确的（逐点误差 2.9e-4，长音频下�
 | **P0 骨架** | 建 `macos/` 工程与生成脚本（arm64、macOS 14）；搬运客户端代码；接入 onnxruntime SPM 依赖；ASR 层先用假实现（返回固定文本） | 能编译、能起菜单栏、按热键能把固定文本上屏 |
 | **P1 引擎** | `FbankFrontend` + `LFRCMVN` + `SenseVoiceEngine` + `CTCDecoder` + `TextPostprocessor`；金标准 fixtures 与测试 | **FbankParityTests / EndToEndRecognitionTests 全绿**（G2 达成，最关键的一步） |
 | **P2 会话** | `RecognitionBuffer` 滑窗 + `LocalASRSession` + `ASRService`；接进 `VoiceTyperController` | 真实录音→实时预览→松手上屏，端到端跑通 |
-| **P3 配置与 UI** | 新 `AppConfig` schema、`ConfigStore`、`ConfigMigrator`、Keychain；设置窗 4 页重排；菜单精简；`.modelLoading` 状态 | 全新用户路径：打开→授权→可用；老用户热键自动继承 |
-| **P3.5 模型获取** | `ModelDownloader`（串行下载、断点续传、sha256 校验、原子落盘）+ 模型卡片 UI + `.modelMissing` / `.downloadingModel` 状态 | 删掉本机所有模型副本后重新走一遍：下载→校验→加载→可听写；中途断网可续 |
+| **P3 配置与 UI** | 新 `AppConfig` schema、`ConfigStore`、`ConfigMigrator`、Keychain；设置窗 3 页重排；菜单精简；`.modelLoading` 状态 | 全新用户路径：打开→授权→可用；老用户热键自动继承 |
+| **P3.5 模型获取** | `ModelDownloader`（串行下载、断点续传、sha256 校验、原子落盘）+ 模型卡片 UI + `.modelMissing` / `.downloadingModel` 状态 | 删掉本机所有模型副本后首启无需点击，自动完成下载→校验→加载→可听写；中途断网可续 |
 | **P4 校对** | `LLMCorrector` + 设置页 + 「测试校对」 | 开关校对前后文本差异符合预期；断网/错 key 不丢文本 |
 | **P5 打包** | `build_xcode.sh`（arm64 单变体）、ORT 框架瘦身与重签名、图标、许可证声明、`fetch_model.sh` 辅助脚本 | 在**干净的另一台 Mac** 上装 DMG 走通 G1（含首启下载） |
 | **P6 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` 与 `client-server/PROTOCOL.md` 同步；`macos/README.md` | 文档与实现一致，`client-server/PROTOCOL.md` 标注其适用范围不含 `macos/` |
@@ -660,7 +655,7 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | --- | --- | --- |
 | **fbank 数值对不齐** | 识别质量下降且难察觉 | 金标准逐帧比对（1e-3）；退路是 vendoring knf 五个 C++ 文件（半天工作量） |
 | **常驻内存 ~510MB** | 菜单栏 App 偏重 | 已实测 `disable_prepacking` 省 290MB 且零性能代价；再加空闲卸载（默认 10 分钟） |
-| **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | 断点续传 + sha256 校验 + 小文件先行；失败文案给出**手动放置路径**与 `fetch_model.sh`；`ModelLocator` 会复用 `~/.cache/modelscope/` 已有模型 |
+| **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | 断点续传 + sha256 校验 + 小文件先行；识别页显示失败原因并提供手动重试，下次启动自动续传；`fetch_model.sh` 作为手动逃生口；`ModelLocator` 会复用 `~/.cache/modelscope/` 已有模型 |
 | **ModelScope 接口变更** | 首启下载全面失效 | URL 与 sha256 都是常量，改起来是一次小版本发布；`asr.model_dir` 手动指定是永久逃生口 |
 | **模型权重许可** | 分发合规 | 改为用户自行下载后 App 不再分发权重，压力大幅下降；仍在「关于」面板署名 |
 | **ORT SPM 包版本漂移** | 构建不可复现 | `Package.resolved` 入库；SPM 依赖锁 `upToNextMinor` |

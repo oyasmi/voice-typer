@@ -40,6 +40,8 @@ final class SettingsViewModel {
     var asrState: ASRService.State = .unloaded
     /// nil 表示当前未在下载。
     var downloadProgress: Double?
+    /// 自动下载的最近一次失败。重试启动后清空。
+    var modelDownloadError: String?
     var engineStatus = "检查中"
     var hotkeyDisplay = "Fn🌐"
 
@@ -63,7 +65,7 @@ final class SettingsViewModel {
     var hotkeyMessage = ""
     var hotkeyMessageKind: SettingsMessageKind = .info
 
-    // MARK: 通用
+    // MARK: 通用 / 识别引擎
     var launchAtLogin = false
     var hudOpacity = 0.85
     var idleUnloadMinutes = 10
@@ -292,8 +294,8 @@ final class SettingsViewModel {
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
             } catch {
-                self.generalMessage = "空闲卸载时长保存失败：\(error.localizedDescription)"
-                self.generalMessageKind = .error
+                self.recognitionMessage = "空闲卸载时长保存失败：\(error.localizedDescription)"
+                self.recognitionMessageKind = .error
             }
         }
     }

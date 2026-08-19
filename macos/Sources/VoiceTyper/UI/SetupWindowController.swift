@@ -5,14 +5,12 @@ import SwiftUI
 enum SetupTab: Int, CaseIterable {
     case permissions
     case recognition
-    case hotkey
     case general
 
     var title: String {
         switch self {
         case .permissions: return "权限"
         case .recognition: return "识别"
-        case .hotkey: return "热键"
         case .general: return "通用"
         }
     }
@@ -21,7 +19,6 @@ enum SetupTab: Int, CaseIterable {
         switch self {
         case .permissions: return "checkmark.shield"
         case .recognition: return "waveform"
-        case .hotkey: return "keyboard"
         case .general: return "gearshape"
         }
     }
@@ -80,6 +77,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         permissions: PermissionSnapshot,
         asrState: ASRService.State,
         downloadProgress: Double?,
+        modelDownloadError: String?,
         hotkeyDisplay: String,
         engineStatus: String
     ) {
@@ -87,6 +85,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.permissions = permissions
         viewModel.asrState = asrState
         viewModel.downloadProgress = downloadProgress
+        viewModel.modelDownloadError = modelDownloadError
         viewModel.hotkeyDisplay = hotkeyDisplay
         viewModel.engineStatus = engineStatus
         // 只要不在下载中，busy 状态就必须完全由当前 asrState 决定；
@@ -202,8 +201,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return sized(PermissionsSettingsView(vm: viewModel))
         case .recognition:
             return sized(RecognitionSettingsView(vm: viewModel))
-        case .hotkey:
-            return sized(HotkeySettingsView(vm: viewModel))
         case .general:
             return sized(GeneralSettingsView(vm: viewModel))
         }

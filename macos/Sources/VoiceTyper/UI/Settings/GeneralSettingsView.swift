@@ -5,6 +5,8 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
+            HotkeySettingsView(vm: vm)
+
             Section("通用") {
                 Toggle("开机自启", isOn: Binding(
                     get: { vm.launchAtLogin },
@@ -45,23 +47,6 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section {
-                Picker("空闲多久后卸载模型", selection: Binding(
-                    get: { vm.idleUnloadMinutes },
-                    set: { vm.idleUnloadMinutes = $0; vm.commitIdleUnloadMinutes() }
-                )) {
-                    Text("5 分钟").tag(5)
-                    Text("10 分钟").tag(10)
-                    Text("30 分钟").tag(30)
-                    Text("从不").tag(0)
-                }
-            } header: {
-                Text("识别引擎")
-            } footer: {
-                Text("SenseVoice 常驻内存约 500MB。空闲达到设定时长后自动释放；下次按热键会与录音并行自动重新加载（约 1 秒），首句预览会稍晚出现，不影响最终识别结果。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
     }

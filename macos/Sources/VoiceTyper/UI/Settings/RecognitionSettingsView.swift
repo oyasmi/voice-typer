@@ -9,6 +9,24 @@ struct RecognitionSettingsView: View {
                 modelCard
             }
 
+            Section {
+                Picker("空闲多久后卸载模型", selection: Binding(
+                    get: { vm.idleUnloadMinutes },
+                    set: { vm.idleUnloadMinutes = $0; vm.commitIdleUnloadMinutes() }
+                )) {
+                    Text("5 分钟").tag(5)
+                    Text("10 分钟").tag(10)
+                    Text("30 分钟").tag(30)
+                    Text("从不").tag(0)
+                }
+            } header: {
+                Text("识别引擎")
+            } footer: {
+                Text("SenseVoice 常驻内存约 500MB。空闲达到设定时长后自动释放；下次按热键会与录音并行自动重新加载（约 1 秒），首句预览会稍晚出现，不影响最终识别结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("识别语言") {
                 Picker("语言", selection: $vm.language) {
                     ForEach(ASRLanguage.allCases, id: \.self) { lang in
@@ -112,22 +130,26 @@ struct RecognitionSettingsView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.down.circle").foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("需要下载语音模型")
+                        Text(vm.downloadProgress == nil ? "语音模型尚未就绪" : "正在准备语音模型")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("SenseVoice-Small · 约 230 MB，下载一次后完全离线可用。")
+                        Text(modelMissingDetail)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(vm.modelDownloadError == nil ? Color.secondary : Color.red)
                     }
                     Spacer()
-                    Button("开始下载") { vm.startModelDownload() }
+                    if vm.downloadProgress == nil {
+                        Button(vm.modelDownloadError == nil ? "立即下载" : "重试下载") {
+                            vm.startModelDownload()
+                        }
                         .buttonStyle(.borderedProminent)
                         .disabled(vm.modelActionBusy)
+                    }
                 }
             }
         case .unloaded:
             HStack(spacing: 10) {
                 Image(systemName: "clock").foregroundStyle(.secondary)
-                Text("等待权限就绪后自动加载模型…")
+                Text("正在检查本地语音模型…")
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -162,5 +184,15 @@ struct RecognitionSettingsView: View {
                 }
             }
         }
+    }
+
+    private var modelMissingDetail: String {
+        if let error = vm.modelDownloadError {
+            return "自动下载失败：\(error)"
+        }
+        if vm.downloadProgress != nil {
+            return "SenseVoice-Small · 约 230 MB，完成后会自动校验、加载并进入离线可用状态。"
+        }
+        return "SenseVoice-Small · 约 230 MB，下载并校验完成后可完全离线使用。"
     }
 }
