@@ -34,7 +34,7 @@
 - 首次启动引导下载一次模型（约 230MB），此后完全离线
 - 按住热键（默认 `Fn`）录音，松开自动识别并插入文本；录音中按 `Esc` 取消
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
-- 可选的 LLM 智能纠错，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
+- 可选的 LLM 智能校对，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
 - 识别语言可指定为自动 / 中文 / 英文 / 粤语 / 日语 / 韩语
 - 空闲一段时间后自动释放识别引擎内存，下次按热键与录音并行自动重新加载
 - 开机自启、HUD 不透明度可调
@@ -152,7 +152,7 @@ tccutil reset ListenEvent com.voicetyper.app
 | 页 | 内容 |
 | --- | --- |
 | **权限** | 三项权限状态、授权按钮、跳转系统设置 |
-| **识别** | 模型状态卡片（下载/加载/就绪/失败 + 重新加载）、识别语言、智能纠错（开关 + Base URL + API Key + 模型 + 温度 + 超时 + 测试纠错） |
+| **识别** | 模型状态卡片（下载/加载/就绪/失败 + 重新加载）、识别语言、智能校对（开关 + Base URL + API Key + 模型 + 温度 + 超时 + 测试校对） |
 | **热键** | Fn 模式或组合键模式，支持按键录制 |
 | **通用** | 开机自启、HUD 背景不透明度、空闲多久后卸载模型 |
 
@@ -264,7 +264,7 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） |
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
-| `LLMCorrectorTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） |
+| `LLMCorrectorTests` | 校对客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） |
 | `ModelDownloaderTests` | sha256 校验、文件清单自洽性 |
 
 `FbankParityTests` / `EndToEndRecognitionTests` 依赖本机已有模型（`ModelLocator` 任一优先级命中

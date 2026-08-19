@@ -55,7 +55,7 @@
 
 **证据链**
 
-`VoiceTyperController` 允许在上一段已松键、仍处于识别或 LLM 纠错时开始下一段录音，因为 `beginRecording()` 只检查 `isRunning && !isRecording`。控制器新增了 `pending` FIFO，试图按录音发起顺序提交结果，但它只用一个 `asrSession` 属性强持有“当前会话”。
+`VoiceTyperController` 允许在上一段已松键、仍处于识别或 LLM 校对时开始下一段录音，因为 `beginRecording()` 只检查 `isRunning && !isRecording`。控制器新增了 `pending` FIFO，试图按录音发起顺序提交结果，但它只用一个 `asrSession` 属性强持有“当前会话”。
 
 当 B 开始时，`asrSession = B` 覆盖 A。A 的其余引用全部是弱引用：
 
@@ -68,7 +68,7 @@
 
 **最小复现场景**
 
-1. 完成录音 A，A 开始离线识别或慢速 LLM 纠错。
+1. 完成录音 A，A 开始离线识别或慢速 LLM 校对。
 2. A 返回前开始录音 B。
 3. B 覆盖唯一强引用 `asrSession`，A 被释放。
 4. B 返回结果，但因 A 仍占 FIFO 队首而无法上屏；后续结果全部同样被阻塞。
@@ -81,7 +81,7 @@
 
 优先选择更简单、也与项目约定 `Idle → Recording → Recognizing → Inserting` 一致的方案：**在一段听写完成插入前不接受下一段录音，删除 `pending` FIFO 和多会话兼容分支。** 这是最符合“裁弯取直、去肥增瘦”的处理。
 
-如果“连续快速听写、允许上一段仍纠错时开始下一段”是明确产品需求，则必须把它做成一等模型：
+如果“连续快速听写、允许上一段仍校对时开始下一段”是明确产品需求，则必须把它做成一等模型：
 
 - 建立 `UtteranceContext`，包含 ID、强持有的 session、目标焦点、阶段和结果；
 - 由 `[UtteranceID: UtteranceContext]` 拥有每个未终止会话；
@@ -157,7 +157,7 @@ AppDelegate.applicationDidFinishLaunching
 
 **位置**：`SettingsViewModel.swift:213-246`，`AppCoordinator.swift:105-112, 394-416`
 
-`beginHotkeyRecording()` 立即调用 `onSuspendHotkey(true)`，而 coordinator 直接执行 `voiceTyperController.stop()`。此动作发生在 `applyConfig()` 的 `currentState.isActiveDictation` 检查之前，所以用户在识别/纠错阶段点进热键录制，当前 pending 会先被清空、会话先被关闭；随后保存才被拒绝。
+`beginHotkeyRecording()` 立即调用 `onSuspendHotkey(true)`，而 coordinator 直接执行 `voiceTyperController.stop()`。此动作发生在 `applyConfig()` 的 `currentState.isActiveDictation` 检查之前，所以用户在识别/校对阶段点进热键录制，当前 pending 会先被清空、会话先被关闭；随后保存才被拒绝。
 
 更糟的是，`stop()` 不发出状态迁移，`activateReadyState()` 又刻意保留 `.recording/.recognizing/.inserting`，于是重新启用监听后 UI 可能仍停在旧的 active 状态，但实际已经没有正在处理的 utterance。
 
@@ -261,7 +261,7 @@ AppDelegate.applicationDidFinishLaunching
 | 第一轮项 | 第二轮状态 | 结论 |
 | --- | --- | --- |
 | F-01 干净检出缺 WAV / 工程生成漂移 | **关闭** | WAV 已跟踪，fixture 扩展名与忽略规则已修正，干净构建通过 |
-| F-02 日志包含完整识别/纠错文本 | **关闭** | 改为字符数或结构化错误，未再发现完整用户文本日志 |
+| F-02 日志包含完整识别/校对文本 | **关闭** | 改为字符数或结构化错误，未再发现完整用户文本日志 |
 | F-03 非法 LLM URL 崩溃、空响应丢文 | **部分关闭** | URL 强解包和普通空响应已修；tags-only 仍会变空（R2-08） |
 | F-04 空闲卸载后立即自动加载 | **部分关闭** | `suspendedForIdle` 修复单会话循环；多会话 lease 仍缺失（R2-06） |
 | F-05 旧会话结果乱序/丢失 | **修复回归** | FIFO 思路正确，但旧 session 被释放，反而永久堵塞（R2-01） |
@@ -346,7 +346,7 @@ AppDelegate.applicationDidFinishLaunching
 - 标准测试命令在无模型机器上确定结束；非模型测试真实运行。
 - 快速连续热键、慢 LLM、识别错误、超时、取消的会话所有权与提交顺序。
 - 设备在录音中拔出/切换，分别在用户松键前后完成识别，最终均进入稳定状态。
-- 录音、识别、纠错、插入各阶段尝试录制热键、保存配置、reload 模型。
+- 录音、识别、校对、插入各阶段尝试录制热键、保存配置、reload 模型。
 - 同 App 切窗口/切字段、无效 AX range、AX 不可写、粘贴失败和用户中途复制新内容。
 - 两个活动 session（若产品保留并发）与极短 idle timeout 的 lease 行为。
 - LLM tags-only、远程 HTTP、回环 HTTP、HTTP 错误与超时回退。

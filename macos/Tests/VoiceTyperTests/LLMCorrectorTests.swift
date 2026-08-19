@@ -2,7 +2,7 @@ import XCTest
 @testable import VoiceTyper
 
 /// 用 URLProtocol 打桩验证 LLMCorrector 的失败兜底：网络/超时/截断/格式错误
-/// 都必须原样返回输入文本，绝不让纠错失败丢掉已经识别出的文本。
+/// 都必须原样返回输入文本，绝不让校对失败丢掉已经识别出的文本。
 final class LLMCorrectorTests: XCTestCase {
     private func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -109,6 +109,29 @@ final class LLMCorrectorTests: XCTestCase {
         let original = "已识别的原文"
         let result = await corrector.correct(original)
         XCTAssertEqual(result, original)
+    }
+}
+
+@MainActor
+final class SettingsViewModelTests: XCTestCase {
+    func testCorrectionTestMessageIncludesElapsedTime() async {
+        let vm = SettingsViewModel()
+        vm.llmEnabled = true
+        vm.llmBaseURL = "https://stub.invalid/v1"
+        vm.onTestLLMCorrection = { _, _ in
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            return true
+        }
+
+        vm.testLLMCorrection()
+        let deadline = Date().addingTimeInterval(1)
+        while vm.recognitionBusy && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        XCTAssertFalse(vm.recognitionBusy, "测试校对异步任务未在预期时间内完成")
+        XCTAssertTrue(vm.recognitionMessage.hasPrefix("校对测试成功"))
+        XCTAssertTrue(vm.recognitionMessage.contains("耗时 "))
     }
 }
 

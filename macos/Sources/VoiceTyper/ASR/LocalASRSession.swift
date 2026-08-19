@@ -17,7 +17,7 @@ private final class CancelFlag: @unchecked Sendable {
 }
 
 /// 单次录音会话的本地识别接缝层：接收流式音频、驱动滑窗预览、录音结束后离线整段
-/// 复识别、可选 LLM 纠错，通过四个回调把结果交给 `VoiceTyperController`。
+/// 复识别、可选 LLM 校对，通过四个回调把结果交给 `VoiceTyperController`。
 ///
 /// 行为：
 /// - 有预览在跑就跳过（`previewInFlight`），跳过的音频在下次预览一并处理
@@ -25,7 +25,7 @@ private final class CancelFlag: @unchecked Sendable {
 /// - `isFinalizing` 后不再补发 partial
 /// - 预览异常 → `onWarning`，会话继续
 /// - 单段会话上限 → 一次性 `onWarning`，之后静默丢弃新音频
-/// - finalize → 离线整段识别 → （可选）LLM 纠错 → `onFinal`
+/// - finalize → 离线整段识别 → （可选）LLM 校对 → `onFinal`
 @MainActor
 final class LocalASRSession {
     var onPartial: ((String) -> Void)?
@@ -200,8 +200,8 @@ final class LocalASRSession {
         }
     }
 
-    /// 拿到 ASR 原文后：若启用了 LLM 纠错，先把原文通过 onPartial 顶到 HUD 上
-    /// （让用户立刻看到结果，纠错中不会像"卡住"），再异步纠错，最终以纠错结果调用 onFinal。
+    /// 拿到 ASR 原文后：若启用了 LLM 校对，先把原文通过 onPartial 顶到 HUD 上
+    /// （让用户立刻看到结果，校对中不会像"卡住"），再异步校对，最终以校对结果调用 onFinal。
     /// 这一步在跨进程架构下没有意义（要多一次网络往返），进程内是免费的。
     private func completeWithASRText(_ text: String) {
         guard let llmCorrector, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

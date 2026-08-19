@@ -19,7 +19,7 @@ struct RecognitionSettingsView: View {
             }
 
             Section {
-                Toggle("启用智能纠错", isOn: $vm.llmEnabled)
+                Toggle("启用智能校对", isOn: $vm.llmEnabled)
                 if vm.llmEnabled {
                     TextField("Base URL", text: $vm.llmBaseURL, prompt: Text("https://api.openai.com/v1"))
                     SecureField("API Key", text: $vm.llmAPIKey)
@@ -41,7 +41,7 @@ struct RecognitionSettingsView: View {
                     }
                 }
             } header: {
-                Text("智能纠错")
+                Text("智能校对")
             } footer: {
                 Text("用 OpenAI 兼容接口对识别结果做二次校对（修正同音错字、口语填充词等）。留空 Base URL 则不启用。")
                     .font(.caption)
@@ -52,7 +52,7 @@ struct RecognitionSettingsView: View {
                 HStack {
                     Spacer()
                     if vm.llmEnabled {
-                        Button("测试纠错") { vm.testLLMCorrection() }
+                        Button("测试校对") { vm.testLLMCorrection() }
                     }
                     Button("保存并应用") { vm.saveRecognitionSettings() }
                         .buttonStyle(.borderedProminent)

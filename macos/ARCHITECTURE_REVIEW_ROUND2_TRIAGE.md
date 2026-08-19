@@ -46,7 +46,7 @@
 
 - `VoiceTyperController.swift:191/204/211` 三个回调都是 `[weak self, weak session]`，且闭包本身存放在 session 自己身上（自持不构成外部强引用）；
 - `VoiceTyperController.swift:229/235` 的 `onChunk/onTailChunk` 是 `[weak session]`，由 `AudioCaptureService` 持有；
-- `LocalASRSession.swift:82`（看门狗）、`:125/:169`（asrQueue 闭包）、`:128/:172`（回主线程 Task）、`:198`（LLM 纠错 Task）全部 `[weak self]`；
+- `LocalASRSession.swift:82`（看门狗）、`:125/:169`（asrQueue 闭包）、`:128/:172`（回主线程 Task）、`:198`（LLM 校对 Task）全部 `[weak self]`；
 - `RecognitionBuffer` 被 asrQueue 闭包强持有，但它只持有 `engine`，不反向持有 session。
 
 因此 `VoiceTyperController.swift:258` 的 `asrSession = session` 一旦被第二段录音覆盖，A 立即析构，`onFinal/onError` 永不触发，`pending` 队首 `result` 永远为 `nil`，`drainCommits()`（`:273`）无法前进——**此后所有听写结果永久不上屏**，且 `pending` 无界增长。
@@ -54,7 +54,7 @@
 补充两点报告没写、但影响修复方案的事实：
 
 1. A 析构时 `teardownASRSession()` 从未对 A 执行过，因此 A 的 `close()` 未调用、`asrService.sessionEnded()` 未配对调用（空闲卸载计时被少安排一次）。
-2. 触发条件不需要 LLM：只要"松键后 → 再次按键"的间隔短于离线复识别耗时即可；开启 LLM 纠错时窗口从几百毫秒扩大到几秒。
+2. 触发条件不需要 LLM：只要"松键后 → 再次按键"的间隔短于离线复识别耗时即可；开启 LLM 校对时窗口从几百毫秒扩大到几秒。
 
 ### 2.2 R2-02：报告结论有误，本机可正常执行
 
@@ -117,7 +117,7 @@ R2-06b 经查属实且无解：SPM 检出的 ObjC 绑定 `objectivec/include/ort
   - manifest/hash 体系：属过度设计，见 §4.3。
 - **R2-10**：成立且是**死代码**。`start()` 第一行就调 `stop()`，而 `stop()`（`HotkeyService.swift:137`）无条件 `workerLifecycle = nil`，所以 `:76` 的 `if let abandoned = workerLifecycle` 永远取不到超时遗留的句柄。
 - **R2-11**：成立。`ModelDownloader.swift:257` 硬编码 `ModelLocator.downloadDestination`，而不是注入的 `downloadDestination`。实际影响不止"测试隔离"：**跑一次 `xcodebuild test` 就会把 `.resume` 碎片写进用户真实的 `~/Library/Application Support/VoiceTyper/models/sensevoice-small/`**。
-- **R2-12**：成立。`AppConfig.swift:52` 的 `guard value < lower || value > upper` 对 NaN 两边都为 false，NaN 原样穿透。`llm.temperature = .nan` 会让 `JSONSerialization` 抛错 → 每次纠错都静默回落原文；`ui.opacity = .nan` 会污染窗口 alpha。
+- **R2-12**：成立。`AppConfig.swift:52` 的 `guard value < lower || value > upper` 对 NaN 两边都为 false，NaN 原样穿透。`llm.temperature = .nan` 会让 `JSONSerialization` 抛错 → 每次校对都静默回落原文；`ui.opacity = .nan` 会污染窗口 alpha。
 
 ### 2.8 R2-13：成立，但只需修其中一部分
 

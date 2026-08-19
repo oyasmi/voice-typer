@@ -47,7 +47,7 @@ final class SettingsViewModel {
     var language: ASRLanguage = .auto
     var modelActionBusy = false
 
-    // MARK: 智能纠错（草稿，显式保存）
+    // MARK: 智能校对（草稿，显式保存）
     var llmEnabled = false
     var llmBaseURL = ""
     var llmAPIKey = ""
@@ -107,12 +107,12 @@ final class SettingsViewModel {
         hotkeyMessage = ""
     }
 
-    // MARK: - 识别 / 纠错
+    // MARK: - 识别 / 校对
 
     func testLLMCorrection() {
         let draft = draftLLMConfig()
         guard draft.enabled, !draft.baseURL.trimmingCharacters(in: .whitespaces).isEmpty else {
-            recognitionMessage = "请先启用智能纠错并填写 Base URL。"
+            recognitionMessage = "请先启用智能校对并填写 Base URL。"
             recognitionMessageKind = .error
             return
         }
@@ -122,16 +122,18 @@ final class SettingsViewModel {
             return
         }
         recognitionBusy = true
-        recognitionMessage = "正在测试纠错…"
+        recognitionMessage = "正在测试校对…"
         recognitionMessageKind = .info
         let apiKey = llmAPIKey
+        let startedAt = Date()
         Task { [weak self] in
             guard let self else { return }
             let ok = await self.onTestLLMCorrection?(draft, apiKey) ?? false
+            let elapsed = Date().timeIntervalSince(startedAt)
             self.recognitionBusy = false
             self.recognitionMessage = ok
-                ? "纠错测试成功：模型正常响应并返回了修正结果。"
-                : "纠错测试未通过，请检查 Base URL / API Key / 模型名是否正确。"
+                ? String(format: "校对测试成功：模型正常响应并返回了校对结果（耗时 %.2f 秒）。", elapsed)
+                : String(format: "校对测试未通过，请检查 Base URL / API Key / 模型名是否正确（耗时 %.2f 秒）。", elapsed)
             self.recognitionMessageKind = ok ? .success : .error
         }
     }
@@ -154,7 +156,7 @@ final class SettingsViewModel {
         Task { [weak self] in
             guard let self else { return }
             // 先写 Keychain、检查返回值（原先被丢弃）：写失败必须中止，
-            // 否则界面显示"已保存"而纠错永远 401（F-13）。
+            // 否则界面显示"已保存"而校对永远 401（F-13）。
             guard KeychainStore.saveLLMAPIKey(apiKey) else {
                 self.recognitionMessage = "API Key 写入 Keychain 失败，设置未保存。"
                 self.recognitionMessageKind = .error

@@ -19,7 +19,7 @@
 | G2 | 识别质量与现有链路一致 | 同一段音频，Swift 特征提取（fbank/LFR/CMVN）与 `client-server/server/` 输出逐点误差 < 1e-3；完整识别文本与 Python 输出编辑距离 ≤ 2（金标准测试，详见 §8 的实测结论） |
 | G3 | 延迟不劣化 | 松手到上屏 ≤ 现有本地 server 方案（去掉了 WS 往返，理论上更快） |
 | G4 | 配置面收敛 | 用户可见配置项从 12 项降到 6 项左右，且没有一项与"服务端在哪"有关 |
-| G5 | LLM 纠错开箱可配 | 在设置面板里填 base_url / api_key / model 即可启用，无需改服务端启动参数 |
+| G5 | LLM 校对开箱可配 | 在设置面板里填 base_url / api_key / model 即可启用，无需改服务端启动参数 |
 
 ### 1.2 非目标（本轮明确不做）
 
@@ -69,7 +69,7 @@ recognizer.SenseVoiceRecognizer.initialize   → 读 config.yaml / am.mvn / toke
                      └ _ctc_greedy_decode      → CTC 贪心解码 + 文本后处理
 recognizer.SenseVoiceSession                 → 滑动窗口预览 + finalize 整段重跑
 app.StreamRecognizeHandler                   → 预览调度、合并、warning/final 语义
-llm_client.LLMClient                         → OpenAI 兼容纠错
+llm_client.LLMClient                         → OpenAI 兼容校对
 prompts/correction.md                        → 提示词（原样搬运为 bundle 资源）
 ```
 
@@ -408,7 +408,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 | `finalize` 超时保护 | 保留看门狗（本地无网络，但防推理卡死），默认 30s |
 
 **一处相对服务端的增强**：finalize 拿到 ASR 原文后、调用 LLM 之前，先 `onPartial(原文)`
-让 HUD 立刻显示识别结果并切到「纠错中…」，纠错完成后再上屏。原来跨进程时这一步没有意义
+让 HUD 立刻显示识别结果并切到「校对中…」，校对完成后再上屏。原来跨进程时这一步没有意义
 （要多一次往返），进程内是**一行代码的免费收益**。
 
 ### 5.3 与 `VoiceTyperController` 的接缝
@@ -431,7 +431,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 - 启动时**并行**发起模型预加载与权限检查：权限没给全时模型照样在后台加载好，
   用户授权完立刻可用，不用再等 1 秒
 
-### 5.4 LLM 纠错（`LLMCorrector`）
+### 5.4 LLM 校对（`LLMCorrector`）
 
 `llm_client.py` 的直译，逻辑保持不变：
 
@@ -443,7 +443,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 - 防御性剥离模型回显的标签
 - 任何失败（网络/超时/鉴权/解析）→ 记日志 + `onWarning` + **使用 ASR 原文**，绝不丢文本
 
-新增能力（服务端没有的）：设置页「测试纠错」按钮，用一段固定的含错样例做真实往返，
+新增能力（服务端没有的）：设置页「测试校对」按钮，用一段固定的含错样例做真实往返，
 把 base_url / key / model 三项配置的错误在**配置时**就暴露出来，而不是等到听写时。
 
 ### 5.5 配置与密钥
@@ -527,11 +527,11 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
 | 页 | 内容 |
 | --- | --- |
 | 权限 | 麦克风 / 辅助功能 / 输入监听（原样保留）。**删掉服务端连通性检查项** |
-| 识别 | ① **模型卡片**（当前实现）：未就绪时显示「需要下载语音模型」+「开始下载」+ 下载中的百分比进度 +「取消」（下载失败/取消后可原地重试，不会永久 disabled）；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后显示「引擎已空闲卸载」，下次录音自动重新加载，无需手动操作。速度/字节数/模型路径暂未在 UI 呈现<br>② 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>③ 智能纠错：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 + 「测试纠错」 |
+| 识别 | ① **模型卡片**（当前实现）：未就绪时显示「需要下载语音模型」+「开始下载」+ 下载中的百分比进度 +「取消」（下载失败/取消后可原地重试，不会永久 disabled）；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后显示「引擎已空闲卸载」，下次录音自动重新加载，无需手动操作。速度/字节数/模型路径暂未在 UI 呈现<br>② 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>③ 智能校对：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 + 「测试校对」 |
 | 热键 | 原样保留 |
 | 通用 | 开机自启、HUD 不透明度、**新增**「空闲 N 分钟后卸载模型」 |
 
-> 备选布局：把「智能纠错」拆成第 5 页。当前选择合并，因为它与识别语言同属"识别管线"，
+> 备选布局：把「智能校对」拆成第 5 页。当前选择合并，因为它与识别语言同属"识别管线"，
 > 且一个 SwiftUI `Form` 放 3 个 `Section` 完全撑得住。
 
 ---
@@ -552,7 +552,7 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
 | `ui.width` / `ui.height` | **删除**（现有实现已标注废弃、不再读取） |
 | —— | **新增** `asr.model_dir`、`asr.idle_unload_minutes` |
 
-用户可见配置项：**12 → 6**（识别语言、纠错开关+4 项纠错参数、热键、HUD 不透明度、开机自启、空闲卸载）。
+用户可见配置项：**12 → 6**（识别语言、校对开关+4 项校对参数、热键、HUD 不透明度、开机自启、空闲卸载）。
 其中"必须配置才能用"的项：**0**。
 
 菜单项：删除「重新连接服务」，能力以「设置 → 识别 → 重新加载模型」保留。
@@ -645,7 +645,7 @@ Swift 侧的特征提取本身是正确的（逐点误差 2.9e-4，长音频下�
 | **P2 会话** | `RecognitionBuffer` 滑窗 + `LocalASRSession` + `ASRService`；接进 `VoiceTyperController` | 真实录音→实时预览→松手上屏，端到端跑通 |
 | **P3 配置与 UI** | 新 `AppConfig` schema、`ConfigStore`、`ConfigMigrator`、Keychain；设置窗 4 页重排；菜单精简；`.modelLoading` 状态 | 全新用户路径：打开→授权→可用；老用户热键自动继承 |
 | **P3.5 模型获取** | `ModelDownloader`（串行下载、断点续传、sha256 校验、原子落盘）+ 模型卡片 UI + `.modelMissing` / `.downloadingModel` 状态 | 删掉本机所有模型副本后重新走一遍：下载→校验→加载→可听写；中途断网可续 |
-| **P4 纠错** | `LLMCorrector` + 设置页 + 「测试纠错」 | 开关纠错前后文本差异符合预期；断网/错 key 不丢文本 |
+| **P4 校对** | `LLMCorrector` + 设置页 + 「测试校对」 | 开关校对前后文本差异符合预期；断网/错 key 不丢文本 |
 | **P5 打包** | `build_xcode.sh`（arm64 单变体）、ORT 框架瘦身与重签名、图标、许可证声明、`fetch_model.sh` 辅助脚本 | 在**干净的另一台 Mac** 上装 DMG 走通 G1（含首启下载） |
 | **P6 收尾** | 老客户端改名；根 `README.md` / `CLAUDE.md` 与 `client-server/PROTOCOL.md` 同步；`macos/README.md` | 文档与实现一致，`client-server/PROTOCOL.md` 标注其适用范围不含 `macos/` |
 

@@ -56,7 +56,7 @@ private func clamp<T: Comparable>(_ value: T, _ lower: T, _ upper: T, field: Str
 }
 
 /// 浮点重载：`value < lower || value > upper` 对 NaN 两边都是 false，会让 NaN 原样穿透
-/// 通用版本（例如 `llm.temperature = .nan` 会让 JSONSerialization 抛错，每次纠错都
+/// 通用版本（例如 `llm.temperature = .nan` 会让 JSONSerialization 抛错，每次校对都
 /// 静默回落原文；`ui.opacity = .nan` 会污染窗口 alpha）。非有限数值直接重置为下限（R2-12）。
 private func clamp<T: Comparable & FloatingPoint>(_ value: T, _ lower: T, _ upper: T, field: String) -> T {
     guard value.isFinite else {
@@ -136,7 +136,7 @@ struct ASRConfig: Codable, Equatable {
     }
 }
 
-/// LLM 纠错配置。api_key 不落此结构 —— 存 Keychain，见 KeychainStore。
+/// LLM 校对配置。api_key 不落此结构 —— 存 Keychain，见 KeychainStore。
 struct LLMConfig: Codable, Equatable {
     var enabled: Bool
     var baseURL: String

@@ -87,7 +87,7 @@ final class VoiceTyperController {
             ))
         } else {
             if config.llm.enabled {
-                AppLog.llm.error("LLM Base URL 无法解析为合法请求地址，本次运行禁用智能纠错")
+                AppLog.llm.error("LLM Base URL 无法解析为合法请求地址，本次运行禁用智能校对")
             }
             self.llmCorrector = nil
         }
