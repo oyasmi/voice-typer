@@ -46,11 +46,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             headerItem,
             .separator(),
             pauseMenuItem,
+            launchAtLoginMenuItem,
             .separator(),
             setupMenuItem,
             configMenuItem,
-            .separator(),
-            launchAtLoginMenuItem,
             aboutMenuItem,
             .separator(),
             quitMenuItem,
@@ -198,10 +197,27 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func handleAbout() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: AppConstants.appName,
-            .applicationVersion: AppConstants.version,
-        ])
+
+        let repositoryButton = NSButton(
+            title: AppConstants.repositoryURL.absoluteString,
+            target: self,
+            action: #selector(handleOpenRepository)
+        )
+        repositoryButton.bezelStyle = .inline
+        repositoryButton.contentTintColor = .linkColor
+        repositoryButton.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = AppConstants.appName
+        alert.informativeText = "版本号：\(AppConstants.version)"
+        alert.icon = NSApp.applicationIconImage
+        alert.accessoryView = repositoryButton
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    @objc private func handleOpenRepository() {
+        NSWorkspace.shared.open(AppConstants.repositoryURL)
     }
 
     @objc private func handleQuit() {
