@@ -11,10 +11,6 @@ struct PermissionsSettingsView: View {
                 }
             } header: {
                 Text("权限")
-            } footer: {
-                Text("VoiceTyper 需要以下权限：麦克风用于录音，辅助功能用于插入文本，输入监控用于全局热键（尤其是 Fn 键）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -34,7 +30,7 @@ struct PermissionsSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(kind.title)
                     .font(.system(size: 13, weight: .semibold))
-                Text(status.displayText)
+                Text("\(kind.purpose) · \(status.displayText)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

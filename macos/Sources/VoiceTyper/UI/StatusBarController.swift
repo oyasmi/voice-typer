@@ -198,26 +198,47 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func handleAbout() {
         NSApp.activate(ignoringOtherApps: true)
 
-        let repositoryButton = NSButton(
-            title: AppConstants.repositoryURL.absoluteString,
-            target: self,
-            action: #selector(handleOpenRepository)
-        )
-        repositoryButton.bezelStyle = .inline
-        repositoryButton.contentTintColor = .linkColor
-        repositoryButton.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
-
-        let alert = NSAlert()
-        alert.messageText = AppConstants.appName
-        alert.informativeText = "版本号：\(AppConstants.version)"
-        alert.icon = NSApp.applicationIconImage
-        alert.accessoryView = repositoryButton
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        var options: [NSApplication.AboutPanelOptionKey: Any] = [.credits: aboutCredits]
+        if let applicationIcon = NSApp.applicationIconImage {
+            options[.applicationIcon] = applicationIcon
+        }
+        NSApp.orderFrontStandardAboutPanel(options: options)
     }
 
-    @objc private func handleOpenRepository() {
-        NSWorkspace.shared.open(AppConstants.repositoryURL)
+    /// 标准关于面板的补充信息。应用名与版本由 Info.plist 提供，交给 AppKit 按系统样式排版。
+    private var aboutCredits: NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.lineSpacing = 3
+
+        let credits = NSMutableAttributedString(
+            string: "本地优先的离线语音输入工具\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+        credits.append(NSAttributedString(
+            string: "音频仅在设备端处理\n\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        ))
+        credits.append(NSAttributedString(
+            string: "GitHub 项目主页 ↗",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.linkColor,
+                .link: AppConstants.repositoryURL,
+            ]
+        ))
+        credits.addAttribute(
+            .paragraphStyle,
+            value: paragraphStyle,
+            range: NSRange(location: 0, length: credits.length)
+        )
+        return credits
     }
 
     @objc private func handleQuit() {

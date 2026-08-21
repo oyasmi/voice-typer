@@ -34,7 +34,7 @@
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
-| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.1.3**（当前版本，见 D3） |
+| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.1.6**（当前版本，见 D3） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
 > 代价：老客户端用户升级到改名版后需要**重新授权一次**三项权限。由于两个 App 都是 adhoc 签名、
@@ -685,5 +685,5 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D1 | 模型分发方式 | ✅ **首启从 ModelScope 下载** | App 52MB；已验证端点、断点续传与 sha256（§4.4） |
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
-| D3 | 新 App 版本号 | ✅ **3.1.3**（第二轮架构审查修复批次，见 `ARCHITECTURE_REVIEW_ROUND2_TRIAGE.md`） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 |
+| D3 | 新 App 版本号 | ✅ **3.1.6**（设置面板优化版本） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 |
 | D4 | 空闲卸载默认值 | 待定，暂按 **10 分钟** | 备选：默认关闭（常驻 510MB）。P3 前定即可 |

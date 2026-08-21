@@ -47,7 +47,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var preferredOrigin: NSPoint?
 
     private static let contentWidth: CGFloat = 720
-    private static let contentHeight: CGFloat = 480
+    /// 以展开智能校对后的“识别”页为准，完整容纳最长页面且不留下过多空白。
+    private static let contentHeight: CGFloat = 540
     /// 内容左右边距。grouped Form 在 NSHostingController 中自动边距会塌陷为 0、且会忽略
     /// SwiftUI 层的 padding，故在 AppKit 层给 hosting 视图加物理内缩，确保内容不贴边。
     private static let contentHInset: CGFloat = 20

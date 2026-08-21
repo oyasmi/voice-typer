@@ -5,11 +5,8 @@ struct RecognitionSettingsView: View {
 
     var body: some View {
         Form {
-            Section("语音模型") {
-                modelCard
-            }
-
             Section {
+                modelCard
                 Picker("空闲多久后卸载模型", selection: Binding(
                     get: { vm.idleUnloadMinutes },
                     set: { vm.idleUnloadMinutes = $0; vm.commitIdleUnloadMinutes() }
@@ -19,21 +16,19 @@ struct RecognitionSettingsView: View {
                     Text("30 分钟").tag(30)
                     Text("从不").tag(0)
                 }
-            } header: {
-                Text("识别引擎")
-            } footer: {
-                Text("SenseVoice 常驻内存约 500MB。空闲达到设定时长后自动释放；下次按热键会与录音并行自动重新加载（约 1 秒），首句预览会稍晚出现，不影响最终识别结果。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("识别语言") {
-                Picker("语言", selection: $vm.language) {
+                Picker("识别语言", selection: $vm.language) {
                     ForEach(ASRLanguage.allCases, id: \.self) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
                 .help("SenseVoice 支持自动判断语种，也可指定为固定语言以提升准确率。")
+            } header: {
+                Text("语音模型")
+            } footer: {
+                Text("SenseVoice 常驻内存约 500MB。空闲达到设定时长后自动释放；下次按热键会与录音并行自动重新加载（约 1 秒），首句预览会稍晚出现，不影响最终识别结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -58,15 +53,7 @@ struct RecognitionSettingsView: View {
                             .multilineTextAlignment(.trailing)
                     }
                 }
-            } header: {
-                Text("智能校对")
-            } footer: {
-                Text("用 OpenAI 兼容接口对识别结果做二次校对（修正同音错字、口语填充词等）。留空 Base URL 则不启用。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section {
                 HStack {
                     Spacer()
                     if vm.llmEnabled {
@@ -84,6 +71,12 @@ struct RecognitionSettingsView: View {
                         .foregroundStyle(vm.recognitionMessageKind.color)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            } header: {
+                Text("智能校对")
+            } footer: {
+                Text("用 OpenAI 兼容接口对识别结果做二次校对（修正同音错字、口语填充词等）。留空 Base URL 则不启用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

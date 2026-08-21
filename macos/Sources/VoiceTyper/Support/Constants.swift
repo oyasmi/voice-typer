@@ -3,7 +3,7 @@ import Foundation
 enum AppConstants {
     static let appName = "VoiceTyper"
     static let bundleIdentifier = "com.voicetyper.app"
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.0.0"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.1.6"
     static let repositoryURL = URL(string: "https://github.com/oyasmi/voice-typer")!
     static let targetSampleRate: Double = 16_000
     static let appSupportDirectoryName = "VoiceTyper"

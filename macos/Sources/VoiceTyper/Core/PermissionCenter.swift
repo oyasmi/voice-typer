@@ -19,6 +19,17 @@ enum PermissionKind: CaseIterable {
             return "输入监控"
         }
     }
+
+    var purpose: String {
+        switch self {
+        case .microphone:
+            return "用于录音"
+        case .accessibility:
+            return "用于插入文本"
+        case .inputMonitoring:
+            return "用于监听全局热键（尤其是 Fn 键）"
+        }
+    }
 }
 
 enum PermissionStatus: Equatable {
