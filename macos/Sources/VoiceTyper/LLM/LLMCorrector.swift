@@ -98,7 +98,16 @@ actor LLMCorrector {
             throw LLMError.httpStatus(http.statusCode)
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let responseObject: Any
+        do {
+            responseObject = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            // 对外只暴露稳定的领域错误，避免把 NSJSONSerialization 的实现细节
+            // 直接写入系统日志；响应正文仍然不会被记录。
+            throw LLMError.malformedResponse
+        }
+
+        guard let json = responseObject as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let first = choices.first,
               let message = first["message"] as? [String: Any],

@@ -205,7 +205,8 @@ final class VoiceTyperController {
         }
 
         session.onError = { [weak self] message in
-            AppLog.asr.error("识别错误: \(message, privacy: .public)")
+            // 具体识别异常已由 LocalASRSession 在产生错误的位置记录；控制器只负责
+            // 把错误转换为统一的会话收尾状态，避免同一故障重复写入系统日志。
             self?.finish(.failed(message))
         }
 
