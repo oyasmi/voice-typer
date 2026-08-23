@@ -3,7 +3,7 @@
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
 单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
-内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.0.0**，应用名 **VoiceTyper**。
+内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.1.0**，应用名 **VoiceTyper**。
 
 **本文适合**：想在自己 Windows 电脑上直接用的用户，以及要自行编译或二次开发的人。深入的架构
 决策、实测数据（⚠️ 部分待真机复测）、逐项取舍见 [`DESIGN.md`](DESIGN.md)。
@@ -42,9 +42,10 @@
 
 **不支持 / 已知限制**
 
-- 只能按住说话，没有「按一次开始、再按一次结束」的切换模式
+- 只能按住说话，没有「按一次开始、再按一次结束」的切换模式；录音中按 `Esc` 可取消本次听写
 - 热键主键限于字母、数字、`space`/`tab`/`enter`/`esc`、`F1`–`F12`、方向键等命名键
-- 安装包未做代码签名，首次运行可能被 SmartScreen 拦截，需要点「更多信息 → 仍要运行」
+- 官方 Release 未做代码签名，首次运行可能被 SmartScreen 拦截，需要点「更多信息 → 仍要运行」；
+  自行构建时可选签名，见[「构建 → 签名」](#签名可选)
 - 只支持 SenseVoice-Small 模型，不支持 paraformer / 热词（如需这些能力，用
   [分体式客户端](../client-server/client_windows_native/README.md) + [服务端](../client-server/server/README.md)）
 - 不支持远程/共享服务端——识别永远在本机跑
@@ -118,10 +119,12 @@
 
 1. 启动后系统托盘出现 VoiceTyper 图标。
 2. **按住热键**（默认 `Ctrl+F2`）开始录音，HUD 浮窗出现在前台窗口所在的屏幕上。
-3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正。
+3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正；录音中按 `Esc` 可取消本次听写。
 4. **松开热键**，本地引擎做一次整段复识别，最终文本插入当前光标位置。
+5. 单段录音上限 **120 秒**：达到上限会自动结束当前听写并正常上屏，不会静默丢弃后续内容。
 
-录音不足 **0.3 秒**视为误触，直接丢弃。
+录音不足 **0.3 秒**视为误触，直接丢弃。插入前会校验前台窗口是否与录音开始时一致，若用户
+在此期间切换了窗口，识别结果只会写入剪贴板，不会插入到意料之外的窗口。
 
 托盘图标状态：
 
@@ -131,10 +134,11 @@
 | 红色点 | 正在录音 |
 | 黄色点 | 已松手，等本地引擎返回 / 正在插入文本 |
 | 橙色点 | 需要下载或正在下载语音模型 |
-| 灰色点 | 启动中 / 模型加载中 |
+| 灰色点 | 启动中 / 模型加载中 / 已暂停 |
 | 深红色点 | 出错 |
 
-右键托盘图标可打开菜单：设置、打开配置目录、开机自启开关、关于、退出。
+右键托盘图标可打开菜单：设置、**暂停/恢复听写**（暂停后热键不再响应，直至从菜单恢复）、
+打开配置目录、开机自启开关、关于、退出。
 
 ---
 
@@ -163,7 +167,7 @@ asr:
   threads: 0                # 0 = 自动（min(4, 核数)）
   model_dir: ""              # 留空 = 自动定位（下载目录 / ModelScope 缓存）
   preview_window: 0          # 秒；0 = 首次加载后自动按本机性能校准
-  idle_unload_minutes: 5     # 0 = 常驻不卸载
+  idle_unload_minutes: 10    # 0 = 常驻不卸载（与 macOS 默认值一致）
 llm:
   enabled: false
   base_url: ""
@@ -180,7 +184,11 @@ ui:
 ```
 
 LLM API Key 出于安全考虑不落配置文件，用 Windows DPAPI（`ProtectedData`，当前用户范围）加密后存
-`%APPDATA%\VoiceTyper\llm_api_key.dat`。换用户或换机器都需要重新在设置页填写。
+`%APPDATA%\VoiceTyper\llm_api_key.dat`。换用户或换机器都需要重新在设置页填写；若该文件损坏或
+无法解密，设置页会明确提示"无法读取已保存的 API Key"，而不是让智能纠错静默地一直 401。
+
+手改 `config.yaml` 时越界或非法的值（例如 `timeout: -1`、`hotkey.key` 不带任何修饰键）会在
+下次加载/保存时被自动夹逼回合法范围并记一条 warning 日志，不会被静默接受、也不会拒绝整份配置。
 
 ---
 
@@ -250,6 +258,21 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch_model.ps1
 
 `VoiceTyper.csproj` 里的 `<Version>` / `<AssemblyVersion>` / `<FileVersion>`。
 
+### 签名（可选）
+
+不设置签名环境变量时 `build.bat` 行为完全不变（产物不签名）。要签名，先把证书导入本机
+证书存储，再设置：
+
+```bat
+set VOICETYPER_SIGN_THUMBPRINT=<证书 SHA1 指纹>
+set VOICETYPER_TIMESTAMP_URL=http://timestamp.digicert.com
+build.bat
+```
+
+`build.bat` 会用 `signtool.exe` 依次对 `dist\<rid>\VoiceTyper.exe` 与 Inno Setup 产出的安装包
+签名。不签名的可执行文件会触发 SmartScreen「未知发布者」警告，与 macOS 侧的 Gatekeeper 未公证
+是同一类问题——`macos/build_xcode.sh` 的可选 Developer ID 签名 + 公证与此对称。
+
 ---
 
 ## 测试
@@ -262,11 +285,14 @@ dotnet test
 | 测试 | 内容 | 需要模型？ |
 | --- | --- | --- |
 | `FftTests` | 自写 FFT 与朴素 DFT 比对 | 否 |
-| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3，复用 `macos/` 已入库夹具） | LFR/CMVN 部分需要（缺失自动跳过） |
+| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3，复用 `macos/` 已入库夹具），另含全零输入的对数下限回归 | LFR/CMVN 部分需要（缺失自动跳过） |
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 | 否 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） | 否 |
 | `ConfigStoreTests` | 配置模型与 YAML 序列化往返（不接触真实 `%APPDATA%`） | 否 |
-| `LlmCorrectorTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） | 否 |
+| `AppConfigValidationTests` | 配置字段越界夹逼、非有限浮点重置、裸键热键回落默认值 | 否 |
+| `LlmCorrectorTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文）、`tags-only` 响应不丢文本、`TestAsync` 抛出真实错误且不含响应正文 | 否 |
+| `LlmEndpointTests` | Base URL 结构化解析：scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重 | 否 |
+| `AudioChunkerTests` | 定长分帧、跨调用累积余量、`Drain` 尾音、空输入 | 否 |
 
 xUnit 2.x 没有 macOS `XCTSkip` 那样干净的运行期动态跳过 API；缺夹具/缺模型的测试用提前 `return`
 代替，效果上等价（不阻塞其余测试），但会显示为"通过"而非"已跳过"——属于已知的展示层面差异。
@@ -301,8 +327,24 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 
 - 检查目标窗口是否以管理员身份运行——这是 Windows UIPI 的已知限制（见上文"功能与限制"），
   文本已经在剪贴板里，手动 `Ctrl+V` 即可。
+- 若 HUD/托盘提示"目标窗口已变化"：说明录音开始到识别完成之间切换了前台窗口，为避免误插入
+  到意料之外的窗口（最坏情况是密码框），VoiceTyper 只会把结果写入剪贴板，不会自动插入。
 - 其余情况参考[分体式客户端文档的对应章节](../client-server/client_windows_native/README.md)，文本插入实现
   代码原样搬运，行为一致。
+
+### 录音中按 Esc 没反应 / 暂停后热键失灵
+
+- `Esc` 只在**正在录音**（红色点）阶段生效；松开热键进入"识别中"后 Esc 不再取消该次听写。
+- 托盘菜单「暂停听写」会整体停掉热键监听，需要再次点击「恢复听写」才会响应热键——这是有意
+  行为，不是故障。
+
+### 全局热键突然失效，且没有任何错误提示
+
+`WH_KEYBOARD_LL` 低级键盘钩子的回调若长时间未返回，系统会静默把钩子摘除且不通知应用。
+VoiceTyper 每 30 秒检查一次钩子存活性（比对系统级"最近一次用户输入时间"与钩子自身最近一次
+被调用的时间），检测到摘钩会自动重新安装，日志 `hotkey` 分类下会有对应记录。此项为代码审查
+通过、尚未在真机上验证过真实摘钩场景（见 `DESIGN.md`「已知风险/待办」）；若怀疑遇到此问题，
+重启应用可立即恢复。
 
 ---
 

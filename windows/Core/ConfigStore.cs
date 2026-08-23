@@ -27,7 +27,7 @@ internal sealed class ConfigStore
 
         if (!File.Exists(ConfigPath))
         {
-            var migrated = ConfigMigrator.MigrateFromLegacyClientConfig() ?? new AppConfig();
+            var migrated = (ConfigMigrator.MigrateFromLegacyClientConfig() ?? new AppConfig()).Validated();
             WriteAtomically(ConfigPath, SerializeYaml(migrated));
             return migrated;
         }
@@ -40,7 +40,7 @@ internal sealed class ConfigStore
             cfg.Llm ??= new LlmConfig();
             cfg.Hotkey ??= new HotkeyConfig();
             cfg.UI ??= new UIConfig();
-            return cfg;
+            return cfg.Validated();
         }
         catch (Exception ex)
         {
@@ -52,7 +52,7 @@ internal sealed class ConfigStore
     public void Save(AppConfig config)
     {
         Directory.CreateDirectory(ConfigDirectory);
-        WriteAtomically(ConfigPath, SerializeYaml(config.Clone()));
+        WriteAtomically(ConfigPath, SerializeYaml(config.Validated()));
     }
 
     public void OpenConfigDirectory()

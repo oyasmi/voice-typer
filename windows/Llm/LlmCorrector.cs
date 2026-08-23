@@ -12,9 +12,21 @@ using VoiceTyper.Support;
 
 namespace VoiceTyper.Llm;
 
+/// <summary>
+/// 稳定的领域错误分类，只暴露状态码/错误类型，绝不携带响应正文——响应正文可能回显了
+/// 送去的识别文本，落日志等于把用户听写内容留档（W-02，见 AGENTS.md 日志约束）。
+/// C# 直译自 macOS <c>LLMCorrector.LLMError</c>。
+/// </summary>
+internal enum LlmErrorKind { RequestFailed, HttpStatus, MalformedResponse }
+
 internal sealed class LlmException : Exception
 {
-    public LlmException(string message) : base(message) { }
+    public LlmErrorKind Kind { get; }
+
+    public LlmException(LlmErrorKind kind, string message) : base(message)
+    {
+        Kind = kind;
+    }
 }
 
 /// <summary>
@@ -29,7 +41,8 @@ internal sealed class LlmCorrector : IDisposable
 {
     public sealed class Config
     {
-        public required string BaseUrl { get; init; }
+        /// <summary>已通过 <see cref="LlmEndpoint.Resolve"/> 校验的完整请求地址。</summary>
+        public required Uri ChatCompletionsUrl { get; init; }
         public required string ApiKey { get; init; }
         public required string Model { get; init; }
         public required double Temperature { get; init; }
@@ -105,10 +118,17 @@ internal sealed class LlmCorrector : IDisposable
         }
         catch (Exception ex)
         {
-            AppLog.Warn("llm", $"LLM 纠错失败，使用原始文本: {ex}");
+            AppLog.Warn("llm", $"LLM 纠错失败，使用原始文本: {ex.Message}");
             return text;
         }
     }
+
+    /// <summary>
+    /// 供设置页「测试纠错」按钮使用：与 <see cref="CorrectAsync"/> 不同，失败时把具体错误
+    /// 抛出而不是回落原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，否则
+    /// "网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
+    /// </summary>
+    public Task<string> TestAsync(string text) => CorrectOrThrowAsync(text);
 
     private async Task<string> CorrectOrThrowAsync(string text)
     {
@@ -130,7 +150,7 @@ internal sealed class LlmCorrector : IDisposable
             max_tokens = dynamicMaxTokens,
         };
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{TrimmedBaseUrl()}/chat/completions");
+        using var request = new HttpRequestMessage(HttpMethod.Post, _config.ChatCompletionsUrl);
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
 
@@ -142,11 +162,11 @@ internal sealed class LlmCorrector : IDisposable
         }
         catch (TaskCanceledException)
         {
-            throw new LlmException("LLM 请求超时");
+            throw new LlmException(LlmErrorKind.RequestFailed, "LLM 请求超时");
         }
         catch (HttpRequestException ex)
         {
-            throw new LlmException($"LLM 服务连接失败: {ex.Message}");
+            throw new LlmException(LlmErrorKind.RequestFailed, $"LLM 服务连接失败: {ex.Message}");
         }
 
         using (response)
@@ -154,7 +174,8 @@ internal sealed class LlmCorrector : IDisposable
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                throw new LlmException($"LLM API 错误 ({(int)response.StatusCode}): {Truncate(body, 300)}");
+                // 响应正文可能回显了送去的识别文本，绝不拼进异常消息（W-02）。
+                throw new LlmException(LlmErrorKind.HttpStatus, $"LLM API 错误 ({(int)response.StatusCode})");
             }
 
             JsonDocument doc;
@@ -162,23 +183,23 @@ internal sealed class LlmCorrector : IDisposable
             {
                 doc = JsonDocument.Parse(body);
             }
-            catch (JsonException ex)
+            catch (JsonException)
             {
-                throw new LlmException($"LLM 响应解析失败: {ex.Message}");
+                throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
             }
 
             using (doc)
             {
                 if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
                 {
-                    throw new LlmException("LLM 响应格式无法解析（缺少 choices）");
+                    throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
                 }
                 var first = choices[0];
                 if (!first.TryGetProperty("message", out var messageEl)
                     || !messageEl.TryGetProperty("content", out var contentEl)
                     || contentEl.GetString() is not { } content)
                 {
-                    throw new LlmException("LLM 响应格式无法解析（缺少 message.content）");
+                    throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
                 }
 
                 if (first.TryGetProperty("finish_reason", out var finishReasonEl)
@@ -195,18 +216,24 @@ internal sealed class LlmCorrector : IDisposable
                 {
                     content = content["<asr_text>".Length..^"</asr_text>".Length].Trim();
                 }
+                // 剥标签之后再判空：tags-only 响应（如 "<asr_text>\n</asr_text>"）剥离前非空、
+                // 剥离后才变空，若判空放在剥标签前会漏判这种情况，导致整段听写文本被吞（R2-08）。
+                if (string.IsNullOrEmpty(content))
+                {
+                    return text;
+                }
                 return content;
             }
         }
     }
-
-    private string TrimmedBaseUrl() => _config.BaseUrl.TrimEnd('/');
-
-    private static string Truncate(string s, int max) =>
-        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "...";
 
     public void Dispose()
     {
         if (_ownsHttpClient) _http.Dispose();
     }
 }
+
+/// <summary>「测试纠错」的结果：<see cref="Ok"/> 为 true 时纠错确实产生了变化并成功返回，
+/// 为 false 时 <see cref="Message"/> 是真实失败原因（网络不通/401/超时…），而不是笼统的
+/// "未通过"（R3-13）。</summary>
+internal readonly record struct LlmTestResult(bool Ok, string Message);

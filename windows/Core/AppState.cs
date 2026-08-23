@@ -14,7 +14,16 @@ internal enum AppState
     Recording,
     Recognizing,
     Inserting,
+    /// <summary>用户主动暂停听写：热键监听停止，直到用户从托盘菜单恢复。</summary>
+    Paused,
     Error,
+}
+
+internal static class AppStateExtensions
+{
+    /// <summary>录音/识别/输入进行中：此时保存设置若销毁控制器会丢已录制内容（F-13）。</summary>
+    public static bool IsActiveDictation(this AppState state) =>
+        state is AppState.Recording or AppState.Recognizing or AppState.Inserting;
 }
 
 internal readonly record struct AppStateInfo(AppState State, string? Message = null, double Progress = 0)
@@ -30,6 +39,7 @@ internal readonly record struct AppStateInfo(AppState State, string? Message = n
         AppState.Recording => "录音中...",
         AppState.Recognizing => "识别中...",
         AppState.Inserting => "输入中...",
+        AppState.Paused => "已暂停",
         AppState.Error => string.IsNullOrEmpty(Message) ? "错误" : $"错误：{Message}",
         _ => State.ToString(),
     };
@@ -43,5 +53,6 @@ internal readonly record struct AppStateInfo(AppState State, string? Message = n
     public static AppStateInfo Recording => new(AppState.Recording);
     public static AppStateInfo Recognizing => new(AppState.Recognizing);
     public static AppStateInfo Inserting => new(AppState.Inserting);
+    public static AppStateInfo Paused => new(AppState.Paused);
     public static AppStateInfo ErrorWith(string message) => new(AppState.Error, message);
 }

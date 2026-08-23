@@ -19,6 +19,24 @@ internal static class NativeMethods
     public const int LLKHF_ALTDOWN = 0x20;
     public const int LLKHF_UP = 0x80;
 
+    public const int VK_ESCAPE = 0x1B;
+
+    // ─── 钩子存活性自愈（W-25）────────────────────────────────────
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    // ─── 剪贴板序列号（用于恢复前判断期间是否被其它进程改写）──────
+    [DllImport("user32.dll")]
+    public static extern uint GetClipboardSequenceNumber();
+
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
     {

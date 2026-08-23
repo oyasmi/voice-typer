@@ -23,6 +23,17 @@ internal sealed class HotkeyService : IDisposable
     public Action? OnPress;
     /// <summary>热键松开。在 UI 线程触发。</summary>
     public Action? OnRelease;
+    /// <summary>录音中按下 Esc 主动取消。在 UI 线程触发。</summary>
+    public Action? OnCancel;
+
+    /// <summary>
+    /// 钩子存活性自愈检查周期。<c>WH_KEYBOARD_LL</c> 的回调若超过
+    /// <c>HKEY_CURRENT_USER\Control Panel\Desktop\LowLevelHooksTimeout</c>（默认 5000ms，
+    /// 部分系统 300ms）未返回，系统会直接把钩子卸掉且不通知——现象与 macOS 的
+    /// tapDisabledByTimeout 完全一致：热键突然永久失效。这是 Windows 侧的新增设计（代码
+    /// 审查通过，尚未在真机上验证系统摘钩场景，见 windows/ALIGNMENT_WITH_MACOS.md W-25）。
+    /// </summary>
+    private const int HealthCheckIntervalMs = 30_000;
 
     private IntPtr _hookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
@@ -30,6 +41,9 @@ internal sealed class HotkeyService : IDisposable
     private int _targetVk;
     private ModifierMask _expectedModifiers;
     private bool _isActive;
+    private System.Windows.Forms.Timer? _healthTimer;
+    /// <summary>最近一次钩子回调被系统调用的时间戳（<see cref="Environment.TickCount"/>）。</summary>
+    private int _lastHookActivityTick;
 
     [Flags]
     private enum ModifierMask
@@ -66,11 +80,20 @@ internal sealed class HotkeyService : IDisposable
             throw new HotkeyServiceException($"安装键盘钩子失败 (Win32 error {err})");
         }
 
+        _lastHookActivityTick = Environment.TickCount;
+        _healthTimer = new System.Windows.Forms.Timer { Interval = HealthCheckIntervalMs };
+        _healthTimer.Tick += (_, _) => CheckHookHealth();
+        _healthTimer.Start();
+
         AppLog.Info("hotkey", $"热键监听启动: {hotkey.DisplayString}");
     }
 
     public void Stop()
     {
+        _healthTimer?.Stop();
+        _healthTimer?.Dispose();
+        _healthTimer = null;
+
         if (_hookHandle != IntPtr.Zero)
         {
             UnhookWindowsHookEx(_hookHandle);
@@ -83,6 +106,39 @@ internal sealed class HotkeyService : IDisposable
         _isActive = false;
     }
 
+    /// <summary>
+    /// 用户在最近一个自愈检查周期内有输入，但钩子回调在同一时间窗内一次都没被系统调用过：
+    /// 判定钩子已被系统静默摘除，重新安装。重装本身若失败只记日志，等下一个周期再试。
+    /// </summary>
+    private void CheckHookHealth()
+    {
+        var hotkey = _hotkey;
+        if (_hookHandle == IntPtr.Zero || hotkey is null) return;
+
+        var lastInput = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref lastInput)) return;
+
+        var now = Environment.TickCount;
+        var sinceUserInputMs = unchecked((uint)now - lastInput.dwTime);
+        var sinceHookActivityMs = unchecked((uint)(now - _lastHookActivityTick));
+
+        if (sinceUserInputMs >= HealthCheckIntervalMs || sinceHookActivityMs < HealthCheckIntervalMs)
+        {
+            return;
+        }
+
+        AppLog.Warn("hotkey", "检测到全局键盘钩子可能已被系统摘除，尝试重新安装");
+        try
+        {
+            Start(hotkey);
+            AppLog.Info("hotkey", "全局键盘钩子已重新安装");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("hotkey", "重新安装全局键盘钩子失败", ex);
+        }
+    }
+
     public void Dispose() => Stop();
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -91,6 +147,8 @@ internal sealed class HotkeyService : IDisposable
         {
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
+
+        _lastHookActivityTick = Environment.TickCount;
 
         var msg = wParam.ToInt32();
         var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
@@ -112,6 +170,15 @@ internal sealed class HotkeyService : IDisposable
         }
 
         int vk = (int)data.vkCode;
+
+        // vk != _targetVk 排除用户把 Esc 本身配置为热键主键的情况：那种配置下 Esc 的
+        // key-down auto-repeat 会不断命中这里，把刚触发的合法录音立刻当成取消处理。
+        if (_isActive && isKeyDown && vk == VK_ESCAPE && vk != _targetVk)
+        {
+            _isActive = false;
+            UiDispatcher.Post(() => OnCancel?.Invoke());
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
 
         if (isKeyDown && vk == _targetVk)
         {
@@ -204,6 +271,9 @@ internal sealed class HotkeyService : IDisposable
         || vk == 0xA0 || vk == 0xA1 // LSHIFT, RSHIFT
         || vk == 0xA2 || vk == 0xA3 // LCONTROL, RCONTROL
         || vk == 0xA4 || vk == 0xA5; // LMENU, RMENU
+
+    /// <summary>供 <see cref="Core.AppConfig.Validated"/> 复用：主键是否在支持表内。</summary>
+    public static bool IsSupportedKey(string key) => MapKeyToVk(key) != 0;
 
     private static int MapKeyToVk(string key)
     {

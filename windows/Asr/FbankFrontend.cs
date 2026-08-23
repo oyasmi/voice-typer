@@ -40,11 +40,17 @@ internal sealed class FbankFrontend
     public const int MinimumSamples = 400;
 
     /// <summary>
-    /// Kaldi 的能量下限用最小正规格化 float，不是 <see cref="float.Epsilon"/>（次正规数，
-    /// 差 7 个数量级）。写错不会崩，只会让静音帧的 log 能量偏低几十——这是最难在测试里
-    /// 发现的一类 bug，金标准测试的静音段能抓到。
+    /// 对齐 <c>kaldi_native_fbank</c> 的 <c>std::numeric_limits&lt;float&gt;::epsilon()</c>
+    /// （FLT_EPSILON ≈ 1.1920929e-7），而不是最小正规化 float（FLT_MIN ≈ 1.175e-38，
+    /// 差 31 个数量级）——用真实全零输入实测 Python 参考值确认过：全零帧的对数能量应为
+    /// <c>log(FLT_EPSILON) ≈ -15.942385</c>，不是 <c>log(FLT_MIN) ≈ -87.3</c>（对齐 macOS
+    /// bb25282/R4-10）。
+    /// 注意 C# 的 <see cref="float.Epsilon"/> **不是** FLT_EPSILON，而是最小次正规数
+    /// （≈1.4e-45）——那是另一个更容易踩的坑，必须用下面这个显式常量。
+    /// 写错不会崩，只会让静音帧的 log 能量偏低几十——这是最难在测试里发现的一类 bug，
+    /// 金标准测试里全零输入的回归用例能抓到（见 FbankParityTests）。
     /// </summary>
-    private const float FloatMin = 1.17549435E-38f;
+    private const float LogFloor = 1.1920929E-7f;
 
     private readonly FbankOptions _opts;
     public int FrameLength { get; }
@@ -181,7 +187,7 @@ internal sealed class FbankFrontend
                     float power = real[k] * real[k] + imag[k] * imag[k];
                     sum += power * weights[k - lo];
                 }
-                melEnergies[bin] = MathF.Log(MathF.Max(sum, FloatMin));
+                melEnergies[bin] = MathF.Log(MathF.Max(sum, LogFloor));
             }
             result[f] = melEnergies;
         }

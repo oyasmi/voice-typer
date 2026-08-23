@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using VoiceTyper.Asr;
 using VoiceTyper.Core;
+using VoiceTyper.Llm;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.UI;
@@ -21,17 +22,25 @@ internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General =
 internal sealed class SetupForm : Form
 {
     public Func<AppConfig, Task>? OnSaveConfig;
-    public Action<string>? OnSaveLlmApiKey;
+    /// <summary>返回是否真正落盘成功；调用方不应在失败时仍告诉用户"设置已保存并生效"（R4-06）。</summary>
+    public Func<string, bool>? OnSaveLlmApiKey;
+    /// <summary>区分"从未保存"与"读取失败"（DPAPI 解密失败等）；后者应向用户展示明确提示（R4-06）。</summary>
+    public Func<(SecretReadStatus Status, string ApiKey)>? OnLoadLlmApiKey;
     public Action? OnStartModelDownload;
     public Action? OnCancelModelDownload;
     public Action? OnReloadModel;
-    public Func<LlmConfig, string, Task<bool>>? OnTestLlmCorrection;
+    public Func<LlmConfig, string, Task<LlmTestResult>>? OnTestLlmCorrection;
     public Action? OnRetryMicProbe;
     public Action<double>? OnPreviewHudOpacity;
     public Action? OnUserClosedWindow;
 
     private AppConfig _loadedConfig = new();
     private AsrState _lastAsrState = AsrState.Unloaded;
+    private bool _lastIsDownloading;
+    private bool _lastMicAccessDenied;
+    /// <summary>权限页可见且麦克风未就绪时的自愈轮询（R4-14：只刷新勾选状态，绝不
+    /// 在轮询路径里抢焦点）。见 windows/ALIGNMENT_WITH_MACOS.md W-15。</summary>
+    private readonly System.Windows.Forms.Timer _permissionPollTimer = new() { Interval = 4000 };
 
     // ─ 顶部横幅 ────────────────────────────────────────────────
     private readonly Panel _bannerPanel = new();
@@ -98,6 +107,32 @@ internal sealed class SetupForm : Form
         Controls.Add(_tabs);
         Controls.Add(_bannerPanel);
         Controls.Add(_versionLabel);
+
+        _tabs.SelectedIndexChanged += (_, _) => RefreshPermissionPolling();
+        VisibleChanged += (_, _) => RefreshPermissionPolling();
+        _permissionPollTimer.Tick += (_, _) => OnRetryMicProbe?.Invoke();
+    }
+
+    /// <summary>
+    /// 权限页可见且权限未齐时启动 2–5s 轮询（对齐 macOS bb25282 权限页轮询、5ac5aab R4-14
+    /// 的抢焦点修复）；离开权限页/窗口隐藏/权限已齐时停掉。真开一次 WASAPI 采集才能探测
+    /// 麦克风可用性，2s 一次会让系统托盘的"麦克风使用中"指示灯反复闪烁，故放宽到 4s
+    /// （Windows 独有的适配，需真机复测：见 windows/ALIGNMENT_WITH_MACOS.md W-15）。
+    /// </summary>
+    private void RefreshPermissionPolling()
+    {
+        var shouldPoll = Visible
+            && _tabs.SelectedIndex == (int)SetupTab.Permissions
+            && _lastMicAccessDenied;
+
+        if (shouldPoll && !_permissionPollTimer.Enabled)
+        {
+            _permissionPollTimer.Start();
+        }
+        else if (!shouldPoll && _permissionPollTimer.Enabled)
+        {
+            _permissionPollTimer.Stop();
+        }
     }
 
     // ─────────────────────────────────────────────────────────
@@ -112,7 +147,8 @@ internal sealed class SetupForm : Form
 
         _llmEnabledCheck.Checked = config.Llm.Enabled;
         _llmBaseUrlField.Text = config.Llm.BaseUrl;
-        _llmApiKeyField.Text = SecretStore.LoadLlmApiKey();
+        var (apiKeyStatus, apiKey) = OnLoadLlmApiKey?.Invoke() ?? (SecretReadStatus.NotSaved, "");
+        _llmApiKeyField.Text = apiKey;
         _llmModelField.Text = config.Llm.Model;
         _llmTemperatureField.Value = (decimal)Math.Clamp(config.Llm.Temperature, 0, 2);
         _llmMaxTokensField.Value = Math.Clamp(config.Llm.MaxTokens, 64, 8000);
@@ -131,7 +167,14 @@ internal sealed class SetupForm : Form
         _idleUnloadField.Value = Math.Clamp(config.Asr.IdleUnloadMinutes, 0, 120);
         _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, 0, 30);
 
-        _recognitionMessage.Text = "";
+        if (apiKeyStatus == SecretReadStatus.Failed)
+        {
+            SetMessage(_recognitionMessage, "无法读取已保存的 API Key，请重新填写并保存。", Color.Firebrick);
+        }
+        else
+        {
+            _recognitionMessage.Text = "";
+        }
         _hotkeyMessage.Text = "";
         _generalMessage.Text = "";
     }
@@ -144,6 +187,10 @@ internal sealed class SetupForm : Form
         string hotkeyDisplay,
         string engineStatus)
     {
+        // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
+        // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
+        var isDownloading = downloadProgress is not null;
+
         if (micAccessDenied)
         {
             _bannerPanel.Visible = true;
@@ -157,28 +204,34 @@ internal sealed class SetupForm : Form
         }
 
         _lastAsrState = asrState;
-        _modelStatusLabel.Text = ModelStatusText(asrState, asrFailureMessage);
+        _lastIsDownloading = isDownloading;
+        _modelStatusLabel.Text = ModelStatusText(asrState, isDownloading, asrFailureMessage);
         _modelPathLabel.Text = asrState == AsrState.Ready ? $"模型目录：{ModelLocator.DownloadDestination}" : "";
 
         var progress = downloadProgress ?? 0;
-        _modelProgressBar.Visible = asrState == AsrState.DownloadingModel;
+        _modelProgressBar.Visible = isDownloading;
         _modelProgressBar.Value = Math.Clamp((int)(progress * 100), 0, 100);
 
-        (_modelActionButton.Text, _modelActionButton.Enabled) = asrState switch
-        {
-            AsrState.ModelMissing => ("开始下载模型", true),
-            AsrState.DownloadingModel => ("取消下载", true),
-            AsrState.Loading => ("加载中...", false),
-            AsrState.Ready => ("重新加载模型", true),
-            AsrState.Failed => ("重试加载", true),
-            AsrState.Unloaded => ("重新加载模型", true),
-            _ => ("重新加载模型", true),
-        };
+        (_modelActionButton.Text, _modelActionButton.Enabled) = isDownloading
+            ? ("取消下载", true)
+            : asrState switch
+            {
+                AsrState.ModelMissing => ("开始下载模型", true),
+                AsrState.Loading => ("加载中...", false),
+                AsrState.Ready => ("重新加载模型", true),
+                AsrState.SuspendedForIdle => ("重新加载模型", true),
+                AsrState.Failed => ("重试加载", true),
+                AsrState.Unloaded => ("重新加载模型", true),
+                _ => ("重新加载模型", true),
+            };
 
         _micStatusLabel.Text = micAccessDenied
             ? "麦克风不可用：可能被系统隐私设置阻止"
             : "麦克风可用";
         _micStatusLabel.ForeColor = micAccessDenied ? Color.Firebrick : Color.SeaGreen;
+
+        _lastMicAccessDenied = micAccessDenied;
+        RefreshPermissionPolling();
     }
 
     public void SelectTab(SetupTab tab)
@@ -197,16 +250,21 @@ internal sealed class SetupForm : Form
         Activate();
     }
 
-    private static string ModelStatusText(AsrState state, string? failureMessage) => state switch
+    private static string ModelStatusText(AsrState state, bool isDownloading, string? failureMessage)
     {
-        AsrState.ModelMissing => "需要下载语音模型（约 230 MB）",
-        AsrState.DownloadingModel => "正在下载模型...",
-        AsrState.Loading => "模型加载中...",
-        AsrState.Ready => "SenseVoice-Small（int8）· 已就绪",
-        AsrState.Unloaded => "引擎未加载（空闲卸载后会在下次录音时自动重新加载）",
-        AsrState.Failed => $"模型加载失败：{failureMessage}",
-        _ => "",
-    };
+        if (isDownloading) return "正在下载模型...";
+
+        return state switch
+        {
+            AsrState.ModelMissing => "需要下载语音模型（约 230 MB）",
+            AsrState.Loading => "模型加载中...",
+            AsrState.Ready => "SenseVoice-Small（int8）· 已就绪",
+            AsrState.SuspendedForIdle => "引擎已空闲卸载（下次录音自动重新加载）",
+            AsrState.Unloaded => "引擎未加载（空闲卸载后会在下次录音时自动重新加载）",
+            AsrState.Failed => $"模型加载失败：{failureMessage}",
+            _ => "",
+        };
+    }
 
     // ─────────────────────────────────────────────────────────
     // UI 构建
@@ -568,14 +626,17 @@ internal sealed class SetupForm : Form
 
     private void HandleModelAction()
     {
+        if (_lastIsDownloading)
+        {
+            OnCancelModelDownload?.Invoke();
+            return;
+        }
+
         switch (_lastAsrState)
         {
             case AsrState.ModelMissing:
             case AsrState.Failed:
                 OnStartModelDownload?.Invoke();
-                break;
-            case AsrState.DownloadingModel:
-                OnCancelModelDownload?.Invoke();
                 break;
             default:
                 OnReloadModel?.Invoke();
@@ -615,7 +676,13 @@ internal sealed class SetupForm : Form
         SetMessage(_recognitionMessage, "保存中...", Color.Gray);
         try
         {
-            OnSaveLlmApiKey?.Invoke(_llmApiKeyField.Text);
+            // 密钥保存失败不应告诉用户"已保存并生效"——否则用户以为密钥已落盘，
+            // 实际下次启动读到的还是旧值（R4-06）。
+            if (OnSaveLlmApiKey?.Invoke(_llmApiKeyField.Text) == false)
+            {
+                SetMessage(_recognitionMessage, "API Key 保存失败，请重试。", Color.Firebrick);
+                return;
+            }
             await OnSaveConfig(draft).ConfigureAwait(true);
             _loadedConfig = draft;
             SetMessage(_recognitionMessage, "设置已保存并生效。", Color.SeaGreen);
@@ -648,12 +715,8 @@ internal sealed class SetupForm : Form
         SetMessage(_recognitionMessage, "正在测试纠错...", Color.Gray);
         try
         {
-            var ok = await OnTestLlmCorrection(llmConfig, _llmApiKeyField.Text).ConfigureAwait(true);
-            SetMessage(
-                _recognitionMessage,
-                ok ? "纠错测试成功，配置可用。" : "纠错测试未产生预期结果，请检查 Base URL / API Key / 模型名。",
-                ok ? Color.SeaGreen : Color.Firebrick
-            );
+            var result = await OnTestLlmCorrection(llmConfig, _llmApiKeyField.Text).ConfigureAwait(true);
+            SetMessage(_recognitionMessage, result.Message, result.Ok ? Color.SeaGreen : Color.Firebrick);
         }
         catch (Exception ex)
         {
@@ -747,5 +810,15 @@ internal sealed class SetupForm : Form
             OnUserClosedWindow?.Invoke();
         }
         base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _permissionPollTimer.Stop();
+            _permissionPollTimer.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }

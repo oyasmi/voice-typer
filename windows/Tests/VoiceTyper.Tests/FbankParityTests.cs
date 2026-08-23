@@ -59,6 +59,28 @@ public class FbankParityTests
         Assert.True(maxDiff < 1e-3f, $"fbank 最大逐点误差应 < 1e-3，实际 {maxDiff}");
     }
 
+    /// <summary>
+    /// 全零输入的对数下限回归（W-03）：两个平台共用同一份金标准夹具，但夹具的合成信号
+    /// （正弦+噪声）能量恒不为零，永远走不到下限分支，两边都测不到这个数量级写错的问题。
+    /// 用真实全零输入直接实测：全零帧的对数能量应为 log(FLT_EPSILON) ≈ -15.942385，
+    /// 而不是 log(FLT_MIN) ≈ -87.3（对齐 macOS bb25282 的
+    /// testAllZeroInputHitsDocumentedLogFloor）。
+    /// </summary>
+    [Fact]
+    public void Fbank_AllZeroInputHitsDocumentedLogFloor()
+    {
+        var frontend = new FbankFrontend();
+        var silence = new float[400]; // 恰好一帧（25ms @ 16kHz），全零
+        var feats = frontend.Compute(silence);
+
+        Assert.Single(feats);
+        const float expected = -15.942385f;
+        foreach (var value in feats[0])
+        {
+            Assert.True(Math.Abs(value - expected) < 1e-4f, $"期望 {expected}，实际 {value}");
+        }
+    }
+
     [Fact]
     public void LfrCmvn_MatchesPythonReference()
     {

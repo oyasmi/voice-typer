@@ -765,4 +765,51 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | D10 | 架构覆盖 | ✅ **x64 + arm64** | ORT 两个 RID 原生库齐备，没有 macOS 侧"放弃 Intel"那种被迫取舍 |
 | D11 | 文本插入 | ✅ **维持剪贴板 + SendInput** | Windows 没有 macOS AX 直写的可靠对等物（UIA `TextPattern` 只读、`ValuePattern` 整体替换语义错误） |
 | D12 | Windows 版本下限 | 待定，暂按 **Win10 1809+** | 若接受只支持 Win11 24H2+，Windows ML/NPU 路线才成立。取决于目标用户构成，P0 前定即可 |
-| D13 | 空闲卸载默认值 | 待定，暂按 **5 分钟** | 依赖 P0 实测的加载耗时——若 Windows 上加载明显慢于 macOS 的 0.85s，需要放宽 |
+| D13 | 空闲卸载默认值 | ~~待定，暂按 5 分钟~~ → **10 分钟**（3.1.0 起，见 §13） | 与 macOS 默认值一致；此前的分歧没有实测支撑的理由，直接统一 |
+
+---
+
+## 13. 与 macOS 3.1.9 的行为对齐（3.1.0）
+
+089c2a6 一次性落地本文档描述的 P0 方案后，Windows 侧再未随 macOS 的 R2/R3/R4 三轮架构评审与
+三轮首启/UI 体验优化同步演进，直到本次对齐（详见仓库根目录
+[`windows/ALIGNMENT_WITH_MACOS.md`](ALIGNMENT_WITH_MACOS.md) 逐条盘点的 35 项差异）。本节记录
+对齐后仍然存在的**有意分歧**，以及**代码审查通过、尚未在真机上验证**的部分，避免未来又出现
+"一边改了十几个提交、另一边完全不知情"的漂移。
+
+### 13.1 有意保留的分歧
+
+| 项 | macOS | Windows | 理由 |
+| --- | --- | --- | --- |
+| 默认热键 | `fn` | `Ctrl+F2` | fn 由键盘固件处理，不产生扫描码，Windows 拿不到 |
+| 文本插入路径 | Accessibility（`kAXSelectedTextAttribute`/`kAXValue`）+ 剪贴板兜底 | 只有剪贴板 + SendInput | UI Automation 的 `TextPattern`/`ValuePattern` 在 Electron/Chromium/Qt 类应用上覆盖率远低于 macOS AX，`ValuePattern.SetValue` 还会整字段重建（丢 undo、丢富文本）；剪贴板 + SendInput 已是 Windows 上最可靠的通路 |
+| 权限模型 | TCC 强制门（辅助功能/输入监控），未授权直接阻断热键监听 | 无对应机制；`WH_KEYBOARD_LL`/`SendInput` 不需要授权，只受 UIPI 提权边界限制 | Windows 无 TCC 概念；已由 `TextInsertionService.IsForegroundWindowElevated` 覆盖等价场景 |
+| 状态栏视觉 | SF Symbol 动效 | 自绘状态色点 | 无直接对应物，色点已表达同等信息量 |
+| 空闲卸载后 | 无对应概念 | `SetProcessWorkingSetSize` 归还工作集 | Windows 独有能力，macOS 没有等价 API |
+| `preview_window` | 固定 15s，无自校准 | 首次加载后按实测 RTF 自动校准 15/10/6s | Windows 独有的更优设计（见下） |
+| 断点续传 | `.resume` 副文件 | `.part` 文件自身长度即续传状态 | Windows 方案更简单，且不会踩到 macOS 侧记录过的"CFNetwork 对畸形 resume data 直接 abort 进程"那个坑 |
+| 剪贴板隐私标记 | `org.nspasteboard.ConcealedType`/`TransientType`（社区约定） | `ExcludeClipboardContentFromMonitorProcessing`/`CanIncludeInClipboardHistory`/`CanUploadToCloudClipboard`（系统级） | Windows 的三个格式是系统本身承认的等价物，覆盖比社区约定更彻底（Win+V 历史 + 云剪贴板） |
+
+后两项（`preview_window` 自校准、`.part` 续传）是 Windows 优于 macOS 的设计，建议后续单独立项反向
+移植回 macOS，不与本次对齐混在一起。
+
+### 13.2 已代码审查、尚未真机验证
+
+以下改动逻辑上正确（对照 macOS 实现逐行核对），但本轮对齐完全在没有 .NET SDK、没有 Windows
+机器的环境下完成，**没有编译、没有运行过**。合入后第一件事必须是在真机上把 `dotnet build` /
+`dotnet test` 跑绿，其中这几项需要额外的手工验证（见 `windows/README.md`「日志与排障」与
+`ALIGNMENT_WITH_MACOS.md` §10 手工验证清单）：
+
+- **全局键盘钩子存活性自愈**（`HotkeyService.CheckHookHealth`）：Windows 侧的新增设计，非直译。
+  30 秒周期比对系统级"最近一次用户输入时间"与钩子自身最近一次被调用的时间，判定摘钩后重装。
+  逻辑对齐 macOS tap 的 `tapDisabledByTimeout` 处理，但触发系统摘钩的真实场景（长任务阻塞 UI
+  线程 5 秒+）需要真机验证。
+- **CTC logits 零拷贝解码**（`SenseVoiceEngine.Recognize`）：优先走 `DenseTensor<float>.Buffer.Span`
+  直接引用 ORT 输出的底层内存，避免 `ToArray()` 全量拷贝；仅在 ORT 返回非 `DenseTensor` 实现时
+  才退化为拷贝。`Microsoft.ML.OnnxRuntime` 1.24.2 在 Windows 上是否总是返回 `DenseTensor<float>`
+  需真机确认。
+- **权限页轮询间隔放宽到 4 秒**（`SetupForm.RefreshPermissionPolling`）：`MicPermissionProbe` 靠真开
+  一次 WASAPI 采集探测麦克风可用性，轮询过密会让系统托盘的"麦克风使用中"指示灯反复闪烁；
+  4 秒是估算值，需真机确认观感是否可接受。
+- **常驻内存/推理耗时的具体数字**：本节所有改动都不改变 §4.5 标注为"待实测"的结论——仍然需要
+  P0 阶段的真机测量。

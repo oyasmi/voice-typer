@@ -4,6 +4,7 @@ using VoiceTyper.Asr;
 using VoiceTyper.Llm;
 using VoiceTyper.Services;
 using VoiceTyper.Support;
+using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.Core;
 
@@ -27,6 +28,10 @@ internal sealed class VoiceTyperController : IDisposable
     public Action<AppStateInfo>? StateChanged;
     public Action<string>? PreviewUpdate;
     public Action<string>? RecognizedText;
+    /// <summary>非致命提示（预览失败、上一段听写尚未完成等），UI 可短暂闪烁但不打断录音。</summary>
+    public Action<string>? PreviewWarning;
+    /// <summary>用户主动取消（录音中按 Esc）。与 Idle 区分，便于 UI 给出"已取消"提示。</summary>
+    public Action? Cancelled;
 
     private readonly AppConfig _config;
     private readonly AsrService _asrService;
@@ -54,17 +59,29 @@ internal sealed class VoiceTyperController : IDisposable
         _audioService = new AudioCaptureService();
         _textInsertion = new TextInsertionService();
 
-        if (config.Llm.Enabled && !string.IsNullOrWhiteSpace(config.Llm.BaseUrl))
+        if (config.Llm.Enabled && LlmEndpoint.ChatCompletionsUrl(config.Llm.BaseUrl) is { } chatUrl)
         {
-            _llmCorrector = new LlmCorrector(new LlmCorrector.Config
+            var (apiKeyStatus, apiKey) = SecretStore.LoadLlmApiKeyResult();
+            if (apiKeyStatus == SecretReadStatus.Failed)
             {
-                BaseUrl = config.Llm.BaseUrl,
-                ApiKey = SecretStore.LoadLlmApiKey(),
-                Model = config.Llm.Model,
-                Temperature = config.Llm.Temperature,
-                MaxTokens = config.Llm.MaxTokens,
-                Timeout = config.Llm.Timeout,
-            });
+                AppLog.Error("controller", "无法读取已保存的 LLM API Key，本次运行禁用智能纠错");
+            }
+            else
+            {
+                _llmCorrector = new LlmCorrector(new LlmCorrector.Config
+                {
+                    ChatCompletionsUrl = chatUrl,
+                    ApiKey = apiKey,
+                    Model = config.Llm.Model,
+                    Temperature = config.Llm.Temperature,
+                    MaxTokens = config.Llm.MaxTokens,
+                    Timeout = config.Llm.Timeout,
+                });
+            }
+        }
+        else if (config.Llm.Enabled)
+        {
+            AppLog.Error("controller", "LLM Base URL 无法解析为合法请求地址，本次运行禁用智能纠错");
         }
     }
 
@@ -74,11 +91,50 @@ internal sealed class VoiceTyperController : IDisposable
 
         _hotkeyService.OnPress = BeginRecording;
         _hotkeyService.OnRelease = FinishRecording;
+        _hotkeyService.OnCancel = CancelByUser;
         _hotkeyService.Start(_config.Hotkey);
+
+        _audioService.OnDeviceChanged = () =>
+        {
+            if (_asrSession is null) return;
+            PreviewWarning?.Invoke("输入设备已变化，本次录音已结束");
+        };
 
         _isRunning = true;
         StateChanged?.Invoke(AppStateInfo.Idle);
         AppLog.Info("controller", "Controller started");
+    }
+
+    /// <summary>用户在录音过程中按 Esc 主动取消，通过 <see cref="Cancelled"/> 让 UI 给出"已取消"提示。</summary>
+    private void CancelByUser()
+    {
+        if (!_isRecording) return;
+        _isRecording = false;
+        _discardCurrentSession = false;
+        AppLog.Info("controller", "用户取消录音");
+
+        _audioService.StopWithoutResult();
+        _accumulatedPreview = "";
+        PreviewUpdate?.Invoke("");
+        TeardownAsrSession();
+        Cancelled?.Invoke();
+    }
+
+    /// <summary>
+    /// 暂停全局热键监听但不销毁进行中的听写（R2-04）：设置页保存热键、重新加载模型等
+    /// 操作只应停掉按键钩子，不应该销毁用户正在说的内容。调用方须先确认当前没有进行中
+    /// 的听写（<see cref="AppStateExtensions.IsActiveDictation"/>），否则应拒绝暂停请求。
+    /// </summary>
+    public void SuspendHotkeyListening() => _hotkeyService.Stop();
+
+    /// <summary>恢复热键监听。<see cref="Start"/> 过才有效。</summary>
+    public void ResumeHotkeyListening()
+    {
+        if (!_isRunning) return;
+        _hotkeyService.OnPress = BeginRecording;
+        _hotkeyService.OnRelease = FinishRecording;
+        _hotkeyService.OnCancel = CancelByUser;
+        _hotkeyService.Start(_config.Hotkey);
     }
 
     public void Stop()
@@ -153,6 +209,12 @@ internal sealed class VoiceTyperController : IDisposable
     {
         var session = _asrService.MakeSession(_llmCorrector);
 
+        // 录音开始时的前台窗口；插入前据此判断焦点是否已变化（F-10）。用局部变量而非
+        // 实例字段捕获，天然按会话隔离——用户连按两次热键时，旧会话在后台完成也不会
+        // 用到新会话的前台窗口快照。
+        var expectedForegroundWindow = GetForegroundWindow();
+        GetWindowThreadProcessId(expectedForegroundWindow, out var expectedForegroundProcessId);
+
         // partial 是全量预览文本，直接替换：本地识别引擎对已累积音频滑窗重跑，
         // 后一次结果会修正前一次的文字，增量语义无法表达这种回溯修改。
         session.OnPartial = text =>
@@ -170,14 +232,14 @@ internal sealed class VoiceTyperController : IDisposable
                 _accumulatedPreview = "";
                 PreviewUpdate?.Invoke("");
                 TeardownAsrSession();
-                HandleFinalText(text);
+                HandleFinalText(text, expectedForegroundWindow, expectedForegroundProcessId);
             }
             else
             {
                 session.Close();
                 var trimmed = (text ?? "").Trim();
                 if (!_isRunning || string.IsNullOrEmpty(trimmed)) return;
-                InsertFinalText(trimmed);
+                InsertFinalText(trimmed, expectedForegroundWindow, expectedForegroundProcessId);
             }
         };
 
@@ -186,6 +248,7 @@ internal sealed class VoiceTyperController : IDisposable
             if (ReferenceEquals(_asrSession, session))
             {
                 AppLog.Warn("controller", $"识别预览告警: {message}");
+                PreviewWarning?.Invoke(message);
             }
         };
 
@@ -203,6 +266,17 @@ internal sealed class VoiceTyperController : IDisposable
             else
             {
                 session.Close();
+            }
+        };
+
+        // 达到单段录音上限：不能任由用户继续说下去而内容被静默丢弃，主动走一次与松键
+        // 完全相同的收尾路径——FinishRecording() 会触发 OnTailChunk，把已录到的内容
+        // 正常推进到 finalize 上屏（R3-03）。
+        session.OnSessionCapped = () =>
+        {
+            if (ReferenceEquals(_asrSession, session))
+            {
+                FinishRecording();
             }
         };
 
@@ -251,7 +325,7 @@ internal sealed class VoiceTyperController : IDisposable
 
     // ─── 公共处理 ────────────────────────────────────────────────
 
-    private void HandleFinalText(string text)
+    private void HandleFinalText(string text, IntPtr expectedForegroundWindow, uint expectedForegroundProcessId)
     {
         var trimmed = (text ?? "").Trim();
 
@@ -263,27 +337,38 @@ internal sealed class VoiceTyperController : IDisposable
 
         if (!_isRunning) return;
 
-        InsertFinalText(trimmed);
+        InsertFinalText(trimmed, expectedForegroundWindow, expectedForegroundProcessId);
     }
 
-    private void InsertFinalText(string trimmed)
+    private void InsertFinalText(string trimmed, IntPtr expectedForegroundWindow, uint expectedForegroundProcessId)
     {
         StateChanged?.Invoke(AppStateInfo.Inserting);
-        var inserted = _textInsertion.Insert(trimmed);
-        if (inserted)
+        var result = _textInsertion.Insert(trimmed, expectedForegroundWindow, expectedForegroundProcessId);
+        switch (result)
         {
-            RecognizedText?.Invoke(trimmed);
-            // 若此时已有新一轮录音正在进行，不要把状态拉回 Idle
-            if (!_isRecording) StateChanged?.Invoke(AppStateInfo.Idle);
-        }
-        else
-        {
-            // UIPI 会阻止向提权窗口 SendInput；给出针对性提示而不是让用户以为识别坏了。
-            // 文本插入前已先写入剪贴板，即便这里失败，用户通常仍可手动 Ctrl+V。
-            var reason = TextInsertionService.IsForegroundWindowElevated()
-                ? "目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，请手动粘贴"
-                : "文本插入失败，请手动粘贴";
-            StateChanged?.Invoke(AppStateInfo.ErrorWith(reason));
+            case TextInsertionResult.Inserted:
+                RecognizedText?.Invoke(trimmed);
+                // 若此时已有新一轮录音正在进行，不要把状态拉回 Idle
+                if (!_isRecording) StateChanged?.Invoke(AppStateInfo.Idle);
+                break;
+
+            case TextInsertionResult.FocusChanged:
+                // 录音开始到插入之间前台窗口已切换：不写入用户未预期的窗口，只复制到剪贴板。
+                _textInsertion.CopyToClipboard(trimmed);
+                AppLog.Warn("controller", "目标窗口已变化，插入已取消，改为复制到剪贴板");
+                StateChanged?.Invoke(AppStateInfo.ErrorWith("目标窗口已变化，结果已复制到剪贴板"));
+                break;
+
+            case TextInsertionResult.Failed:
+                // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
+                _textInsertion.CopyToClipboard(trimmed);
+                // UIPI 会阻止向提权窗口 SendInput；给出针对性提示而不是让用户以为识别坏了。
+                var reason = TextInsertionService.IsForegroundWindowElevated()
+                    ? "目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，已复制到剪贴板，可手动粘贴"
+                    : "插入失败，已复制到剪贴板，可手动粘贴";
+                AppLog.Error("controller", "文本插入失败，已复制到剪贴板");
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(reason));
+                break;
         }
     }
 

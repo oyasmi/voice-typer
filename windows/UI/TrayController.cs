@@ -22,12 +22,15 @@ internal sealed class TrayController : IDisposable
     public Action? OnOpenSetup;
     public Action? OnOpenConfigDirectory;
     public Action? OnQuit;
+    /// <summary>用户点击"暂停听写"菜单项。由调用方决定实际是否切换（托盘只负责发出请求）。</summary>
+    public Action? OnTogglePause;
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _hotkeyItem;
     private readonly ToolStripMenuItem _engineItem;
+    private readonly ToolStripMenuItem _pauseItem;
     private readonly ToolStripMenuItem _startupItem;
     private Icon? _currentIcon;
     private AppState _lastState = AppState.Booting;
@@ -48,6 +51,9 @@ internal sealed class TrayController : IDisposable
 
         var setupItem = new ToolStripMenuItem("设置...");
         setupItem.Click += (_, _) => OnOpenSetup?.Invoke();
+
+        _pauseItem = new ToolStripMenuItem("暂停听写") { CheckOnClick = false };
+        _pauseItem.Click += (_, _) => OnTogglePause?.Invoke();
 
         var openConfigItem = new ToolStripMenuItem("打开配置目录");
         openConfigItem.Click += (_, _) => OnOpenConfigDirectory?.Invoke();
@@ -72,6 +78,7 @@ internal sealed class TrayController : IDisposable
             _engineItem,
             new ToolStripSeparator(),
             setupItem,
+            _pauseItem,
             openConfigItem,
             new ToolStripSeparator(),
             _startupItem,
@@ -95,6 +102,8 @@ internal sealed class TrayController : IDisposable
         _statusItem.Text = info.MenuTitle;
         _hotkeyItem.Text = $"热键：{hotkeyDisplay}";
         _engineItem.Text = $"引擎：{engineStatus}";
+        _pauseItem.Text = info.State == AppState.Paused ? "恢复听写" : "暂停听写";
+        _pauseItem.Enabled = info.State is not (AppState.Booting or AppState.SetupRequired);
 
         if (info.State != _lastState)
         {
@@ -181,6 +190,7 @@ internal sealed class TrayController : IDisposable
                 AppState.ModelMissing or AppState.DownloadingModel => Color.FromArgb(255, 230, 140, 30),
                 AppState.ModelLoading => Color.FromArgb(255, 160, 160, 160),
                 AppState.Booting => Color.FromArgb(255, 160, 160, 160),
+                AppState.Paused => Color.FromArgb(255, 150, 150, 155),
                 AppState.Idle => Color.FromArgb(0, 0, 0, 0), // 透明，不画
                 _ => Color.FromArgb(0, 0, 0, 0),
             };

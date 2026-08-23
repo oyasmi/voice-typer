@@ -18,7 +18,7 @@ namespace VoiceTyper.UI;
 /// </summary>
 internal sealed class RecordingHud : Form
 {
-    private enum HudMode { Recording, Recognizing }
+    private enum HudMode { Recording, Recognizing, Success, Error, Canceled }
 
     private readonly System.Windows.Forms.Timer _timer;
     private DateTime _startedAt = DateTime.UtcNow;
@@ -31,6 +31,10 @@ internal sealed class RecordingHud : Form
     private readonly Font _timerFont;
     private readonly Font _previewFont;
     private bool _useDwmRoundCorners;
+    /// <summary>一次性提示（成功/错误/已取消）的自动隐藏任务；状态变化时作废。</summary>
+    private System.Windows.Forms.Timer? _transientHideTimer;
+    /// <summary><see cref="FlashWarning"/> 的状态文字恢复任务；状态变化时作废。</summary>
+    private System.Windows.Forms.Timer? _warningRestoreTimer;
 
     public RecordingHud(UIConfig uiConfig)
     {
@@ -91,6 +95,9 @@ internal sealed class RecordingHud : Form
 
     public void ShowRecording()
     {
+        CancelTransientHide();
+        CancelWarningRestore();
+
         _mode = HudMode.Recording;
         _statusText = "录音中...";
         _preview = "";
@@ -109,6 +116,8 @@ internal sealed class RecordingHud : Form
 
     public void SetRecognizing()
     {
+        CancelTransientHide();
+        CancelWarningRestore();
         _mode = HudMode.Recognizing;
         _statusText = "识别中...";
         Invalidate();
@@ -117,6 +126,8 @@ internal sealed class RecordingHud : Form
     public void HideHud()
     {
         _timer.Stop();
+        CancelTransientHide();
+        CancelWarningRestore();
         _preview = "";
         if (Visible) Hide();
     }
@@ -125,6 +136,87 @@ internal sealed class RecordingHud : Form
     {
         _preview = accumulated ?? "";
         Invalidate();
+    }
+
+    /// <summary>final 文本插入成功后的一次性反馈，约 0.7s 后自动隐藏。</summary>
+    public void ShowSuccess() => ShowTransient(HudMode.Success, "已输入", "", TimeSpan.FromSeconds(0.7));
+
+    /// <summary>一次性错误提示，约 2.5s 后自动隐藏——菜单栏/托盘的错误态回落时长与此对齐（R3-04）。</summary>
+    public void ShowError(string message) =>
+        ShowTransient(HudMode.Error, "错误", string.IsNullOrEmpty(message) ? "服务异常" : message, TimeSpan.FromSeconds(2.5));
+
+    /// <summary>用户按 Esc 取消录音后的一次性提示，约 1.0s 后自动隐藏。</summary>
+    public void ShowCanceled() => ShowTransient(HudMode.Canceled, "已取消", "", TimeSpan.FromSeconds(1.0));
+
+    /// <summary>
+    /// 录音中或识别中的非致命提示（如预览失败、上一段听写尚未完成）。仅闪烁状态文字，
+    /// 约 1.2s 后恢复；两个阶段都要能看到，否则识别中按热键会得到完全无反馈的"死键"观感。
+    /// </summary>
+    public void FlashWarning(string message)
+    {
+        if (_mode is not (HudMode.Recording or HudMode.Recognizing)) return;
+
+        CancelWarningRestore();
+        _statusText = string.IsNullOrEmpty(message) ? "识别提示" : message;
+        Invalidate();
+
+        var timer = new System.Windows.Forms.Timer { Interval = 1200 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            _warningRestoreTimer = null;
+            _statusText = _mode switch
+            {
+                HudMode.Recording => "录音中...",
+                HudMode.Recognizing => "识别中...",
+                _ => _statusText,
+            };
+            Invalidate();
+        };
+        _warningRestoreTimer = timer;
+        timer.Start();
+    }
+
+    private void ShowTransient(HudMode mode, string status, string message, TimeSpan autoHideAfter)
+    {
+        CancelTransientHide();
+        CancelWarningRestore();
+        _timer.Stop();
+
+        _mode = mode;
+        _statusText = status;
+        _preview = message;
+        _elapsedText = "";
+        PositionNearForegroundWindow();
+
+        if (!Visible) Show();
+        Invalidate();
+
+        var timer = new System.Windows.Forms.Timer { Interval = Math.Max(1, (int)autoHideAfter.TotalMilliseconds) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            _transientHideTimer = null;
+            HideHud();
+        };
+        _transientHideTimer = timer;
+        timer.Start();
+    }
+
+    private void CancelTransientHide()
+    {
+        _transientHideTimer?.Stop();
+        _transientHideTimer?.Dispose();
+        _transientHideTimer = null;
+    }
+
+    private void CancelWarningRestore()
+    {
+        _warningRestoreTimer?.Stop();
+        _warningRestoreTimer?.Dispose();
+        _warningRestoreTimer = null;
     }
 
     /// <summary>透明度是唯一可在运行期热更新的外观项；由设置页预览调用。</summary>
@@ -192,9 +284,15 @@ internal sealed class RecordingHud : Form
         const int paddingX = 18;
         const int paddingY = 14;
 
-        var dotColor = _mode == HudMode.Recording
-            ? Color.FromArgb(255, 235, 70, 60)
-            : Color.FromArgb(255, 250, 190, 40);
+        var dotColor = _mode switch
+        {
+            HudMode.Recording => Color.FromArgb(255, 235, 70, 60),
+            HudMode.Recognizing => Color.FromArgb(255, 250, 190, 40),
+            HudMode.Success => Color.FromArgb(255, 60, 190, 90),
+            HudMode.Error => Color.FromArgb(255, 235, 70, 60),
+            HudMode.Canceled => Color.FromArgb(255, 170, 170, 170),
+            _ => Color.FromArgb(255, 235, 70, 60),
+        };
         var alpha = _mode == HudMode.Recording
             ? (int)(180 + 75 * Math.Sin(_pulsePhase))
             : 255;
@@ -271,6 +369,8 @@ internal sealed class RecordingHud : Form
         if (disposing)
         {
             _timer.Dispose();
+            _transientHideTimer?.Dispose();
+            _warningRestoreTimer?.Dispose();
             _statusFont.Dispose();
             _timerFont.Dispose();
             _previewFont.Dispose();

@@ -19,7 +19,7 @@ namespace VoiceTyper.Asr;
 /// - partial 只在文本变化时下发
 /// - <c>_isFinalizing</c> 后不再补发 partial
 /// - 预览异常 → <c>OnWarning</c>，会话继续
-/// - 300 秒会话上限 → 一次性 <c>OnWarning</c>，之后静默丢弃新音频
+/// - 单段会话上限 → 一次性 <c>OnWarning</c> + <c>OnSessionCapped</c>，之后静默丢弃新音频
 /// - finalize → 离线整段识别 → （可选）LLM 纠错 → <c>OnFinal</c>
 ///
 /// 所有公共方法必须在 UI 线程调用；所有回调都在 UI 线程触发。
@@ -30,8 +30,19 @@ internal sealed class LocalAsrSession
     public Action<string>? OnFinal;
     public Action<string>? OnWarning;
     public Action<string>? OnError;
+    /// <summary>
+    /// 达到单段录音上限时触发一次：只发 <see cref="OnWarning"/> 无法让用户知道后续说的话已经
+    /// 不会被录入（HUD 的警告闪烁只持续 1.2s，随后恢复"录音中"）。调用方应据此立即结束本次
+    /// 录音、把已录到的内容正常上屏，而不是任由用户继续说下去、内容却被静默丢弃（R3-03）。
+    /// </summary>
+    public Action? OnSessionCapped;
 
-    private const int MaxSessionSamples = 300 * AppConstants.TargetSampleRate;
+    /// <summary>
+    /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
+    /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
+    /// 与 finalize 耗时实测（F-07b）。
+    /// </summary>
+    private const int MaxSessionSamples = 120 * AppConstants.TargetSampleRate;
 
     private readonly AsrPump _pump;
     private readonly Func<SenseVoiceEngine?> _engineAccessor;
@@ -46,6 +57,12 @@ internal sealed class LocalAsrSession
     private bool _isFinalizing;
     private bool _capped;
     private bool _closed;
+    /// <summary>
+    /// 与 <see cref="_closed"/> 同步置位，供 <see cref="AsrPump"/> 线程上的推理闭包在跑之前
+    /// 短路判断（F-07d）：<see cref="Close"/> 之后已入队的闭包仍会执行，但不应该真的跑一遍
+    /// CTC 解码只为丢弃结果。用 <c>volatile</c> 保证跨线程可见性。
+    /// </summary>
+    private volatile bool _cancelled;
     private string _lastPreview = "";
     private CancellationTokenSource? _finalizeWatchdogCts;
 
@@ -83,7 +100,8 @@ internal sealed class LocalAsrSession
             if (!_capped)
             {
                 _capped = true;
-                OnWarning?.Invoke($"录音已达 {MaxSessionSamples / AppConstants.TargetSampleRate} 秒上限，后续音频不再录入");
+                OnWarning?.Invoke($"录音已达 {MaxSessionSamples / AppConstants.TargetSampleRate} 秒上限，自动结束本次听写");
+                OnSessionCapped?.Invoke();
             }
             return;
         }
@@ -124,6 +142,7 @@ internal sealed class LocalAsrSession
     {
         if (_closed) return;
         _closed = true;
+        _cancelled = true;
         _finalizeWatchdogCts?.Cancel();
         _finalizeWatchdogCts = null;
         _buffer = null;
@@ -173,6 +192,7 @@ internal sealed class LocalAsrSession
 
         _pump.Post(() =>
         {
+            if (_cancelled) return;
             string? text = null;
             Exception? error = null;
             try { text = buffer.Preview(); }
@@ -235,6 +255,7 @@ internal sealed class LocalAsrSession
     {
         _pump.Post(() =>
         {
+            if (_cancelled) return;
             string? text = null;
             Exception? error = null;
             try { text = buffer.Finalize(); }

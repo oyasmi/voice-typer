@@ -44,7 +44,7 @@ public class LlmCorrectorTests
         var client = new HttpClient(handler);
         return new LlmCorrector(new LlmCorrector.Config
         {
-            BaseUrl = "https://example.invalid/v1",
+            ChatCompletionsUrl = new Uri("https://example.invalid/v1/chat/completions"),
             ApiKey = "test-key",
             Model = "test-model",
             Temperature = 0,
@@ -123,5 +123,61 @@ public class LlmCorrectorTests
 
         var result = await corrector.CorrectAsync("原始文本");
         Assert.Equal("原始文本", result);
+    }
+
+    /// <summary>W-04（R2-08）：判空必须放在剥标签之后。<c>&lt;asr_text&gt;\n&lt;/asr_text&gt;</c>
+    /// 剥离前非空、剥离后为空，若判空放在剥标签前会漏判，把整段听写文本丢掉。</summary>
+    [Fact]
+    public async Task Correct_ReturnsOriginalText_WhenResponseIsTagsOnly()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"choices\":[{\"message\":{\"content\":\"<asr_text>\\n</asr_text>\"},\"finish_reason\":\"stop\"}]}"),
+        });
+
+        var result = await corrector.CorrectAsync("原始文本");
+        Assert.Equal("原始文本", result);
+    }
+
+    /// <summary>W-02：非 2xx 响应体可能回显了送去的识别文本，异常消息绝不能包含它，只暴露状态码。</summary>
+    [Fact]
+    public async Task Test_ThrowsWithoutResponseBody_On5xxError()
+    {
+        const string sensitiveBody = "呃这是用户的听写内容，不应该出现在异常消息里";
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = new StringContent(sensitiveBody),
+        });
+
+        var ex = await Assert.ThrowsAsync<LlmException>(() => corrector.TestAsync("原始文本"));
+        Assert.DoesNotContain(sensitiveBody, ex.Message);
+        Assert.Contains("500", ex.Message);
+    }
+
+    /// <summary>W-06（R3-13）："测试纠错"必须能看到真实失败原因，而不是像 <see cref="LlmCorrector.CorrectAsync"/>
+    /// 那样把任何失败都吞成原文回落。</summary>
+    [Fact]
+    public async Task Test_Throws_OnMalformedJson()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("not json"),
+        });
+
+        await Assert.ThrowsAsync<LlmException>(() => corrector.TestAsync("原始文本"));
+    }
+
+    [Fact]
+    public async Task Test_ReturnsCorrectedText_OnSuccess()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"choices":[{"message":{"content":"修正后的文本"},"finish_reason":"stop"}]}"""),
+        });
+
+        var result = await corrector.TestAsync("原始文本");
+        Assert.Equal("修正后的文本", result);
     }
 }

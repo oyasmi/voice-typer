@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -7,80 +9,215 @@ using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.Services;
 
+internal enum TextInsertionResult
+{
+    Inserted,
+    /// <summary>录音开始到插入之间前台窗口已切换：为避免写入用户未预期的窗口
+    /// （最坏情况是密码框），不再插入，只把结果复制到剪贴板（F-10）。</summary>
+    FocusChanged,
+    Failed,
+}
+
 /// <summary>
 /// 文本插入服务：剪贴板 + SendInput Ctrl+V。
 /// 必须在 UI 线程调用（剪贴板 API 是 STA-affined）。
 /// </summary>
 internal sealed class TextInsertionService
 {
+    /// <summary>恢复原剪贴板内容前的等待时长；500ms 对部分慢应用偏短（对齐 macOS d572f86）。</summary>
+    private static readonly TimeSpan RestoreDelay = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// 三个系统级剪贴板排除格式：Win+V 历史与跨设备云剪贴板都会跳过带这些格式的写入项。
+    /// Windows 上没有 macOS 那种社区约定（org.nspasteboard.*），但有系统本身承认的等价物，
+    /// 且是系统级而非社区约定，覆盖更彻底（R3-15）。
+    /// </summary>
+    private static readonly string[] ExclusionFormats =
+    {
+        "ExcludeClipboardContentFromMonitorProcessing",
+        "CanIncludeInClipboardHistory",
+        "CanUploadToCloudClipboard",
+    };
+
     private CancellationTokenSource? _pendingRestoreCts;
 
-    public bool Insert(string text)
+    /// <summary>
+    /// 一份剪贴板内容的真实快照：备份时立即遍历原剪贴板的每个格式并取走数据，
+    /// 而不是持有对原剪贴板所有者的 COM 引用——原所有者进程若在恢复前退出，
+    /// 持有引用的恢复会静默失败，用户原剪贴板内容永久丢失（W-08b）。
+    /// </summary>
+    private sealed class ClipboardSnapshot
     {
-        if (string.IsNullOrEmpty(text)) return true;
+        public List<(string Format, object Data)> Entries { get; } = new();
+    }
+
+    /// <param name="expectedForegroundWindow">录音开始时记录的前台窗口句柄；插入前若与当前
+    /// 前台窗口不一致，说明用户已切换焦点，直接放弃插入（F-10）。</param>
+    /// <param name="expectedForegroundProcessId">同一时刻的前台窗口所属进程 id，用于防止
+    /// 句柄被系统复用给另一个窗口时误判为"焦点未变化"。</param>
+    public TextInsertionResult Insert(string text, IntPtr expectedForegroundWindow, uint expectedForegroundProcessId)
+    {
+        if (string.IsNullOrEmpty(text)) return TextInsertionResult.Inserted;
+
+        var currentWindow = GetForegroundWindow();
+        GetWindowThreadProcessId(currentWindow, out var currentProcessId);
+        if (currentWindow != expectedForegroundWindow || currentProcessId != expectedForegroundProcessId)
+        {
+            return TextInsertionResult.FocusChanged;
+        }
 
         // 取消上一轮的剪贴板恢复任务（如果还在等待）
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
 
-        // 备份当前剪贴板
-        IDataObject? backup = null;
-        try { backup = Clipboard.GetDataObject(); }
-        catch (Exception ex)
+        var backup = SnapshotClipboard();
+
+        if (!TryWriteConcealedText(text))
         {
-            AppLog.Debug("input", $"读取原剪贴板失败（忽略）: {ex.Message}");
+            AppLog.Error("input", "写入剪贴板失败");
+            return TextInsertionResult.Failed;
         }
 
-        // 写入识别文本
-        try
-        {
-            Clipboard.SetDataObject(text, copy: true, retryTimes: 5, retryDelay: 20);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error("input", "写入剪贴板失败", ex);
-            return false;
-        }
+        var expectedSequence = GetClipboardSequenceNumber();
 
-        // 模拟 Ctrl+V
         if (!SendCtrlV())
         {
             AppLog.Error("input", "SendInput 模拟 Ctrl+V 失败");
-            return false;
+            RestoreClipboardSnapshotUnconditionally(backup);
+            return TextInsertionResult.Failed;
         }
 
-        // 500ms 后尝试恢复原剪贴板内容（若期间未被其它进程改写）
-        if (backup is not null)
+        var cts = new CancellationTokenSource();
+        _pendingRestoreCts = cts;
+        _ = Task.Run(async () =>
         {
-            var cts = new CancellationTokenSource();
-            _pendingRestoreCts = cts;
-            _ = Task.Run(async () =>
+            try
             {
-                try
-                {
-                    await Task.Delay(500, cts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) { return; }
+                await Task.Delay(RestoreDelay, cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { return; }
 
-                UiDispatcher.Post(() => RestoreClipboardIfUnchanged(backup, text));
-            });
-        }
+            UiDispatcher.Post(() => RestoreClipboardSnapshotIfUnchanged(backup, text, expectedSequence));
+        });
 
-        return true;
+        return TextInsertionResult.Inserted;
     }
 
-    private static void RestoreClipboardIfUnchanged(IDataObject backup, string expectedText)
+    /// <summary>插入失败/焦点已变化时的兜底：把识别结果写入剪贴板，避免长听写内容彻底丢失。
+    /// 取消待恢复任务，防止把这次的文本又还原掉。</summary>
+    public void CopyToClipboard(string text)
+    {
+        _pendingRestoreCts?.Cancel();
+        _pendingRestoreCts = null;
+        if (!TryWriteConcealedText(text))
+        {
+            AppLog.Error("input", "兜底写入剪贴板失败");
+        }
+    }
+
+    private static bool TryWriteConcealedText(string text)
     {
         try
         {
-            // 当前剪贴板的字符串内容仍然是我们刚写入的 expectedText 才恢复；
-            // 否则说明用户/其它程序又写了新内容，不要打扰。
+            var dataObject = new DataObject();
+            // autoConvert:true——大量粘贴目标仍依赖从 CF_UNICODETEXT 自动派生 CF_TEXT/CF_OEMTEXT，
+            // 关掉会影响兼容性；下面的三个剪贴板排除标记是不透明的自定义格式，不涉及自动转换，
+            // 各自单独用 autoConvert:false 写入即可。
+            dataObject.SetData(DataFormats.UnicodeText, true, text);
+            ApplyClipboardExclusionFormats(dataObject);
+            Clipboard.SetDataObject(dataObject, copy: true, retryTimes: 5, retryDelay: 20);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Debug("input", $"写入剪贴板失败: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void ApplyClipboardExclusionFormats(DataObject dataObject)
+    {
+        foreach (var format in ExclusionFormats)
+        {
+            dataObject.SetData(format, false, new MemoryStream(new byte[] { 0 }));
+        }
+    }
+
+    /// <summary>遍历原剪贴板每个原生格式立即取走数据，构成一份不依赖原剪贴板所有者存活的快照。
+    /// 单个格式读取失败会被跳过并只计数，不记内容（AGENTS.md 日志约束）。</summary>
+    private static ClipboardSnapshot SnapshotClipboard()
+    {
+        var snapshot = new ClipboardSnapshot();
+        IDataObject? original;
+        try { original = Clipboard.GetDataObject(); }
+        catch (Exception ex)
+        {
+            AppLog.Debug("input", $"读取原剪贴板失败（忽略）: {ex.Message}");
+            return snapshot;
+        }
+        if (original is null) return snapshot;
+
+        int failedFormats = 0;
+        foreach (var format in original.GetFormats(false))
+        {
+            try
+            {
+                var data = original.GetData(format, false);
+                if (data is not null)
+                {
+                    snapshot.Entries.Add((format, data));
+                }
+            }
+            catch (Exception)
+            {
+                failedFormats++;
+            }
+        }
+        if (failedFormats > 0)
+        {
+            AppLog.Debug("input", $"剪贴板快照跳过了 {failedFormats} 个无法读取的格式");
+        }
+        return snapshot;
+    }
+
+    private static void RestoreClipboardSnapshotUnconditionally(ClipboardSnapshot snapshot)
+    {
+        try
+        {
+            if (snapshot.Entries.Count == 0)
+            {
+                // 原剪贴板为空：不能"什么都不做"，否则我们写入的识别文本会永久留在剪贴板（W-08b）。
+                Clipboard.Clear();
+                return;
+            }
+
+            var restored = new DataObject();
+            foreach (var (format, data) in snapshot.Entries)
+            {
+                restored.SetData(format, false, data);
+            }
+            Clipboard.SetDataObject(restored, copy: true, retryTimes: 5, retryDelay: 20);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Debug("input", $"恢复剪贴板失败（忽略）: {ex.Message}");
+        }
+    }
+
+    private static void RestoreClipboardSnapshotIfUnchanged(ClipboardSnapshot snapshot, string expectedText, uint expectedSequence)
+    {
+        try
+        {
+            // 序列号 + 内容双重守卫：确保不会覆盖用户在等待期间新复制的内容，
+            // 延长到 1s 只是给慢应用更多时间读取剪贴板。
+            if (GetClipboardSequenceNumber() != expectedSequence) return;
+
             string? current = null;
             try { current = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
             catch { /* swallow */ }
-
             if (current != expectedText) return;
-            Clipboard.SetDataObject(backup, copy: true, retryTimes: 5, retryDelay: 20);
+
+            RestoreClipboardSnapshotUnconditionally(snapshot);
         }
         catch (Exception ex)
         {

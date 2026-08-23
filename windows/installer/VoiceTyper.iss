@@ -1,12 +1,12 @@
 ; VoiceTyper (unified) Inno Setup script.
 ; Per-user install under %LOCALAPPDATA%\Programs\VoiceTyper — no UAC elevation prompt.
 ; Invoked from build.bat as:
-;   iscc.exe /DAppVersion=3.0.0 /DTargetRid=win-x64 /DTargetArch=x64 installer\VoiceTyper.iss
+;   iscc.exe /DAppVersion=3.1.0 /DTargetRid=win-x64 /DTargetArch=x64 installer\VoiceTyper.iss
 ;
 ; 见 windows/DESIGN.md §7 D9：目录式部署 + Inno Setup 安装包，不用 PublishSingleFile 自解压。
 
 #ifndef AppVersion
-  #define AppVersion "3.0.0"
+  #define AppVersion "3.1.0"
 #endif
 #ifndef TargetRid
   #define TargetRid "win-x64"

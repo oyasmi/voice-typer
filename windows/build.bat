@@ -23,7 +23,7 @@ echo .NET SDK: %DOTNET_VER%
 REM ===== Read version from csproj =====
 set VERSION=
 for /f "tokens=*" %%a in ('dotnet msbuild VoiceTyper.csproj -getProperty:Version -nologo 2^>nul') do set VERSION=%%a
-if "%VERSION%"=="" set VERSION=3.0.0
+if "%VERSION%"=="" set VERSION=3.1.0
 
 echo Version:  %VERSION%
 echo.
@@ -64,6 +64,25 @@ for %%R in (win-x64 win-arm64) do (
 )
 echo.
 
+REM ===== Code signing (optional,见 windows/README.md "签名" 章节) =====
+REM 不设置 VOICETYPER_SIGN_THUMBPRINT 时整段跳过，行为完全不变——与 macOS 侧
+REM build_xcode.sh 的可选签名对称。不签名的可执行文件会触发 SmartScreen
+REM "未知发布者" 警告，与 Gatekeeper 是同一类问题（W-31）。
+if not "%VOICETYPER_SIGN_THUMBPRINT%"=="" (
+    if "%VOICETYPER_TIMESTAMP_URL%"=="" set VOICETYPER_TIMESTAMP_URL=http://timestamp.digicert.com
+    echo Signing build outputs with thumbprint %VOICETYPER_SIGN_THUMBPRINT% ...
+    for %%R in (win-x64 win-arm64) do (
+        signtool.exe sign /sha1 %VOICETYPER_SIGN_THUMBPRINT% /fd SHA256 /tr %VOICETYPER_TIMESTAMP_URL% /td SHA256 "dist\%%R\VoiceTyper.exe"
+        if errorlevel 1 (
+            echo [ERROR] signtool failed for dist\%%R\VoiceTyper.exe
+            pause
+            exit /b 1
+        )
+    )
+    echo       OK
+    echo.
+)
+
 REM ===== Zip portable builds =====
 echo [3/4] Packaging portable zips...
 for %%R in (win-x64 win-arm64) do (
@@ -86,6 +105,14 @@ if errorlevel 1 (
             echo [ERROR] Inno Setup build failed for %%R.
             pause
             exit /b 1
+        )
+        if not "%VOICETYPER_SIGN_THUMBPRINT%"=="" (
+            signtool.exe sign /sha1 %VOICETYPER_SIGN_THUMBPRINT% /fd SHA256 /tr %VOICETYPER_TIMESTAMP_URL% /td SHA256 "dist\VoiceTyper-%VERSION%-win-%%R-setup.exe"
+            if errorlevel 1 (
+                echo [ERROR] signtool failed for the win-%%R installer.
+                pause
+                exit /b 1
+            )
         )
     )
 )

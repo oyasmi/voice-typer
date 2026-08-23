@@ -1,7 +1,8 @@
 using System;
 using System.Buffers;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -21,12 +22,27 @@ internal sealed class AudioStartException : Exception
 /// <summary>
 /// 流式录音服务。录音期间每凑满 600ms（9600 个 16kHz float32 样本）通过 <see cref="OnChunk"/> 发出；
 /// 停止时将剩余尾音通过 <see cref="OnTailChunk"/> 发出。
-/// 回调可能在工作线程触发，调用方负责自行 marshal。
+///
+/// <see cref="_lock"/> 同时保护 <see cref="_running"/> 与 <see cref="_chunker"/>：
+/// <see cref="AppendSamples"/>（WASAPI 回调线程）与 <see cref="Stop"/>（UI 线程）若不在同一把锁下
+/// 原子地"判断 running + 处理缓冲区"，会出现两类竞态（R3-01）：
+/// (a) <see cref="Stop"/> 取走尾音之后，一个仍在途的 <see cref="AppendSamples"/> 才把新样本写进
+///     已被清空、此后再也不会被读取的缓冲区——那部分音频（通常是松键前最后几十毫秒）静默丢失；
+/// (b) <see cref="OnChunk"/>/<see cref="OnTailChunk"/> 分别从音频线程与 UI 线程独立发起，
+///     没有强制的先后关系，可能乱序到达。
+/// 让投递动作本身（入队到 <see cref="_deliveryQueue"/>）也发生在同一把锁内，即可让"入队顺序"
+/// 严格遵循锁定义的临界区顺序，从根上同时解决两个问题。
 /// </summary>
 internal sealed class AudioCaptureService : IDisposable
 {
     public Action<byte[]>? OnChunk;
     public Action<byte[]>? OnTailChunk;
+    /// <summary>
+    /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次。
+    /// 已采到的音频仍会通过 <see cref="OnTailChunk"/>（本回调触发前已同步投递）正常交给当前会话
+    /// 完成识别；这里只做"可见告知"，不做自动重建/自动恢复（F-15 / R2-03）。在 UI 线程触发。
+    /// </summary>
+    public Action? OnDeviceChanged;
 
     public int ChunkSamples { get; } = AppConstants.ChunkSamples;
 
@@ -35,13 +51,31 @@ internal sealed class AudioCaptureService : IDisposable
     private MMDevice? _device;
     private BufferedWaveProvider? _inputBuffer;
     private ISampleProvider? _resampledProvider;
-    private readonly Queue<float> _ringBuffer = new();
     private WaveFormat? _captureFormat;
+    private AudioChunker _chunker;
     private bool _running;
+
+    /// <summary>"stop() 之后的迟到样本"丢帧计数：R3-01 场景 (a) 的正常代价，不代表出错（R4-07）。</summary>
+    private int _droppedNotRunningCount;
+
+    /// <summary>
+    /// 串行投递队列：<see cref="OnChunk"/>/<see cref="OnTailChunk"/> 统一从这里触发，而不是分别
+    /// 直接从音频线程和 UI 线程调用，从而保证两者之间的相对顺序与 <see cref="_lock"/> 临界区顺序一致。
+    /// </summary>
+    private readonly BlockingCollection<Action> _deliveryQueue = new();
+    private readonly Thread _deliveryThread;
+    private bool _disposed;
 
     public bool IsRunning
     {
         get { lock (_lock) return _running; }
+    }
+
+    public AudioCaptureService()
+    {
+        _chunker = new AudioChunker(ChunkSamples);
+        _deliveryThread = new Thread(RunDeliveryLoop) { IsBackground = true, Name = "VoiceTyper.AudioDelivery" };
+        _deliveryThread.Start();
     }
 
     public void Start()
@@ -86,18 +120,25 @@ internal sealed class AudioCaptureService : IDisposable
 
                 _capture.DataAvailable += OnCaptureDataAvailable;
                 _capture.RecordingStopped += OnCaptureStopped;
-                _capture.StartRecording();
 
-                _ringBuffer.Clear();
+                _chunker = new AudioChunker(ChunkSamples);
+                _droppedNotRunningCount = 0;
+                // running 必须在 StartRecording 之前、且在锁内置位：DataAvailable 理论上可能在
+                // StartRecording() 返回后的极窄窗口内几乎立即触发，若仍在锁外才置位，这段窗口里
+                // 到达的样本会被误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的
+                // 跨线程写（对齐 macOS R4-07 的教训）。
                 _running = true;
+                _capture.StartRecording();
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
+                _running = false;
                 Cleanup();
                 throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", accessDenied: true, ex);
             }
             catch (Exception ex)
             {
+                _running = false;
                 Cleanup();
                 throw new AudioStartException($"启动录音失败: {ex.Message}", accessDenied: false, ex);
             }
@@ -113,29 +154,32 @@ internal sealed class AudioCaptureService : IDisposable
     public void Stop()
     {
         WasapiCapture? capture;
+        bool wasRunning;
+        int tailLength;
         lock (_lock)
         {
-            if (!_running) return;
+            wasRunning = _running;
             capture = _capture;
-            _running = false;
+            if (_running)
+            {
+                _running = false;
+                tailLength = DrainAndEnqueueTailLocked();
+            }
+            else
+            {
+                tailLength = 0;
+            }
         }
+        if (!wasRunning) return;
 
         try { capture?.StopRecording(); }
         catch (Exception ex) { AppLog.Warn("audio", $"StopRecording 异常: {ex.Message}"); }
 
-        // 取走剩余尾音
-        byte[] tail;
-        lock (_lock)
-        {
-            tail = DrainRingBufferLocked();
-            _ringBuffer.Clear();
-        }
-
-        OnTailChunk?.Invoke(tail);
-        AppLog.Info("audio", $"录音停止，尾音 {tail.Length} bytes");
+        LogDroppedBuffersIfAny();
+        AppLog.Info("audio", $"录音停止，尾音 {tailLength} bytes");
     }
 
-    /// <summary>不发出尾音直接终止（如错误清理）。</summary>
+    /// <summary>不发出尾音直接终止（如错误清理、用户主动取消）。</summary>
     public void StopWithoutResult()
     {
         WasapiCapture? capture;
@@ -144,10 +188,20 @@ internal sealed class AudioCaptureService : IDisposable
             if (!_running) return;
             capture = _capture;
             _running = false;
-            _ringBuffer.Clear();
+            _chunker.Drain();
         }
         try { capture?.StopRecording(); }
         catch { /* swallow */ }
+        LogDroppedBuffersIfAny();
+    }
+
+    /// <summary>必须在持有 <see cref="_lock"/> 时调用；返回尾音字节数供调用方日志使用。</summary>
+    private int DrainAndEnqueueTailLocked()
+    {
+        var tail = _chunker.Drain();
+        var handler = OnTailChunk;
+        _deliveryQueue.Add(() => handler?.Invoke(tail));
+        return tail.Length;
     }
 
     private void OnCaptureDataAvailable(object? sender, WaveInEventArgs e)
@@ -158,7 +212,6 @@ internal sealed class AudioCaptureService : IDisposable
         ISampleProvider? resampled;
         lock (_lock)
         {
-            if (!_running) return;
             input = _inputBuffer;
             resampled = _resampledProvider;
         }
@@ -168,7 +221,8 @@ internal sealed class AudioCaptureService : IDisposable
         {
             input.AddSamples(e.Buffer, 0, e.BytesRecorded);
 
-            // 重采样输出：把所有可读样本拉出来
+            // 重采样输出：把所有可读样本拉出来。转换本身与 running 无关，
+            // running 判定只在真正写入 chunker 时做（见 AppendSamples）。
             var pool = ArrayPool<float>.Shared;
             var tmp = pool.Rent(4096);
             try
@@ -195,41 +249,86 @@ internal sealed class AudioCaptureService : IDisposable
     {
         if (e.Exception is not null)
         {
-            AppLog.Error("audio", "WASAPI 停止异常", e.Exception);
+            AppLog.Warn("audio", $"音频设备意外停止（可能是设备被拔出/切换）: {e.Exception.Message}");
+            UiDispatcher.Post(HandleDeviceChangedDuringRecording);
         }
+    }
+
+    /// <summary>
+    /// 保留已采到的音频交给当前会话完成识别（走与正常停止相同的尾音刷出路径），
+    /// 但明确告知用户设备已变化、本次录音已结束——不做自动重建/自动恢复（F-15 / R2-03）。
+    /// </summary>
+    private void HandleDeviceChangedDuringRecording()
+    {
+        bool wasRunning;
+        lock (_lock)
+        {
+            wasRunning = _running;
+            if (_running)
+            {
+                _running = false;
+                DrainAndEnqueueTailLocked();
+            }
+        }
+        if (!wasRunning) return;
+
+        LogDroppedBuffersIfAny();
+        OnDeviceChanged?.Invoke();
     }
 
     private void AppendSamples(float[] buffer, int count)
     {
-        // 把样本塞入 ring buffer，每凑满 ChunkSamples 个就 emit 一帧。
-        List<byte[]>? toEmit = null;
         lock (_lock)
         {
-            for (int i = 0; i < count; i++) _ringBuffer.Enqueue(buffer[i]);
-
-            while (_ringBuffer.Count >= ChunkSamples)
+            if (!_running)
             {
-                var chunk = new byte[ChunkSamples * sizeof(float)];
-                var floats = MemoryMarshal.Cast<byte, float>(chunk);
-                for (int i = 0; i < ChunkSamples; i++) floats[i] = _ringBuffer.Dequeue();
-                (toEmit ??= new List<byte[]>()).Add(chunk);
+                // stop() 已经把 running 置 false 并取走尾音：这批样本必然是"迟到"的，
+                // 若仍写进 chunker 会成为永远不会被 flush 的孤儿数据（R3-01 场景 a）。
+                _droppedNotRunningCount++;
+                return;
+            }
+
+            var chunks = _chunker.Append(buffer.AsSpan(0, count));
+            if (chunks.Count == 0) return;
+
+            var handler = OnChunk;
+            // 入队动作必须在锁内完成，才能保证与 Stop()/设备变化那侧的入队顺序一致（见类注释）。
+            foreach (var chunk in chunks)
+            {
+                _deliveryQueue.Add(() => handler?.Invoke(chunk));
             }
         }
-
-        if (toEmit is null) return;
-        var cb = OnChunk;
-        if (cb is null) return;
-        foreach (var c in toEmit) cb(c);
     }
 
-    private byte[] DrainRingBufferLocked()
+    /// <summary>只记计数，不含音频内容（AGENTS.md 日志约束）。"迟到"丢帧是 stop() 与音频线程
+    /// 竞态下的正常代价，不代表出错，用 info 级别（R4-07）。</summary>
+    private void LogDroppedBuffersIfAny()
     {
-        if (_ringBuffer.Count == 0) return Array.Empty<byte>();
-        var buf = new byte[_ringBuffer.Count * sizeof(float)];
-        var floats = MemoryMarshal.Cast<byte, float>(buf);
-        int i = 0;
-        while (_ringBuffer.Count > 0) floats[i++] = _ringBuffer.Dequeue();
-        return buf;
+        int notRunning;
+        lock (_lock)
+        {
+            notRunning = _droppedNotRunningCount;
+            _droppedNotRunningCount = 0;
+        }
+        if (notRunning > 0)
+        {
+            AppLog.Info("audio", $"录音期间丢弃了 {notRunning} 个音频缓冲区（stop() 之后的迟到样本，属预期行为）");
+        }
+    }
+
+    private void RunDeliveryLoop()
+    {
+        foreach (var action in _deliveryQueue.GetConsumingEnumerable())
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("audio", "音频投递任务异常", ex);
+            }
+        }
     }
 
     private void Cleanup()
@@ -244,7 +343,12 @@ internal sealed class AudioCaptureService : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         StopWithoutResult();
         Cleanup();
+        _deliveryQueue.CompleteAdding();
+        _deliveryThread.Join(TimeSpan.FromSeconds(2));
+        _deliveryQueue.Dispose();
     }
 }

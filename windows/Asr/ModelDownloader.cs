@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -164,14 +165,31 @@ internal sealed class ModelDownloader : IDisposable
         var buffer = new byte[1 << 16];
         long written = existingLength;
         int read;
+        // 每读 64KB 就回调一次：241MB 的模型文件约 3800 次，每次都触发一次全量 UI 刷新
+        // （托盘 + 设置窗口）代价过高。节流到"变化 ≥0.5% 或距上次 ≥200ms"，首尾两次不节流
+        // （对齐 macOS b94b31e/R3-09）。
+        const double MinProgressDelta = 0.005;
+        const long MinReportIntervalMs = 200;
+        double lastReportedProgress = -1;
+        var reportStopwatch = Stopwatch.StartNew();
+
         while ((read = await httpStream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
         {
             if (_cancelled) throw new OperationCanceledException();
             await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             written += read;
-            if (totalLength > 0)
+            if (totalLength <= 0) continue;
+
+            var progress = Math.Min(1.0, (double)written / totalLength);
+            var isFirst = lastReportedProgress < 0;
+            var isLast = written >= totalLength;
+            if (isFirst || isLast
+                || progress - lastReportedProgress >= MinProgressDelta
+                || reportStopwatch.ElapsedMilliseconds >= MinReportIntervalMs)
             {
-                onProgress(Math.Min(1.0, (double)written / totalLength));
+                lastReportedProgress = progress;
+                reportStopwatch.Restart();
+                onProgress(progress);
             }
         }
     }
