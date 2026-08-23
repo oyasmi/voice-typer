@@ -60,6 +60,9 @@ struct PermissionsSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
+            if !ready {
+                Button("重新检测") { vm.onRetryReadinessCheck?() }
+            }
         }
         .padding(.vertical, 2)
     }

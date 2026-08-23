@@ -50,6 +50,8 @@ final class RecordingHUDController: NSWindowController {
     private var collapseWorkItem: DispatchWorkItem?
     /// 一次性提示的自动隐藏任务，phase 变化时作废。
     private var transientHideItem: DispatchWorkItem?
+    /// `flashWarning` 的 statusLabel 恢复任务，phase 变化时作废。
+    private var warningRestoreWorkItem: DispatchWorkItem?
     private var lastLevelUpdate: CFTimeInterval = 0
 
     // MARK: - 初始化
@@ -85,6 +87,7 @@ final class RecordingHUDController: NSWindowController {
         ensureUIBuilt()
         cancelTransientHide()
         cancelCollapse()
+        cancelWarningRestore()
 
         phase = .recording
         startDate = Date()
@@ -111,6 +114,7 @@ final class RecordingHUDController: NSWindowController {
         timer = nil
         cancelCollapse()
         cancelTransientHide()
+        cancelWarningRestore()
         phase = .hidden
         dotView.stopPulse()
         waveformView.stop()
@@ -136,6 +140,7 @@ final class RecordingHUDController: NSWindowController {
     /// 切换到"识别中"状态（松键后等待 final）。
     func setRecognizing() {
         cancelTransientHide()
+        cancelWarningRestore()
         // 松键后录音结束，冻结计时（保留最后时长）。
         timer?.invalidate()
         timer = nil
@@ -195,13 +200,24 @@ final class RecordingHUDController: NSWindowController {
     }
 
     /// 录音过程中的非致命提示（如 partial 暂时不可用）。仅闪烁 statusLabel。
+    /// 录音中或识别中的非致命提示（如 partial 暂时不可用、上一段听写尚未完成）。
+    /// 两个阶段都要能看到，否则识别中按热键会得到完全无反馈的"死键"观感（R4-06）。
     func flashWarning(_ message: String) {
-        guard phase == .recording else { return }
+        guard phase == .recording || phase == .recognizing else { return }
+        cancelWarningRestore()
         statusLabel.stringValue = message.isEmpty ? "识别提示" : message
         let item = DispatchWorkItem { [weak self] in
-            guard let self, self.phase == .recording else { return }
-            self.statusLabel.stringValue = "录音中"
+            guard let self else { return }
+            switch self.phase {
+            case .recording:
+                self.statusLabel.stringValue = "录音中"
+            case .recognizing:
+                self.statusLabel.stringValue = "识别中"
+            case .hidden, .transient:
+                break
+            }
         }
+        warningRestoreWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: item)
     }
 
@@ -262,6 +278,7 @@ final class RecordingHUDController: NSWindowController {
         timer = nil
         startDate = nil
         cancelCollapse()
+        cancelWarningRestore()
         cancelTransientHide()
         phase = .transient
 
@@ -452,6 +469,11 @@ final class RecordingHUDController: NSWindowController {
     private func cancelTransientHide() {
         transientHideItem?.cancel()
         transientHideItem = nil
+    }
+
+    private func cancelWarningRestore() {
+        warningRestoreWorkItem?.cancel()
+        warningRestoreWorkItem = nil
     }
 
     // MARK: - 前导指示（点 / 符号）

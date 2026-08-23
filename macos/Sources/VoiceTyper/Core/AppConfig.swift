@@ -44,7 +44,27 @@ struct AppConfig: Codable {
         config.llm.maxTokens = clamp(config.llm.maxTokens, 64, 8192, field: "llm.max_tokens")
         config.llm.timeout = clamp(config.llm.timeout, 1, 120, field: "llm.timeout")
         config.ui.opacity = clamp(config.ui.opacity, 0.1, 1.0, field: "ui.opacity")
+        config.hotkey = Self.validatedHotkey(config.hotkey)
         return config
+    }
+
+    /// `SettingsViewModel.applyHotkey` 已经在 UI 路径校验过"主键是否支持"与"非 fn 主键
+    /// 必须搭配至少一个修饰键"，但设置窗口不是改配置的唯一入口——菜单里就有「打开配置
+    /// 目录」，README 也鼓励手改 YAML。不经 UI 直接写一个 `key: "d"` 且不带修饰键的配置
+    /// 完全可达：`HotkeyService` 只检查键名是否受支持，不要求修饰键非空，结果是在任何
+    /// App 里正常打字敲字母 d 都会触发一次录音（R4-05）。这里补上手改配置文件绕过 UI
+    /// 校验的第二道防线，越界回落到默认热键 fn，不静默接受。
+    private static func validatedHotkey(_ hotkey: HotkeyConfig) -> HotkeyConfig {
+        let key = hotkey.key.lowercased()
+        guard HotkeyService.isSupportedKey(key) else {
+            AppLog.app.warning("配置字段 hotkey.key 不支持(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
+            return HotkeyConfig()
+        }
+        guard key == "fn" || !hotkey.modifiers.isEmpty else {
+            AppLog.app.warning("配置字段 hotkey 未搭配修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
+            return HotkeyConfig()
+        }
+        return hotkey
     }
 }
 

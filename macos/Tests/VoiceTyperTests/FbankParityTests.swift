@@ -64,6 +64,22 @@ final class FbankParityTests: XCTestCase {
         XCTAssertLessThan(maxDiff, 1e-3, "LFR+CMVN 最大逐点误差应 < 1e-3，实际 \(maxDiff)")
     }
 
+    /// 全零输入是唯一会触发对数下限分支的输入：`dump_reference_fixtures.py` 的合成信号
+    /// 是正弦+噪声，能量永远不为零，两条金标准测试都测不到这个分支。不依赖模型/Python，
+    /// 直接用真实麦克风静音输入实测过的 Python 参考值做回归（R4-10）：全零输入的对数
+    /// 能量恒为 `log(FLT_EPSILON) ≈ -15.942385`，不是 `log(FLT_MIN) ≈ -87.3`。
+    func testAllZeroInputHitsDocumentedLogFloor() {
+        let frontend = FbankFrontend()
+        let silence = [Float](repeating: 0, count: 400) // 恰好一帧（25ms @ 16kHz）
+        let feats = frontend.compute(silence)
+
+        XCTAssertEqual(feats.count, 1)
+        let expected: Float = -15.942385
+        for value in feats[0] {
+            XCTAssertEqual(value, expected, accuracy: 1e-4)
+        }
+    }
+
     private struct Shapes: Decodable {
         let n_samples: Int
         let fbank_frames: Int

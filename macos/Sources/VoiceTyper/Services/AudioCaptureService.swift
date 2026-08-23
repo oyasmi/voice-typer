@@ -75,8 +75,12 @@ final class AudioCaptureService: @unchecked Sendable {
     private var chunker: AudioChunker
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
-    /// 转换/丢帧计数：只用于诊断，日志里只记数量，不记音频内容。
-    private var droppedBufferCount = 0
+    /// 转换失败丢帧计数：只用于诊断，日志里只记数量，不记音频内容。
+    private var droppedConversionFailedCount = 0
+    /// `stop()` 与音频线程竞态导致的"迟到"丢帧计数：这是 R3-01 场景 (a) 的正常代价
+    /// （tap 回调与 `isRunning` 置位之间存在窗口），不代表转换出错，日志措辞与
+    /// 严重级别都应与转换失败区分（R4-07）。
+    private var droppedNotRunningCount = 0
 
     /// 串行投递队列：`onChunk`/`onTailChunk` 统一从这里触发，而不是分别直接从音频线程
     /// 和主线程调用，从而保证两者之间的相对顺序与 `lock` 临界区顺序一致（见上方注释）。
@@ -112,7 +116,17 @@ final class AudioCaptureService: @unchecked Sendable {
         }
 
         self.converter = converter
-        droppedBufferCount = 0
+
+        // isRunning 必须在 installTap 之前、且在锁内置位：tap 回调理论上可能在
+        // engine.start() 返回后的极窄窗口内、于音频线程几乎立即触发，若仍在锁外、
+        // 在 engine.start() 之后才置位，这段窗口里到达的样本会被 append(buffer:)
+        // 误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的跨线程写（R4-07）。
+        lock.lock()
+        droppedConversionFailedCount = 0
+        droppedNotRunningCount = 0
+        isRunning = true
+        lock.unlock()
+
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             self?.append(buffer: buffer)
@@ -122,12 +136,15 @@ final class AudioCaptureService: @unchecked Sendable {
         do {
             try engine.start()
         } catch {
-            // 启动失败时回滚已安装的 tap，避免残留一个不会再被 stop() 正常清理的挂起状态。
+            // 启动失败时回滚已安装的 tap与 isRunning，避免残留一个不会再被 stop()
+            // 正常清理的挂起状态。
             inputNode.removeTap(onBus: 0)
             self.converter = nil
+            lock.lock()
+            isRunning = false
+            lock.unlock()
             throw error
         }
-        isRunning = true
 
         configurationChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -180,19 +197,27 @@ final class AudioCaptureService: @unchecked Sendable {
 
     // MARK: - Private
 
-    /// 只记计数与错误码，不含音频内容（AGENTS.md 日志约束）。
+    /// 只记计数与错误码，不含音频内容（AGENTS.md 日志约束）。分开报告两类丢帧：
+    /// 转换失败是真实异常，值得 warning；"迟到"丢帧是 stop() 与音频线程竞态下的
+    /// 正常代价，不代表出错，用 info 即可（R4-07）。
     private func logDroppedBuffersIfAny() {
         lock.lock()
-        let count = droppedBufferCount
-        droppedBufferCount = 0
+        let conversionFailed = droppedConversionFailedCount
+        let notRunning = droppedNotRunningCount
+        droppedConversionFailedCount = 0
+        droppedNotRunningCount = 0
         lock.unlock()
-        guard count > 0 else { return }
-        AppLog.audio.warning("录音期间丢弃了 \(count, privacy: .public) 个音频缓冲区（转换失败）")
+        if conversionFailed > 0 {
+            AppLog.audio.warning("录音期间丢弃了 \(conversionFailed, privacy: .public) 个音频缓冲区（格式转换失败）")
+        }
+        if notRunning > 0 {
+            AppLog.audio.info("录音期间丢弃了 \(notRunning, privacy: .public) 个音频缓冲区（stop() 之后的迟到样本，属预期行为）")
+        }
     }
 
     private func append(buffer: AVAudioPCMBuffer) {
         guard let converter else {
-            lock.lock(); droppedBufferCount += 1; lock.unlock()
+            lock.lock(); droppedConversionFailedCount += 1; lock.unlock()
             return
         }
 
@@ -203,7 +228,7 @@ final class AudioCaptureService: @unchecked Sendable {
             pcmFormat: targetFormat,
             frameCapacity: max(targetFrameCapacity, 1)
         ) else {
-            lock.lock(); droppedBufferCount += 1; lock.unlock()
+            lock.lock(); droppedConversionFailedCount += 1; lock.unlock()
             return
         }
 
@@ -221,7 +246,7 @@ final class AudioCaptureService: @unchecked Sendable {
 
         guard error == nil, status != .error,
               let channel = convertedBuffer.floatChannelData?.pointee else {
-            lock.lock(); droppedBufferCount += 1; lock.unlock()
+            lock.lock(); droppedConversionFailedCount += 1; lock.unlock()
             return
         }
 
@@ -240,7 +265,7 @@ final class AudioCaptureService: @unchecked Sendable {
         guard isRunning else {
             // stop() 已经把 isRunning 置 false 并取走尾音：这批样本必然是"迟到"的，
             // 若仍写进 chunker 会成为永远不会被 flush 的孤儿数据（R3-01 场景 a）。
-            droppedBufferCount += 1
+            droppedNotRunningCount += 1
             lock.unlock()
             return
         }

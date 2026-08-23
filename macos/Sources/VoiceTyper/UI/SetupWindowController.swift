@@ -45,6 +45,12 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private let tabController = NSTabViewController()
     private var hasBuiltUI = false
     private var preferredOrigin: NSPoint?
+    /// 权限页在"未授权"时的轮询：用户去系统设置里勾选后切回本窗口，之前没有任何
+    /// 机制会主动重新探测 TCC 状态——`onRetryReadinessCheck` 存在但从未被调用过，
+    /// 界面文案却写着"处理完成后本窗口会自动更新状态"，实际会一直卡在未授权直到
+    /// 用户再点一次「授权」按钮（R4-01）。TCC 查询是本地 IPC，2s 轮询成本可忽略；
+    /// 一旦权限齐全或窗口不可见就停表，不会无限期空转。
+    private var permissionPollTimer: Timer?
 
     private static let contentWidth: CGFloat = 720
     /// 以展开智能校对后的“识别”页为准，完整容纳最长页面且不留下过多空白。
@@ -94,6 +100,12 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         if downloadProgress == nil {
             viewModel.modelActionBusy = (asrState == .loading)
         }
+
+        if permissions.allRequiredGranted {
+            stopPermissionPoll()
+        } else if window?.isVisible == true {
+            startPermissionPollIfNeeded()
+        }
     }
 
     func selectTab(_ tab: SetupTab) {
@@ -115,6 +127,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+
+        if !viewModel.permissions.allRequiredGranted {
+            startPermissionPollIfNeeded()
+        }
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -122,7 +138,24 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        stopPermissionPoll()
         onClose?()
+    }
+
+    // MARK: - 权限轮询
+
+    private func startPermissionPollIfNeeded() {
+        guard permissionPollTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.onRetryReadinessCheck?()
+        }
+        timer.tolerance = 0.5
+        permissionPollTimer = timer
+    }
+
+    private func stopPermissionPoll() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
     }
 
     // MARK: - 构建
@@ -138,6 +171,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private func wireViewModelCallbacks() {
         viewModel.onRequestPermission = { [weak self] kind in self?.onRequestPermission?(kind) }
         viewModel.onOpenSystemSettings = { [weak self] kind in self?.onOpenSystemSettings?(kind) }
+        viewModel.onRetryReadinessCheck = { [weak self] in self?.onRetryReadinessCheck?() }
         viewModel.onSaveConfig = { [weak self] config in
             try await self?.onSaveConfig?(config)
         }

@@ -108,9 +108,27 @@ final class ModelDownloader: NSObject {
         }
     }
 
+    /// 用 `cancel(byProducingResumeData:)` 而不是普通 `cancel()`：后者产生的
+    /// `NSURLErrorCancelled` 不带 resume data，`didCompleteWithError` 里那段落盘逻辑
+    /// 只对"系统触发的取消"（网络中断等）生效，用户主动点取消时永远走不到——
+    /// 表现为"取消再重来"等价于从零开始，241MB 的模型文件每次取消都要重下（R4-02）。
     func cancel() {
         isCancelled = true
-        activeTask?.cancel()
+        guard let task = activeTask else { return }
+        let resumeDataURL: URL? = Self.fileName(for: task).map {
+            downloadDestination.appendingPathComponent("\($0).resume")
+        }
+        task.cancel(byProducingResumeData: { data in
+            guard let resumeDataURL else { return }
+            if let data {
+                // 原子写入，理由同 `didCompleteWithError` 里的同类写入（见其注释）。
+                try? data.write(to: resumeDataURL, options: .atomic)
+            } else {
+                // 系统未能产出可用的续传数据：清掉可能残留的旧 .resume，避免下次
+                // 用一份与本次进度无关的陈旧数据去续传（R4-03 的另一面）。
+                try? FileManager.default.removeItem(at: resumeDataURL)
+            }
+        })
     }
 
     private func downloadOne(_ spec: FileSpec, into dir: URL, onProgress: @escaping (Double) -> Void) async throws {
@@ -126,6 +144,10 @@ final class ModelDownloader: NSObject {
                     url: Self.remoteURL(for: spec.name),
                     partURL: partURL,
                     resumeDataURL: resumeDataURL,
+                    // 第二次本地重试强制丢弃 resume 数据、从零开始：陈旧或与本次失败
+                    // 相关的 .resume 内容会让"重试"精确重放同一个失败，跨越一次
+                    // app 重启也不会自愈（R4-03）。
+                    useResumeData: attempt == 0,
                     onProgress: onProgress
                 )
                 guard await Self.sha256Matches(partURL, spec.sha256) else {
@@ -156,12 +178,19 @@ final class ModelDownloader: NSObject {
         url: URL,
         partURL: URL,
         resumeDataURL: URL,
+        useResumeData: Bool,
         onProgress: @escaping (Double) -> Void
     ) async throws {
         activeProgressHandler = onProgress
         lastReportedProgress = -1
         lastProgressReportTime = 0
-        let resumeData = try? Data(contentsOf: resumeDataURL)
+        let resumeData: Data?
+        if useResumeData {
+            resumeData = try? Data(contentsOf: resumeDataURL)
+        } else {
+            resumeData = nil
+            try? FileManager.default.removeItem(at: resumeDataURL)
+        }
 
         let tmpURL: URL = try await withCheckedThrowingContinuation { continuation in
             self.activeContinuation = continuation
@@ -291,7 +320,12 @@ extension ModelDownloader: URLSessionDownloadDelegate {
            let fileName = URLComponents(url: originalURL, resolvingAgainstBaseURL: false)?
                .queryItems?.first(where: { $0.name == "FilePath" })?.value {
             let resumeDataURL = downloadDestination.appendingPathComponent("\(fileName).resume")
-            try? resumeData.write(to: resumeDataURL)
+            // 原子写入：resume data 是系统私有的不透明格式，`downloadTask(withResumeData:)`
+            // 遇到损坏/截断的数据不是抛可捕获的 Swift 错误，而是在 CFNetwork 内部直接
+            // 抛出 ObjC 异常导致进程 abort（已实测确认）。App 被杀 / 崩溃 / 断电这类场景下，
+            // 非原子写入可能留下半截文件，下次启动读到它就会让下载功能整个带崩 App——
+            // 原子写不能防住所有畸形数据，但能消除"写到一半被打断"这个最常见的成因。
+            try? resumeData.write(to: resumeDataURL, options: .atomic)
         }
         Task { @MainActor in
             self.activeContinuation?.resume(throwing: error)

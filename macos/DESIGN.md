@@ -222,9 +222,42 @@ C++ 互操作、通用二进制构建、上游同步三重成本，而 fbank 本
 ⇒ **设计决策**：`ORTSessionOptions.addConfigEntry(key: "session.disable_prepacking", value: "1")`
 必须打开。这一行省 290MB 常驻内存，对一个常驻菜单栏 App 是决定性的。
 
+**后续复核（第二轮架构评审，R4）**：曾提议再测 `disable_mem_pattern` 这项独立于 arena 的优化
+（内存模式优化本是为固定 shape 设计的，本项目每次推理输入长度都不同，理论上可能有额外收益）。
+实测确认**这条路走不通**：用 `strings` 检出 `onnxruntime-swift-package-manager` 1.24.2 macOS
+xcframework 二进制里全部 `session.*` 前缀的 `AddSessionConfigEntry` 识别键，`disable_mem_pattern`
+不在其中——它在 ORT 的 C/C++ API 里是 `OrtSessionOptions` 上的独立方法
+（`DisableMemPattern()`），不是字符串 config-entry，而 `ORTSessionOptions`（ObjC 绑定，见
+`ort_session.h`）只包了 `setIntraOpNumThreads`/`setGraphOptimizationLevel`/
+`setOptimizedModelFilePath`/`setLogID`/`setLogSeverityLevel`/`addConfigEntryWithKey` 六个方法，
+没有暴露它。二进制里能找到 `arena_extend_strategy`/`enable_cpu_mem_arena` 字符串，但那对应的
+是通过 `OrtArenaCfg` + `SessionOptionsAppendExecutionProvider_CPU` 配置 CPU EP 的路径，
+同样没有对应的 ObjC 方法。要拿到这两项，只能绕开这个 SPM 包直接调 C API 函数指针——
+正是 §4.1 选型时特意避开的成本，且与上面已实测的 `enable_cpu_mem_arena=false`（无改善）
+结论方向一致，判断继续投入的性价比不高，本轮不再跟进。
+
 即便如此，~510MB 常驻对菜单栏应用仍偏重，因此引入**空闲卸载**（§5.2）：
 空闲 N 分钟后释放 ORT session；下次按下热键时**与录音并行**重新加载（0.85s），
 用户通常在说第一句话，加载对感知延迟几乎不可见。
+
+**录音启动延迟（第二轮架构评审，R4）**：此前这项完全没有实测数据。用一段独立 Swift 脚本
+按 `AudioCaptureService.start()` 的真实调用序列（`inputFormat` 查询 → `AVAudioConverter`
+构造 → `installTap` → `engine.prepare()` → `engine.start()`）在同一台 M4 MacBook Air 上
+测了 8 次（间隔 3s，模拟正常听写节奏）：从调用 `engine.start()` 到第一个真实音频缓冲区
+抵达 tap 回调，稳定在 **150 ~ 171ms**，且这个数字几乎全部来自 `engine.start()` 调用本身
+与硬件音频流真正开始产出数据之间的间隙（CoreAudio HAL 的设备启动延迟），Swift 侧
+`inputFormat`/`converter`/`installTap`/`prepare()` 几步加起来在热启动下也就 80~90ms、
+冷启动下仅 47ms，都不是主要占比。
+
+⚠️ 这组数字来自独立脚本、非签名打包的 `.app`、非目标 TCC/沙盒上下文，只是量级参考，
+**不是**对真实 App 的实测验证（区分方式见 AGENTS.md）；但已经足以推翻两个候选缓解方案：
+Pre-roll（麦克风常开、按键时把已录的缓冲一并送入）本可以完全盖掉这段延迟，但代价是麦克风
+指示灯常亮，与本项目"音频仅在设备端处理、不做常驻监听"的隐私定位直接冲突，故不采纳；
+"提前预热 `AVAudioConverter`/`engine.prepare()`"看似合理，但从上面的分解看，它最多只能省掉
+Swift 侧那 47~90ms 里的一小部分，动不了真正的大头（`engine.start()` 之后的 HAL 启动延迟），
+性价比不足以为此在 `.idle` 态常驻一份 converter/tap。结论：这是 CoreAudio 在这类设备上启动
+音频流的固有延迟，本轮不再寻求代码层面的缓解，记入 §11.1 已知限制，等待真机走查（P5）时
+用打包后的 App 复核这组数字是否随签名/沙盒环境变化。
 
 ### 4.4 模型分发 —— 首次启动下载（已定）
 
@@ -594,8 +627,8 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 
 | 测试 | 内容 | 通过标准 |
 | --- | --- | --- |
-| **FbankParityTests** | `dump_reference_fixtures.py` 用 `client-server/server/` 导出 3 段音频（0.5s 静音 / 3s 中文 / 15s 中英混合）的 `[T,80]` fbank 与 `[T',560]` LFR+CMVN 特征 | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3` |
-| **EndToEndRecognitionTests** | 同 3 段音频跑完整 Swift 链路 | 编辑距离 ≤ 2（G2 的正式验收，见下方实测结论） |
+| **FbankParityTests** | `dump_reference_fixtures.py` 用 `client-server/server/` 导出一段 0.63s 合成正弦+噪声信号（61 帧，含 `applyLFR` 尾帧补齐分支）的 `[T,80]` fbank 与 `[T',560]` LFR+CMVN 特征；另有一条不依赖 Python/模型的纯 Swift 用例覆盖全零静音输入的对数下限分支 | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3`（静音用例：固定常量误差 < 1e-4） |
+| **EndToEndRecognitionTests** | 用 `speech_zh_en_mixed.wav`（15.5s 中英混排+数字+标点）跑完整 Swift 链路 | 编辑距离 ≤ 2（G2 的正式验收，见下方实测结论） |
 | **TextPostprocessorTests** | `<\|...\|>` 剥离、中英间距、纯标点丢弃、`▁` 还原 | 覆盖 `_postprocess` 每条规则 |
 | **RecognitionBufferTests** | 合成音频驱动滑窗：窗口滚动、切点能量最小、`finalize` 走完整音频 | 预览单调增长不回退为空；finalize 输入长度 == 总样本数 |
 | **ConfigStoreTests** | YAML 读写往返、缺字段回落默认、`~/.config` 迁移 | 往返幂等；迁移只带走 hotkey/opacity |
@@ -661,7 +694,7 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | 断点续传 + sha256 校验 + 小文件先行；识别页显示失败原因并提供手动重试，下次启动自动续传；`fetch_model.sh` 作为手动逃生口；`ModelLocator` 会复用 `~/.cache/modelscope/` 已有模型 |
 | **ModelScope 接口变更** | 首启下载全面失效 | URL 与 sha256 都是常量，改起来是一次小版本发布；`asr.model_dir` 手动指定是永久逃生口 |
 | **模型权重许可** | 分发合规 | 改为用户自行下载后 App 不再分发权重，压力大幅下降；仍在「关于」面板署名 |
-| **ORT SPM 包版本漂移** | 构建不可复现 | `Package.resolved` 入库；SPM 依赖锁 `upToNextMinor` |
+| **ORT SPM 包版本漂移** | 构建不可复现 | `Package.resolved` 入库（真正起锁定作用的是这个文件，`xcodebuild -resolvePackageDependencies` 默认遵循它，不会自行升级）；`generate_xcodeproj.rb` 里 ORT 包声明为 `exactVersion`，Yams 声明为 `upToNextMajorVersion`（此前这里误写成统一的 `upToNextMinor`，与脚本实际不符，R4-12） |
 | **不支持 Intel Mac** | Intel 用户完全无法使用 | 已定：只出 arm64。README 明确写明最低要求为 Apple Silicon；Intel 用户继续用 `VoiceTyperClient` + `client-server/server/` 方案 |
 | **ORT 崩溃拖垮整个 App** | 菜单栏应用退出 | 首版接受（进程内）；`SenseVoiceEngine` 已按可 `load/unload` 设计，将来若需要可平移到 XPC 子进程 |
 | 两个 App 同时安装 | 热键互抢、双份权限 | 配置目录已隔离；README 明确写"装了新版请删掉 VoiceTyperClient" |
@@ -679,6 +712,19 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
   焦点是否变化（跨 App），不识别"同一个 App 内切换了输入字段"。收益场景（几秒内切字段）少见，而
   AX element 身份跨查询是否稳定因 App 实现而异，一旦误判会让正常听写被拒绝插入、退化为只复制到剪贴板，
   代价比它防的问题更常见。
+- **录音开始后 ~150~170ms 的音频会被丢失**：按下热键到麦克风真正开始产出数据存在这段固有延迟
+  （CoreAudio HAL 设备启动，非 Swift 侧代码可控，见 §4.3 的实测与两个候选方案的否决理由）。
+  用户如果按键后立刻开口，最开头的一两个字可能不会被录进去。Pre-roll（麦克风常开）能完全盖掉，
+  但与本项目的隐私定位冲突；预热 converter/prepare() 只能省掉小头，不采纳。
+- **松手后（`.recognizing` 阶段）没有主动取消入口**：`HotkeyService` 的 Esc 取消只在热键仍按住
+  （`isActive`）时生效，松手后 Esc 不再起作用，HUD 又设了 `ignoresMouseEvents`。用户唯一能做的是
+  等——最坏情况是 `LocalASRSession.finalize(timeout: 30)` 的 30s 看门狗，加上启用智能校对时
+  `llm.timeout` 最长可配到 120s（`AppConfig.validated()` 的夹逼上限），合计最长约 150s 卡在无法
+  中断的状态。R4 这轮已经补上"识别中按热键给出可见反馈"（不再是完全无声），但反馈不等于能取消——
+  真要支持取消，需要让 `HotkeyService` 在按键释放后仍能响应 Esc、并把取消信号一路传给
+  `LocalASRSession` 的 `cancelFlag`/`close()`，这是一次新的、跨两层的改动（不是小修）。给定默认
+  `llm.timeout=5s`、且只有刻意调大超时 + 端点恰好卡死才会撞到分钟级等待，判断这轮投入产出比不够，
+  按与"finalize 超时不中断计算"（上一条）相同的理由暂不做，等真的观察到用户被卡住再立项。
 
 ---
 
@@ -690,4 +736,4 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
 | D3 | 新 App 版本号 | ✅ **3.1.6**（设置面板优化版本） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 |
-| D4 | 空闲卸载默认值 | 待定，暂按 **10 分钟** | 备选：默认关闭（常驻 510MB）。P3 前定即可 |
+| D4 | 空闲卸载默认值 | ✅ **10 分钟**（`ASRConfig.idleUnloadMinutes` 默认值） | 备选（默认关闭、常驻 510MB）已否决；早已随实现发布，此前这里一直标注"待定"与代码不符（R4-12） |

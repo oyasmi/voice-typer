@@ -187,6 +187,16 @@ final class ModelDownloaderTests: XCTestCase {
         XCTAssertEqual(attemptCounter.count, 1, "取消后不应发起第二次尝试")
     }
 
+    // 注：cancel()/performDownload 围绕真实 resume data 的行为（R4-02/R4-03，见
+    // ModelDownloader.swift 的对应注释）没有配套单测——实测过程中确认，只要预先在磁盘上
+    // 放一份非本次会话产出的 `.resume` 文件，`downloadOne` 第一次尝试就会把它喂给
+    // `downloadTask(withResumeData:)`，而系统对不是自己刚刚产出的续传数据长期缺乏
+    // 健壮的容错：无论是完全无关的字节，还是结构正确但语义不对的 plist，都会在
+    // CFNetwork 内部直接让进程 abort，不是可捕获的 Swift 错误。这正是本文件顶部
+    // doc comment 里"断点续传...不适合用 URLProtocol 打桩做确定性单测"这句话想说的事，
+    // 用合成数据去验证这条路径反而会让测试本身变成一个偶发崩溃源。这两处修复改为靠
+    // 代码审查 + 手工验证覆盖（见 macos/DESIGN.md §7 的模型下载验收步骤）。
+
     private func shell(_ command: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")

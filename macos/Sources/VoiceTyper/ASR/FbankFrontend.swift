@@ -157,7 +157,14 @@ final class FbankFrontend {
                     weights.withUnsafeBufferPointer { weightPtr in
                         vDSP_dotpr(powerPtr.baseAddress! + lo, 1, weightPtr.baseAddress!, 1, &sum, vDSP_Length(hi - lo + 1))
                     }
-                    melEnergies[bin] = max(sum, Float.leastNormalMagnitude)
+                    // 对数下限对齐本文件顶部规格与 kaldi_native_fbank 的
+                    // std::numeric_limits<float>::epsilon()，即 Float.ulpOfOne（≈1.19e-7），
+                    // 不是 Float.leastNormalMagnitude（FLT_MIN≈1.17e-38，差 31 个数量级）。
+                    // 已用真实全零输入实测 Python 参考值验证：两者在 log 之后的差是
+                    // -15.94（epsilon）对 -87.3（FLT_MIN），只有静音/数字零输入才会踩到，
+                    // 金标准夹具此前恰好没有覆盖这个分支（R4-10，见 LFRCMVNTests /
+                    // FbankParityTests 的全零回归测试）。
+                    melEnergies[bin] = max(sum, Float.ulpOfOne)
                 }
             }
             var logged = [Float](repeating: 0, count: opts.numMelBins)

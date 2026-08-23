@@ -42,6 +42,39 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(validated.llm.temperature, 0.7)
     }
 
+    /// R4-05：设置窗口的 UI 校验（`SettingsViewModel.applyHotkey`）不是改配置的唯一入口，
+    /// 手改 `config.yaml` 可以绕过它写出一个不带修饰键的普通字母键，导致在任何 App 里
+    /// 正常打字都会触发录音。`validated()` 必须是这条规则的最后一道防线。
+    func testValidatedFallsBackToFnWhenNonFnKeyHasNoModifier() {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: [], key: "d")
+        let validated = config.validated()
+        XCTAssertEqual(validated.hotkey.key, "fn")
+        XCTAssertTrue(validated.hotkey.modifiers.isEmpty)
+    }
+
+    func testValidatedFallsBackToFnForUnsupportedKeyName() {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: ["cmd"], key: "not-a-real-key")
+        let validated = config.validated()
+        XCTAssertEqual(validated.hotkey.key, "fn")
+    }
+
+    func testValidatedKeepsNonFnKeyWithModifier() {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: ["cmd", "shift"], key: "d")
+        let validated = config.validated()
+        XCTAssertEqual(validated.hotkey.key, "d")
+        XCTAssertEqual(validated.hotkey.modifiers, ["cmd", "shift"])
+    }
+
+    func testValidatedKeepsBareFnWithoutModifier() {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: [], key: "fn")
+        let validated = config.validated()
+        XCTAssertEqual(validated.hotkey.key, "fn")
+    }
+
     func testConfigDecodesNaNAndInfFromYAMLWithoutCrashing() throws {
         let yaml = """
         llm:

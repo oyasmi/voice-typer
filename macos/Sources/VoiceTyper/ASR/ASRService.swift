@@ -182,7 +182,18 @@ final class ASRService {
 
         switch result {
         case .success(let built):
-            asrQueue.async { [weak self] in self?.setEngine(built) }
+            // load() 开始时用来构造 built 的 language 快照可能已经过期：`updateConfig` 在
+            // 加载期间收到的语言变化会走 `asrQueue.async { currentEngine()?.setLanguage(...) }`，
+            // 这次入队与下面这次 `setEngine(built)` 的相对顺序不保证——若前者先执行，
+            // 它当时要么作用在旧引擎、要么作用在 nil 上，随后被这里的 setEngine 覆盖掉，
+            // 语言设置静默丢失，要等下一次 reload 才会生效（R4-13）。用装载完成这一刻的
+            // 最新 config.language 重放一次，保证无论期间发生过什么，最终生效的语言
+            // 一定是最新配置。
+            let latestLanguage = config.language
+            asrQueue.async { [weak self] in
+                self?.setEngine(built)
+                built.setLanguage(latestLanguage)
+            }
             state = .ready
             scheduleIdleUnloadIfNeeded()
         case .failure(let error):

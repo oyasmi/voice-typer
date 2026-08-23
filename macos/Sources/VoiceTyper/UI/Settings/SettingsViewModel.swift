@@ -78,6 +78,7 @@ final class SettingsViewModel {
     // MARK: 注入的回调
     var onRequestPermission: ((PermissionKind) -> Void)?
     var onOpenSystemSettings: ((PermissionKind) -> Void)?
+    var onRetryReadinessCheck: (() -> Void)?
     var onSaveConfig: ((AppConfig) async throws -> Void)?
     /// 返回值：暂停/恢复请求是否被接受。暂停请求在有进行中的听写时会被拒绝（R2-04）。
     var onSuspendHotkey: ((Bool) -> Bool)?
@@ -98,7 +99,7 @@ final class SettingsViewModel {
         language = config.asr.language
         llmEnabled = config.llm.enabled
         llmBaseURL = config.llm.baseURL
-        llmAPIKey = KeychainStore.loadLLMAPIKey()
+        let apiKeyResult = KeychainStore.loadLLMAPIKeyResult()
         llmModel = config.llm.model
         llmTemperature = config.llm.temperature
         llmTimeout = config.llm.timeout
@@ -110,6 +111,17 @@ final class SettingsViewModel {
 
         recognitionMessage = ""
         hotkeyMessage = ""
+
+        // 读取失败（而非"从未保存过"）必须让用户看得见，否则智能校对会静默停在
+        // "开着但从来没生效过"——现象只是不断 401，没有任何信号指向密钥本身（R4-06）。
+        switch apiKeyResult {
+        case .success(let key):
+            llmAPIKey = key
+        case .failure:
+            llmAPIKey = ""
+            recognitionMessage = "无法从 Keychain 读取已保存的 API Key，请重新填写并保存。"
+            recognitionMessageKind = .error
+        }
     }
 
     // MARK: - 识别 / 校对
@@ -170,7 +182,7 @@ final class SettingsViewModel {
         recognitionMessage = "正在保存并应用设置…"
         recognitionMessageKind = .info
         let apiKey = llmAPIKey
-        let previousAPIKey = KeychainStore.loadLLMAPIKey()
+        let previousAPIKeyResult = KeychainStore.loadLLMAPIKeyResult()
         Task { [weak self] in
             guard let self else { return }
             // 先写 Keychain、检查返回值（原先被丢弃）：写失败必须中止，
@@ -187,8 +199,15 @@ final class SettingsViewModel {
                 self.recognitionMessage = "设置已保存并生效。"
                 self.recognitionMessageKind = .success
             } catch {
-                // YAML 写入失败：尽力把 Keychain 回滚到保存前的值，避免两者状态不一致。
-                _ = KeychainStore.saveLLMAPIKey(previousAPIKey)
+                // YAML 写入失败：尽力把 Keychain 回滚到保存前的值，避免两者状态不一致——
+                // 但只在保存前那次读取本身就成功时才回滚。若那次读取也失败了，"回滚"会
+                // 把用户原本真实存在的 key 用一个空字符串覆盖掉，这是比"回滚失败"更糟的
+                // 数据丢失，宁可跳过回滚、把新写入的 key 留在 Keychain 里（R4-06）。
+                if case .success(let previousAPIKey) = previousAPIKeyResult {
+                    _ = KeychainStore.saveLLMAPIKey(previousAPIKey)
+                } else {
+                    AppLog.app.error("保存识别设置失败，且无法读取保存前的 API Key，跳过 Keychain 回滚以避免误删")
+                }
                 self.recognitionMessage = "保存失败：\(error.localizedDescription)"
                 self.recognitionMessageKind = .error
             }

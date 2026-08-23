@@ -28,7 +28,11 @@ def dump_fbank_parity():
     from voice_typer_server.recognizer import _bypass_load
 
     rng = np.random.default_rng(42)
-    t = np.arange(int(0.62 * 16000)) / 16000
+    # 0.63s（61 fbank 帧）而不是 0.62s（60 帧）：framesLFR=ceil(61/6)=11，最后一帧
+    # start=60、paddedT-start=4 < m=7，会走 applyLFR 的尾帧补齐分支；0.62s/60 帧下
+    # paddedT-start=9 ≥ 7，补齐分支从未被这份夹具跑到过（R4-09，结构性覆盖见
+    # LFRCMVNTests，这里额外用真实 Python 参考值做数值级验证）。
+    t = np.arange(int(0.63 * 16000)) / 16000
     sig = (
         0.3 * np.sin(2 * np.pi * 220 * t)
         + 0.15 * np.sin(2 * np.pi * 880 * t)

@@ -38,6 +38,23 @@ final class ASRServiceTests: XCTestCase {
         func recognize(_ samples: [Float]) throws -> String { "" }
     }
 
+    /// 记录 `setLanguage` 调用，供 R4-13 回归测试验证"加载期间发生的语言变化最终生效"。
+    private final class LanguageTrackingFakeEngine: SenseVoiceRecognizing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _lastLanguage: ASRLanguage?
+
+        func recognize(_ samples: [Float]) throws -> String { "" }
+
+        func setLanguage(_ language: ASRLanguage) {
+            lock.lock(); _lastLanguage = language; lock.unlock()
+        }
+
+        var lastLanguage: ASRLanguage? {
+            lock.lock(); defer { lock.unlock() }
+            return _lastLanguage
+        }
+    }
+
     private func fakeBundle() -> ModelBundle {
         let dummy = URL(fileURLWithPath: "/dev/null")
         return ModelBundle(
@@ -103,5 +120,35 @@ final class ASRServiceTests: XCTestCase {
 
         service.sessionEnded()
         XCTAssertTrue(scheduler.hasPendingSchedule, "会话结束后应重新安排空闲卸载")
+    }
+
+    /// R4-13 回归：`updateConfig` 收到的语言变化若恰好落在 `load()` 已经取到旧语言快照、
+    /// 但 `setEngine(built)` 还没执行完这段窗口内，此前会被随后的 `setEngine` 覆盖掉、
+    /// 静默丢失，要等下一次 reload 才生效。用一个"构造耗时"的假引擎工厂制造这段窗口。
+    func testLanguageChangedDuringLoadEndsUpAppliedToNewEngine() async {
+        let scheduler = FakeIdleScheduler()
+        let engine = LanguageTrackingFakeEngine()
+        let service = ASRService(
+            idleScheduler: scheduler,
+            modelLocate: { [weak self] _ in self?.fakeBundle() },
+            engineFactory: { _, _, _ in
+                // 模拟真实 ORT session 构建耗时，给测试留出"加载仍在进行中改语言"的窗口。
+                Thread.sleep(forTimeInterval: 0.1)
+                return engine
+            }
+        )
+        service.updateConfig(ASRConfig(language: .zh, threads: 0, modelDir: "", idleUnloadMinutes: 1))
+
+        let loadTask = Task { await service.preload() }
+
+        // 引擎工厂仍在其 0.1s 的模拟耗时里睡眠，此时改变语言：modelDir/threads 不变，
+        // 只会走 updateConfig 里的语言热更新分支（asrQueue.async 里对 currentEngine()
+        // 的 setLanguage 调用），不会触发新的 reload()。
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        service.updateConfig(ASRConfig(language: .en, threads: 0, modelDir: "", idleUnloadMinutes: 1))
+
+        await loadTask.value
+        XCTAssertEqual(service.state, .ready)
+        XCTAssertEqual(engine.lastLanguage, .en, "加载期间发生的语言变化最终应生效，而不是被构造时的旧语言覆盖")
     }
 }
