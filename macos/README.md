@@ -243,6 +243,44 @@ VoiceTyper-<版本>-macOS-arm64.zip / .dmg
 ./scripts/fetch_model.sh
 ```
 
+### 签名与公证（可选）
+
+默认（不设置任何环境变量）构建产物是 **ad-hoc 本机签名**，这也是绝大多数贡献者应该使用的路径。
+ad-hoc 签名有两个已知代价：
+
+- **每次更新都可能需要用户重新授权**麦克风/辅助功能/输入监控三项权限——ad-hoc 签名没有稳定的
+  Team ID，cdhash 每次构建都变，TCC 记录以代码签名标识为键。
+- 无法通过公证分发，用户首次打开需要在「系统设置」里手动放行（"仍要打开"）。
+
+若已有付费 Apple Developer 账号，可通过环境变量启用 **Developer ID 签名 + 强化运行时 + 公证**：
+
+```bash
+# 1. 查看本机可用的 Developer ID 签名身份
+security find-identity -v -p codesigning
+
+# 2.（仅需一次）把公证凭据存进本机 Keychain，之后无需再输入密码
+xcrun notarytool store-credentials "voicetyper-notary" \
+  --apple-id "you@example.com" --team-id "TEAMID1234" --password "应用专用密码"
+
+# 3. 签名 + 公证 + 装订一次跑完
+VOICETYPER_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID1234)" \
+VOICETYPER_NOTARY_PROFILE="voicetyper-notary" \
+./build_xcode.sh
+```
+
+只设置 `VOICETYPER_SIGN_IDENTITY`（不设置 `VOICETYPER_NOTARY_PROFILE`）则只做 Developer ID 签名、
+不提交公证——适合先本地验证签名是否正常，再决定要不要公证。
+
+实现要点（详见 `build_xcode.sh` 注释）：内嵌的 `onnxruntime.framework` 会与主程序用同一身份分别
+签名（强化运行时 `--options runtime`），而不是用 `--deep` 笼统签一次——这是 Apple 官方公证指南的
+建议做法，也是公证失败最常见原因之一。工程已在 `ENABLE_HARDENED_RUNTIME=YES` 下验证过可以正常
+编译、运行、通过全部单元测试（含真实 ONNX 推理），但**实际的 Developer ID 签名与公证流程本身
+未经真机验证**——本仓库的自动化环境没有付费开发者账号与可用凭据，这一步需要持有账号的维护者
+走通一次后更新本节状态。
+
+自动更新（Sparkle 等）不在本次范围内：证书能解决"重装即用"，但持续的版本检测/推送需要额外的
+发布基础设施（appcast 托管、签名密钥管理），留待后续按实际分发需求决定。
+
 ### 改版本号
 
 `scripts/generate_xcodeproj.rb` 里的 `MARKETING_VERSION`（两处：`build_configuration_list` 与

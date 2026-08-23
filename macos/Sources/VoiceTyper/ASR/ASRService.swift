@@ -57,6 +57,15 @@ final class ASRService {
     private var config = ASRConfig()
     private let idleScheduler: IdleUnloadScheduling
     private var loadGeneration = 0
+    /// `preload()`/`reload()` 的互斥标志：两者都可能各自触发 `load()`，若不guard，
+    /// `unloadNow` 把 state 置 `.unloaded` 触发的 `onStateChange` 会被 `AppCoordinator`
+    /// 无差别转发进 `reevaluateReadiness()`，其 `.unloaded` 分支又发起一次独立的
+    /// `preload()`——两次 `load()` 会各自构建一份 ~500MB 的 ORT session，在谁都还没被
+    /// `setEngine()` 替换掉之前短暂同时存活，峰值内存可翻倍（R3-02）。
+    private var isLoadInFlight = false
+    /// 加载进行中又收到一次加载请求（例如 reload 时 preload 恰好也被触发）：
+    /// 不重入执行，只记一次"完成后再跑一遍"，确保最新配置最终生效，而不是静默丢弃。
+    private var reloadRequestedWhileLoading = false
 
     private let modelLocate: (String) -> ModelBundle?
     private let engineFactory: (ModelBundle, ASRLanguage, Int) throws -> any SenseVoiceRecognizing
@@ -96,12 +105,33 @@ final class ASRService {
 
     func preload() async {
         guard state != .loading, state != .ready else { return }
-        await load()
+        await requestLoad(unloadFirst: false)
     }
 
     func reload() async {
-        await unloadNow(dueToIdle: false)
+        await requestLoad(unloadFirst: true)
+    }
+
+    /// `preload()`/`reload()` 的统一入口：若已有加载在跑，只记一个"完成后再跑一次"的
+    /// 标记，绝不发起第二次 `load()`（R3-02）。
+    private func requestLoad(unloadFirst: Bool) async {
+        guard !isLoadInFlight else {
+            reloadRequestedWhileLoading = true
+            return
+        }
+        isLoadInFlight = true
+        if unloadFirst {
+            await unloadNow(dueToIdle: false)
+        }
         await load()
+        isLoadInFlight = false
+
+        if reloadRequestedWhileLoading {
+            reloadRequestedWhileLoading = false
+            // 合并的请求按"重新加载"处理：确保加载期间发生的最新配置变化最终会生效，
+            // 而不是被静默吞掉。
+            await requestLoad(unloadFirst: true)
+        }
     }
 
     /// 引擎当前实例。可从任意线程调用（`LocalASRSession` 会在 MainActor 上直接读取，

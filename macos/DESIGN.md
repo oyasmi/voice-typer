@@ -403,7 +403,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 | partial 只在文本变化时下发 | `lastPreview` 比对 |
 | `finalizing` 后不再补发 partial | `isFinalizing` 标志 + 回调前二次校验 |
 | 预览异常 → `warning(feed_failed)`，连接保留 | `onWarning`，会话继续 |
-| `MAX_SESSION_SAMPLES = 300*16000` 后停止收音 | 同样 300 秒上限，触发一次 `onWarning("已达 5 分钟上限")` |
+| `MAX_SESSION_SAMPLES` 后停止收音 | 实际单段上限为 **120 秒**（`maxSessionSamples`，非移植自服务端的 300 秒，见 §11.1 关于内存/耗时的权衡）。达到上限触发一次 `onWarning` 并调用 `onSessionCapped`，控制器据此走一次与松键完全相同的收尾路径（`audioCaptureService.stop()` → `onTailChunk` → finalize 上屏），而不是任由用户继续说下去、后续内容被静默丢弃（R3-03） |
 | finalize → 离线整段识别 → LLM → `final` 帧 | `finalize()` → `RecognitionBuffer.finalize()` → `LLMCorrector` → `onFinal` |
 | `finalize` 超时保护 | 保留看门狗（本地无网络，但防推理卡死），默认 30s |
 
@@ -580,7 +580,11 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 供跑金标准测试或跳过首启引导用。
 
 `Info.plist` 关键项：`LSUIElement=1`、`NSMicrophoneUsageDescription`、`LSMinimumSystemVersion=14.0`。
-`ENABLE_HARDENED_RUNTIME=NO`（沿用现状；若将来做公证需打开并申请麦克风 entitlement）。
+`ENABLE_HARDENED_RUNTIME=YES`，`CODE_SIGN_ENTITLEMENTS=Resources/VoiceTyper.entitlements`
+（空 entitlements，无强化运行时例外——麦克风访问走 TCC 权限而非 sandbox entitlement，本应用未
+启用 App Sandbox）。`build_xcode.sh` 默认仍是 ad-hoc 签名，不受此项影响；若设置
+`VOICETYPER_SIGN_IDENTITY`/`VOICETYPER_NOTARY_PROFILE` 可走 Developer ID 签名 + 公证，
+详见 `macos/README.md`「签名与公证」一节（R3-16）。
 
 ---
 

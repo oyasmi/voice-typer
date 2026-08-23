@@ -14,6 +14,12 @@ enum KeychainStore {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            // ad-hoc 签名每次构建的 cdhash 都会变化，可能与已保存条目的 ACL 信任记录不匹配；
+            // 若不显式禁止，SecItemCopyMatching 会在主线程同步弹出系统级 Keychain 授权对话框
+            // 阻塞 UI（这正是本项目此前排查到的"读 Keychain 卡住测试宿主"现象的产品态版本，
+            // 见 ARCHITECTURE_REVIEW_ROUND2_TRIAGE.md R2-02）。显式禁止 UI 后查询会直接失败
+            // 返回空字符串，而不是阻塞（R3-06）。
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

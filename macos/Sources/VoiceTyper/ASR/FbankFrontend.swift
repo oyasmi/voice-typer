@@ -144,18 +144,30 @@ final class FbankFrontend {
             for i in 0..<frameLength { frameBuf[i] *= window[i] }
 
             let power = powerSpectrum(frameBuf)
+            // 用 vDSP_dotpr 做每个 mel bin 的加权求和（替代标量循环），并把 80 个 bin
+            // 的 log 一次性交给 vvlogf 批量处理（替代逐个调用 logf），减少每帧的标量
+            // 循环与函数调用开销——120s 音频对应约 12000 帧，累计可观（R3-08）。
             var melEnergies = [Float](repeating: 0, count: opts.numMelBins)
-            for bin in 0..<opts.numMelBins {
-                let (lo, hi) = melBinRanges[bin]
-                guard hi >= lo else { continue }
-                var sum: Float = 0
-                let weights = melFilters[bin]
-                for k in lo...hi {
-                    sum += power[k] * weights[k - lo]
+            power.withUnsafeBufferPointer { powerPtr in
+                for bin in 0..<opts.numMelBins {
+                    let (lo, hi) = melBinRanges[bin]
+                    guard hi >= lo else { continue }
+                    let weights = melFilters[bin]
+                    var sum: Float = 0
+                    weights.withUnsafeBufferPointer { weightPtr in
+                        vDSP_dotpr(powerPtr.baseAddress! + lo, 1, weightPtr.baseAddress!, 1, &sum, vDSP_Length(hi - lo + 1))
+                    }
+                    melEnergies[bin] = max(sum, Float.leastNormalMagnitude)
                 }
-                melEnergies[bin] = logf(max(sum, Float.leastNormalMagnitude))
             }
-            result.append(melEnergies)
+            var logged = [Float](repeating: 0, count: opts.numMelBins)
+            melEnergies.withUnsafeBufferPointer { inPtr in
+                logged.withUnsafeMutableBufferPointer { outPtr in
+                    var count = Int32(opts.numMelBins)
+                    vvlogf(outPtr.baseAddress!, inPtr.baseAddress!, &count)
+                }
+            }
+            result.append(logged)
         }
         return result
     }

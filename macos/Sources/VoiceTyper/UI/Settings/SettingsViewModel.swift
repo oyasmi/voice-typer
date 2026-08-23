@@ -21,11 +21,14 @@ enum SettingsMessageKind {
 
 private enum SettingsValidationError: LocalizedError {
     case unsupportedHotkeyKey(String)
+    case missingModifier(String)
 
     var errorDescription: String? {
         switch self {
         case .unsupportedHotkeyKey(let key):
             return "不支持的主键 \(key)。可用：字母 a–z、数字 0–9、space、tab、enter、F1–F12。"
+        case .missingModifier(let key):
+            return "\(key) 必须搭配至少一个修饰键（⌘/⌃/⌥/⇧），否则会在任何应用里把这个键变成录音热键。"
         }
     }
 }
@@ -83,7 +86,7 @@ final class SettingsViewModel {
     var onStartModelDownload: (() -> Void)?
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
-    var onTestLLMCorrection: ((LLMConfig, String) async -> Bool)?
+    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<String, SimpleMessageError>)?
 
     /// 已落盘的基线配置。即时保存（热键/透明度）以它为基准，避免带上未保存的识别草稿。
     private(set) var loadedConfig = AppConfig()
@@ -130,13 +133,26 @@ final class SettingsViewModel {
         let startedAt = Date()
         Task { [weak self] in
             guard let self else { return }
-            let ok = await self.onTestLLMCorrection?(draft, apiKey) ?? false
+            let outcome = await self.onTestLLMCorrection?(draft, apiKey)
+                ?? .failure(SimpleMessageError(message: "内部错误：测试通道不可用"))
             let elapsed = Date().timeIntervalSince(startedAt)
             self.recognitionBusy = false
-            self.recognitionMessage = ok
-                ? String(format: "校对测试成功：模型正常响应并返回了校对结果（耗时 %.2f 秒）。", elapsed)
-                : String(format: "校对测试未通过，请检查 Base URL / API Key / 模型名是否正确（耗时 %.2f 秒）。", elapsed)
-            self.recognitionMessageKind = ok ? .success : .error
+            // 成功/失败严格以是否抛出异常为准，不再用"文本是否发生变化"猜测——网络不通
+            // 与"模型认为无需修改"此前会被误判成同一个结果，用户拿不到真实原因（R3-13）。
+            switch outcome {
+            case .success(let corrected):
+                self.recognitionMessage = String(
+                    format: "校对测试成功：模型正常响应（耗时 %.2f 秒）。返回结果：%@",
+                    elapsed, corrected
+                )
+                self.recognitionMessageKind = .success
+            case .failure(let error):
+                self.recognitionMessage = String(
+                    format: "校对测试失败：%@（耗时 %.2f 秒）。",
+                    error.message, elapsed
+                )
+                self.recognitionMessageKind = .error
+            }
         }
     }
 
@@ -212,6 +228,13 @@ final class SettingsViewModel {
         let key = config.key.lowercased()
         guard HotkeyService.isSupportedKey(key) else {
             hotkeyMessage = SettingsValidationError.unsupportedHotkeyKey(config.key).localizedDescription
+            hotkeyMessageKind = .error
+            return
+        }
+        // 非 fn 主键必须至少带一个修饰键：录制器（HotkeyRecorderView）已经拦过一次，
+        // 这里是配置落盘前的第二道防线（例如未来其他入口直接调用 applyHotkey）（R3-05）。
+        guard key == "fn" || !config.modifiers.isEmpty else {
+            hotkeyMessage = SettingsValidationError.missingModifier(config.key).localizedDescription
             hotkeyMessageKind = .error
             return
         }

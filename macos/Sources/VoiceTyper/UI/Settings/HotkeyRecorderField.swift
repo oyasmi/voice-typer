@@ -115,7 +115,15 @@ final class HotkeyRecorderView: NSView {
                 label.stringValue = "不支持该键，请重试"
                 return
             }
-            finish(HotkeyConfig(modifiers: modifiers(from: event.modifierFlags), key: name))
+            let mods = modifiers(from: event.modifierFlags)
+            // 非 fn 主键必须至少带一个修饰键：热键 tap 是 listenOnly（不吞事件），裸键
+            // 一旦生效，此后每次在任何应用里打这个字母都会同时触发录音，且用户很可能
+            // 因此无法再用键盘正常操作、包括打开设置页改回来（R3-05）。
+            guard !mods.isEmpty else {
+                label.stringValue = "请至少同时按住一个修饰键（⌘/⌃/⌥/⇧）"
+                return
+            }
+            finish(HotkeyConfig(modifiers: mods, key: name))
         case .flagsChanged:
             // 仅在按下单独的 Fn🌐 键（无其他修饰）时捕获。
             let flags = event.modifierFlags

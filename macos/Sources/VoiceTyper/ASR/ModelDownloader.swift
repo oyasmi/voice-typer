@@ -48,6 +48,15 @@ final class ModelDownloader: NSObject {
     private var activeContinuation: CheckedContinuation<URL, Error>?
     private var activeProgressHandler: ((Double) -> Void)?
     private var isCancelled = false
+    /// 节流状态：241MB 的文件下载会产生几千次 `didWriteData` 回调，若每次都不加过滤地
+    /// 跳到 MainActor 触发 `onProgress`，`AppCoordinator` 侧会跟着做几千次全量 UI 刷新
+    /// （`updateStatusUI` + `syncSetupWindow`）（R3-09）。`nonisolated(unsafe)`：需要在
+    /// `didWriteData`（nonisolated 的 delegate 回调）里同步判断是否要跳过本次回调，避免
+    /// 为每一次回调都创建一个 `Task { @MainActor }`。只在 `URLSession` 的私有串行 delegate
+    /// 队列（写）与 `performDownload` 在任务 resume 之前（重置）访问，二者有明确的先后关系，
+    /// 不构成并发读写——与本类里 `activeTask`/`activeContinuation` 的既有约定一致。
+    private nonisolated(unsafe) var lastReportedProgress: Double = -1
+    private nonisolated(unsafe) var lastProgressReportTime: CFAbsoluteTime = 0
 
     private let fileSpecs: [FileSpec]
     /// `nonisolated`：需要在 `urlSession(_:task:didCompleteWithError:)`（nonisolated 的
@@ -150,6 +159,8 @@ final class ModelDownloader: NSObject {
         onProgress: @escaping (Double) -> Void
     ) async throws {
         activeProgressHandler = onProgress
+        lastReportedProgress = -1
+        lastProgressReportTime = 0
         let resumeData = try? Data(contentsOf: resumeDataURL)
 
         let tmpURL: URL = try await withCheckedThrowingContinuation { continuation in
@@ -213,6 +224,20 @@ extension ModelDownloader: URLSessionDownloadDelegate {
     ) {
         guard totalBytesExpectedToWrite > 0 else { return }
         let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+
+        // 节流：变化 ≥0.5% 或距上次 ≥200ms 才转发一次；首尾两次（fraction 归零后的首次
+        // 回调、以及下载完成的 fraction==1）不节流，保证 UI 立即看到开始与结束（R3-09）。
+        let now = CFAbsoluteTimeGetCurrent()
+        let isEdge = fraction >= 1.0 || lastReportedProgress < 0
+        guard isEdge
+            || fraction - lastReportedProgress >= 0.005
+            || now - lastProgressReportTime >= 0.2
+        else {
+            return
+        }
+        lastReportedProgress = fraction
+        lastProgressReportTime = now
+
         Task { @MainActor in
             self.activeProgressHandler?(fraction)
         }

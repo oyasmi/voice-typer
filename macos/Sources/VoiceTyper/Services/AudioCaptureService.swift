@@ -5,6 +5,35 @@ private final class AudioConverterInputState: @unchecked Sendable {
     var hasProvidedInput = false
 }
 
+/// 纯逻辑的环形缓冲分帧器：累积样本 → 吐出定长 chunk，`drain()` 吐出剩余尾音。
+/// 与 AVAudioEngine/线程无关，可脱离真实麦克风单测（R3-18 覆盖缺口之一）。
+/// 调用方（`AudioCaptureService`）负责所有线程安全。
+struct AudioChunker {
+    let chunkSamples: Int
+    private var buffer: [Float] = []
+
+    init(chunkSamples: Int) {
+        self.chunkSamples = chunkSamples
+    }
+
+    /// 累积新样本，返回本次凑满的完整 chunk（可能为空、一个或多个）。
+    mutating func append(_ samples: [Float]) -> [[Float]] {
+        buffer.append(contentsOf: samples)
+        var chunks: [[Float]] = []
+        while buffer.count >= chunkSamples {
+            chunks.append(Array(buffer.prefix(chunkSamples)))
+            buffer.removeFirst(chunkSamples)
+        }
+        return chunks
+    }
+
+    /// 取走并清空当前缓冲区（不足一个完整 chunk 的尾音）。
+    mutating func drain() -> [Float] {
+        defer { buffer.removeAll() }
+        return buffer
+    }
+}
+
 /// 流式录音服务。
 ///
 /// 录音期间每凑满 `chunkSamples` 个 float32 样本就通过 `onChunk` 发出一帧；
@@ -33,23 +62,36 @@ final class AudioCaptureService: @unchecked Sendable {
         interleaved: false
     )!
 
+    /// `lock` 同时保护 `isRunning` 与 `chunker`：`append()`（音频线程）与 `stop()`（主线程）
+    /// 若不在同一把锁下原子地"判断 isRunning + 处理缓冲区"，会出现两类竞态（R3-01）：
+    /// (a) `stop()` 取走尾音之后，一个仍在途的 `append()` 才把新样本写进已被清空、此后
+    ///     再也不会被读取的缓冲区——那部分音频（通常是松键前最后几十毫秒）静默丢失；
+    /// (b) `onChunk`/`onTailChunk` 分别从音频线程与主线程独立发起，两者各自创建的
+    ///     `Task { @MainActor in ... }` 之间没有强制的先后关系，可能乱序执行。
+    /// 让 `deliveryQueue.async` 的入队动作也发生在同一把锁内，即可让"入队顺序"严格
+    /// 遵循锁定义的临界区顺序，从根上同时解决两个问题，见下方 `append`/`stop` 实现。
     private let lock = NSLock()
     private var converter: AVAudioConverter?
-    private var ringBuffer: [Float] = []
+    private var chunker: AudioChunker
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
     /// 转换/丢帧计数：只用于诊断，日志里只记数量，不记音频内容。
     private var droppedBufferCount = 0
 
+    /// 串行投递队列：`onChunk`/`onTailChunk` 统一从这里触发，而不是分别直接从音频线程
+    /// 和主线程调用，从而保证两者之间的相对顺序与 `lock` 临界区顺序一致（见上方注释）。
+    private let deliveryQueue = DispatchQueue(label: "com.voicetyper.app.audiocapture.delivery")
+
     init(chunkSamples: Int = 9600) {
         self.chunkSamples = chunkSamples
+        self.chunker = AudioChunker(chunkSamples: chunkSamples)
     }
 
     func start() throws {
         guard !isRunning else { return }
 
         lock.lock()
-        ringBuffer = []
+        chunker = AudioChunker(chunkSamples: chunkSamples)
         lock.unlock()
 
         let inputNode = engine.inputNode
@@ -109,41 +151,34 @@ final class AudioCaptureService: @unchecked Sendable {
 
     /// 停止录音，将剩余尾音通过 `onTailChunk` 发出。
     func stop() {
-        guard isRunning else { return }
+        lock.lock()
+        guard isRunning else { lock.unlock(); return }
+        isRunning = false
+        let tail = chunker.drain()
+        let tailHandler = onTailChunk
+        deliveryQueue.async { tailHandler?(tail) }
+        lock.unlock()
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        isRunning = false
         removeConfigurationChangeObserver()
         logDroppedBuffersIfAny()
-
-        lock.lock()
-        let tail = ringBuffer
-        ringBuffer = []
-        lock.unlock()
-
-        onTailChunk?(tail)
     }
 
     func stopWithoutResult() {
-        guard isRunning else { return }
+        lock.lock()
+        guard isRunning else { lock.unlock(); return }
+        isRunning = false
+        _ = chunker.drain()
+        lock.unlock()
+
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        isRunning = false
         removeConfigurationChangeObserver()
         logDroppedBuffersIfAny()
-        lock.lock()
-        ringBuffer = []
-        lock.unlock()
     }
 
     // MARK: - Private
-
-    private func recordDroppedBuffer() {
-        lock.lock()
-        droppedBufferCount += 1
-        lock.unlock()
-    }
 
     /// 只记计数与错误码，不含音频内容（AGENTS.md 日志约束）。
     private func logDroppedBuffersIfAny() {
@@ -157,7 +192,7 @@ final class AudioCaptureService: @unchecked Sendable {
 
     private func append(buffer: AVAudioPCMBuffer) {
         guard let converter else {
-            recordDroppedBuffer()
+            lock.lock(); droppedBufferCount += 1; lock.unlock()
             return
         }
 
@@ -168,7 +203,7 @@ final class AudioCaptureService: @unchecked Sendable {
             pcmFormat: targetFormat,
             frameCapacity: max(targetFrameCapacity, 1)
         ) else {
-            recordDroppedBuffer()
+            lock.lock(); droppedBufferCount += 1; lock.unlock()
             return
         }
 
@@ -186,13 +221,13 @@ final class AudioCaptureService: @unchecked Sendable {
 
         guard error == nil, status != .error,
               let channel = convertedBuffer.floatChannelData?.pointee else {
-            recordDroppedBuffer()
+            lock.lock(); droppedBufferCount += 1; lock.unlock()
             return
         }
 
         let newSamples = Array(UnsafeBufferPointer(start: channel, count: Int(convertedBuffer.frameLength)))
 
-        // 电平回调：在锁外计算 RMS 并发出，供 HUD 波形显示真实音量。
+        // 电平回调：不涉及 ringBuffer/顺序保证，保持原样直接在音频线程触发。
         if let onLevel, !newSamples.isEmpty {
             var sumSquares: Float = 0
             for sample in newSamples {
@@ -202,14 +237,20 @@ final class AudioCaptureService: @unchecked Sendable {
         }
 
         lock.lock()
-        ringBuffer.append(contentsOf: newSamples)
-        // 每凑满 chunkSamples 就取出一帧
-        while ringBuffer.count >= chunkSamples {
-            let chunk = Array(ringBuffer.prefix(chunkSamples))
-            ringBuffer.removeFirst(chunkSamples)
+        guard isRunning else {
+            // stop() 已经把 isRunning 置 false 并取走尾音：这批样本必然是"迟到"的，
+            // 若仍写进 chunker 会成为永远不会被 flush 的孤儿数据（R3-01 场景 a）。
+            droppedBufferCount += 1
             lock.unlock()
-            onChunk?(chunk)
-            lock.lock()
+            return
+        }
+        let chunks = chunker.append(newSamples)
+        if !chunks.isEmpty {
+            let handler = onChunk
+            // 入队动作必须在锁内完成，才能保证与 stop() 那侧的入队顺序一致（见类注释）。
+            for chunk in chunks {
+                deliveryQueue.async { handler?(chunk) }
+            }
         }
         lock.unlock()
     }

@@ -120,7 +120,7 @@ final class SettingsViewModelTests: XCTestCase {
         vm.llmBaseURL = "https://stub.invalid/v1"
         vm.onTestLLMCorrection = { _, _ in
             try? await Task.sleep(nanoseconds: 20_000_000)
-            return true
+            return .success("修正后的文本")
         }
 
         vm.testLLMCorrection()
@@ -132,6 +132,27 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.recognitionBusy, "测试校对异步任务未在预期时间内完成")
         XCTAssertTrue(vm.recognitionMessage.hasPrefix("校对测试成功"))
         XCTAssertTrue(vm.recognitionMessage.contains("耗时 "))
+    }
+
+    /// R3-13 回归：失败必须展示真实错误原因，而不是笼统的"未通过"——网络不通与
+    /// "模型认为无需修改"此前会被误判成同一个结果。
+    func testCorrectionTestFailureShowsRealErrorMessage() async {
+        let vm = SettingsViewModel()
+        vm.llmEnabled = true
+        vm.llmBaseURL = "https://stub.invalid/v1"
+        vm.onTestLLMCorrection = { _, _ in
+            .failure(SimpleMessageError(message: "LLM API 错误 (401)"))
+        }
+
+        vm.testLLMCorrection()
+        let deadline = Date().addingTimeInterval(1)
+        while vm.recognitionBusy && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        XCTAssertTrue(vm.recognitionMessage.hasPrefix("校对测试失败"))
+        XCTAssertTrue(vm.recognitionMessage.contains("LLM API 错误 (401)"))
+        XCTAssertEqual(vm.recognitionMessageKind, .error)
     }
 }
 

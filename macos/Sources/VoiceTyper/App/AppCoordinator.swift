@@ -41,6 +41,10 @@ final class AppCoordinator {
     private var modelDownloadProgress = 0.0
     private var modelDownloadError: String?
     private var automaticModelDownloadPolicy = AutomaticModelDownloadPolicy()
+    /// 听写流程内的一次性错误（识别失败/插入失败/焦点变化）超时自愈到 `.idle`。
+    /// HUD 早已在 2.5s 后自动隐藏该提示（`RecordingHUDController.showError`），但此前
+    /// 菜单栏状态没有对应的回落，会一直停留在红色错误态直到下一次听写（R3-04）。
+    private var dictationErrorRecoveryWorkItem: DispatchWorkItem?
 
     func start() {
         bindStatusBarActions()
@@ -148,7 +152,7 @@ final class AppCoordinator {
                 Task { await self.asrService.reload() }
             }
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
-                await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? false
+                await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? .failure(SimpleMessageError(message: "应用未就绪"))
             }
             controller.loadWindow()
             setupWindowController = controller
@@ -190,6 +194,45 @@ final class AppCoordinator {
         asrService.state == .ready || asrService.state == .suspendedForIdle
     }
 
+    /// 纯函数：只依据已知信息决定"应该进入的状态"，不产生任何副作用。从
+    /// `reevaluateReadiness()` 里拆出来是为了可单测（不需要构造 `AppCoordinator` 的全部
+    /// 依赖），并让"决定状态"与"执行副作用"两件事在代码里分开——此前二者揉在一起，
+    /// 每次任何触发点（下载进度、空闲卸载、权限变化…）调用这个函数都会无条件重跑一遍
+    /// 全部副作用，这正是 R3-02 那类重入 bug 的滋生土壤（R3-12）。
+    ///
+    /// `previous` 只在 `.ready`/`.suspendedForIdle` 分支起作用：正在进行中的听写
+    /// （`.recording`/`.recognizing`/`.inserting`）不应被模型状态变化覆盖回 `.idle`。
+    static func computeTargetState(
+        permissions: PermissionSnapshot,
+        isPaused: Bool,
+        isDownloadingModel: Bool,
+        downloadProgress: Double,
+        asrState: ASRService.State,
+        previous: AppState
+    ) -> AppState {
+        if isPaused { return .paused }
+        guard permissions.allRequiredGranted else { return .setupRequired }
+        if isDownloadingModel { return .downloadingModel(downloadProgress) }
+
+        switch asrState {
+        case .unloaded, .loading:
+            return .modelLoading
+        case .modelMissing:
+            return .modelMissing
+        case .failed(let message):
+            return .error("模型加载失败: \(message)")
+        case .ready, .suspendedForIdle:
+            // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
+            // 由 makeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
+            switch previous {
+            case .recording, .recognizing, .inserting:
+                return previous
+            default:
+                return .idle
+            }
+        }
+    }
+
     /// 重新评估权限与模型就绪状态，并驱动状态机。
     ///
     /// - 权限缺失：必须用户介入，强制弹出设置窗口（权限页）。
@@ -206,46 +249,33 @@ final class AppCoordinator {
             startModelDownload()
         }
 
-        guard !isPaused else {
-            currentState = .paused
-            updateStatusUI()
-            return
-        }
-
         permissions = permissionCenter.snapshot()
 
-        guard permissions.allRequiredGranted else {
-            currentState = .setupRequired
+        let target = Self.computeTargetState(
+            permissions: permissions,
+            isPaused: isPaused,
+            isDownloadingModel: isDownloadingModel,
+            downloadProgress: modelDownloadProgress,
+            asrState: asrService.state,
+            previous: currentState
+        )
+        currentState = target
+
+        switch target {
+        case .setupRequired:
             voiceTyperController?.stop()
             recordingHUDController?.hideHUD()
             setupControllerIfNeeded(forceShow: true, preferredTab: .permissions)
-            syncSetupWindow()
-            updateStatusUI()
-            return
-        }
-
-        if isDownloadingModel {
-            currentState = .downloadingModel(modelDownloadProgress)
-            syncSetupWindow()
-            updateStatusUI()
-            return
-        }
-
-        switch asrService.state {
-        case .unloaded:
-            Task { await asrService.preload() }
-            currentState = .modelLoading
-        case .loading:
-            currentState = .modelLoading
         case .modelMissing:
-            currentState = .modelMissing
             setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
-        case .failed(let message):
-            currentState = .error("模型加载失败: \(message)")
-        case .ready, .suspendedForIdle:
-            // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
-            // 由 makeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
+        case .modelLoading:
+            if asrService.state == .unloaded {
+                Task { await asrService.preload() }
+            }
+        case .idle, .recording, .recognizing, .inserting:
             activateReadyState()
+        default:
+            break
         }
 
         syncSetupWindow()
@@ -344,9 +374,11 @@ final class AppCoordinator {
         syncSetupWindow()
     }
 
-    private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Bool {
+    /// 返回 `.success` 时携带模型的真实校对结果，`.failure` 时携带真实错误描述
+    /// （401 / 超时 / 网络不通…），而不是把"网络不通"与"模型认为无需修改"混为一谈（R3-13）。
+    private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Result<String, SimpleMessageError> {
         guard let chatURL = LLMEndpoint.chatCompletionsURL(from: llmConfig.baseURL) else {
-            return false
+            return .failure(SimpleMessageError(message: "Base URL 无法解析为合法请求地址"))
         }
         let corrector = LLMCorrector(config: LLMCorrector.Config(
             chatCompletionsURL: chatURL,
@@ -357,8 +389,12 @@ final class AppCoordinator {
             timeout: llmConfig.timeout
         ))
         let sample = "呃，这个功能和并之后应该可以用了吧"
-        let result = await corrector.correct(sample)
-        return result != sample && !result.isEmpty
+        do {
+            let corrected = try await corrector.test(sample)
+            return .success(corrected)
+        } catch {
+            return .failure(SimpleMessageError(message: error.localizedDescription))
+        }
     }
 
     // MARK: - 事件绑定
@@ -370,6 +406,7 @@ final class AppCoordinator {
             self.currentState = state
             switch state {
             case .recording:
+                self.dictationErrorRecoveryWorkItem?.cancel()
                 self.recordingHUDController?.showHUD()
             case .recognizing:
                 self.recordingHUDController?.setRecognizing()
@@ -377,7 +414,9 @@ final class AppCoordinator {
                 break
             case .error(let message):
                 self.recordingHUDController?.showError(message)
+                self.scheduleDictationErrorRecovery()
             case .idle:
+                self.dictationErrorRecoveryWorkItem?.cancel()
                 if previous == .inserting {
                     self.recordingHUDController?.showSuccess()
                 } else {
@@ -411,6 +450,19 @@ final class AppCoordinator {
         voiceTyperController?.onRecognizedText = { text in
             AppLog.app.info("识别完成 chars=\(text.count, privacy: .public)")
         }
+    }
+
+    /// 与 `RecordingHUDController.showError` 的自动隐藏时长（2.5s）保持一致，让菜单栏
+    /// 状态与 HUD 同步回落，而不是一直停在红色错误态直到下一次听写（R3-04）。
+    private func scheduleDictationErrorRecovery() {
+        dictationErrorRecoveryWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, case .error = self.currentState else { return }
+            self.currentState = .idle
+            self.updateStatusUI()
+        }
+        dictationErrorRecoveryWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: item)
     }
 
     private func updateStatusUI() {

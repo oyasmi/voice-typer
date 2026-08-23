@@ -133,14 +133,6 @@ final class RecordingHUDController: NSWindowController {
         }
     }
 
-    /// 清空预览文本（final 上屏后调用），立即收起。
-    func clearPreview() {
-        previewLabel.stringValue = displayText(for: "")
-        cancelCollapse()
-        updateHudWidth(for: "", animated: true)
-        setExpanded(false)
-    }
-
     /// 切换到"识别中"状态（松键后等待 final）。
     func setRecognizing() {
         cancelTransientHide()
@@ -319,8 +311,11 @@ final class RecordingHUDController: NSWindowController {
         let visible = screen.visibleFrame
         let availableWidth = max(180, visible.width - Self.screenMargin * 2)
         let maximumWidth = min(visible.width * Self.maximumScreenWidthRatio, availableWidth)
-        let defaultWidth = maximumWidth
-        let width = min(max(requestedWidth, defaultWidth), maximumWidth)
+        // 曾经这里写成 `let defaultWidth = maximumWidth`，导致 `min(max(requested, defaultWidth),
+        // maximumWidth)` 恒等于 maximumWidth——HUD 宽度实际上永远等于屏幕宽的 50%，
+        // `targetHudWidth(for:)` 按预览文本测宽的结果被完全忽略（R3-11）。这里改回真正的
+        // "默认宽度起步，随文本增长，封顶屏幕宽度一半"。
+        let width = min(max(requestedWidth, Self.defaultHudWidth), maximumWidth)
         let centeredX = visible.midX - width / 2
         let minX = visible.minX + Self.screenMargin
         let maxX = visible.maxX - Self.screenMargin - width

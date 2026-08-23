@@ -66,7 +66,11 @@ app_target.build_configurations.each do |config|
   settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
   settings['MARKETING_VERSION'] = '3.1.6'
   settings['CURRENT_PROJECT_VERSION'] = '1'
-  settings['ENABLE_HARDENED_RUNTIME'] = 'NO'
+  # 强化运行时是被 notarytool 公证接受的前提条件（见 macos/README.md「签名与公证」）。
+  # 与是否使用 Developer ID 签名无关：即使沿用默认的 ad-hoc 本机签名，Xcode 也允许打开
+  # 这个开关，只是 ad-hoc 产物本来就无法通过公证——打开它不影响本机开发/测试流程（R3-16）。
+  settings['ENABLE_HARDENED_RUNTIME'] = 'YES'
+  settings['CODE_SIGN_ENTITLEMENTS'] = 'Resources/VoiceTyper.entitlements'
   # 只出 arm64：见 macos/DESIGN.md 决策记录 D2。
   settings['ARCHS'] = 'arm64'
   settings['ONLY_ACTIVE_ARCH'] = 'NO'
@@ -105,11 +109,16 @@ end
 info_plist_ref = resources_group.new_file('Resources/Info.plist')
 info_plist_ref.include_in_index = '0'
 
+# 与 Info.plist 同理：entitlements 只通过 CODE_SIGN_ENTITLEMENTS 构建设置在签名期被
+# codesign 读取，不应该被拷进 Contents/Resources 里（R3-16）。
+entitlements_ref = resources_group.new_file('Resources/VoiceTyper.entitlements')
+entitlements_ref.include_in_index = '0'
+
 Dir.glob(File.join(ROOT, 'Resources/*')).sort.each do |absolute_path|
   next if File.directory?(absolute_path)
 
   relative_path = Pathname.new(absolute_path).relative_path_from(Pathname.new(ROOT)).to_s
-  next if relative_path == 'Resources/Info.plist'
+  next if %w[Resources/Info.plist Resources/VoiceTyper.entitlements].include?(relative_path)
 
   file_name = File.basename(relative_path)
   file_ref = resources_group.files.find { |ref| ref.path == file_name }

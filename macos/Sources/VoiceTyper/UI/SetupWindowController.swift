@@ -39,7 +39,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onStartModelDownload: (() -> Void)?
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
-    var onTestLLMCorrection: ((LLMConfig, String) async -> Bool)?
+    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<String, SimpleMessageError>)?
 
     private let viewModel = SettingsViewModel()
     private let tabController = NSTabViewController()
@@ -147,7 +147,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.onCancelModelDownload = { [weak self] in self?.onCancelModelDownload?() }
         viewModel.onReloadModel = { [weak self] in self?.onReloadModel?() }
         viewModel.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
-            await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? false
+            await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? .failure(SimpleMessageError(message: "内部错误：测试通道不可用"))
         }
         viewModel.onToggleLaunchAtLogin = { [weak viewModel] enabled in
             do {

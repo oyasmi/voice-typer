@@ -67,6 +67,13 @@ actor LLMCorrector {
         }
     }
 
+    /// 供设置页「测试校对」按钮使用：与 `correct` 不同，失败时把具体错误抛出而不是回落
+    /// 原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，而不是笼统的"未通过"，
+    /// 否则"网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
+    func test(_ text: String) async throws -> String {
+        try await correctOrThrow(text)
+    }
+
     private func correctOrThrow(_ text: String) async throws -> String {
         // 校对输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         // 中文大致 1 字 ≈ 1~2 token，留足冗余。

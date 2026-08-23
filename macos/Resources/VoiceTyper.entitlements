@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	刻意不加任何强化运行时例外（allow-jit / allow-unsigned-executable-memory /
+	disable-library-validation）：onnxruntime.framework 在打包时会被 build_xcode.sh
+	用与主程序相同的签名身份重新签名，CPU 执行提供程序不需要运行时代码生成，因此不应该
+	需要这些例外。若未来升级 ONNX Runtime 版本后在强化运行时下崩溃，先确认崩溃报告里的
+	具体异常码，再按需添加对应的最小例外——不要为了让崩溃消失就无差别打开一堆例外，
+	那样会削弱强化运行时本该提供的保护（R3-16）。
+	-->
+</dict>
+</plist>

@@ -19,9 +19,12 @@ final class RecognitionBuffer: @unchecked Sendable {
 
     private let engine: any SenseVoiceRecognizing
     private let lock = NSLock()
-    private var chunks: [[Float]] = []
-    private var n = 0
-    private var joined: [Float]?
+    /// 单条扁平缓冲：旧实现是 `chunks: [[Float]]` + `joined` 缓存，`append` 每次都会让
+    /// `joined` 失效——预览节奏固定在 ~600ms 一次，但每次都要把**全部**已累积音频重新
+    /// 拼接一遍，是一个和总录音时长成正比的隐藏开销（DESIGN.md 的稳态 CPU 估算没有
+    /// 把它算进去）。改成单条持续追加的扁平数组后，`append` 退化成 O(chunk 大小) 的
+    /// 均摊操作，不再有这个隐藏的 O(N) 重拼接（R3-08）。
+    private var samples: [Float] = []
 
     /// 窗口左侧已固化的预览文本；只在 asrQueue 上读写。
     private var committedText = ""
@@ -35,22 +38,20 @@ final class RecognitionBuffer: @unchecked Sendable {
     var sampleCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return n
+        return samples.count
     }
 
     /// 累积音频。必须足够便宜——可能跑在音频采集的回调路径上。
     func append(_ chunk: [Float]) {
         guard !chunk.isEmpty else { return }
         lock.lock()
-        chunks.append(chunk)
-        n += chunk.count
-        joined = nil
+        samples.append(contentsOf: chunk)
         lock.unlock()
     }
 
     /// 返回全量预览文本 = 已固化前缀 + 当前窗口的识别结果。只应在 asrQueue 上调用。
     func preview() throws -> String {
-        let audio = audioBuffer()
+        let audio = audioSnapshot()
         if audio.count - committedN > Self.previewWindowSamples {
             try roll(audio)
         }
@@ -62,7 +63,7 @@ final class RecognitionBuffer: @unchecked Sendable {
     /// 窗口边界处的固化文本可能有接缝瑕疵，finalize 产出的是要上屏的最终文本，
     /// 必须整段重跑。只应在 asrQueue 上调用。
     func finalize() throws -> String {
-        try engine.recognize(audioBuffer())
+        try engine.recognize(audioSnapshot())
     }
 
     /// 把窗口前半段识别成文本固化，之后的预览不再重复识别这段音频。
@@ -100,21 +101,11 @@ final class RecognitionBuffer: @unchecked Sendable {
         return lo + bestOffset
     }
 
-    private func audioBuffer() -> [Float] {
+    /// 返回当前已累积音频的一份值语义快照。得益于 Swift Array 的写时复制，只要期间没有
+    /// 新的 `append` 与这份快照的生命周期重叠，就不会发生真正的内存拷贝。
+    private func audioSnapshot() -> [Float] {
         lock.lock()
-        if let joined {
-            lock.unlock()
-            return joined
-        }
-        guard !chunks.isEmpty else {
-            lock.unlock()
-            return []
-        }
-        var flat = [Float]()
-        flat.reserveCapacity(n)
-        for chunk in chunks { flat.append(contentsOf: chunk) }
-        joined = flat
-        lock.unlock()
-        return flat
+        defer { lock.unlock() }
+        return samples
     }
 }

@@ -1,5 +1,12 @@
 import Foundation
 
+/// 「测试校对」等只需要展示一句错误文案、不需要区分具体错误类型的场景使用（R3-13）：
+/// `Result` 的 Failure 类型必须遵循 `Error`，纯 `String` 不满足，故用这个最简包装。
+struct SimpleMessageError: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 /// 把用户填写的 LLM Base URL 结构化解析为最终请求地址，供设置页校验与
 /// `LLMCorrector` 复用同一份规则，避免非法输入在请求期才触发强制解包崩溃（F-03）。
 enum LLMEndpoint {

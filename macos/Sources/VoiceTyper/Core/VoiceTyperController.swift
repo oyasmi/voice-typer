@@ -181,6 +181,14 @@ final class VoiceTyperController {
         onPreviewWarning?("输入设备已变化，本次录音已结束")
     }
 
+    /// 会话达到单段录音上限：不能任由用户继续说下去而内容被静默丢弃，主动走一次与
+    /// 松键完全相同的收尾路径——`audioCaptureService.stop()` 会触发 `onTailChunk`，
+    /// 把已录到的内容正常推进到 `.recognizing` 并 finalize 上屏（R3-03）。
+    private func handleSessionCapped() {
+        guard active?.phase == .recording else { return }
+        audioCaptureService.stop()
+    }
+
     // MARK: - 识别路径
 
     private func beginDictationSession() {
@@ -208,6 +216,10 @@ final class VoiceTyperController {
             // 具体识别异常已由 LocalASRSession 在产生错误的位置记录；控制器只负责
             // 把错误转换为统一的会话收尾状态，避免同一故障重复写入系统日志。
             self?.finish(.failed(message))
+        }
+
+        session.onSessionCapped = { [weak self] in
+            self?.handleSessionCapped()
         }
 
         audioCaptureService.onChunk = { [weak session] samples in

@@ -28,6 +28,13 @@ final class TextInsertionService {
     /// 本身就不完整——这种规模直接放弃 AX，走粘贴更可靠。
     private static let maxAXValueLengthForFullReplace = 100_000
 
+    /// 社区约定（Paste / Maccy / CleanClipboard 等剪贴板历史工具遵循）：带有这两个类型的
+    /// 剪贴板内容会被直接跳过，不计入历史。听写内容本应"用完即走"，若不标记，走粘贴兜底路径
+    /// 的每一段识别文本都会被这类工具在恢复前的 1 秒窗口内永久留档，与"音频仅在设备端处理"
+    /// 的隐私承诺相悖（R3-15）。
+    private static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+
     private let pasteboard = NSPasteboard.general
     private var pendingRestoreTask: Task<Void, Never>?
 
@@ -50,7 +57,18 @@ final class TextInsertionService {
         pendingRestoreTask?.cancel()
         pendingRestoreTask = nil
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        _ = writeConcealedString(text)
+    }
+
+    /// 写入一份带 concealed/transient 标记的纯文本。`writeObjects` 会先清空当前内容再写入，
+    /// 调用方需自行决定是否需要保留原有 pasteboard 内容（此处不清空，交给调用方处理）。
+    @discardableResult
+    private func writeConcealedString(_ text: String) -> Bool {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: Self.concealedType)
+        item.setData(Data(), forType: Self.transientType)
+        return pasteboard.writeObjects([item])
     }
 
     private func insertUsingAccessibility(text: String) -> Bool {
@@ -153,7 +171,7 @@ final class TextInsertionService {
 
         let backup = snapshotPasteboard()
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
+        guard writeConcealedString(text) else {
             // 剪贴板已被 clearContents() 清空，必须先恢复用户原内容，
             // 否则失败之余还会把用户原剪贴板永久丢失（F-10）。
             restorePasteboardContentsUnconditionally(backup)

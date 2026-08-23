@@ -32,6 +32,11 @@ final class LocalASRSession {
     var onFinal: ((String) -> Void)?
     var onWarning: ((String) -> Void)?
     var onError: ((String) -> Void)?
+    /// 达到单段录音上限时触发一次：只发 `onWarning` 无法让用户知道后续说的话已经不会被
+    /// 录入（HUD 的警告闪烁只持续 1.2s，随后恢复"录音中"，用户完全无法察觉自己在对着一个
+    /// 已停止收音的会话继续说话）。调用方应据此立即结束本次录音、把已录到的内容正常上屏，
+    /// 而不是任由用户继续说下去、内容却被静默丢弃（R3-03）。
+    var onSessionCapped: (() -> Void)?
 
     /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
     /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
@@ -77,7 +82,8 @@ final class LocalASRSession {
         if buffer.sampleCount >= Self.maxSessionSamples {
             if !capped {
                 capped = true
-                onWarning?("录音已达 \(Self.maxSessionSamples / 16000) 秒上限，后续音频不再录入")
+                onWarning?("录音已达 \(Self.maxSessionSamples / 16000) 秒上限，自动结束本次听写")
+                onSessionCapped?()
             }
             return
         }
