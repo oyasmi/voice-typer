@@ -115,7 +115,7 @@ final class AppCoordinator {
                 self?.permissionCenter.openSystemSettings(for: kind)
             }
             controller.onRetryReadinessCheck = { [weak self] in
-                Task { await self?.reevaluateReadiness() }
+                Task { await self?.refreshPermissionsWithoutStealingFocus() }
             }
             controller.onSaveConfig = { [weak self] updatedConfig in
                 guard let self else { return }
@@ -230,6 +230,22 @@ final class AppCoordinator {
             default:
                 return .idle
             }
+        }
+    }
+
+    /// 权限页轮询、以及页面上的「重新检测」按钮共用的入口：只重新探测权限状态、刷新界面
+    /// 上的勾选显示，不触发 `reevaluateReadiness()` 里"权限未齐全就 `NSApp.activate` + 置顶
+    /// 设置窗口"的副作用。那条副作用是为"首次检测到缺权限，弹窗引导用户"设计的——用在
+    /// 每 2 秒一次的后台轮询上，会导致用户正在系统设置里勾选权限时，本窗口每 2 秒抢一次
+    /// 焦点、盖到系统设置上面，实际操作系统设置的窗口变得几乎不可用（R4-14）。
+    ///
+    /// 只有权限已经**全部**授权时才转交给完整的 `reevaluateReadiness()`：那种情况下它会
+    /// 正常收起设置窗、把控制器切到就绪态，是用户期望看到的收尾，不属于"抢焦点"。
+    private func refreshPermissionsWithoutStealingFocus() async {
+        permissions = permissionCenter.snapshot()
+        syncSetupWindow()
+        if permissions.allRequiredGranted {
+            await reevaluateReadiness()
         }
     }
 
