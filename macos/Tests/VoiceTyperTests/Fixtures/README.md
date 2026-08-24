@@ -10,7 +10,9 @@
 - sha256: `e3f176a582cdff3ac30e3b1fb4dd4abc9b6737060533351589f51d9cfdd56b96`
 - `speech_zh_en_mixed.reference.txt` 由 `scripts/dump_reference_fixtures.py` 用
   `client-server/server/` 的 Python 识别链路对本文件跑出的参考识别文本生成，
-  Swift 侧 `EndToEndRecognitionTests` 据此逐字比对。
+  Swift 侧 `EndToEndRecognitionTests` 据此比对。验收标准是**编辑距离 ≤ 2** 而非逐字相等：
+  Python 与 macOS 用的是两套独立编译的 ONNX Runtime 二进制，个别模棱两可的 token 可能因
+  浮点求和顺序不同而翻转（详见 `macos/DESIGN.md` §8 的实测结论）。
 
 ## fbank_input.f32 / fbank_reference.f32 / lfrcmvn_reference.f32 / fbank_parity_shapes.json
 

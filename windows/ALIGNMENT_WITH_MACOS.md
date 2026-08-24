@@ -6,6 +6,20 @@
 > （`d572f86` → `5ac5aab`，四轮架构评审 R2/R3/R4 系列 + 三轮 UI/首启体验优化），
 > 这些修复绝大多数是**平台无关的逻辑缺陷**，Windows 侧原样存在。本文逐条盘点差异、
 > 给出 Windows 侧的适配改法与验证方式。
+>
+> **状态（2026-08-24 更新）**：上述差异已随 commit `3b1d975` 完成**代码层面**的拉齐，
+> Windows 随之发布 3.1.0。阅读时请注意：
+>
+> - 正文保留撰写时的方案口吻（"改法 / 预估 / 建议"），实际实现以仓库代码为准；个别条目与
+>   方案存在偏差，例如 W-15 的权限轮询间隔方案写 2s、实现取 4s（理由见 `DESIGN.md` §13.2）。
+> - §8 测试补强清单中已落地：`AppConfigValidationTests`、`LlmEndpointTests`、
+>   `AudioChunkerTests`（新增），以及 `LlmCorrectorTests`、`FbankParityTests` 的扩充；
+>   `LocalAsrSessionTests`、`AsrServiceTests`、`ModelDownloaderTests`、
+>   `VoiceTyperControllerTests`、`LfrCmvnTests` **尚未创建**（其中会话层与加载互斥的行为
+>   已在实现对齐，仅缺对应测试，见 `windows/DESIGN.md` §8 的待补清单）。
+> - §10 手工验证清单 13 条都需要真实 Windows 设备，截至本文更新**一条都未执行**——
+>   项目尚未在真机上编译运行过（见根 README「Windows」一节与 `windows/DESIGN.md`
+>   顶部状态框）。
 
 ---
 

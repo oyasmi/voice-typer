@@ -58,7 +58,7 @@
 | --- | --- |
 | 系统 | macOS 14.0 (Sonoma) 或更高 |
 | 架构 | **仅 Apple Silicon**（M 系列芯片） |
-| 磁盘 | 约 250MB（App 本体 + 首次下载的模型） |
+| 磁盘 | 约 300MB（App 本体 + 首次下载的模型，留有余量） |
 | 网络 | 仅首次启动下载模型时需要；此后完全离线 |
 | Xcode | 仅自行构建时需要 |
 
@@ -296,13 +296,25 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 
 | 测试 | 内容 |
 | --- | --- |
-| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3） |
+| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3），含全零输入的对数下限回归 |
 | `EndToEndRecognitionTests` | 完整识别链路对真实语音样本的验收（编辑距离容忍度，见下方说明） |
+| `LFRCMVNTests` | LFR 尾帧补齐分支与 CMVN 逐元素仿射的结构校验（纯逻辑，不需要模型） |
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） |
+| `AudioChunkerTests` | 音频定长分帧、跨调用累积余量、尾音刷出（纯逻辑，不依赖麦克风） |
+| `LocalASRSessionTests` | 会话层行为：预览重入跳过、finalize 看门狗、120 秒上限一次性告警并触发收尾、close 后抑制迟到回调 |
+| `ASRServiceTests` | 引擎加载互斥、空闲卸载不反向触发自动预加载、加载期间的语言变更重放到新引擎 |
+| `VoiceTyperControllerTests` | 状态机行为：识别中重叠按键拒绝而非覆盖、Esc 取消、设备变化后仍正常收尾、短录音丢弃等 |
+| `AppCoordinatorReadinessTests` | 就绪编排的状态优先级（暂停 > 权限缺失 > 模型下载 > 引擎状态） |
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
+| `ConfigMigratorTests` | 老配置迁移只继承 hotkey 与 HUD 不透明度 |
+| `AppConfigTests` | 配置校验：越界夹逼、NaN/Inf 重置、非 fn 裸键回落默认热键 |
 | `LLMCorrectorTests` | 校对客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） |
-| `ModelDownloaderTests` | sha256 校验、文件清单自洽性 |
+| `LLMEndpointTests` | 校对 Base URL 的结构化解析（scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重） |
+| `ModelDownloaderTests` | sha256 校验、文件清单自洽性、下载顺序与单次自动触发策略 |
+| `TextInsertionServiceTests` | AX 插入范围合法性判定（负值、越界、溢出一律拒绝） |
+
+除前两组金标准测试外，其余都是纯逻辑单元测试，不需要模型或网络。
 
 `FbankParityTests` / `EndToEndRecognitionTests` 依赖本机已有模型（`ModelLocator` 任一优先级命中
 即可），缺失时自动 `XCTSkip`。夹具由 `scripts/dump_reference_fixtures.py` 生成（需要 `client-server/server/`
@@ -318,8 +330,8 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 ## 日志与排障
 
 日志走统一日志系统（`os.Logger`），不落地为独立的 `.log` 文件，subsystem 为
-`com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `network` / `asr` / `llm` /
-`model` / `input` 几个 category。
+`com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `asr` / `llm` /
+`model` 几个 category。
 
 **命令行**（`log` 是系统自带工具）：
 

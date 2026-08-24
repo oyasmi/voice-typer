@@ -9,6 +9,14 @@
 > ModelScope 端点、托管 API 表面、金标准夹具）；标注「⚠️ 估算」的是从 macOS/M4 实测数据外推的，
 > **必须在 P0 阶段用真实 Windows 硬件复测**——本次调研环境是 macOS，无 .NET SDK、无 Windows 机器，
 > 无法编译也无法跑分。凡是与性能、内存、产物体积相关的数字，都属于后者。
+>
+> **当前状态（2026-08，v3.1.0）**：本文 P1–P8 描述的工程已全部编码完成并合入仓库
+> （测试文件以 §8 更新后的清单为准），[`ALIGNMENT_WITH_MACOS.md`](ALIGNMENT_WITH_MACOS.md)
+> 盘点的 35 项差异也已完成代码层面的拉齐。但截至本文更新时：① 尚未在真实 Windows 设备上完成
+> 编译、安装与运行验证（见根 README「Windows」一节），`dotnet build` / `dotnet test` 也尚无
+> 在任何环境跑通的记录；② §4.5 的全部性能/内存数字仍是外推估算；③ 需真机验证的具体清单见 §13.2 与
+> `ALIGNMENT_WITH_MACOS.md` §10。下文保留撰写时的调研口吻与 ✅/⚠️ 标注，作为决策依据的
+> 历史记录；当前事实以上述状态为准。
 
 ---
 
@@ -39,7 +47,7 @@
 | 项目 | 产品名 | 配置目录 | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_windows_native/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `%APPDATA%\voice_typer\`（**不变**） | 3.0.0（**不变**） |
-| `windows/`（新，主分发版本） | **`VoiceTyper`** | **`%APPDATA%\VoiceTyper\`** | **3.0.0**（与 `macos/` 对齐，见 D3） |
+| `windows/`（新，主分发版本） | **`VoiceTyper`** | **`%APPDATA%\VoiceTyper\`** | **3.1.0**（3.0.0 首发；3.1.0 完成向 macOS 3.1.9 的行为对齐，见 §13 与 D3） |
 
 > 与 macOS 同构：老客户端改名让位，新一体化 App 接管 `VoiceTyper` 这个名字。
 > Windows 上没有 Bundle ID / TCC 那套以标识符为键的权限体系，改名的代价比 macOS 更低——
@@ -331,8 +339,8 @@ finalize 完全不受影响。这是优雅降级，不是故障。
 - 用户可在设置里覆盖（进阶项）。
 
 **内存**：⚠️ 估算与 macOS 同量级（~500MB）。Windows 的差别在于**用户更容易看见**——
-任务管理器就在那儿。除了沿用「空闲 N 分钟卸载」（Windows 默认建议 **5 分钟**，比 macOS 的 10 更激进，
-因为 Windows 用户对常驻内存更敏感），再加一个 Windows 原生动作：
+任务管理器就在那儿。除了沿用「空闲 N 分钟卸载」（默认值曾按更激进的 5 分钟设计，3.1.0 起与
+macOS 统一为 **10 分钟**，见 D13——此前的分歧没有实测支撑的理由），再加一个 Windows 原生动作：
 卸载 engine 后调用 `SetProcessWorkingSetSize(hProcess, -1, -1)` 把工作集真正还给系统，
 否则任务管理器里的数字要等系统内存压力才会降下来。~10 行 P/Invoke。
 
@@ -381,12 +389,12 @@ windows/
 ├── Llm/            LlmCorrector
 ├── Services/       HotkeyService, AudioCaptureService, TextInsertionService
 ├── UI/             TrayController, RecordingHud,
-│                   SetupForm{,.Recognition,.Hotkey,.General} (partial class 拆页)
+│                   SetupForm（单文件；按 Tab 拆 partial class 的规划见 §5.6，尚未实施）
 ├── Support/        Constants, AppLog, NativeMethods, UiDispatcher, StartupRegistration
-└── Tests/VoiceTyper.Tests/            # xUnit
-        FbankParityTests, TextPostprocessorTests, RecognitionBufferTests,
-        ConfigStoreTests, LlmCorrectorTests, ModelDownloaderTests,
-        EndToEndRecognitionTests
+└── Tests/VoiceTyper.Tests/            # xUnit（9 个文件，实际清单见 §8）
+        FftTests, FbankParityTests, TextPostprocessorTests, RecognitionBufferTests,
+        ConfigStoreTests, AppConfigValidationTests, LlmCorrectorTests,
+        LlmEndpointTests, AudioChunkerTests
 ```
 
 **关于与 `client-server/client_windows_native/` 的代码重复**：约 1,500 行会被复制一份。
@@ -441,7 +449,7 @@ sealed class AsrService {                      // 所有公共方法在 UI 线�
     public void SessionEnded();                // 重新安排空闲卸载计时
 }
 ```
-持有 `AsrPump`。**空闲卸载**：`asr.idle_unload_minutes`（Windows 默认 5，0=永不），
+持有 `AsrPump`。**空闲卸载**：`asr.idle_unload_minutes`（默认 10，与 macOS 一致，0=永不），
 用 `System.Windows.Forms.Timer`（UI 线程，与状态机同域）。卸载时 `engine.Dispose()` +
 `SetProcessWorkingSetSize(-1,-1)`。`MakeSession()` 发现未加载时**异步重新加载并与录音并行**。
 
@@ -532,7 +540,7 @@ system prompt 从 `Resources/correction.md` 读（**与 macOS 同一份文件，
 **首次启动一次性迁移**（`ConfigMigrator`）：若新路径无配置而 `%APPDATA%\voice_typer\config.yaml`
 存在，则继承其中的 `hotkey` 与 `ui.opacity`，`server` 段丢弃。老用户换过来热键不用重设。
 
-**新 schema**（与 macOS 同构，仅 `preview_window` 与默认 `idle_unload_minutes` 不同）：
+**新 schema**（与 macOS 同构，仅 `preview_window` 为 Windows 独有字段；各默认值自 3.1.0 起与 macOS 一致）：
 
 ```yaml
 asr:
@@ -540,7 +548,7 @@ asr:
   threads: 0                # 0 = 自动（min(4, 核数)）
   model_dir: ""             # 留空 = 按 ModelLocator 优先级自动定位
   preview_window: 0         # 秒；0 = 首次加载后按实测 RTF 自动校准（§4.5）
-  idle_unload_minutes: 5    # 0 = 常驻不卸载
+  idle_unload_minutes: 10   # 0 = 常驻不卸载（与 macOS 一致）
 llm:
   enabled: false
   base_url: ""
@@ -606,8 +614,9 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 | 权限 | 麦克风可用性检测 +「打开 Windows 隐私设置」（`ms-settings:privacy-microphone`）+ UIPI 提权限制说明 |
 | 通用 | 开机自启、HUD 不透明度、空闲 N 分钟后卸载模型、预览窗口（进阶） |
 
-`SetupForm.cs` 现在 550 行单文件，4 个 Tab 会撑到 900+。拆成 `partial class`
-按 Tab 分文件（`SetupForm.Recognition.cs` 等），保持每个文件可读。
+`SetupForm.cs` 规划时为 550 行，原计划拆成 `partial class` 按 Tab 分文件
+（`SetupForm.Recognition.cs` 等）。**该拆分尚未实施**：当前仍是单文件，已增长到约 820 行，
+接近可维护性上限，列入待办。
 
 **麦克风权限探测**（`MicPermissionProbe`）：Windows 对非打包桌面应用的麦克风管控在
 设置 → 隐私和安全性 → 麦克风 → "让桌面应用访问你的麦克风"。程序侧只能通过
@@ -674,29 +683,36 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 
 新增 `windows/Tests/VoiceTyper.Tests/`（xUnit）。现有 Windows 客户端**没有任何测试**，这次补上。
 
+当前实际落地的测试如下（9 个文件）。除标注外都不需要真实模型、不需要 Python、不需要网络，
+可直接跑在 CI（如 GitHub Actions 的 `windows-latest`）上——前提是先有一台能装 .NET SDK 的
+机器把工程编译起来（见顶部状态框）：
+
 | 测试 | 内容 | 通过标准 | 需要模型？ |
 | --- | --- | --- | --- |
-| **FbankParityTests** | 链接引用 `macos/Tests/VoiceTyperTests/Fixtures/fbank_input.f32` → 比对 `fbank_reference.f32` | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3` | **否** ✅ |
-| **LfrCmvnParityTests** | 同上比对 `lfrcmvn_reference.f32` | 同上 | 是（需 `am.mvn`），缺失则跳过 |
+| **FftTests** | 自写 FFT vs 朴素 DFT（512 点，随机输入） | `max‖Δ‖∞ < 1e-4` | 否 |
+| **FbankParityTests** | 链接引用 `macos/Tests/VoiceTyperTests/Fixtures/fbank_input.f32` → 比对 `fbank_reference.f32` 与 `lfrcmvn_reference.f32`；另含全零输入的对数下限回归 | 帧数**完全相同**；`max‖Δ‖∞ < 1e-3` | 仅 LFR+CMVN 部分需 `am.mvn`，缺失自动跳过 |
 | **TextPostprocessorTests** | `<\|...\|>` 剥离、中英间距、纯标点丢弃、`▁` 还原 | 覆盖每条规则；用例与 macOS 测试同源 | 否 |
 | **RecognitionBufferTests** | 假引擎驱动滑窗：窗口滚动、切点能量最小、`Finalize` 走完整音频 | 预览单调增长不回退为空；finalize 输入长度 == 总样本数 | 否 |
 | **ConfigStoreTests** | YAML 读写往返、缺字段回落默认、`voice_typer` 目录迁移 | 往返幂等；迁移只带走 hotkey/opacity | 否 |
-| **LlmCorrectorTests** | `HttpMessageHandler` 打桩：正常 / `finish_reason=length` / 5xx / 超时 | 后三者均返回**原文** | 否 |
-| **ModelDownloaderTests** | `HttpMessageHandler` 打桩：正常、中断后 Range 续传（206）、sha256 不匹配、磁盘满 | 续传不重下已完成部分；校验失败只留 `.part` | 否 |
-| **EndToEndRecognitionTests** | 完整链路跑 `speech_zh_en_mixed.wav` | 与 `.reference.txt` 编辑距离 ≤ 2 | 是（模型 + wav），缺失则跳过 |
-| **FftTests** | 自写 FFT vs 朴素 DFT（512 点，随机输入） | `max‖Δ‖∞ < 1e-4` | 否 |
+| **AppConfigValidationTests** | 配置字段越界夹逼、非有限浮点重置、裸键热键回落默认值 | 直译 macOS `AppConfigTests` 用例 | 否 |
+| **LlmCorrectorTests** | `HttpMessageHandler` 打桩：正常 / `finish_reason=length` / 5xx / 超时；tags-only 不丢文本；异常不含响应正文；`TestAsync` 抛真实错误 | 失败路径均返回**原文**且不泄露响应体 | 否 |
+| **LlmEndpointTests** | scheme/host 白名单、明文 HTTP 限回环私网、后缀去重 | 直译 macOS `LLMEndpointTests` 用例 | 否 |
+| **AudioChunkerTests** | 定长分帧、跨调用累积余量、`Drain()` 尾音、空输入 | 直译 macOS `AudioChunkerTests` 用例 | 否 |
 
-**七个测试里有六个不需要模型、不需要 Python、不需要网络**——可以直接跑在
-GitHub Actions 的 `windows-latest` 上。这是复用 macOS 已入库夹具带来的直接收益。
+以下两个测试在初版方案中规划，**尚未实现**——补齐之前，不能视为 G2 在 Windows 侧已有
+端到端验收：
 
-> **一个建议的仓库改动**：`.gitignore` 的 `*.wav` 规则让
-> `macos/Tests/VoiceTyperTests/Fixtures/speech_zh_en_mixed.wav`（974 KB）没有入库，
-> 导致两个平台的 E2E 测试都不可复现。建议加一条否定规则
-> `!macos/Tests/VoiceTyperTests/Fixtures/*.wav` 把它收进来。974 KB 换两个平台的
-> 端到端可复现性，很划算。
+- `ModelDownloaderTests`：进度节流上界、HTTP 非 2xx、Range 续传（206）、sha256 不匹配。
+- `EndToEndRecognitionTests`：G2 的正式验收载体（完整链路跑 `speech_zh_en_mixed.wav`，
+  与 `.reference.txt` 编辑距离 ≤ 2）。当前 Windows 识别正确性由特征级金标准测试间接保障，
+  文本级端到端验收仍由 macOS 侧承载。
 
-**P1 的推荐做法（沿用 macOS 的经验）**：先跑 `FbankParityTests`，让 C# 去追平已有夹具，
-再写后面的东西。每一步都有明确的数值反馈，不靠"看起来对"。
+> **已采纳的仓库改动**（初版方案中的建议）：`.gitignore` 已加否定规则
+> `!macos/Tests/VoiceTyperTests/Fixtures/*.wav`，`speech_zh_en_mixed.wav`（974 KB）已入库，
+> 两个平台的 E2E 测试夹具齐备。
+
+实施顺序沿用了 macOS 的经验：先让 `FbankParityTests` 追平已有夹具，再写后续模块，
+每一步都有明确的数值反馈，不靠"看起来对"。
 
 ---
 
@@ -721,7 +737,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | --- | --- | --- |
 | **P0 探针** | 在**真实 Windows 机器**上建最小工程：`Microsoft.ML.OnnxRuntime` 1.24.2 + 加载 `model_quant.onnx` + 跑一次固定输入。测：加载耗时、1s/5s/15s/30s 推理耗时、常驻内存（开/关 `disable_prepacking`、开/关 `allow_spinning`）、自包含产物体积 | **§4.5 的全部 ⚠️ 数字换成实测值**；据此定 `preview_window` 默认档位与 `idle_unload_minutes` 默认值。**这是唯一有真实不确定性的阶段，必须先做** |
 | **P1 骨架** | 建 `windows/` 工程（net10.0-windows、x64+arm64）；搬运 §2.1 的 1,500 行；ASR 层先用假实现（返回固定文本） | 能编译、能起托盘、按热键能把固定文本上屏 |
-| **P2 引擎** | `Rfft` + `FbankFrontend` + `LfrCmvn` + `SenseVoiceEngine` + `CtcDecoder` + `TextPostprocessor`；链接 macOS 夹具 | **FftTests / FbankParityTests / LfrCmvnParityTests 全绿**（G2 达成，最关键的一步） |
+| **P2 引擎** | `Rfft` + `FbankFrontend` + `LfrCmvn` + `SenseVoiceEngine` + `CtcDecoder` + `TextPostprocessor`；链接 macOS 夹具 | **FftTests / FbankParityTests（含 LFR+CMVN 部分）全绿**（G2 的特征级验收达成，最关键的一步） |
 | **P3 会话** | `AsrPump` + `RecognitionBuffer` + `LocalAsrSession` + `AsrService`；接进 `VoiceTyperController` | 真实录音 → 实时预览 → 松手上屏，端到端跑通 |
 | **P4 配置与 UI** | 新 `AppConfig` schema、`ConfigStore`、`ConfigMigrator`、DPAPI；设置窗 4 Tab；托盘精简；三个新状态；开机自启；DPI/圆角改进 | 全新用户路径：打开 → 可用；老用户热键自动继承 |
 | **P5 模型获取** | `ModelDownloader`（串行、Range 续传、sha256、原子落盘）+ 模型卡片 UI + `ModelMissing`/`DownloadingModel` 状态 + 预览窗口自校准 | 删掉本机所有模型副本后重走一遍：下载 → 校验 → 加载 → 可听写；中途断网可续 |
@@ -737,7 +753,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | --- | --- | --- |
 | **⚠️ Windows CPU 上预览跟不上 600ms 节奏** | 预览刷新变慢、CPU/风扇吵 | 已被 `previewInFlight` 跳过机制兜住（优雅降级，非故障）；再加 `preview_window` 自校准（§4.5）与 `allow_spinning=0`。**P0 必须先测出真实数字** |
 | **fbank 数值对不齐** | 识别质量下降且难察觉 | 夹具已现成（✅ 已入库），1e-3 逐点比对；三个已知陷阱（`FLT_MIN`、预加重倒序、double 构造滤波器）已写进 §4.3；退路是逐帧二分定位 |
-| **常驻内存 ~500MB** | 任务管理器里显眼，用户投诉 | `disable_prepacking`（macOS 实测省 290MB 零代价）+ 空闲卸载默认 5 分钟 + 卸载后 `SetProcessWorkingSetSize` 归还工作集 |
+| **常驻内存 ~500MB** | 任务管理器里显眼，用户投诉 | `disable_prepacking`（macOS 实测省 290MB 零代价）+ 空闲卸载（默认 10 分钟，D13）+ 卸载后 `SetProcessWorkingSetSize` 归还工作集 |
 | **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | Range 续传（✅ 本次实测 206 可用）+ sha256 校验（✅ 三个小文件本次实测全对）+ 小文件先行；失败文案给手动放置路径与 `fetch_model.ps1`；`ModelLocator` 复用 `~/.cache/modelscope/` |
 | **未签名安装包被 SmartScreen 拦** | 新用户装不上 | README 图文说明"更多信息 → 仍要运行"；长期解法是买 EV 证书（与 macOS 公证同一个决策位，本轮都不做） |
 | **UIPI：无法向提权窗口插入文本** | 在管理员终端里听写静默失败 | 检测目标窗口提权并给明确提示，而不是让用户以为识别坏了；README 记为已知限制 |
@@ -755,7 +771,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | --- | --- | --- | --- |
 | D1 | UI 栈 | ✅ **WinForms**（不是 WPF / WinUI 3） | 复用 1,022 行经过实战的 UI；"不抢焦点悬浮窗"已调通，不值得为观感重来一遍 |
 | D2 | .NET 版本 | ✅ **net10.0-windows** | .NET 8/9 于 2026-11-10 EOL；ORT 托管包提供 net8.0 资产，兼容无碍 |
-| D3 | 新 App 版本号 | ✅ **3.0.0**，与 `macos/` 对齐 | 老客户端改名为 `VoiceTyperClient` 后，其 3.0.0 归属另一条产品线，不冲突。备选是 4.0.0（更无歧义但与 macOS 脱节） |
+| D3 | 新 App 版本号 | ✅ 首发 3.0.0（与 `macos/` 对齐），现为 **3.1.0** | 老客户端改名为 `VoiceTyperClient` 后，其 3.0.0 归属另一条产品线，不冲突。备选是 4.0.0（更无歧义但与 macOS 脱节）。3.1.0 承载 §13 的行为对齐（W-32） |
 | D4 | ORT 版本 | ✅ **钉 1.24.2**，与 `macos/` 一致 | 消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量；升级另开一次带金标准复测的变更 |
 | D5 | 执行提供者 | ✅ **仅 CPU EP** | DirectML 对动态 int8 支持差；Windows ML 要 Win11 24H2 且与直译策略冲突（记为 P2） |
 | D6 | FFT 实现 | ✅ **自写 512 点 radix-2**，不引数学库 | 固定尺寸、算法确定、有金标准兜底；比 macOS 的 vDSP 打包方案更简单 |
@@ -789,6 +805,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | `preview_window` | 固定 15s，无自校准 | 首次加载后按实测 RTF 自动校准 15/10/6s | Windows 独有的更优设计（见下） |
 | 断点续传 | `.resume` 副文件 | `.part` 文件自身长度即续传状态 | Windows 方案更简单，且不会踩到 macOS 侧记录过的"CFNetwork 对畸形 resume data 直接 abort 进程"那个坑 |
 | 剪贴板隐私标记 | `org.nspasteboard.ConcealedType`/`TransientType`（社区约定） | `ExcludeClipboardContentFromMonitorProcessing`/`CanIncludeInClipboardHistory`/`CanUploadToCloudClipboard`（系统级） | Windows 的三个格式是系统本身承认的等价物，覆盖比社区约定更彻底（Win+V 历史 + 云剪贴板） |
+| LLM 功能叫法 | 「智能校对」 | 「智能纠错」 | 有意的措辞分歧：旧分体式客户端两侧均用「纠错」，macOS 一体化版改用「校对」，Windows 维持「纠错」；各自平台内 UI、文档、日志保持一致即可，不构成行为差异 |
 
 后两项（`preview_window` 自校准、`.part` 续传）是 Windows 优于 macOS 的设计，建议后续单独立项反向
 移植回 macOS，不与本次对齐混在一起。
