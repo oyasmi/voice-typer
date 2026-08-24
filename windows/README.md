@@ -30,7 +30,7 @@
 **支持**
 
 - 单进程运行，识别引擎（SenseVoice-Small）直接跑在 App 内，不连接任何服务端
-- 首次启动引导下载一次模型（约 230MB），此后完全离线
+- 首次启动引导下载一次模型（约 240MB），此后完全离线
 - 按住热键（默认 `Ctrl+F2`）录音，松开自动识别并插入文本
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
 - 可选的 LLM 智能纠错，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
@@ -46,8 +46,9 @@
 - 热键主键限于字母、数字、`space`/`tab`/`enter`/`esc`、`F1`–`F12`、方向键等命名键
 - 官方 Release 未做代码签名，首次运行可能被 SmartScreen 拦截，需要点「更多信息 → 仍要运行」；
   自行构建时可选签名，见[「构建 → 签名」](#签名可选)
-- 只支持 SenseVoice-Small 模型，不支持 paraformer / 热词（如需这些能力，用
-  [分体式客户端](../client-server/client_windows_native/README.md) + [服务端](../client-server/server/README.md)）
+- 只支持 SenseVoice-Small 模型，不支持更换为 paraformer；热词在两种形态里都已移除
+  （如需 paraformer，用[分体式客户端](../client-server/client_windows_native/README.md) +
+  [服务端](../client-server/server/README.md)）
 - 不支持远程/共享服务端——识别永远在本机跑
 - **UIPI 限制**：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，这是 Windows 安全
   机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动 `Ctrl+V`
@@ -110,7 +111,7 @@
   ModelScope，逐个校验 sha256，支持断点续传（中途断网重新点击即可从中断处继续）。
 
 模型落在 `%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\`——刻意放在**非漫游**的
-`LocalAppData` 而不是 `AppData\Roaming`：域环境下 Roaming profile 会跟随登录漫游，塞进 230MB
+`LocalAppData` 而不是 `AppData\Roaming`：域环境下 Roaming profile 会跟随登录漫游，塞进 240MB
 模型会让域用户登录变慢。
 
 ---

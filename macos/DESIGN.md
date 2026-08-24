@@ -120,7 +120,7 @@ prompts/correction.md                        → 提示词（原样搬运为 bun
 ## 4. 关键技术选型（含实测数据）
 
 以下数据均在本机（**Apple M4，4 性能核**）实测，模型为 `iic/SenseVoiceSmall-onnx` 的
-`model_quant.onnx`（int8，230MB），`intra_op_num_threads=4`。
+`model_quant.onnx`（int8，240MB），`intra_op_num_threads=4`。
 
 ### 4.1 ONNX Runtime 集成 —— 选 `onnxruntime-swift-package-manager`
 
@@ -263,7 +263,7 @@ Swift 侧那 47~90ms 里的一小部分，动不了真正的大头（`engine.sta
 
 App 内**不含**模型，调研期估算体积约 **52MB**（ORT 框架 arm64 切片 45MB + 应用本体）；
 实测见 §7——App bundle 解包后 35MB，压缩产物更小。
-首启自动下载、校验并部署 SenseVoice-Small（230MB），落到用户目录；不等待用户点击，也不受 TCC 权限授权进度阻塞。此后完全离线，版本更新不重下模型。
+首启自动下载、校验并部署 SenseVoice-Small（约 240MB），落到用户目录；不等待用户点击，也不受 TCC 权限授权进度阻塞。此后完全离线，版本更新不重下模型。
 
 **已实测验证的下载契约：**
 
@@ -287,7 +287,7 @@ App 内**不含**模型，调研期估算体积约 **52MB**（ORT 框架 arm64 �
 
 - 落点 `~/Library/Application Support/VoiceTyper/models/sensevoice-small/`
 - `URLSessionDownloadTask`，四个文件**串行**；**先下三个小文件、最后下 onnx**——
-  网络/端点问题能在花掉 230MB 流量之前就暴露
+  网络/端点问题能在花掉 240MB 流量之前就暴露
 - 失败用 `cancel(byProducingResumeData:)` 保存 resumeData 并落盘到同目录，重试即续传；
   App 退出后重开仍可续
 - 每个文件下载完立即校验 sha256；不匹配则删除重下一次，再失败则报错并给出手动放置说明
@@ -535,7 +535,7 @@ booting ──┬─→ setupRequired ──(授权完成)───────�
 权限与模型是**两条互不依赖的准备线**，可并行推进：首次发现模型缺失时应用会在后台自动开始下载，权限没给全时也照常下载/加载。同一进程内失败后不无限重试，用户可在「识别」页手动重试，下次启动也会再自动续传。只有两条线都就绪才进 `.idle`。
 
 菜单栏图标：`.modelMissing` → `arrow.down.circle`（橙）；`.downloadingModel` → 同符号 + `.pulse` 动效，
-header 显示「下载模型 42% · 96/230 MB」。
+header 显示「下载模型 42% · 96/240 MB」。
 
 **菜单栏菜单**（删掉「重新连接服务」）：
 
@@ -607,7 +607,7 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
 
 **实测体积**（`build_xcode.sh` 完整跑通一次的真实结果，不含模型）：
 App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比最初预估更小，
-因为可执行文件/框架二进制压缩率很高，且不再有模型那 230MB 不可压缩的死重。
+因为可执行文件/框架二进制压缩率很高，且不再有模型那 240MB 不可压缩的死重。
 
 `scripts/fetch_model.sh` 保留，但角色从"构建前置步骤"变成**开发与测试辅助**：
 用同一组 URL 和 sha256 把模型拉到 `~/Library/Application Support/VoiceTyper/models/`，

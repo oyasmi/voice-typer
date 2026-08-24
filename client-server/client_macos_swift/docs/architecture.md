@@ -1,5 +1,15 @@
 # client_macos_swift 设计文档
 
+> **状态：历史设计稿，写于项目早期，部分决策已被后续实现取代**，保留作为背景资料。已知差异：
+>
+> - 设置窗口已改用 SwiftUI 四页（权限 / 连接 / 热键 / 通用），不再是「不引入 SwiftUI」的纯 AppKit；
+> - 客户端已支持 WebSocket 流式识别（`/recognize/stream`），协议不再只有 `POST /recognize`；
+> - 热词（`X-Hotwords` 头与 `hotwords.txt`）已整体移除；
+> - 模块划分以 [README 架构一节](../README.md#架构)为准（已新增 StreamingASRClient、
+>   ServerHealthProbe、LaunchAtLogin 等）。
+>
+> 现行行为以 [`PROTOCOL.md`](../../PROTOCOL.md) 与 [README](../README.md) 为准。
+
 ## 目标
 
 `client_macos_swift` 是 VoiceTyper 的原生 macOS 客户端实现。它不是演示性重写，而是面向长期维护与正式分发的主力客户端候选。

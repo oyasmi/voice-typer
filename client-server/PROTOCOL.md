@@ -33,14 +33,14 @@
 {
   "status": "ok",
   "ready": true,
-  "version": "1.5.0",
+  "version": "1.5.1",
   "protocol_version": 2,
   "streaming": true,
   "llm_enabled": false,
-  "asr_model":     "sensevoice-small",
+  "asr_model": "sensevoice-small",
   "offline_model": "sensevoice-small",
-  "punc_model":    null,
-  "device":        "cpu"
+  "punc_model": null,
+  "device": "cpu"
 }
 ```
 

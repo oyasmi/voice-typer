@@ -46,8 +46,8 @@
 | Python | 最低 **3.10**，推荐 3.12+ |
 | 操作系统 | macOS / Linux / Windows |
 | 设备 | CPU（默认）或 NVIDIA CUDA |
-| 磁盘 | 默认模型约 241MB，首次运行自动下载 |
-| 内存 | 默认单模型约 1GB 常驻起步 |
+| 磁盘 | 默认模型约 240MB，首次运行自动下载 |
+| 内存 | 进程常驻约 1GB 起步（含运行时开销；模型权重本身约 240MB，见[模型加载矩阵](#模型加载矩阵)） |
 
 运行时依赖（`pip` 自动装）：`funasr-onnx`、`modelscope`、`onnxruntime>=1.24`、`tornado`、`numpy<2`。
 
@@ -279,7 +279,7 @@ voice-typer-server --offline-model paraformer-zh --model paraformer-zh-streaming
 
 | 短名 | 仓库 | 体积 | 说明 |
 | --- | --- | --- | --- |
-| `sensevoice-small`（默认） | `iic/SenseVoiceSmall-onnx` | 241MB | 官方 int8 导出。自带标点与 ITN，覆盖中 / 英 / 粤 / 日 / 韩 |
+| `sensevoice-small`（默认） | `iic/SenseVoiceSmall-onnx` | 240MB | 官方 int8 导出。自带标点与 ITN，覆盖中 / 英 / 粤 / 日 / 韩 |
 | `sensevoice-small-fp32` | `manyeyes/sensevoice-small-onnx` | 893MB | 社区 fp32 导出。实测质量与 int8 持平，速度慢约 1.6 倍 |
 | `paraformer-zh` | `damo/speech_paraformer-large...onnx` | 227MB + ct-punc 1.0GB | 旧默认值。需外挂 `ct-punc` 才有标点，数字保持「六十四兆」这样的口语形式 |
 
@@ -292,10 +292,10 @@ voice-typer-server --no-streaming --model paraformer-zh   # 非流式
 
 ### 模型加载矩阵
 
-| 配置 | 加载的模型 | 常驻内存量级 |
+| 配置 | 加载的模型 | 模型权重占用 |
 | --- | --- | --- |
-| 流式 + SenseVoice（默认） | 1 个：`sensevoice-small` | ~241MB |
-| 非流式 + SenseVoice | 1 个：`sensevoice-small` | ~241MB |
+| 流式 + SenseVoice（默认） | 1 个：`sensevoice-small` | ~240MB |
+| 非流式 + SenseVoice | 1 个：`sensevoice-small` | ~240MB |
 | 流式 + paraformer | 3 个：`paraformer-zh-streaming` + `paraformer-zh` + `ct-punc` | ~1.5GB |
 | 非流式 + paraformer | 2 个：`paraformer-zh` + `ct-punc` | ~1.2GB |
 
@@ -539,7 +539,7 @@ voice-typer-server --onnx-threads 8
 
 ### 内存
 
-默认单模型配置下流式与非流式内存占用相当（约 241MB 模型 + 运行时开销）。显式切到 `--offline-model paraformer-zh` 才会额外加载流式预览模型和 `ct-punc`（约 1.2GB）。内存紧张时：
+默认单模型配置下流式与非流式内存占用相当（约 240MB 模型 + 运行时开销）。显式切到 `--offline-model paraformer-zh` 才会额外加载流式预览模型和 `ct-punc`（约 1.2GB）。内存紧张时：
 
 ```bash
 # 首选：回到 SenseVoice 单模型
@@ -570,7 +570,7 @@ voice-typer-server --offline-model paraformer-zh --punc-model none
 
 ### 首次启动很慢
 
-在下载模型（241MB 起）。日志会停在「初始化模型...」，下完会打印 `初始化完成，耗时 Ns`。用 Docker 镜像可以跳过这一步（模型已烘进镜像）。
+在下载模型（约 240MB）。日志会停在「初始化模型...」，下完会打印 `初始化完成，耗时 Ns`。用 Docker 镜像可以跳过这一步（模型已烘进镜像）。
 
 ### 参数好像没生效
 

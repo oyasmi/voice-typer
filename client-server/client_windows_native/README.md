@@ -8,6 +8,11 @@
 
 **本文适合**：Windows 用户，以及要自行编译或二次开发的人。
 
+> **大多数 Windows 用户应该用 [`windows/`](../../windows/README.md) 下的一体化 VoiceTyper**：
+> 识别引擎直接内置进应用，不需要单独部署 Python 服务端（⚠️ 尚未完成真机验证，见其
+> `DESIGN.md` 的风险清单）。本目录是分体式架构下的 Windows 客户端一半，适合已有远程/局域网
+> 服务端、或多台设备共用一台服务端的场景。
+
 ---
 
 ## 目录
@@ -68,6 +73,10 @@
 | `VoiceTyper-<版本>-win-x64-portable.exe` | ~3MB | **便携版**，需要先装 .NET Desktop Runtime 8.0。适合已有运行时、在意体积的场景 |
 
 两者功能完全一致，都是单文件 exe，没有安装程序。放哪个目录都行。
+
+> 注意与一体化 Windows App 的 `VoiceTyper-<版本>-win-x64-setup.exe`（安装程序形态）区分：
+> 名字相近但不是同一个东西——一体化版内置识别引擎、无需服务端，本目录产物是分体式客户端，
+> 必须另行部署[服务端](../server/README.md)。
 
 ### 首次使用
 
@@ -292,6 +301,7 @@ curl http://127.0.0.1:6008/health
 ## 相关链接
 
 - [VoiceTyper 主项目](../../README.md)
+- [一体化 Windows App（推荐大多数用户）](../../windows/README.md)
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [macOS Swift 原生客户端](../client_macos_swift/README.md)

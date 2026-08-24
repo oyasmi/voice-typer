@@ -11,9 +11,11 @@
 
 > **macOS / Windows 用户看这里**：根目录提供**一体化 App**（[`macos/`](../macos/README.md) /
 > [`windows/`](../windows/README.md)），把识别引擎直接内置进客户端，安装即用，**不需要**
-> 再单独装下面说的服务端。首次启动会引导下载一次模型（约 230MB），之后完全离线。
+> 再单独装下面说的服务端。首次启动会引导下载一次模型（约 240MB），之后完全离线。
 > ⚠️ `windows/` 版本刚完成实现，尚未在真实 Windows 机器上编译/跑分验证，见其
-> [`DESIGN.md`](../windows/DESIGN.md) §10（P0）。
+> [`DESIGN.md`](../windows/DESIGN.md#11-风险与对策) §11（P0 风险清单）。
+> 注意：服务端与各客户端**各自独立版本号**，与一体化 App 的版本没有大小或新旧对应关系；
+> Release 页面会同时出现多套产物，请按文件名和说明区分。
 > 下面「先装服务端、再装客户端」的路径面向 Linux，或者想让多台设备共用一台服务端
 > （比如局域网里一台带显卡的机器）的场景。
 
@@ -77,7 +79,7 @@
 
 ## 第一步：安装服务端
 
-需要 Python 3.10 或更高版本。首次启动会自动下载语音模型（约 241MB），耐心等一会儿。
+需要 Python 3.10 或更高版本。首次启动会自动下载语音模型（约 240MB），耐心等一会儿。
 
 ### 方式一：让 AI Agent 帮你装（推荐）
 
@@ -118,7 +120,7 @@
   - Linux 客户端（必须加 --no-streaming）：
       ~/.venvs/voice-typer/bin/voice-typer-server --no-streaming
   后台运行加 nohup ... & 即可。
-  首次启动要下载约 241MB 的模型，可能耗时几分钟，属正常现象。
+  首次启动要下载约 240MB 的模型，可能耗时几分钟，属正常现象。
 
 【第 6 步】验证并汇报
   等服务起来后执行：curl http://127.0.0.1:6008/health
@@ -179,6 +181,9 @@ curl http://127.0.0.1:6008/health
 - **下载**：从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载
   - `VoiceTyper-<版本>-win-x64.exe` — **完整版**，下载即用，推荐
   - `VoiceTyper-<版本>-win-x64-portable.exe` — 便携版，体积小但需要先装 [.NET Desktop Runtime 8.0](https://dotnet.microsoft.com/download/dotnet/8.0)
+- **注意区分**：一体化 Windows App 的安装包名为 `VoiceTyper-<版本>-win-x64-setup.exe`（内置
+  识别引擎，无需服务端，见 [`windows/`](../windows/README.md)）。名字相近但不是同一个东西，
+  上面两个是分体式客户端，需要按上文先部署好服务端
 - **安装**：没有安装程序，双击 exe 即可，应用驻留系统托盘
 - **授权**：首次录音时 Windows 会询问麦克风权限，允许即可
 - **默认热键**：`Ctrl + F2`
@@ -248,7 +253,7 @@ voice-typer-server --llm-base-url https://api.openai.com/v1 \
 先确认服务端还在跑，然后 `curl http://127.0.0.1:6008/health` 看看返回。还要确认客户端的「流式识别」开关和服务端模式一致——服务端加了 `--no-streaming` 的话，客户端也要关掉流式。
 
 **第一次启动特别慢**
-在下载语音模型（约 241MB）。只有第一次会这样，之后是秒开。
+在下载语音模型（约 240MB）。只有第一次会这样，之后是秒开。
 
 **macOS 上热键完全没反应**
 「输入监控」权限没给，或者更新版本后授权失效了。到「系统设置 → 隐私与安全性 → 输入监控」把对应的 App（一体化版是 VoiceTyper，分体式客户端是 VoiceTyperClient）移除再加回去，然后完全退出应用重开。

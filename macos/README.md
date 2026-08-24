@@ -31,7 +31,7 @@
 **支持**
 
 - 单进程运行，识别引擎（SenseVoice-Small）直接跑在 App 内，不连接任何服务端
-- 首次启动自动下载并部署一次模型（约 230MB），此后完全离线
+- 首次启动自动下载并部署一次模型（约 240MB），此后完全离线
 - 按住热键（默认 `Fn`）录音，松开自动识别并插入文本；录音中按 `Esc` 取消
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
 - 可选的 LLM 智能校对，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
@@ -46,8 +46,9 @@
 - 只能按住说话，没有「按一次开始、再按一次结束」的切换模式
 - 热键主键限于字母、数字、`space`/`tab`/`enter`、`F1`–`F12`，以及独立的 `fn`
 - 应用未做签名公证，首次打开需在「系统设置 → 隐私与安全性」手动放行
-- 只支持 SenseVoice-Small 模型，不支持 paraformer / 热词（如需这些能力，用
-  [分体式客户端](../client-server/client_macos_swift/README.md) + [服务端](../client-server/server/README.md)）
+- 只支持 SenseVoice-Small 模型，不支持更换为 paraformer；热词在两种形态里都已移除
+  （如需 paraformer，用[分体式客户端](../client-server/client_macos_swift/README.md) +
+  [服务端](../client-server/server/README.md)）
 - 不支持远程/共享服务端——识别永远在本机跑
 
 ---

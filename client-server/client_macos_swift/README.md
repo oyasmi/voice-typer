@@ -8,7 +8,7 @@ Bundle ID `com.voicetyper.client`。
 > **大多数 macOS 用户应该用 [`macos/`](../../macos/README.md) 下的一体化 VoiceTyper**：
 > 拖进 Applications、打开即用，不需要单独部署 Python 服务端。本目录（`client_macos_swift/`）
 > 是分体式架构下的客户端一半，配合独立部署的 [服务端](../server/README.md) 使用，适合：
-> 已有远程/局域网 GPU 服务端、需要多设备共享一份服务端、或需要 paraformer / 热词等
+> 已有远程/局域网 GPU 服务端、需要多设备共享一份服务端、或需要 paraformer 等
 > 一体化 App 未提供的能力的场景。
 
 它负责的事只有四件：监听热键、录音、把音频送给服务端、把返回的文本插到光标处。识别模型全部跑在[服务端](../server/README.md)。
@@ -373,4 +373,4 @@ log show --predicate 'subsystem == "com.voicetyper.client"' --last 10m
 - [服务端文档](../server/README.md)
 - [客户端 ↔ 服务端协议](../PROTOCOL.md)
 - [Windows 原生客户端](../client_windows_native/README.md)
-- [架构笔记](docs/architecture.md) · [流式设计](docs/streaming-design.md)
+- [架构笔记（历史稿）](docs/architecture.md) · [流式设计（历史稿）](docs/streaming-design.md)

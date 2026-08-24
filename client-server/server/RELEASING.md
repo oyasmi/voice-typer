@@ -2,7 +2,7 @@
 
 ## 前置要求
 
-- Python 3.9+，建议 3.12
+- Python 3.10+（与服务端 `pyproject.toml` 的 `requires-python` 一致），建议 3.12+
 - 已准备好一个干净的发布虚拟环境
 - 已准备好 PyPI 或 TestPyPI 凭据
 

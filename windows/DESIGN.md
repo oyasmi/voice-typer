@@ -163,7 +163,7 @@ ORT 托管程序集提供 `lib/net8.0/` 与 `lib/netstandard2.0/` 资产（✅ �
 | --- | --- | --- |
 | **WinForms**（选中） | ✅ | `RecordingHud` / `TrayController` / `SetupForm` 共 1,022 行经过实战的代码可直接复用；`WS_EX_NOACTIVATE` + `ShowWithoutActivation` 的"不抢焦点悬浮窗"已经调通——这是这个 App 最难缠的一个 UI 需求 |
 | WPF | ❌ | 悬浮 HUD 能做得更漂亮（真透明/亚克力/Per-Monitor DPI），但要重写全部 UI 约 1,000 行，功能零增量，还要重新踩一遍"不抢焦点"的坑 |
-| WinUI 3 / Windows App SDK | ❌ | 额外的 SDK 运行时依赖；托盘图标与全局悬浮窗支持一直是弱项；打包模型（MSIX）与"下载 230MB 模型到用户目录"的诉求相互别扭 |
+| WinUI 3 / Windows App SDK | ❌ | 额外的 SDK 运行时依赖；托盘图标与全局悬浮窗支持一直是弱项；打包模型（MSIX）与"下载 240MB 模型到用户目录"的诉求相互别扭 |
 | C++/WinRT | ❌ | ORT 的 C++ API 更直接，但要重写全部 UI 与业务逻辑，且失去 `macos/` Swift 参考实现的一一对应关系（直译价值归零） |
 
 WinForms 的两个已知短板，在本轮一并处理掉：
@@ -414,8 +414,8 @@ windows/
 `config.yaml` 用 YamlDotNet 解析取 `frontend_conf`，缺失时回落硬编码默认值。
 
 > **为什么模型放 `%LOCALAPPDATA%` 而配置放 `%APPDATA%`**：`%APPDATA%`（Roaming）在域环境下
-> 会随用户配置文件漫游，往里塞 230MB 模型会让登录变成灾难。配置（几 KB）漫游是**对的**——
-> 换台机器热键设置跟着走；模型（230MB）漫游是**错的**。这是 Windows 特有的正确做法，
+> 会随用户配置文件漫游，往里塞 240MB 模型会让登录变成灾难。配置（几 KB）漫游是**对的**——
+> 换台机器热键设置跟着走；模型（240MB）漫游是**错的**。这是 Windows 特有的正确做法，
 > macOS 的 `Application Support` 单目录方案不能照抄。
 
 #### `SenseVoiceEngine`
@@ -491,7 +491,7 @@ C# 直接用 `HttpClient` + `HttpCompletionOption.ResponseHeadersRead` 流式写
 续传时看 `.part` 的现有长度、发 `Range: bytes=<len>-`。**`.part` 文件本身就是续传状态**，
 不需要额外的 `.resume` 副文件，App 退出后重开天然可续。
 
-其余要点与 macOS 一致：4 个文件串行、**先下三个小文件再下 onnx**（网络问题在花掉 230MB 前暴露）、
+其余要点与 macOS 一致：4 个文件串行、**先下三个小文件再下 onnx**（网络问题在花掉 240MB 前暴露）、
 每个文件下完立即流式 sha256 校验、不匹配则删除重下一次、校验通过后 `File.Move(part, dest, overwrite:true)`。
 失败文案给出手动放置路径与 `scripts/fetch_model.ps1`。
 
@@ -608,7 +608,7 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 
 | Tab | 内容 |
 | --- | --- |
-| 识别 | ① **模型卡片**：未就绪时「需要下载语音模型 · 230 MB」+「开始下载」+ 进度条（已下/总量、速度）+「取消」；就绪时「SenseVoice-Small · int8 · 已就绪」+ 路径 +「重新加载」<br>② 识别语言 下拉<br>③ 智能纠错：开关 + Base URL + API Key + 模型 + 温度 + 超时 +「测试纠错」 |
+| 识别 | ① **模型卡片**：未就绪时「需要下载语音模型 · 240 MB」+「开始下载」+ 进度条（已下/总量、速度）+「取消」；就绪时「SenseVoice-Small · int8 · 已就绪」+ 路径 +「重新加载」<br>② 识别语言 下拉<br>③ 智能纠错：开关 + Base URL + API Key + 模型 + 温度 + 超时 +「测试纠错」 |
 | 热键 | **原样保留** |
 | 权限 | 麦克风可用性检测 +「打开 Windows 隐私设置」（`ms-settings:privacy-microphone`）+ UIPI 提权限制说明 |
 | 通用 | 开机自启、HUD 不透明度、空闲 N 分钟后卸载模型、预览窗口（进阶） |
@@ -774,7 +774,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | D4 | ORT 版本 | ✅ **钉 1.24.2**，与 `macos/` 一致 | 消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量；升级另开一次带金标准复测的变更 |
 | D5 | 执行提供者 | ✅ **仅 CPU EP** | DirectML 对动态 int8 支持差；Windows ML 要 Win11 24H2 且与直译策略冲突（记为 P2） |
 | D6 | FFT 实现 | ✅ **自写 512 点 radix-2**，不引数学库 | 固定尺寸、算法确定、有金标准兜底；比 macOS 的 vDSP 打包方案更简单 |
-| D7 | 目录布局 | ✅ **配置 `%APPDATA%\VoiceTyper\`，模型 `%LOCALAPPDATA%\VoiceTyper\models\`** | 配置（KB 级）该漫游，模型（230MB）绝不能漫游。这是 Windows 特有的正确做法，不能照抄 macOS 单目录方案 |
+| D7 | 目录布局 | ✅ **配置 `%APPDATA%\VoiceTyper\`，模型 `%LOCALAPPDATA%\VoiceTyper\models\`** | 配置（KB 级）该漫游，模型（240MB）绝不能漫游。这是 Windows 特有的正确做法，不能照抄 macOS 单目录方案 |
 | D8 | 密钥存储 | ✅ **DPAPI 文件** | 40 行 vs 凭据管理器的 120 行互操作，底层同样是 DPAPI，安全性无差别 |
 | D9 | 分发形态 | ✅ **目录式 + Inno Setup**，放弃单文件自解压 | 常驻自启工具不应每次新版本首启解压 14MB 原生库；AV 也更友好 |
 | D10 | 架构覆盖 | ✅ **x64 + arm64** | ORT 两个 RID 原生库齐备，没有 macOS 侧"放弃 Intel"那种被迫取舍 |
