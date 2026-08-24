@@ -9,8 +9,7 @@
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <AssemblyName>VoiceTyper</AssemblyName>
     <RootNamespace>VoiceTyper</RootNamespace>
-    <!-- 对齐 macOS 3.1.9（HEAD 5ac5aab）的行为基线一次性拉齐（见
-         windows/ALIGNMENT_WITH_MACOS.md）。两个平台此后各自计版，不再强制同步。 -->
+    <!-- 对齐 macOS 3.1.9（HEAD 5ac5aab）的行为基线一次性拉齐。两个平台此后各自计版，不再强制同步。 -->
     <Version>3.1.0</Version>
     <AssemblyVersion>3.1.0.0</AssemblyVersion>
     <FileVersion>3.1.0.0</FileVersion>

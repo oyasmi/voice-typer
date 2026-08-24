@@ -39,7 +39,7 @@ internal sealed class SetupForm : Form
     private bool _lastIsDownloading;
     private bool _lastMicAccessDenied;
     /// <summary>权限页可见且麦克风未就绪时的自愈轮询（R4-14：只刷新勾选状态，绝不
-    /// 在轮询路径里抢焦点）。见 windows/ALIGNMENT_WITH_MACOS.md W-15。</summary>
+    /// 在轮询路径里抢焦点）。</summary>
     private readonly System.Windows.Forms.Timer _permissionPollTimer = new() { Interval = 4000 };
 
     // ─ 顶部横幅 ────────────────────────────────────────────────
@@ -117,7 +117,7 @@ internal sealed class SetupForm : Form
     /// 权限页可见且权限未齐时启动 2–5s 轮询（对齐 macOS bb25282 权限页轮询、5ac5aab R4-14
     /// 的抢焦点修复）；离开权限页/窗口隐藏/权限已齐时停掉。真开一次 WASAPI 采集才能探测
     /// 麦克风可用性，2s 一次会让系统托盘的"麦克风使用中"指示灯反复闪烁，故放宽到 4s
-    /// （Windows 独有的适配，需真机复测：见 windows/ALIGNMENT_WITH_MACOS.md W-15）。
+    /// （Windows 独有的适配，需真机复测）。
     /// </summary>
     private void RefreshPermissionPolling()
     {

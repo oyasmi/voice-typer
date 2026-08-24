@@ -31,7 +31,7 @@ internal sealed class HotkeyService : IDisposable
     /// <c>HKEY_CURRENT_USER\Control Panel\Desktop\LowLevelHooksTimeout</c>（默认 5000ms，
     /// 部分系统 300ms）未返回，系统会直接把钩子卸掉且不通知——现象与 macOS 的
     /// tapDisabledByTimeout 完全一致：热键突然永久失效。这是 Windows 侧的新增设计（代码
-    /// 审查通过，尚未在真机上验证系统摘钩场景，见 windows/ALIGNMENT_WITH_MACOS.md W-25）。
+    /// 审查通过，尚未在真机上验证系统摘钩场景）。
     /// </summary>
     private const int HealthCheckIntervalMs = 30_000;
 
