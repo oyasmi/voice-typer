@@ -23,7 +23,7 @@ project.root_object.attributes['LastSwiftUpdateCheck'] = '2600'
 project.root_object.attributes['LastUpgradeCheck'] = '2600'
 project.build_configuration_list.set_setting('SWIFT_VERSION', '6.0')
 project.build_configuration_list.set_setting('MACOSX_DEPLOYMENT_TARGET', '14.0')
-project.build_configuration_list.set_setting('MARKETING_VERSION', '3.1.9')
+project.build_configuration_list.set_setting('MARKETING_VERSION', '3.2.0')
 project.build_configuration_list.set_setting('CURRENT_PROJECT_VERSION', '1')
 
 app_target = project.new_target(:application, TARGET_NAME, :osx, '14.0')
@@ -64,7 +64,7 @@ app_target.build_configurations.each do |config|
   settings['CODE_SIGN_STYLE'] = 'Automatic'
   settings['SWIFT_VERSION'] = '6.0'
   settings['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
-  settings['MARKETING_VERSION'] = '3.1.9'
+  settings['MARKETING_VERSION'] = '3.2.0'
   settings['CURRENT_PROJECT_VERSION'] = '1'
   # 强化运行时是被 notarytool 公证接受的前提条件（见 macos/README.md「签名与公证」）。
   # 与是否使用 Developer ID 签名无关：即使沿用默认的 ad-hoc 本机签名，Xcode 也允许打开

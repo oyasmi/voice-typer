@@ -3,7 +3,7 @@
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client-server/client_macos_swift/README.md)
 
 单进程 macOS 菜单栏应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 Swift 重写并
-内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.1.9**，
+内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.2.0**，
 应用名 **VoiceTyper**，Bundle ID `com.voicetyper.app`。
 
 **本文适合**：想在自己 Mac 上直接用的用户，以及要自行编译或二次开发的人。深入的架构决策、
