@@ -40,6 +40,9 @@ final class RecordingHUDController: NSWindowController {
     private var hasBuiltUI = false
     private var hudOpacity: Double = 0.85
 
+    /// 状态行常规色（次级灰白，见 buildUI 的层级注释）。flashWarning 期间临时升为警示色。
+    private static let statusTextColor: NSColor = .secondaryLabelColor
+
     /// 展开态（显示 preview 行）与否。
     private var isExpanded = false
     /// 当前 HUD 宽度。随预览内容增长到上限，避免文本继续把窗口推到屏幕外。
@@ -94,7 +97,7 @@ final class RecordingHUDController: NSWindowController {
         isExpanded = false
         currentHudWidth = Self.defaultHudWidth
 
-        statusLabel.stringValue = "录音中"
+        setStatus("录音中")
         timeLabel.stringValue = ""
         previewLabel.stringValue = displayText(for: "")
         previewLabel.alphaValue = 0
@@ -145,7 +148,7 @@ final class RecordingHUDController: NSWindowController {
         timer?.invalidate()
         timer = nil
         phase = .recognizing
-        statusLabel.stringValue = "识别中"
+        setStatus("识别中")
         showGlyph(false)
         dotView.isHidden = false
         dotView.stopPulse()
@@ -202,23 +205,37 @@ final class RecordingHUDController: NSWindowController {
     /// 录音过程中的非致命提示（如 partial 暂时不可用）。仅闪烁 statusLabel。
     /// 录音中或识别中的非致命提示（如 partial 暂时不可用、上一段听写尚未完成）。
     /// 两个阶段都要能看到，否则识别中按热键会得到完全无反馈的"死键"观感（R4-06）。
+    /// 警告是状态行上唯一必须被注意的内容：闪现期临时升为警示色，恢复时回落。
     func flashWarning(_ message: String) {
         guard phase == .recording || phase == .recognizing else { return }
         cancelWarningRestore()
         statusLabel.stringValue = message.isEmpty ? "识别提示" : message
+        statusLabel.textColor = .systemOrange
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            switch self.phase {
-            case .recording:
-                self.statusLabel.stringValue = "录音中"
-            case .recognizing:
-                self.statusLabel.stringValue = "识别中"
-            case .hidden, .transient:
-                break
-            }
+            self.restoreStatusLabel()
         }
         warningRestoreWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: item)
+    }
+
+    /// 写状态行文案并回落常规色。警告闪现之外的所有状态切换都应走这里，
+    /// 保证被取消的警告不会把警示色带进下一个状态。
+    private func setStatus(_ text: String) {
+        statusLabel.stringValue = text
+        statusLabel.textColor = Self.statusTextColor
+    }
+
+    /// 警告闪现结束后按当前阶段恢复状态行文案与颜色。
+    private func restoreStatusLabel() {
+        switch phase {
+        case .recording:
+            setStatus("录音中")
+        case .recognizing:
+            setStatus("识别中")
+        case .hidden, .transient:
+            statusLabel.textColor = Self.statusTextColor
+        }
     }
 
     /// 临时以给定不透明度预览 HUD 背景（设置页透明度滑杆用）。
@@ -236,7 +253,7 @@ final class RecordingHUDController: NSWindowController {
         }
 
         phase = .transient
-        statusLabel.stringValue = "背景预览"
+        setStatus("背景预览")
         timeLabel.stringValue = ""
         previewLabel.alphaValue = 0
         showGlyph(false)
@@ -282,7 +299,7 @@ final class RecordingHUDController: NSWindowController {
         cancelTransientHide()
         phase = .transient
 
-        statusLabel.stringValue = status
+        setStatus(status)
         timeLabel.stringValue = ""
         previewLabel.stringValue = message
         previewLabel.alphaValue = expanded ? 1 : 0
@@ -379,8 +396,26 @@ final class RecordingHUDController: NSWindowController {
         let metrics = layoutMetrics(for: currentHudWidth)
         anchorOrigin = metrics.origin
         currentHudWidth = metrics.width
-        let startFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: currentHudWidth, height: height)
         let endFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
+
+        // 已可见（连读：上一次成功/错误提示或其淡出动画还没结束）时直接就位，
+        // 不重放入场动画——否则每次连读 HUD 都会闪黑一下再跳 10pt。
+        if window.isVisible {
+            window.setFrame(endFrame, display: true)
+            if window.alphaValue < 1 {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.12
+                    window.animator().alphaValue = 1
+                } completionHandler: { [weak self] in
+                    MainActor.assumeIsolated { self?.window?.invalidateShadow() }
+                }
+            } else {
+                window.invalidateShadow()
+            }
+            return
+        }
+
+        let startFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: currentHudWidth, height: height)
 
         window.setFrame(startFrame, display: false)
         window.alphaValue = 0
@@ -528,8 +563,10 @@ final class RecordingHUDController: NSWindowController {
         indicator.addSubview(dotView)
         indicator.addSubview(glyphView)
 
+        // 层级约定:预览文字是 HUD 的正文(用户实时校对识别结果),用主色;
+        // 状态标签只是装饰性提示(呼吸点/波形已在传达录音状态),降为次级色。
         statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        statusLabel.textColor = .labelColor
+        statusLabel.textColor = Self.statusTextColor
         statusLabel.alignment = .left
         statusLabel.lineBreakMode = .byClipping
         statusLabel.cell?.usesSingleLineMode = true
@@ -559,10 +596,13 @@ final class RecordingHUDController: NSWindowController {
         previewClipView.layer?.masksToBounds = true
         previewClipView.translatesAutoresizingMaskIntoConstraints = false
 
-        previewLabel.font = .systemFont(ofSize: 14, weight: .regular)
-        previewLabel.textColor = .secondaryLabelColor
+        previewLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        previewLabel.textColor = .labelColor
         previewLabel.alignment = .right
-        previewLabel.lineBreakMode = .byClipping
+        // 超宽时从头截断并显示前导省略号（与 Windows 的 TruncateToFitFromStart 对齐）；
+        // 不用 byClipping 硬裁，那会切出半个字形。压缩阻力放低，超宽时标签才会被
+        // 压到 clipView 宽度触发截断；短文本时靠 required 拥抱保持右对齐原宽。
+        previewLabel.lineBreakMode = .byTruncatingHead
         previewLabel.maximumNumberOfLines = 1
         previewLabel.cell?.usesSingleLineMode = true
         previewLabel.cell?.wraps = false
@@ -570,7 +610,7 @@ final class RecordingHUDController: NSWindowController {
         previewLabel.alphaValue = 0
         previewLabel.translatesAutoresizingMaskIntoConstraints = false
         previewLabel.setContentHuggingPriority(.required, for: .horizontal)
-        previewLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewClipView.addSubview(previewLabel)
 
         contentView.addSubview(effectView)

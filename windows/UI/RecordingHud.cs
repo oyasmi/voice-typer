@@ -10,7 +10,7 @@ namespace VoiceTyper.UI;
 
 /// <summary>
 /// 无边框、置顶、不抢焦点的录音指示器。
-/// 上方一行：呼吸红点 + 状态文字（"录音中..." / "识别中..."）+ 计时。
+/// 上方一行：呼吸红点 + 状态文字（"录音中" / "识别中"）+ 计时。
 /// 下方一行：右对齐流式预览，超长右起截断（保留尾部）。
 ///
 /// 与 <c>client-server/client_windows_native/UI/RecordingHud.cs</c> 相比的两处增量（见 windows/DESIGN.md §4.1）：
@@ -25,8 +25,10 @@ internal sealed class RecordingHud : Form
     private HudMode _mode = HudMode.Recording;
     private double _pulsePhase;
     private string _preview = "";
-    private string _statusText = "录音中...";
-    private string _elapsedText = "0s";
+    private string _statusText = "录音中";
+    private string _elapsedText = "";
+    /// <summary>状态文字是否处于 FlashWarning 的警示色闪现期（约 1.2s）。</summary>
+    private bool _statusWarning;
     private readonly Font _statusFont;
     private readonly Font _timerFont;
     private readonly Font _previewFont;
@@ -47,9 +49,11 @@ internal sealed class RecordingHud : Form
         BackColor = Color.FromArgb(20, 20, 22);
         DoubleBuffered = true;
 
-        _statusFont = new Font("Segoe UI", 10f, FontStyle.Regular);
+        // 层级约定与 macOS 一致：预览文字是 HUD 的正文（用户实时校对识别结果），
+        // 字号与亮度都高于顶行的状态提示（呼吸点/波形已在传达录音状态）。
+        _statusFont = new Font("Segoe UI", 9.5f, FontStyle.Regular);
         _timerFont = new Font("Consolas", 9f, FontStyle.Regular);
-        _previewFont = new Font("Segoe UI", 9f, FontStyle.Regular);
+        _previewFont = new Font("Segoe UI", 10f, FontStyle.Regular);
 
         HandleCreated += (_, _) =>
         {
@@ -72,7 +76,8 @@ internal sealed class RecordingHud : Form
         {
             _pulsePhase = (_pulsePhase + 0.10) % (Math.PI * 2);
             var elapsed = (int)(DateTime.UtcNow - _startedAt).TotalSeconds;
-            var newText = $"{elapsed}s";
+            // 首秒不显示（与 macOS 的 timeString 对齐），避免 "0s"→"1s" 的无谓跳变。
+            var newText = elapsed > 0 ? $"{elapsed}s" : "";
             if (newText != _elapsedText)
             {
                 _elapsedText = newText;
@@ -99,10 +104,10 @@ internal sealed class RecordingHud : Form
         CancelWarningRestore();
 
         _mode = HudMode.Recording;
-        _statusText = "录音中...";
+        _statusText = "录音中";
         _preview = "";
         _startedAt = DateTime.UtcNow;
-        _elapsedText = "0s";
+        _elapsedText = "";
         _pulsePhase = 0;
         PositionNearForegroundWindow();
 
@@ -119,7 +124,10 @@ internal sealed class RecordingHud : Form
         CancelTransientHide();
         CancelWarningRestore();
         _mode = HudMode.Recognizing;
-        _statusText = "识别中...";
+        _statusText = "识别中";
+        // 松键后冻结计时并停止重绘（与 macOS 对齐）：点为静态橙色、无波形、计时不走，
+        // 继续 20fps Invalidate 只是无谓的空刷。下次 ShowRecording 会重新 Start。
+        _timer.Stop();
         Invalidate();
     }
 
@@ -151,6 +159,7 @@ internal sealed class RecordingHud : Form
     /// <summary>
     /// 录音中或识别中的非致命提示（如预览失败、上一段听写尚未完成）。仅闪烁状态文字，
     /// 约 1.2s 后恢复；两个阶段都要能看到，否则识别中按热键会得到完全无反馈的"死键"观感。
+    /// 警告是状态行上唯一必须被注意的内容：闪现期临时升为警示色（与 macOS 对齐）。
     /// </summary>
     public void FlashWarning(string message)
     {
@@ -158,6 +167,7 @@ internal sealed class RecordingHud : Form
 
         CancelWarningRestore();
         _statusText = string.IsNullOrEmpty(message) ? "识别提示" : message;
+        _statusWarning = true;
         Invalidate();
 
         var timer = new System.Windows.Forms.Timer { Interval = 1200 };
@@ -166,10 +176,11 @@ internal sealed class RecordingHud : Form
             timer.Stop();
             timer.Dispose();
             _warningRestoreTimer = null;
+            _statusWarning = false;
             _statusText = _mode switch
             {
-                HudMode.Recording => "录音中...",
-                HudMode.Recognizing => "识别中...",
+                HudMode.Recording => "录音中",
+                HudMode.Recognizing => "识别中",
                 _ => _statusText,
             };
             Invalidate();
@@ -217,6 +228,8 @@ internal sealed class RecordingHud : Form
         _warningRestoreTimer?.Stop();
         _warningRestoreTimer?.Dispose();
         _warningRestoreTimer = null;
+        // 警告被阶段切换打断时一并回落警示色，避免橙色被带进下一个状态。
+        _statusWarning = false;
     }
 
     /// <summary>透明度是唯一可在运行期热更新的外观项；由设置页预览调用。</summary>
@@ -301,7 +314,11 @@ internal sealed class RecordingHud : Form
             g.FillEllipse(dotBrush, paddingX, paddingY + 5, 10, 10);
         }
 
-        using var statusBrush = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+        // 状态/计时属装饰行（约 65% 白），预览是正文行（约 92% 白），层级与 macOS 对齐。
+        // FlashWarning 闪现期状态文字升为不透明警示橙，确保警告被注意到。
+        using var statusBrush = new SolidBrush(_statusWarning
+            ? Color.FromArgb(255, 250, 190, 40)
+            : Color.FromArgb(165, 255, 255, 255));
         g.DrawString(_statusText, _statusFont, statusBrush, paddingX + 16, paddingY);
 
         using var timerBrush = new SolidBrush(Color.FromArgb(160, 255, 255, 255));
@@ -316,7 +333,7 @@ internal sealed class RecordingHud : Form
 
         if (!string.IsNullOrEmpty(_preview))
         {
-            using var previewBrush = new SolidBrush(Color.FromArgb(165, 255, 255, 255));
+            using var previewBrush = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
             var availableWidth = Width - paddingX * 2;
             var preview = TruncateToFitFromStart(g, _preview, _previewFont, availableWidth);
             var previewSize = g.MeasureString(preview, _previewFont);
