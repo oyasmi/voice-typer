@@ -139,7 +139,38 @@ DMG_NAME="$APP_NAME-$VERSION-macOS-arm64.dmg"
 
 # 必须在装订（若有）完成之后才打最终包，否则发出去的 zip/dmg 里的 .app 不含公证凭据，
 # 用户离线时 Gatekeeper 仍会拦截。
-(cd "$(dirname "$APP_PATH")" && /usr/bin/zip -r -q "$DIST_DIR/$ZIP_NAME" "$APP_NAME.app")
+#
+# 用 `ditto -c -k --keepParent` 而不是 `zip -r`：与上面公证提交包完全一致的打包方式。
+# 普通 `zip -r` 会把 framework bundle 里的符号链接（Versions/Current、顶层 Headers/
+# Resources/二进制 等）按普通文件展开，解压后的 .app 因 framework 结构损坏而无法启动，
+# 也会破坏已装订的签名。`ditto -c -k` 保留符号链接与 macOS 扩展属性。
+(cd "$(dirname "$APP_PATH")" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$DIST_DIR/$ZIP_NAME")
+
+# 结构自检（不依赖签名/公证环境）：把刚打好的 ZIP 解开，确认 framework bundle 的符号
+# 链接都还在且不悬空。普通 `zip -r` 打出来的包在这里会因"没有任何符号链接"而失败。
+verify_zip_symlinks() {
+  local zip_path="$1"
+  local check_dir
+  check_dir=$(mktemp -d)
+  /usr/bin/ditto -x -k "$zip_path" "$check_dir"
+  local link_count broken=0
+  link_count=$(find "$check_dir" -type l | wc -l | tr -d ' ')
+  while IFS= read -r link; do
+    [ -e "$link" ] || { echo "  悬空符号链接: ${link#"$check_dir"/}" >&2; broken=1; }
+  done < <(find "$check_dir" -type l)
+  rm -rf "$check_dir"
+  if [ "$link_count" -eq 0 ]; then
+    echo "错误: 最终 ZIP 中没有任何符号链接，framework bundle 结构已被破坏" >&2
+    return 1
+  fi
+  if [ "$broken" -ne 0 ]; then
+    echo "错误: 最终 ZIP 中存在悬空符号链接" >&2
+    return 1
+  fi
+  echo "ZIP 结构自检通过（$link_count 个符号链接完整保留）"
+}
+
+verify_zip_symlinks "$DIST_DIR/$ZIP_NAME"
 
 DMG_STAGE="$BUILD_DIR/dmg-root"
 mkdir -p "$DMG_STAGE"

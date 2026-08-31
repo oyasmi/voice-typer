@@ -14,8 +14,13 @@ final class VoiceTyperControllerTests: XCTestCase {
         var onCancel: (() -> Void)?
         private(set) var startCallCount = 0
         private(set) var stopCallCount = 0
+        /// 非 nil 时，下一次 `start` 抛出该错误（模拟 tap 创建失败/超时）。
+        var startError: Error?
 
-        func start(with hotkey: HotkeyConfig) throws { startCallCount += 1 }
+        func start(with hotkey: HotkeyConfig) throws {
+            startCallCount += 1
+            if let startError { throw startError }
+        }
         func stop() { stopCallCount += 1 }
     }
 
@@ -340,6 +345,24 @@ final class VoiceTyperControllerTests: XCTestCase {
         harness.hotkey.onRelease?()
         try? await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(harness.textInsertion.insertedTexts, ["恢复正常"])
+    }
+
+    // MARK: - 恢复热键监听失败：isStarted 必须复位，不能"显示就绪但热键已死"
+
+    func testResumeHotkeyListeningFailureResetsIsStarted() async {
+        let harness = await makeHarness()
+        XCTAssertTrue(harness.controller.isStarted)
+
+        harness.controller.suspendHotkeyListening()
+        harness.hotkey.startError = StubError()
+
+        XCTAssertThrowsError(try harness.controller.resumeHotkeyListening())
+        XCTAssertFalse(harness.controller.isStarted, "恢复失败后 isStarted 必须复位为 false，交由外层重试")
+
+        // 恢复正常后，重新 start() 能把监听真正拉起。
+        harness.hotkey.startError = nil
+        XCTAssertNoThrow(try harness.controller.start())
+        XCTAssertTrue(harness.controller.isStarted)
     }
 
     /// stop()：控制器整体停止时若识别仍在飞，必须立刻收尾（不发额外状态变化），

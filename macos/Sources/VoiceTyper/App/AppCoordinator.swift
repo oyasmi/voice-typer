@@ -130,7 +130,14 @@ final class AppCoordinator {
                     self.voiceTyperController?.suspendHotkeyListening()
                     return true
                 } else {
-                    try? self.voiceTyperController?.resumeHotkeyListening()
+                    do {
+                        try self.voiceTyperController?.resumeHotkeyListening()
+                    } catch {
+                        // 恢复失败：控制器已把自己复位成未运行，reevaluateReadiness() 会
+                        // 通过 activateReadyState() 的 start() 重试路径重新拉起，仍失败则落
+                        // 到 .error 让用户看到，而不是"显示就绪但热键已死"（R4-xx）。
+                        AppLog.hotkey.error("恢复热键监听失败，交由就绪重评重试: \(error.localizedDescription, privacy: .public)")
+                    }
                     Task { await self.reevaluateReadiness() }
                     return true
                 }

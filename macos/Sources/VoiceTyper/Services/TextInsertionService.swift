@@ -38,6 +38,30 @@ final class TextInsertionService {
     private let pasteboard = NSPasteboard.general
     private var pendingRestoreTask: Task<Void, Never>?
 
+    /// 上一次粘贴兜底尚未完成的恢复：记录当时备份的「用户原始剪贴板」快照，以及我们
+    /// 写进剪贴板的临时文本和写入后的 changeCount。在临时恢复窗口内再次走粘贴兜底时，
+    /// 若剪贴板仍是这次的临时文本（用户没有复制新内容），下一次必须**继承**这份原始
+    /// 快照，而不是把当前这段听写临时文本当成「用户原始内容」快照下来——否则连续两次
+    /// 兜底会把用户最初的剪贴板永久覆盖掉。
+    private struct PendingRestore {
+        let snapshot: PasteboardSnapshot
+        let writtenText: String
+        let writtenChangeCount: Int
+    }
+    private var pendingRestore: PendingRestore?
+
+    /// 纯函数：连续粘贴兜底时，判断本次是否应继承上一次 pending 的原始快照。
+    /// true = 剪贴板仍是上一段听写写入的临时文本且用户未复制新内容，应继承；
+    /// false = 剪贴板已变化（用户复制了新内容，或已被别处改写），应重新快照当前内容。
+    nonisolated static func shouldInheritPendingSnapshot(
+        currentChangeCount: Int,
+        currentString: String?,
+        pendingWrittenChangeCount: Int,
+        pendingWrittenText: String
+    ) -> Bool {
+        currentChangeCount == pendingWrittenChangeCount && currentString == pendingWrittenText
+    }
+
     /// - Parameter expectedFrontmostPID: 录音开始时记录的前台应用 pid；插入前若与
     ///   当前前台应用不一致，说明用户已切换焦点，直接放弃插入、只复制到剪贴板。
     func insert(text: String, expectedFrontmostPID: pid_t?) -> TextInsertionResult {
@@ -56,6 +80,7 @@ final class TextInsertionService {
     func copyToClipboard(text: String) {
         pendingRestoreTask?.cancel()
         pendingRestoreTask = nil
+        pendingRestore = nil
         pasteboard.clearContents()
         _ = writeConcealedString(text)
     }
@@ -169,21 +194,24 @@ final class TextInsertionService {
         pendingRestoreTask?.cancel()
         pendingRestoreTask = nil
 
-        let backup = snapshotPasteboard()
+        let backup = backupSnapshotInheritingPendingIfNeeded()
         pasteboard.clearContents()
         guard writeConcealedString(text) else {
             // 剪贴板已被 clearContents() 清空，必须先恢复用户原内容，
             // 否则失败之余还会把用户原剪贴板永久丢失（F-10）。
             restorePasteboardContentsUnconditionally(backup)
+            pendingRestore = nil
             return false
         }
 
         let changeCount = pasteboard.changeCount
         guard simulatePaste() else {
             restorePasteboardContentsUnconditionally(backup)
+            pendingRestore = nil
             return false
         }
 
+        pendingRestore = PendingRestore(snapshot: backup, writtenText: text, writtenChangeCount: changeCount)
         pendingRestoreTask = Task { @MainActor [weak self] in
             // changeCount 守卫已保证不会覆盖用户在此期间的新复制内容，
             // 延长只是给慢应用更多时间读取剪贴板（原 500ms 对部分应用偏短）。
@@ -194,9 +222,25 @@ final class TextInsertionService {
                 expectedText: text,
                 expectedChangeCount: changeCount
             )
+            self?.pendingRestore = nil
         }
 
         return true
+    }
+
+    /// 取备份快照：若仍处于上一次粘贴兜底的临时恢复窗口内、且剪贴板未被用户改动，
+    /// 继承上一次备份的「用户原始快照」；否则重新快照当前剪贴板内容。
+    private func backupSnapshotInheritingPendingIfNeeded() -> PasteboardSnapshot {
+        if let pending = pendingRestore,
+           Self.shouldInheritPendingSnapshot(
+               currentChangeCount: pasteboard.changeCount,
+               currentString: pasteboard.string(forType: .string),
+               pendingWrittenChangeCount: pending.writtenChangeCount,
+               pendingWrittenText: pending.writtenText
+           ) {
+            return pending.snapshot
+        }
+        return snapshotPasteboard()
     }
 
     private func restorePasteboardContentsUnconditionally(_ snapshot: PasteboardSnapshot) {

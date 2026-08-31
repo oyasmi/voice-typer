@@ -135,9 +135,19 @@ final class VoiceTyperController {
     }
 
     /// 恢复热键监听。控制器已 `start()` 过才有效。
+    ///
+    /// 恢复失败时把 `isRunning` 复位为 false 再把错误抛出：`suspendHotkeyListening()`
+    /// 已经停掉了底层 tap，如果这里失败又不复位，控制器会"自认为在跑、实际热键已死"，
+    /// UI 却显示就绪。复位后 `isStarted` 变为 false，交由 `AppCoordinator` 既有的
+    /// `activateReadyState()` → `start()` 重试路径重新拉起（失败会落到 `.error`）。
     func resumeHotkeyListening() throws {
         guard isRunning else { return }
-        try hotkeyService.start(with: config.hotkey)
+        do {
+            try hotkeyService.start(with: config.hotkey)
+        } catch {
+            isRunning = false
+            throw error
+        }
     }
 
     // MARK: - 录音流程

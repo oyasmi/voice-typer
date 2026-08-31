@@ -57,13 +57,29 @@ actor LLMCorrector {
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 使用 LLM 校对识别文本中的显著错误；任何失败都原样返回输入文本。
-    func correct(_ text: String) async -> String {
+    /// 校对结果：区分"成功产出（文本可能与原文相同）"与"失败回落原文"。
+    /// 调用方在 `.fellBack` 时应按 DESIGN.md §「LLM 校对」约定触发 `onWarning`，
+    /// 让用户知道这次上屏的是未经校对的识别原文。
+    enum CorrectionOutcome {
+        case corrected(String)
+        case fellBack(String)
+
+        var text: String {
+            switch self {
+            case .corrected(let value), .fellBack(let value):
+                return value
+            }
+        }
+    }
+
+    /// 使用 LLM 校对识别文本中的显著错误；任何失败（网络/超时/鉴权/解析）都回落到
+    /// 输入原文，并以 `.fellBack` 告知调用方，绝不让校对失败丢掉已经识别出的文本。
+    func correct(_ text: String) async -> CorrectionOutcome {
         do {
             return try await correctOrThrow(text)
         } catch {
             AppLog.llm.warning("LLM 校对失败，使用原始文本: \(String(describing: error), privacy: .public)")
-            return text
+            return .fellBack(text)
         }
     }
 
@@ -71,10 +87,13 @@ actor LLMCorrector {
     /// 原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，而不是笼统的"未通过"，
     /// 否则"网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
     func test(_ text: String) async throws -> String {
-        try await correctOrThrow(text)
+        try await correctOrThrow(text).text
     }
 
-    private func correctOrThrow(_ text: String) async throws -> String {
+    /// 抛出：网络/超时/鉴权/HTTP/解析异常。返回：
+    /// - `.corrected` 模型给出非空校对文本；
+    /// - `.fellBack` 语义回落原文（`finish_reason==length` 截断、空 content、剥标签后为空）。
+    private func correctOrThrow(_ text: String) async throws -> CorrectionOutcome {
         // 校对输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         // 中文大致 1 字 ≈ 1~2 token，留足冗余。
         let dynamicMaxTokens = max(config.maxTokens, text.count * 2 + 128)
@@ -124,7 +143,7 @@ actor LLMCorrector {
 
         if (first["finish_reason"] as? String) == "length" {
             AppLog.llm.warning("LLM 输出被 max_tokens 截断，放弃修正并返回原文")
-            return text
+            return .fellBack(text)
         }
 
         content = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -136,9 +155,9 @@ actor LLMCorrector {
         // 剥标签之后再判空：tags-only 响应（如 `<asr_text>\n</asr_text>`）剥离前非空、
         // 剥离后才变空，若判空放在剥标签前会漏判这种情况（R2-08）。
         if content.isEmpty {
-            return text
+            return .fellBack(text)
         }
-        return content
+        return .corrected(content)
     }
 
     enum LLMError: LocalizedError {

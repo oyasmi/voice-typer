@@ -75,21 +75,37 @@ final class LocalASRSession {
         ensureBufferIfPossible()
         guard let buffer else {
             // 引擎仍在加载：先攒着，下次 sendAudio（或 finalize）时补上。
-            pendingAudio.append(contentsOf: samples)
+            // pendingAudio 同样严格不超过单段上限——引擎长时间不就绪时不能无限积累
+            // （R3-03 同源）；单个超大 chunk 也只追加剩余容量内的部分。
+            pendingAudio.append(contentsOf: acceptWithinCap(samples, currentCount: pendingAudio.count))
             return
         }
 
-        if buffer.sampleCount >= Self.maxSessionSamples {
-            if !capped {
-                capped = true
-                onWarning?("录音已达 \(Self.maxSessionSamples / 16000) 秒上限，自动结束本次听写")
-                onSessionCapped?()
-            }
-            return
-        }
+        let accepted = acceptWithinCap(samples, currentCount: buffer.sampleCount)
+        guard !accepted.isEmpty else { return }
 
-        buffer.append(samples)
+        buffer.append(accepted)
         schedulePreview()
+    }
+
+    /// 统一的单段上限裁剪：pendingAudio 与已创建 buffer 共用。
+    /// - 返回可安全追加的样本前缀，保证 `currentCount + 返回值.count <= maxSessionSamples`，
+    ///   即单个 chunk 也不会跨越上限。
+    /// - 仅当本次 chunk **严格超过**剩余容量时触发一次 `onWarning` + `onSessionCapped`
+    ///   （控制器据此走与松键相同的收尾路径）；恰好填满不触发，保留"下一入口才触发"的
+    ///   既有兼容语义。
+    private func acceptWithinCap(_ samples: [Float], currentCount: Int) -> [Float] {
+        let remaining = max(0, Self.maxSessionSamples - currentCount)
+        guard samples.count > remaining else { return samples }
+        triggerCapOnce()
+        return Array(samples.prefix(remaining))
+    }
+
+    private func triggerCapOnce() {
+        guard !capped else { return }
+        capped = true
+        onWarning?("录音已达 \(Self.maxSessionSamples / 16000) 秒上限，自动结束本次听写")
+        onSessionCapped?()
     }
 
     /// - Parameter timeout: 等待识别完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的
@@ -218,9 +234,15 @@ final class LocalASRSession {
         onPartial?(text)
         Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
-            let corrected = await llmCorrector.correct(text)
+            let outcome = await llmCorrector.correct(text)
             guard !self.closed else { return }
-            self.onFinal?(corrected)
+            if case .fellBack = outcome {
+                // DESIGN.md 约定：校对失败回落原文时要给用户一个非致命提示。
+                // 这条 warning 可能在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，
+                // 不引入额外的 UI 调度。
+                self.onWarning?("智能校对未成功，已使用识别原文")
+            }
+            self.onFinal?(outcome.text)
         }
     }
 }

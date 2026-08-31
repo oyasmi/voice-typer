@@ -164,6 +164,128 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(engine.callSampleCounts.last, 120 * 16_000, "超过上限后的样本不应被计入 buffer")
     }
 
+    /// 引擎长时间未就绪时，pendingAudio 也必须受单段上限约束：达到上限只触发一次
+    /// warning + onSessionCapped，之后的样本静默丢弃，正常收尾语义不变。
+    func testEngineNotReadyPendingAudioAlsoRespectsSessionCap() async {
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil)
+
+        var warnings: [String] = []
+        var cappedCount = 0
+        session.onWarning = { warnings.append($0) }
+        session.onSessionCapped = { cappedCount += 1 }
+
+        // 恰好喂满上限：这一次 append 本身不触发（检查在下一次入口）。
+        session.sendAudio([Float](repeating: 0, count: 120 * 16_000))
+        XCTAssertEqual(cappedCount, 0)
+
+        session.sendAudio([Float](repeating: 0, count: 1_000))
+        XCTAssertEqual(cappedCount, 1)
+        XCTAssertEqual(warnings.count, 1)
+
+        session.sendAudio([Float](repeating: 0, count: 1_000))
+        XCTAssertEqual(cappedCount, 1, "上限回调只应触发一次")
+        XCTAssertEqual(warnings.count, 1)
+    }
+
+    /// 跨界 chunk：buffer 已到 max-1，再来 2 个样本。必须只追加 1 个（严格不超过上限）
+    /// 并立即触发一次 cap/warning，而不是让 chunk 跨过上限、计数变成 max+1。
+    func testBufferChunkCrossingCapIsClippedAndTriggersCapOnce() async {
+        let max = 120 * 16_000
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "" }
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+
+        var warnings: [String] = []
+        var cappedCount = 0
+        session.onWarning = { warnings.append($0) }
+        session.onSessionCapped = { cappedCount += 1 }
+
+        session.sendAudio([Float](repeating: 0, count: max - 1))
+        XCTAssertEqual(cappedCount, 0)
+
+        // 剩余容量 1，来 2 个：追加 1 个后立即触发。
+        session.sendAudio([Float](repeating: 0, count: 2))
+        XCTAssertEqual(cappedCount, 1)
+        XCTAssertEqual(warnings.count, 1)
+
+        // 之后继续发也不再触发。
+        session.sendAudio([Float](repeating: 0, count: 5))
+        XCTAssertEqual(cappedCount, 1)
+
+        var finalText: String?
+        session.onFinal = { finalText = $0 }
+        session.finalize(timeout: 5)
+        await poll(timeout: 2) { finalText != nil }
+        XCTAssertEqual(engine.callSampleCounts.last, max, "跨界 chunk 必须被裁剪到恰好上限，不能是 max+1")
+    }
+
+    /// 引擎未就绪时，首个 pendingAudio chunk 本身就超过上限：只攒到上限、裁掉多余部分，
+    /// 触发一次 cap/warning；引擎就绪后 finalize 的样本数恰好等于上限。
+    func testEngineNotReadyOversizedFirstPendingChunkIsClippedToCap() async {
+        let max = 120 * 16_000
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "final-text" }
+        var engineAvailable = false
+        let session = LocalASRSession(
+            asrQueue: makeQueue(),
+            engineAccessor: { engineAvailable ? engine : nil },
+            llmCorrector: nil
+        )
+
+        var warnings: [String] = []
+        var cappedCount = 0
+        session.onWarning = { warnings.append($0) }
+        session.onSessionCapped = { cappedCount += 1 }
+
+        session.sendAudio([Float](repeating: 0, count: max + 5_000))
+        XCTAssertEqual(cappedCount, 1)
+        XCTAssertEqual(warnings.count, 1)
+
+        session.sendAudio([Float](repeating: 0, count: 1_000))
+        XCTAssertEqual(cappedCount, 1, "cap 只触发一次")
+
+        var finalText: String?
+        session.onFinal = { finalText = $0 }
+        session.finalize(timeout: 5)
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        engineAvailable = true
+
+        await poll(timeout: 2) { finalText != nil }
+        XCTAssertEqual(finalText, "final-text")
+        XCTAssertEqual(engine.callSampleCounts.last, max, "pendingAudio 必须被裁剪到恰好上限")
+    }
+
+    /// LLM 校对失败回落原文时，LocalASRSession 必须调用 onWarning（DESIGN.md 约定），
+    /// 且最终仍以原文调用 onFinal。
+    func testLLMFallbackTriggersWarningAndFinalizesWithOriginalText() async {
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "raw-asr-text" }
+
+        StubURLProtocol.handler = { _ in (500, "boom") }
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [StubURLProtocol.self]
+        let corrector = LLMCorrector(
+            config: LLMCorrector.Config(
+                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
+                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
+            ),
+            urlSession: URLSession(configuration: sessionConfig)
+        )
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: corrector)
+
+        var warnings: [String] = []
+        var finalText: String?
+        session.onWarning = { warnings.append($0) }
+        session.onFinal = { finalText = $0 }
+
+        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.finalize(timeout: 5)
+
+        await poll(timeout: 3) { finalText != nil }
+        XCTAssertEqual(finalText, "raw-asr-text")
+        XCTAssertTrue(warnings.contains("智能校对未成功，已使用识别原文"))
+    }
+
     // MARK: - close() 后的迟到回调抑制
 
     func testCloseSuppressesLateCallbacksFromInFlightWork() async {

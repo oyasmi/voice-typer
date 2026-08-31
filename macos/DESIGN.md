@@ -603,7 +603,11 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
    ORT 版本/构建行为变化时兜底，不是必需步骤（推翻了此前"必须补"的预判）。
 4. 重新 adhoc 签名 `codesign --force --deep -s -`（若 lipo 真的执行过会破坏签名，
    Apple Silicon 强制要求有效签名；未执行时重签名也无害）
-5. 打包 `VoiceTyper-<ver>-macOS-arm64.{zip,dmg}`
+5. 打包 `VoiceTyper-<ver>-macOS-arm64.{zip,dmg}`。ZIP 用
+   `ditto -c -k --keepParent`（与公证提交包一致），不用 `zip -r`：后者会把
+   `onnxruntime.framework` 里的符号链接展开成普通文件，解压后 .app 因 framework
+   结构损坏无法启动、已装订签名也被破坏。打包后有一步 `verify_zip_symlinks`
+   结构自检（解开 ZIP 确认符号链接存在且不悬空），不依赖签名/公证环境。
 
 **实测体积**（`build_xcode.sh` 完整跑通一次的真实结果，不含模型）：
 App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比最初预估更小，
