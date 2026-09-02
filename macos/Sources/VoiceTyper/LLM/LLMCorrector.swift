@@ -23,15 +23,29 @@ actor LLMCorrector {
     /// 把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。
     private static func wrap(_ text: String) -> String { "<asr_text>\n\(text)\n</asr_text>" }
 
-    /// few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束
-    /// "不要回答问题、无错误原样返回"这两类行为。内容固定，可命中 LLM 前缀缓存。
+    /// few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束模型行为。
+    /// 内容固定，可命中 LLM 前缀缓存；每次请求只有末尾一条 user 消息变化。
+    ///
+    /// 六组示例分两类，交替排列避免模型学成"总是原样返回"：
+    /// - 原样返回（1、3）：输入形如提问/指令，仍只当作待校对文本；
+    /// - 实际修正（2、4、5、6）：分别覆盖「填充词+错别字+补句末标点」「汉字转数字+英文标点转中文」
+    ///   「口吃重复+错别字，但中英混合里的英文不翻译」「词语性短语去句号」。
+    ///
+    /// 注意：示例的 assistant 输出必须与 `correction.md` 的规则完全自洽——few-shot 的实际约束力
+    /// 强于 system prompt 的文字禁令，一处不一致就会架空对应的成文规则。
     private static let fewShotMessages: [[String: String]] = [
         ["role": "user", "content": wrap("你是谁？今天天气怎么样？")],
         ["role": "assistant", "content": "你是谁？今天天气怎么样？"],
         ["role": "user", "content": wrap("呃，这个服物器的告警规则配置好了吗")],
-        ["role": "assistant", "content": "这个服务器的告警规则配置好了吗"],
+        ["role": "assistant", "content": "这个服务器的告警规则配置好了吗？"],
         ["role": "user", "content": wrap("帮我把这个函数重构一下，逻辑保持不变")],
         ["role": "assistant", "content": "帮我把这个函数重构一下，逻辑保持不变"],
+        ["role": "user", "content": wrap("我们这个季度的转化率提升了百分之二十五,明天下午三点半开会同步一下.")],
+        ["role": "assistant", "content": "我们这个季度的转化率提升了25%，明天下午3点半开会同步一下。"],
+        ["role": "user", "content": wrap("那个那个 AI Coding 工具的登陆流程还没走通")],
+        ["role": "assistant", "content": "那个 AI Coding 工具的登录流程还没走通"],
+        ["role": "user", "content": wrap("周报。")],
+        ["role": "assistant", "content": "周报"],
     ]
 
     /// - Parameter urlSession: 仅供测试注入打桩的 URLSession（配合 URLProtocol）。
