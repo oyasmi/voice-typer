@@ -9,10 +9,11 @@
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <AssemblyName>VoiceTyper</AssemblyName>
     <RootNamespace>VoiceTyper</RootNamespace>
-    <!-- 对齐 macOS 3.1.9（HEAD 5ac5aab）的行为基线一次性拉齐。两个平台此后各自计版，不再强制同步。 -->
-    <Version>3.1.0</Version>
-    <AssemblyVersion>3.1.0.0</AssemblyVersion>
-    <FileVersion>3.1.0.0</FileVersion>
+    <!-- 版本与 macOS 拉齐：3.1.0 对齐 macOS 3.1.9 行为基线；3.2.1 补齐 macOS
+         4c33be2「本地听写恢复路径加固」的 4 处直译（见 DESIGN.md §14）。 -->
+    <Version>3.2.1</Version>
+    <AssemblyVersion>3.2.1.0</AssemblyVersion>
+    <FileVersion>3.2.1.0</FileVersion>
     <Company>VoiceTyper</Company>
     <Product>VoiceTyper</Product>
     <Description>VoiceTyper —— 前后端一体的离线语音输入工具（Windows 原生，内嵌 SenseVoice-Small 识别引擎）</Description>

@@ -91,23 +91,40 @@ internal sealed class LocalAsrSession
         if (_buffer is null)
         {
             // 引擎仍在加载：先攒着，下次 SendAudio（或 FinalizeStream）时补上。
-            _pendingAudio.AddRange(samples);
+            // _pendingAudio 同样严格不超过单段上限——引擎长时间不就绪时不能无限积累
+            // （R3-03 同源）；单个超大 chunk 也只追加剩余容量内的部分。
+            _pendingAudio.AddRange(AcceptWithinCap(samples, _pendingAudio.Count));
             return;
         }
 
-        if (_buffer.SampleCount >= MaxSessionSamples)
-        {
-            if (!_capped)
-            {
-                _capped = true;
-                OnWarning?.Invoke($"录音已达 {MaxSessionSamples / AppConstants.TargetSampleRate} 秒上限，自动结束本次听写");
-                OnSessionCapped?.Invoke();
-            }
-            return;
-        }
+        var accepted = AcceptWithinCap(samples, _buffer.SampleCount);
+        if (accepted.Length == 0) return;
 
-        _buffer.Append(samples);
+        _buffer.Append(accepted);
         SchedulePreview();
+    }
+
+    /// <summary>
+    /// 统一的单段上限裁剪：<see cref="_pendingAudio"/> 与已创建 buffer 共用。
+    /// 返回可安全追加的样本前缀，保证 <c>currentCount + 返回值.Length &lt;= MaxSessionSamples</c>，
+    /// 即单个 chunk 也不会跨越上限。仅当本次 chunk **严格超过**剩余容量时触发一次
+    /// <see cref="OnWarning"/> + <see cref="OnSessionCapped"/>（控制器据此走与松键相同的收尾
+    /// 路径）；恰好填满不触发，保留"下一入口才触发"的既有兼容语义。
+    /// </summary>
+    private float[] AcceptWithinCap(float[] samples, int currentCount)
+    {
+        var remaining = Math.Max(0, MaxSessionSamples - currentCount);
+        if (samples.Length <= remaining) return samples;
+        TriggerCapOnce();
+        return samples[..remaining];
+    }
+
+    private void TriggerCapOnce()
+    {
+        if (_capped) return;
+        _capped = true;
+        OnWarning?.Invoke($"录音已达 {MaxSessionSamples / AppConstants.TargetSampleRate} 秒上限，自动结束本次听写");
+        OnSessionCapped?.Invoke();
     }
 
     /// <param name="timeout">
@@ -297,8 +314,14 @@ internal sealed class LocalAsrSession
 
     private async Task CorrectAndFinishAsync(string text)
     {
-        var corrected = await _llmCorrector!.CorrectAsync(text).ConfigureAwait(true);
+        var outcome = await _llmCorrector!.CorrectAsync(text).ConfigureAwait(true);
         if (_closed) return;
-        OnFinal?.Invoke(corrected);
+        if (outcome.DidFallBack)
+        {
+            // DESIGN.md 约定：纠错失败回落原文时要给用户一个非致命提示。这条 warning 可能
+            // 在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，不引入额外的 UI 调度。
+            OnWarning?.Invoke("智能纠错未成功，已使用识别原文");
+        }
+        OnFinal?.Invoke(outcome.Text);
     }
 }

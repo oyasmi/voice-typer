@@ -42,6 +42,26 @@ internal sealed class TextInsertionService
     private CancellationTokenSource? _pendingRestoreCts;
 
     /// <summary>
+    /// 上一次粘贴兜底尚未完成的恢复：记录当时备份的「用户原始剪贴板」快照，以及我们写进
+    /// 剪贴板的临时文本和写入后的剪贴板序列号。在临时恢复窗口内再次走粘贴兜底时，若剪贴板
+    /// 仍是这次的临时文本（用户没有复制新内容），下一次必须**继承**这份原始快照，而不是把
+    /// 当前这段听写临时文本当成「用户原始内容」快照下来——否则连续两次兜底会把用户最初的
+    /// 剪贴板永久覆盖掉（对齐 macOS <c>TextInsertionService.PendingRestore</c>）。
+    /// </summary>
+    private sealed record PendingRestore(ClipboardSnapshot Snapshot, string WrittenText, uint WrittenSequence);
+    private PendingRestore? _pendingRestore;
+
+    /// <summary>
+    /// 纯函数：连续粘贴兜底时，判断本次是否应继承上一次 pending 的原始快照。
+    /// true = 剪贴板仍是上一段听写写入的临时文本且用户未复制新内容，应继承；
+    /// false = 剪贴板已变化（用户复制了新内容，或已被别处改写），应重新快照当前内容。
+    /// </summary>
+    internal static bool ShouldInheritPendingSnapshot(
+        uint currentSequence, string? currentText,
+        uint pendingWrittenSequence, string pendingWrittenText)
+        => currentSequence == pendingWrittenSequence && currentText == pendingWrittenText;
+
+    /// <summary>
     /// 一份剪贴板内容的真实快照：备份时立即遍历原剪贴板的每个格式并取走数据，
     /// 而不是持有对原剪贴板所有者的 COM 引用——原所有者进程若在恢复前退出，
     /// 持有引用的恢复会静默失败，用户原剪贴板内容永久丢失（W-08b）。
@@ -70,11 +90,12 @@ internal sealed class TextInsertionService
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
 
-        var backup = SnapshotClipboard();
+        var backup = BackupSnapshotInheritingPendingIfNeeded();
 
         if (!TryWriteConcealedText(text))
         {
             AppLog.Error("input", "写入剪贴板失败");
+            _pendingRestore = null;
             return TextInsertionResult.Failed;
         }
 
@@ -84,9 +105,11 @@ internal sealed class TextInsertionService
         {
             AppLog.Error("input", "SendInput 模拟 Ctrl+V 失败");
             RestoreClipboardSnapshotUnconditionally(backup);
+            _pendingRestore = null;
             return TextInsertionResult.Failed;
         }
 
+        _pendingRestore = new PendingRestore(backup, text, expectedSequence);
         var cts = new CancellationTokenSource();
         _pendingRestoreCts = cts;
         _ = Task.Run(async () =>
@@ -97,7 +120,11 @@ internal sealed class TextInsertionService
             }
             catch (OperationCanceledException) { return; }
 
-            UiDispatcher.Post(() => RestoreClipboardSnapshotIfUnchanged(backup, text, expectedSequence));
+            UiDispatcher.Post(() =>
+            {
+                RestoreClipboardSnapshotIfUnchanged(backup, text, expectedSequence);
+                _pendingRestore = null;
+            });
         });
 
         return TextInsertionResult.Inserted;
@@ -109,10 +136,32 @@ internal sealed class TextInsertionService
     {
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
+        _pendingRestore = null;
         if (!TryWriteConcealedText(text))
         {
             AppLog.Error("input", "兜底写入剪贴板失败");
         }
+    }
+
+    /// <summary>
+    /// 取备份快照：若仍处于上一次粘贴兜底的临时恢复窗口内、且剪贴板未被用户改动，继承上一次
+    /// 备份的「用户原始快照」；否则重新快照当前剪贴板内容。
+    /// </summary>
+    private ClipboardSnapshot BackupSnapshotInheritingPendingIfNeeded()
+    {
+        if (_pendingRestore is { } pending)
+        {
+            string? current = null;
+            try { current = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
+            catch { /* 读取失败按"已变化"处理，走重新快照 */ }
+            if (ShouldInheritPendingSnapshot(
+                    GetClipboardSequenceNumber(), current,
+                    pending.WrittenSequence, pending.WrittenText))
+            {
+                return pending.Snapshot;
+            }
+        }
+        return SnapshotClipboard();
     }
 
     private static bool TryWriteConcealedText(string text)

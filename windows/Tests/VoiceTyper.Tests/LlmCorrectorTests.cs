@@ -11,7 +11,7 @@ namespace VoiceTyper.Tests;
 /// <summary>
 /// 用 <see cref="HttpMessageHandler"/> 打桩验证：正常 / <c>finish_reason=length</c> / 5xx /
 /// 响应格式错误，均不应把异常抛给调用方——<see cref="LlmCorrector.CorrectAsync"/> 的契约是
-/// 任何失败都返回原文，不丢已识别出的文本。
+/// 任何失败都回落到原文（<c>DidFallBack==true</c>），不丢已识别出的文本。
 /// </summary>
 public class LlmCorrectorTests
 {
@@ -63,11 +63,12 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("修正后的文本", result);
+        Assert.False(result.DidFallBack);
+        Assert.Equal("修正后的文本", result.Text);
     }
 
     [Fact]
-    public async Task Correct_ReturnsOriginalText_WhenFinishReasonIsLength()
+    public async Task Correct_FallsBackToOriginalText_WhenFinishReasonIsLength()
     {
         var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -76,11 +77,12 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("原始文本", result);
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
     }
 
     [Fact]
-    public async Task Correct_ReturnsOriginalText_On5xxError()
+    public async Task Correct_FallsBackToOriginalText_On5xxError()
     {
         var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
         {
@@ -88,11 +90,12 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("原始文本", result);
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
     }
 
     [Fact]
-    public async Task Correct_ReturnsOriginalText_OnMalformedJson()
+    public async Task Correct_FallsBackToOriginalText_OnMalformedJson()
     {
         var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -100,7 +103,8 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("原始文本", result);
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
     }
 
     [Fact]
@@ -113,16 +117,18 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("修正后的文本", result);
+        Assert.False(result.DidFallBack);
+        Assert.Equal("修正后的文本", result.Text);
     }
 
     [Fact]
-    public async Task Correct_ReturnsOriginalText_OnTimeout()
+    public async Task Correct_FallsBackToOriginalText_OnTimeout()
     {
         var corrector = MakeCorrectorWithHandler(new ThrowingHandler(new TaskCanceledException("simulated timeout")), timeout: 1);
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("原始文本", result);
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
     }
 
     /// <summary>W-04（R2-08）：判空必须放在剥标签之后。<c>&lt;asr_text&gt;\n&lt;/asr_text&gt;</c>
@@ -137,7 +143,24 @@ public class LlmCorrectorTests
         });
 
         var result = await corrector.CorrectAsync("原始文本");
-        Assert.Equal("原始文本", result);
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
+    }
+
+    /// <summary>纠错成功但文本与原文完全一致（模型认为无需修改）：仍是 Corrected，不是 FellBack——
+    /// 调用方据此决定是否弹"未成功"提示，两者语义不能混。对齐 macOS <c>CorrectionOutcome</c>。</summary>
+    [Fact]
+    public async Task Correct_ReportsCorrected_WhenModelReturnsUnchangedText()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"choices":[{"message":{"content":"原始文本"},"finish_reason":"stop"}]}"""),
+        });
+
+        var result = await corrector.CorrectAsync("原始文本");
+        Assert.False(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
     }
 
     /// <summary>W-02：非 2xx 响应体可能回显了送去的识别文本，异常消息绝不能包含它，只暴露状态码。</summary>
@@ -179,5 +202,20 @@ public class LlmCorrectorTests
 
         var result = await corrector.TestAsync("原始文本");
         Assert.Equal("修正后的文本", result);
+    }
+
+    /// <summary>TestAsync 遇到语义回落（finish_reason=length）仍返回文本、不抛错——契约不变，
+    /// 只有真实失败（网络/鉴权/解析）才抛。对齐 macOS <c>testTestReturnsOriginalTextOnSemanticFallback</c>。</summary>
+    [Fact]
+    public async Task Test_ReturnsOriginalText_OnSemanticFallback()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"choices":[{"message":{"content":"截断"},"finish_reason":"length"}]}"""),
+        });
+
+        var result = await corrector.TestAsync("原始长文本");
+        Assert.Equal("原始长文本", result);
     }
 }

@@ -10,7 +10,7 @@
 > **必须在 P0 阶段用真实 Windows 硬件复测**——本次调研环境是 macOS，无 .NET SDK、无 Windows 机器，
 > 无法编译也无法跑分。凡是与性能、内存、产物体积相关的数字，都属于后者。
 >
-> **当前状态（2026-08，v3.1.0）**：本文 P1–P8 描述的工程已全部编码完成并合入仓库
+> **当前状态（2026-09，v3.2.1）**：本文 P1–P8 描述的工程已全部编码完成并合入仓库
 > （测试文件以 §8 更新后的清单为准），与 macOS 之间逐条盘点的 35 项差异也已完成代码层面的拉齐。
 > 但截至本文更新时：① 尚未在真实 Windows 设备上完成编译、安装与运行验证（见根 README「Windows」一节），
 > `dotnet build` / `dotnet test` 也尚无在任何环境跑通的记录；② §4.5 的全部性能/内存数字仍是外推估算；
@@ -46,7 +46,7 @@
 | 项目 | 产品名 | 配置目录 | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_windows_native/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `%APPDATA%\voice_typer\`（**不变**） | 3.0.0（**不变**） |
-| `windows/`（新，主分发版本） | **`VoiceTyper`** | **`%APPDATA%\VoiceTyper\`** | **3.1.0**（3.0.0 首发；3.1.0 完成向 macOS 3.1.9 的行为对齐，见 §13 与 D3） |
+| `windows/`（新，主分发版本） | **`VoiceTyper`** | **`%APPDATA%\VoiceTyper\`** | **3.2.1**（3.0.0 首发；3.1.0 完成向 macOS 3.1.9 的行为对齐；3.2.1 补齐 macOS 4c33be2 本地听写恢复加固，见 §13、§14 与 D3） |
 
 > 与 macOS 同构：老客户端改名让位，新一体化 App 接管 `VoiceTyper` 这个名字。
 > Windows 上没有 Bundle ID / TCC 那套以标识符为键的权限体系，改名的代价比 macOS 更低——
@@ -770,7 +770,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | --- | --- | --- | --- |
 | D1 | UI 栈 | ✅ **WinForms**（不是 WPF / WinUI 3） | 复用 1,022 行经过实战的 UI；"不抢焦点悬浮窗"已调通，不值得为观感重来一遍 |
 | D2 | .NET 版本 | ✅ **net10.0-windows** | .NET 8/9 于 2026-11-10 EOL；ORT 托管包提供 net8.0 资产，兼容无碍 |
-| D3 | 新 App 版本号 | ✅ 首发 3.0.0（与 `macos/` 对齐），现为 **3.1.0** | 老客户端改名为 `VoiceTyperClient` 后，其 3.0.0 归属另一条产品线，不冲突。备选是 4.0.0（更无歧义但与 macOS 脱节）。3.1.0 承载 §13 的行为对齐（W-32） |
+| D3 | 新 App 版本号 | ✅ 首发 3.0.0（与 `macos/` 对齐），现为 **3.2.1** | 老客户端改名为 `VoiceTyperClient` 后，其 3.0.0 归属另一条产品线，不冲突。3.1.0 承载 §13 的 35 项行为对齐（W-32）；3.2.1 承载 §14 对 macOS 4c33be2 的补齐。版本号与 macOS 保持拉齐 |
 | D4 | ORT 版本 | ✅ **钉 1.24.2**，与 `macos/` 一致 | 消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量；升级另开一次带金标准复测的变更 |
 | D5 | 执行提供者 | ✅ **仅 CPU EP** | DirectML 对动态 int8 支持差；Windows ML 要 Win11 24H2 且与直译策略冲突（记为 P2） |
 | D6 | FFT 实现 | ✅ **自写 512 点 radix-2**，不引数学库 | 固定尺寸、算法确定、有金标准兜底；比 macOS 的 vDSP 打包方案更简单 |
@@ -827,3 +827,35 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
   4 秒是估算值，需真机确认观感是否可接受。
 - **常驻内存/推理耗时的具体数字**：本节所有改动都不改变 §4.5 标注为"待实测"的结论——仍然需要
   P0 阶段的真机测量。
+
+---
+
+## 14. 与 macOS 3.2.1 的对齐（3.2.x）
+
+§13 把 Windows 拉齐到 macOS **3.1.9** 的行为基线。此后 macOS 到 3.2.1 之间只有一个提交带
+真实行为变更：`4c33be2 fix(macos): harden local dictation recovery paths`（3.2.0→3.2.1 之间的
+提交、以及 HUD 视觉层级、校对提示词等，均已随各自提交同步或不涉及 Windows）。本节把该提交的
+4 处加固逐行直译到 Windows：
+
+| # | 文件 | 加固点 | 直译要点 |
+| --- | --- | --- | --- |
+| 1 | `Asr/LocalAsrSession.cs` | 单段上限裁剪统一到 `AcceptWithinCap` | ① 引擎长时间未就绪时 `_pendingAudio` 也严格受 120s 上限约束，不再无限积累；② 跨界 chunk（`currentCount + chunk > 上限`）只追加剩余容量内的前缀，不让计数跨过上限；③ `TriggerCapOnce` 统一 warning + `OnSessionCapped`，恰好填满不触发（保留"下一入口才触发"的既有语义） |
+| 2 | `Llm/LlmCorrector.cs` | `CorrectAsync` 返回 `CorrectionOutcome` | 区分「纠错成功（文本可能与原文相同）」与「回落原文」（网络/超时/鉴权/解析失败，或 `finish_reason==length`/空 content/剥标签后为空的语义回落）。`TestAsync` 契约不变（返回 `.Text`，失败仍抛 `LlmException`） |
+| 3 | `Asr/LocalAsrSession.cs` | 纠错回落时发非致命提示 | `CorrectAndFinishAsync` 在 `outcome.DidFallBack` 时 `OnWarning?.Invoke("智能纠错未成功，已使用识别原文")`，再以原文 `OnFinal`。措辞沿用 Windows 的「纠错」（§13.1 有意分歧） |
+| 4 | `Services/TextInsertionService.cs` | 连续粘贴兜底继承 pending 快照 | 新增 `PendingRestore`（原始快照 + 写入的临时文本 + 写入后的剪贴板序列号）。临时恢复窗口内再次兜底、且剪贴板仍是上一段听写写入的临时文本（序列号 + 文本双重比对，纯函数 `ShouldInheritPendingSnapshot`）时，**继承**上一次的「用户原始快照」，避免连续两次兜底把用户最初的剪贴板永久覆盖 |
+
+附带：`Core/VoiceTyperController.cs` 的 `ResumeHotkeyListening` 在 `_hotkeyService.Start` 抛异常时
+复位 `_isRunning = false` 再抛出，对齐 macOS `resumeHotkeyListening` 的"恢复失败不留下
+自认为在跑、实际热键已死的状态"。Windows 当前经由 `AppCoordinator.ReloadAndReevaluateAsync`
+的整体 `Stop/Dispose/重建` 路径，未直接调用该方法（macOS 用 Suspend/Resume，Windows 用重建），
+此处修改为直译保真、防止未来接线时踩坑。
+
+macOS 4c33be2 里的 `build_xcode.sh`（`ditto` 替代 `zip -r` 保 framework 符号链接）纯属 macOS
+打包问题，Windows 走 Inno Setup 目录式部署、无 framework bundle，不涉及。
+
+### 14.1 测试
+
+- `Tests/VoiceTyper.Tests/LlmCorrectorTests.cs`：断言改为 `CorrectionOutcome`；新增「模型返回与原文一致的文本仍报 `Corrected` 而非 `FellBack`」。
+- `Tests/VoiceTyper.Tests/LocalAsrSessionCapTests.cs`（新）：`_pendingAudio` 上限裁剪与一次性触发（引擎返回 `null` 的同步路径，无需真实模型）。
+- `Tests/VoiceTyper.Tests/TextInsertionServiceTests.cs`（新）：`ShouldInheritPendingSnapshot` 的继承/不继承判定。
+- 未在真机上跑过 `dotnet test`（见 §13.2 的既有说明）。

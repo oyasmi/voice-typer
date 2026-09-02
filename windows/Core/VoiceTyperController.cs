@@ -127,14 +127,30 @@ internal sealed class VoiceTyperController : IDisposable
     /// </summary>
     public void SuspendHotkeyListening() => _hotkeyService.Stop();
 
-    /// <summary>恢复热键监听。<see cref="Start"/> 过才有效。</summary>
+    /// <summary>
+    /// 恢复热键监听。<see cref="Start"/> 过才有效。
+    ///
+    /// 恢复失败时把 <see cref="_isRunning"/> 复位为 false 再把异常抛出：
+    /// <see cref="SuspendHotkeyListening"/> 已经停掉了底层键盘钩子，如果这里失败又不复位，
+    /// 控制器会"自认为在跑、实际热键已死"，UI 却显示就绪。复位后交由外层
+    /// <c>AppCoordinator.ActivateReadyState()</c> → <see cref="Start"/> 的重试路径重新拉起
+    /// （失败会落到 .error）。对齐 macOS <c>VoiceTyperController.resumeHotkeyListening</c>。
+    /// </summary>
     public void ResumeHotkeyListening()
     {
         if (!_isRunning) return;
         _hotkeyService.OnPress = BeginRecording;
         _hotkeyService.OnRelease = FinishRecording;
         _hotkeyService.OnCancel = CancelByUser;
-        _hotkeyService.Start(_config.Hotkey);
+        try
+        {
+            _hotkeyService.Start(_config.Hotkey);
+        }
+        catch
+        {
+            _isRunning = false;
+            throw;
+        }
     }
 
     public void Stop()
