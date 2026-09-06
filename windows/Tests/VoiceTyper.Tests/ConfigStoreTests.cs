@@ -17,14 +17,13 @@ public class ConfigStoreTests
     public void Clone_IsDeepCopy_MutatingCloneDoesNotAffectOriginal()
     {
         var original = new AppConfig();
-        original.Hotkey.Modifiers.Add("ctrl");
 
         var clone = original.Clone();
         clone.Hotkey.Modifiers.Add("alt");
         clone.Asr.Language = "zh";
         clone.UI.Opacity = 0.5;
 
-        Assert.Single(original.Hotkey.Modifiers);
+        Assert.Equal(new[] { "ctrl" }, original.Hotkey.Modifiers);
         Assert.Equal("auto", original.Asr.Language);
         Assert.Equal(0.85, original.UI.Opacity);
     }
@@ -37,13 +36,14 @@ public class ConfigStoreTests
     }
 
     [Theory]
-    [InlineData("zh", AsrLanguage.Zh)]
-    [InlineData("EN", AsrLanguage.En)]
-    [InlineData("", AsrLanguage.Auto)]
-    [InlineData("bogus", AsrLanguage.Auto)]
-    public void AsrLanguageParse_FallsBackToAutoOnUnknown(string raw, AsrLanguage expected)
+    [InlineData("zh", "Zh")]
+    [InlineData("EN", "En")]
+    [InlineData("", "Auto")]
+    [InlineData("bogus", "Auto")]
+    public void AsrLanguageParse_FallsBackToAutoOnUnknown(string raw, string expected)
     {
-        Assert.Equal(expected, AsrLanguageExtensions.Parse(raw));
+        // 不在公开测试签名里出现 internal 枚举 AsrLanguage（否则 CS0051）；用名称字符串比对。
+        Assert.Equal(expected, AsrLanguageExtensions.Parse(raw).ToString());
     }
 
     [Fact]

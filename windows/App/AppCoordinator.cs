@@ -58,8 +58,11 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnQuit = () => Application.Exit();
         _tray.OnTogglePause = TogglePause;
 
-        _asrService.OnStateChange = _ => { _ = ReevaluateReadinessAsync(); };
+        _asrService.OnStateChange = OnAsrStateChanged;
     }
+
+    /// <summary>ASR 状态变化的统一入口：具名方法避免 lambda 形参名为 `_` 时把 Task 误赋给 AsrState（R0-1）。</summary>
+    private void OnAsrStateChanged(AsrState state) => _ = ReevaluateReadinessAsync();
 
     public void Start()
     {

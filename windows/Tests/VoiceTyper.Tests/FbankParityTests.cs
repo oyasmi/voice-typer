@@ -12,9 +12,10 @@ namespace VoiceTyper.Tests;
 /// <c>macos/scripts/dump_reference_fixtures.py</c> 生成）——两个平台的 fbank 实现共用同一份
 /// Python 参考输出，不需要各自造一遍。
 ///
-/// xUnit 2.x 没有干净的运行期动态跳过 API（不同于 macOS 侧的 <c>XCTSkip</c>），
-/// 缺夹具/缺模型时用提前 return 代替"跳过"，测试仍会显示为通过——这是本文件的已知局限，
-/// 效果上等价于 CI/无模型环境下不阻塞其余测试。
+/// 夹具分两类（R0-3）：<b>必需夹具</b>（<c>fbank_input/fbank_reference/fbank_parity_shapes</c>
+/// 等，已随 <c>macos/</c> 入库）缺失时直接 <see cref="Assert.Fail"/>，不允许静默跳过——
+/// 一个夹具路径配错的绿色 CI 不会告诉任何人；<b>需要真实模型</b>的用例（<c>am.mvn</c>）用
+/// xUnit 2.9 的 <c>Assert.Skip</c> 明确跳过并写清缺什么。
 /// </summary>
 public class FbankParityTests
 {
@@ -35,7 +36,7 @@ public class FbankParityTests
         var inputPath = FixturePath("fbank_input.f32");
         var refPath = FixturePath("fbank_reference.f32");
         var shapesPath = FixturePath("fbank_parity_shapes.json");
-        if (!File.Exists(inputPath) || !File.Exists(refPath) || !File.Exists(shapesPath)) return;
+        AssertRequiredFixtures(inputPath, refPath, shapesPath);
 
         var shapes = JsonSerializer.Deserialize<Shapes>(File.ReadAllText(shapesPath))!;
         var waveform = LoadFloats(inputPath);
@@ -87,11 +88,11 @@ public class FbankParityTests
         var inputPath = FixturePath("fbank_input.f32");
         var refPath = FixturePath("lfrcmvn_reference.f32");
         var shapesPath = FixturePath("fbank_parity_shapes.json");
-        if (!File.Exists(inputPath) || !File.Exists(refPath) || !File.Exists(shapesPath)) return;
+        AssertRequiredFixtures(inputPath, refPath, shapesPath);
 
         // 需要本机已有 am.mvn（下载过模型，或跑过 client-server/server/ 留下 ModelScope 缓存）。
         var bundle = ModelLocator.Locate("");
-        if (bundle is null) return;
+        Assert.SkipWhen(bundle is null, "缺少 am.mvn：未下载模型，无法比对 CMVN。运行 windows/scripts/fetch_model.ps1 后重试。");
 
         var shapes = JsonSerializer.Deserialize<Shapes>(File.ReadAllText(shapesPath))!;
         var waveform = LoadFloats(inputPath);
@@ -115,6 +116,17 @@ public class FbankParityTests
             }
         }
         Assert.True(maxDiff < 1e-3f, $"LFR+CMVN 最大逐点误差应 < 1e-3，实际 {maxDiff}");
+    }
+
+    private static void AssertRequiredFixtures(params string[] paths)
+    {
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path))
+            {
+                Assert.Fail($"缺少必需夹具: {path}（应由 macos/Tests/VoiceTyperTests/Fixtures/ 经 csproj 链接复制）");
+            }
+        }
     }
 
     private static float[] LoadFloats(string path)

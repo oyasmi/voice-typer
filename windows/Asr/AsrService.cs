@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using VoiceTyper.Core;
+using VoiceTyper.Llm;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.Asr;

@@ -4,6 +4,7 @@ using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using VoiceTyper.Core;
+using VoiceTyper.Support;
 
 namespace VoiceTyper.Asr;
 

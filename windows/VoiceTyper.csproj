@@ -39,6 +39,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 测试源码单独属于 Tests/VoiceTyper.Tests 工程；SDK 默认 glob 会把它编进主工程，
+         而主工程不引用 xUnit（R0-1）。首轮用局部排除把变更面压到最小。 -->
+    <Compile Remove="Tests/**/*.cs" />
+    <None Remove="Tests/**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Assets\icon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
