@@ -38,22 +38,12 @@ internal sealed class HotkeyService : IDisposable
     private IntPtr _hookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
     private HotkeyConfig? _hotkey;
-    private int _targetVk;
-    private ModifierMask _expectedModifiers;
-    private bool _isActive;
+    /// <summary>按键判定逻辑抽到 <see cref="HotkeyStateMachine"/>（纯逻辑、可单测，R2-1）。
+    /// 钩子回调只做注入过滤 + 委派 + 把动作异步投递到 UI 线程。</summary>
+    private HotkeyStateMachine? _stateMachine;
     private System.Windows.Forms.Timer? _healthTimer;
     /// <summary>最近一次钩子回调被系统调用的时间戳（<see cref="Environment.TickCount"/>）。</summary>
     private int _lastHookActivityTick;
-
-    [Flags]
-    private enum ModifierMask
-    {
-        None = 0,
-        Ctrl = 1,
-        Alt = 2,
-        Shift = 4,
-        Win = 8,
-    }
 
     public void Start(HotkeyConfig hotkey)
     {
@@ -66,9 +56,10 @@ internal sealed class HotkeyService : IDisposable
         }
 
         _hotkey = hotkey.Clone();
-        _targetVk = vk;
-        _expectedModifiers = BuildExpected(hotkey.Modifiers);
-        _isActive = false;
+        _stateMachine = new HotkeyStateMachine(vk, BuildExpected(hotkey.Modifiers));
+        // 钩子可能在用户已按住修饰键时（如自愈重装）安装：用一次 GetAsyncKeyState 播种初始
+        // 物理状态。这不同于"在事件里用 GetAsyncKeyState 推断释放"——只在安装这一刻取一次快照。
+        SeedPhysicalModifierState();
 
         _proc = HookCallback;
         var moduleHandle = GetModuleHandleW(null);
@@ -101,9 +92,7 @@ internal sealed class HotkeyService : IDisposable
         }
         _proc = null;
         _hotkey = null;
-        _targetVk = 0;
-        _expectedModifiers = ModifierMask.None;
-        _isActive = false;
+        _stateMachine = null;
     }
 
     /// <summary>
@@ -170,62 +159,43 @@ internal sealed class HotkeyService : IDisposable
         }
 
         int vk = (int)data.vkCode;
+        var (action, consume) = _stateMachine?.OnKey(vk, isKeyDown) ?? (HotkeyAction.None, false);
 
-        // vk != _targetVk 排除用户把 Esc 本身配置为热键主键的情况：那种配置下 Esc 的
-        // key-down auto-repeat 会不断命中这里，把刚触发的合法录音立刻当成取消处理。
-        if (_isActive && isKeyDown && vk == VK_ESCAPE && vk != _targetVk)
+        switch (action)
         {
-            _isActive = false;
-            UiDispatcher.PostAsync(() => OnCancel?.Invoke());
-            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-        }
-
-        if (isKeyDown && vk == _targetVk)
-        {
-            // 修饰键必须严格匹配（不多不少）
-            var currentMods = ReadCurrentModifiers();
-            if (currentMods == _expectedModifiers && !_isActive)
-            {
-                _isActive = true;
+            case HotkeyAction.Press:
                 UiDispatcher.PostAsync(() => OnPress?.Invoke());
-            }
-        }
-        else if (isKeyUp && vk == _targetVk && _isActive)
-        {
-            _isActive = false;
-            UiDispatcher.PostAsync(() => OnRelease?.Invoke());
-        }
-        else if (isKeyUp && _isActive && IsModifierVk(vk))
-        {
-            // 用户按住组合键时先松开了修饰键。此时录音应当作"松开"处理。
-            var afterRelease = ReadCurrentModifiersExcluding(vk);
-            if (afterRelease != _expectedModifiers)
-            {
-                _isActive = false;
+                break;
+            case HotkeyAction.Release:
                 UiDispatcher.PostAsync(() => OnRelease?.Invoke());
-            }
+                break;
+            case HotkeyAction.Cancel:
+                UiDispatcher.PostAsync(() => OnCancel?.Invoke());
+                break;
         }
 
-        return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        // 被接管的主键 down/repeat/up 与生效的 Esc 一律消费掉，不再下发给前台应用；
+        // 修饰键事件必须继续传递，否则会破坏其他应用看到的修饰键 down/up 配对（R2-1）。
+        return consume ? (IntPtr)1 : CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private static ModifierMask BuildExpected(List<string> modifiers)
+    private static HotkeyModifiers BuildExpected(List<string> modifiers)
     {
-        var mask = ModifierMask.None;
+        var mask = HotkeyModifiers.None;
         foreach (var m in modifiers)
         {
             switch (m.Trim().ToLowerInvariant())
             {
                 case "ctrl":
                 case "control":
-                    mask |= ModifierMask.Ctrl;
+                    mask |= HotkeyModifiers.Ctrl;
                     break;
                 case "alt":
                 case "option":
-                    mask |= ModifierMask.Alt;
+                    mask |= HotkeyModifiers.Alt;
                     break;
                 case "shift":
-                    mask |= ModifierMask.Shift;
+                    mask |= HotkeyModifiers.Shift;
                     break;
                 case "win":
                 case "win_l":
@@ -233,44 +203,25 @@ internal sealed class HotkeyService : IDisposable
                 case "super":
                 case "command":
                 case "cmd":
-                    mask |= ModifierMask.Win;
+                    mask |= HotkeyModifiers.Win;
                     break;
             }
         }
         return mask;
     }
 
-    private static ModifierMask ReadCurrentModifiers()
+    /// <summary>安装钩子这一刻取一次系统快照，播种已按住的修饰键（应对自愈重装时用户仍按着键）。</summary>
+    private void SeedPhysicalModifierState()
     {
-        var mask = ModifierMask.None;
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) mask |= ModifierMask.Ctrl;
-        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) mask |= ModifierMask.Alt;
-        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) mask |= ModifierMask.Shift;
-        if (((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0) mask |= ModifierMask.Win;
-        return mask;
-    }
-
-    private static ModifierMask ReadCurrentModifiersExcluding(int releasedVk)
-    {
-        var mask = ReadCurrentModifiers();
-        switch (releasedVk)
+        if (_stateMachine is null) return;
+        foreach (var vk in HotkeyStateMachine.AllModifierVks)
         {
-            case VK_CONTROL: mask &= ~ModifierMask.Ctrl; break;
-            case VK_MENU: mask &= ~ModifierMask.Alt; break;
-            case VK_SHIFT: mask &= ~ModifierMask.Shift; break;
-            case VK_LWIN:
-            case VK_RWIN:
-                mask &= ~ModifierMask.Win;
-                break;
+            if ((GetAsyncKeyState(vk) & 0x8000) != 0)
+            {
+                _stateMachine.SeedModifier(vk);
+            }
         }
-        return mask;
     }
-
-    private static bool IsModifierVk(int vk) =>
-        vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT || vk == VK_LWIN || vk == VK_RWIN
-        || vk == 0xA0 || vk == 0xA1 // LSHIFT, RSHIFT
-        || vk == 0xA2 || vk == 0xA3 // LCONTROL, RCONTROL
-        || vk == 0xA4 || vk == 0xA5; // LMENU, RMENU
 
     /// <summary>供 <see cref="Core.AppConfig.Validated"/> 复用：主键是否在支持表内。</summary>
     public static bool IsSupportedKey(string key) => MapKeyToVk(key) != 0;

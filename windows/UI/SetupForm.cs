@@ -7,6 +7,7 @@ using System.Windows.Forms;
 using VoiceTyper.Asr;
 using VoiceTyper.Core;
 using VoiceTyper.Llm;
+using VoiceTyper.Services;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.UI;
@@ -738,12 +739,23 @@ internal sealed class SetupForm : Form
             SetMessage(_hotkeyMessage, "主键不能为空", Color.Firebrick);
             return;
         }
+        // 保存前即时校验，避免保存流程先提示"已保存并生效"、HotkeyService.Start 再抛异常回退默认（R2-1）。
+        if (!HotkeyService.IsSupportedKey(key))
+        {
+            SetMessage(_hotkeyMessage, $"不支持的主键：{key}。可用：字母、数字、F1–F12、Space、Tab、方向键等。", Color.Firebrick);
+            return;
+        }
 
         var mods = new System.Collections.Generic.List<string>();
         if (_modCtrl.Checked) mods.Add("ctrl");
         if (_modAlt.Checked) mods.Add("alt");
         if (_modShift.Checked) mods.Add("shift");
         if (_modWin.Checked) mods.Add("win");
+        if (mods.Count == 0)
+        {
+            SetMessage(_hotkeyMessage, "至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。", Color.Firebrick);
+            return;
+        }
 
         var draft = _loadedConfig.Clone();
         draft.Hotkey = new HotkeyConfig { Modifiers = mods, Key = key };
