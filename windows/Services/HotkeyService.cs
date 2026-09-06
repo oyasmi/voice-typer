@@ -28,10 +28,10 @@ internal sealed class HotkeyService : IDisposable
 
     /// <summary>
     /// 钩子存活性自愈检查周期。<c>WH_KEYBOARD_LL</c> 的回调若超过
-    /// <c>HKEY_CURRENT_USER\Control Panel\Desktop\LowLevelHooksTimeout</c>（默认 5000ms，
-    /// 部分系统 300ms）未返回，系统会直接把钩子卸掉且不通知——现象与 macOS 的
-    /// tapDisabledByTimeout 完全一致：热键突然永久失效。这是 Windows 侧的新增设计（代码
-    /// 审查通过，尚未在真机上验证系统摘钩场景）。
+    /// <c>HKEY_CURRENT_USER\Control Panel\Desktop\LowLevelHooksTimeout</c> 未返回，系统会
+    /// 直接把钩子卸掉且不通知——现象与 macOS 的 tapDisabledByTimeout 一致：热键突然永久失效。
+    /// 具体超时毫秒数随 Windows 版本而变，未在真机上核实，不在此写死。回调始终立即返回、
+    /// 业务异步投递（见 <see cref="HookCallback"/> 使用 <see cref="UiDispatcher.PostAsync"/>）。
     /// </summary>
     private const int HealthCheckIntervalMs = 30_000;
 
@@ -176,7 +176,7 @@ internal sealed class HotkeyService : IDisposable
         if (_isActive && isKeyDown && vk == VK_ESCAPE && vk != _targetVk)
         {
             _isActive = false;
-            UiDispatcher.Post(() => OnCancel?.Invoke());
+            UiDispatcher.PostAsync(() => OnCancel?.Invoke());
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
 
@@ -187,13 +187,13 @@ internal sealed class HotkeyService : IDisposable
             if (currentMods == _expectedModifiers && !_isActive)
             {
                 _isActive = true;
-                UiDispatcher.Post(() => OnPress?.Invoke());
+                UiDispatcher.PostAsync(() => OnPress?.Invoke());
             }
         }
         else if (isKeyUp && vk == _targetVk && _isActive)
         {
             _isActive = false;
-            UiDispatcher.Post(() => OnRelease?.Invoke());
+            UiDispatcher.PostAsync(() => OnRelease?.Invoke());
         }
         else if (isKeyUp && _isActive && IsModifierVk(vk))
         {
@@ -202,7 +202,7 @@ internal sealed class HotkeyService : IDisposable
             if (afterRelease != _expectedModifiers)
             {
                 _isActive = false;
-                UiDispatcher.Post(() => OnRelease?.Invoke());
+                UiDispatcher.PostAsync(() => OnRelease?.Invoke());
             }
         }
 

@@ -86,7 +86,9 @@ internal sealed class AudioCaptureService : IDisposable
 
             try
             {
-                var enumerator = new MMDeviceEnumerator();
+                // MMDeviceEnumerator 必须释放：GetDefaultAudioEndpoint 返回的 MMDevice 持有独立
+                // COM 引用，枚举器本身用完即弃（R1-3）。
+                using var enumerator = new MMDeviceEnumerator();
                 _device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
@@ -107,14 +109,28 @@ internal sealed class AudioCaptureService : IDisposable
                 {
                     BufferDuration = TimeSpan.FromSeconds(2),
                     DiscardOnBufferOverflow = true,
+                    // 关键（R1-1）：默认 ReadFully=true 时 Read 在数据不足会补零并返回请求长度，
+                    // WdlResamplingSampleProvider 透传这一行为，使 OnCaptureDataAvailable 里的
+                    // "读到短读/0 才退出"循环永不退出——在 WASAPI 回调线程上无限生成静音。
+                    ReadFully = false,
                 };
 
                 // 重采样到 16kHz / mono / float32（IEEE float）。
                 // 选 WDL 而非 MediaFoundationResampler：纯托管、不依赖 MF DLL，且对语音 16kHz 重采样质量足够。
+                // 声道处理显式分三种（R1-3）：ToMono() 内部是 StereoToMonoSampleProvider，
+                // 源声道数 != 2 会抛 ArgumentException，被外层吞成笼统的"启动录音失败"。
                 var sampleProvider = _inputBuffer.ToSampleProvider();
-                if (_captureFormat.Channels > 1)
+                switch (_captureFormat.Channels)
                 {
-                    sampleProvider = sampleProvider.ToMono();
+                    case 1:
+                        break;
+                    case 2:
+                        sampleProvider = sampleProvider.ToMono();
+                        break;
+                    default:
+                        throw new AudioStartException(
+                            $"暂不支持 {_captureFormat.Channels} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风",
+                            accessDenied: false);
                 }
                 _resampledProvider = new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
 
@@ -129,6 +145,12 @@ internal sealed class AudioCaptureService : IDisposable
                 // 跨线程写（对齐 macOS R4-07 的教训）。
                 _running = true;
                 _capture.StartRecording();
+            }
+            catch (AudioStartException)
+            {
+                _running = false;
+                Cleanup();
+                throw;
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
@@ -227,11 +249,21 @@ internal sealed class AudioCaptureService : IDisposable
             var tmp = pool.Rent(4096);
             try
             {
+                // 迭代上限保险（R1-1）：单次回调最多消费约 3s @ 16kHz 的重采样输出。
+                // 正常路径远达不到；一旦触顶说明补零行为又回来了，记一次 warn 并退出，
+                // 但这不能替代 ReadFully=false。
+                int maxIterations = (AppConstants.TargetSampleRate * 3) / tmp.Length + 1;
                 int read;
+                int iterations = 0;
                 while ((read = resampled.Read(tmp, 0, tmp.Length)) > 0)
                 {
                     AppendSamples(tmp, read);
                     if (read < tmp.Length) break;
+                    if (++iterations >= maxIterations)
+                    {
+                        AppLog.Warn("audio", "重采样单次回调迭代触顶，提前退出（疑似补零回退）");
+                        break;
+                    }
                 }
             }
             finally
@@ -251,6 +283,41 @@ internal sealed class AudioCaptureService : IDisposable
         {
             AppLog.Warn("audio", $"音频设备意外停止（可能是设备被拔出/切换）: {e.Exception.Message}");
             UiDispatcher.Post(HandleDeviceChangedDuringRecording);
+        }
+
+        // NAudio 的 StopRecording 是异步的：真正的资源释放要等到 RecordingStopped 到达才做，
+        // 否则正常 Stop() 路径从不释放 _capture/_device，每次听写泄漏一组 COM 对象与采集线程（R1-3）。
+        TeardownStoppedCapture(sender as WasapiCapture);
+    }
+
+    /// <summary>退订并释放已停止的采集器；若它仍是当前实例，一并释放设备并清空字段。
+    /// 快速连按热键时新的 Start() 可能已经把 <see cref="_capture"/> 换成新实例——此时只释放旧的。</summary>
+    private void TeardownStoppedCapture(WasapiCapture? stopped)
+    {
+        if (stopped is null || _disposed) return;
+
+        stopped.DataAvailable -= OnCaptureDataAvailable;
+        stopped.RecordingStopped -= OnCaptureStopped;
+
+        bool isCurrent;
+        lock (_lock)
+        {
+            isCurrent = ReferenceEquals(stopped, _capture);
+            if (isCurrent)
+            {
+                _capture = null;
+                _resampledProvider = null;
+                _inputBuffer = null;
+            }
+        }
+
+        try { stopped.Dispose(); } catch (Exception ex) { AppLog.Warn("audio", $"释放采集器异常: {ex.Message}"); }
+
+        if (isCurrent)
+        {
+            MMDevice? device;
+            lock (_lock) { device = _device; _device = null; }
+            try { device?.Dispose(); } catch (Exception ex) { AppLog.Warn("audio", $"释放设备异常: {ex.Message}"); }
         }
     }
 
@@ -333,7 +400,13 @@ internal sealed class AudioCaptureService : IDisposable
 
     private void Cleanup()
     {
-        try { _capture?.Dispose(); } catch { }
+        var capture = _capture;
+        if (capture is not null)
+        {
+            capture.DataAvailable -= OnCaptureDataAvailable;
+            capture.RecordingStopped -= OnCaptureStopped;
+        }
+        try { capture?.Dispose(); } catch { }
         try { _device?.Dispose(); } catch { }
         _capture = null;
         _resampledProvider = null;

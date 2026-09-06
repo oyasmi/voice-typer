@@ -36,7 +36,24 @@ internal static class UiDispatcher
             }
             return;
         }
-        _context.Post(static state =>
+        PostToContext(action);
+    }
+
+    /// <summary>
+    /// 始终异步投递到 UI 线程，即使调用方已经在 UI 线程上。
+    /// 低级键盘钩子回调（<see cref="Services.HotkeyService"/>）必须用它：钩子装在 UI 线程，
+    /// 若走 <see cref="Post"/> 的同步分支，录音启动（COM 设备枚举 + WASAPI 打开）会在钩子回调
+    /// 内部跑完，回调超时会被系统静默摘除（R1-4）。
+    /// </summary>
+    public static void PostAsync(Action action)
+    {
+        if (_context is null) throw new InvalidOperationException("UiDispatcher 未初始化");
+        PostToContext(action);
+    }
+
+    private static void PostToContext(Action action)
+    {
+        _context!.Post(static state =>
         {
             try { ((Action)state!)(); }
             catch (Exception ex)

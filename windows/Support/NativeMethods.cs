@@ -85,10 +85,27 @@ internal static class NativeMethods
         public InputUnion U;
     }
 
+    // 联合体必须补全 MOUSEINPUT/HARDWAREINPUT：x64/arm64 下 MOUSEINPUT 决定联合体大小
+    // （32 字节），原生 INPUT = 4(type)+4(pad)+32 = 40 字节。只声明 KEYBDINPUT 时托管
+    // INPUT 只有 32 字节，SendInput 收到 cbSize=32 会以 ERROR_INVALID_PARAMETER 返回 0，
+    // 文本插入在 64 位进程上 100% 失败（R1-2）。
     [StructLayout(LayoutKind.Explicit)]
     public struct InputUnion
     {
+        [FieldOffset(0)] public MOUSEINPUT mi;
         [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -99,6 +116,14 @@ internal static class NativeMethods
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
