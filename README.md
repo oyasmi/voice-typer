@@ -105,7 +105,8 @@ Windows 一体化应用支持 Windows 10/11，并同时面向 x64 与 arm64。�
 描述成已经稳定发布的版本。
 
 如果你愿意参与验证或从源码构建，请阅读 [Windows 使用与开发说明](windows/README.md)以及
-[待验证风险清单](windows/DESIGN.md#11-风险与对策)。这项状态会在真机验证完成后更新。
+[待验证风险清单](windows/DESIGN.md#11-风险与对策)。真机验证前的已知问题、修复优先级与执行步骤见
+[Windows 审查与修复计划](windows/REVIEW_AND_REPAIR_PLAN.md)。这项状态会在真机验证完成后更新。
 
 ## 常见问题
 

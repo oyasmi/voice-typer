@@ -1,6 +1,6 @@
 # VoiceTyper — 一体化 Windows 应用
 
-[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
+[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [审查与修复计划](REVIEW_AND_REPAIR_PLAN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
 单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
 内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.2.1**，应用名 **VoiceTyper**。
