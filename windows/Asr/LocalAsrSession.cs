@@ -46,6 +46,10 @@ internal sealed class LocalAsrSession
 
     private readonly AsrPump _pump;
     private readonly Func<SenseVoiceEngine?> _engineAccessor;
+    /// <summary>引擎加载已确定失败时返回原因文本（State==Failed/ModelMissing），否则 null。
+    /// 让"等引擎"的轮询在加载失败时立刻带真实原因收尾，而不是空转到超时再报无信息的
+    /// "识别引擎尚未就绪"（R2-2）。</summary>
+    private readonly Func<string?>? _engineLoadError;
     private readonly LlmCorrector? _llmCorrector;
     private readonly int _previewWindowSamples;
 
@@ -66,12 +70,14 @@ internal sealed class LocalAsrSession
     private string _lastPreview = "";
     private CancellationTokenSource? _finalizeWatchdogCts;
 
-    public LocalAsrSession(AsrPump pump, Func<SenseVoiceEngine?> engineAccessor, LlmCorrector? llmCorrector, int previewWindowSamples)
+    public LocalAsrSession(AsrPump pump, Func<SenseVoiceEngine?> engineAccessor, LlmCorrector? llmCorrector,
+        int previewWindowSamples, Func<string?>? engineLoadError = null)
     {
         _pump = pump;
         _engineAccessor = engineAccessor;
         _llmCorrector = llmCorrector;
         _previewWindowSamples = previewWindowSamples;
+        _engineLoadError = engineLoadError;
     }
 
     public void SendAudio(byte[] data)
@@ -235,17 +241,26 @@ internal sealed class LocalAsrSession
         });
     }
 
+    // 冷启动加载真实模型可能耗时十几秒；每 100ms 探测一次，最多等 20s。
+    private const int MaxEngineWaitAttempts = 200;
+
     private void WaitForEngineThenFinalize(int attempt = 0)
     {
-        // 引擎加载耗时量级待 P0 实测；每 100ms 探测一次，最多等 5s——超过这个时间基本
-        // 意味着模型加载失败，交给外层 FinalizeWatchdog 的超时兜底报错。
-        if (attempt >= 50 || _closed)
+        if (_closed) return;
+
+        // 加载已确定失败：立刻带真实原因收尾，不再空转（R2-2）。
+        var loadError = _engineLoadError?.Invoke();
+        if (loadError is not null)
         {
-            if (!_closed)
-            {
-                _isFinalizing = false;
-                OnError?.Invoke("识别引擎尚未就绪");
-            }
+            _isFinalizing = false;
+            OnError?.Invoke(loadError);
+            return;
+        }
+
+        if (attempt >= MaxEngineWaitAttempts)
+        {
+            _isFinalizing = false;
+            OnError?.Invoke("识别引擎加载超时，请稍后重试");
             return;
         }
 

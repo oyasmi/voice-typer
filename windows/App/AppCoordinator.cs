@@ -455,6 +455,17 @@ internal sealed class AppCoordinator : IDisposable
 
     private async Task ReloadModelAsync()
     {
+        // 录音/识别/纠错期间点"重新加载模型"会把正在使用的引擎 Dispose 掉。
+        // 与 ApplyConfigAsync 相同的拒绝逻辑（R2-3）。
+        if (_currentState.State.IsActiveDictation())
+        {
+            _currentState = AppStateInfo.ErrorWith("正在听写，请等待当前听写完成后再重新加载模型");
+            UpdateTray();
+            SyncSetupWindow();
+            ScheduleDictationErrorRecovery();
+            return;
+        }
+
         try
         {
             await _asrService.ReloadAsync().ConfigureAwait(true);

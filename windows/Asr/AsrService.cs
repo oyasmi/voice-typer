@@ -46,15 +46,13 @@ internal sealed class AsrService : IDisposable
     private System.Windows.Forms.Timer? _idleTimer;
     private int _loadGeneration;
     private int _resolvedPreviewWindowSamples = 15 * AppConstants.TargetSampleRate;
-    /// <summary><see cref="PreloadAsync"/>/<see cref="ReloadAsync"/> 的互斥标志：两者都可能各自
-    /// 触发一次加载，若不 guard，空闲卸载把状态置 Unloaded 触发的 OnStateChange 会被
-    /// AppCoordinator 无差别转发进 ReevaluateReadinessAsync，其 Unloaded 分支又发起一次独立的
-    /// 预加载——两次加载会各自构建一份约 500MB 的 ORT session，在谁都还没替换掉 <see cref="_engine"/>
-    /// 之前短暂同时存活，峰值内存可翻倍（R3-02）。</summary>
-    private bool _isLoadInFlight;
-    /// <summary>加载进行中又收到一次加载请求：不重入执行，只记一次"完成后再跑一遍"，
-    /// 确保最新配置最终生效，而不是静默丢弃。</summary>
-    private bool _reloadRequestedWhileLoading;
+    /// <summary>当前在飞的加载任务。<see cref="PreloadAsync"/>（EnsureLoaded 语义）在有它时
+    /// 直接共享、绝不追加新加载；只有 <see cref="ReloadAsync"/>（配置版本变化 / 用户点重载）
+    /// 才会在它非空时记一次 <see cref="_pendingReload"/>。这样"重载 → 卸载 → 状态置 Unloaded →
+    /// 协调器自动 EnsureLoaded"这条链不再自激成无限重载环（R2-3）。</summary>
+    private Task? _inFlightLoad;
+    /// <summary>加载进行中又收到一次真正的重载请求：完成后再合并跑一遍，确保最新配置最终生效。</summary>
+    private bool _pendingReload;
     private bool _disposed;
 
     /// <summary>配置变化时调用：语言变化直接热更新引擎；模型目录/线程数变化触发重新加载。</summary>
@@ -79,39 +77,56 @@ internal sealed class AsrService : IDisposable
         }
     }
 
+    /// <summary>
+    /// EnsureLoaded 语义：确保引擎最终会被加载，但不强制"卸载重来"。已就绪/加载中直接返回；
+    /// 有加载在飞则共享它；否则发起一次不带卸载的加载。<b>绝不设置 <see cref="_pendingReload"/></b>——
+    /// 这是打断无限重载环的关键（R2-3）。空闲卸载后（<see cref="AsrState.SuspendedForIdle"/>）
+    /// 引擎为 null，这里会真正发起加载（R2-2）。
+    /// </summary>
     public Task PreloadAsync()
     {
         if (State is AsrState.Loading or AsrState.Ready) return Task.CompletedTask;
-        return RequestLoadAsync(unloadFirst: false);
+        return _inFlightLoad ?? StartLoad(unloadFirst: false);
     }
 
-    public Task ReloadAsync() => RequestLoadAsync(unloadFirst: true);
-
-    /// <summary>
-    /// <see cref="PreloadAsync"/>/<see cref="ReloadAsync"/> 的统一入口：若已有加载在跑，只记一个
-    /// "完成后再跑一次"的标记，绝不发起第二次加载（R3-02）。
-    /// </summary>
-    private async Task RequestLoadAsync(bool unloadFirst)
+    /// <summary>真正的重新加载：配置版本变化或用户手动点击。加载在飞时记一次合并重载。</summary>
+    public Task ReloadAsync()
     {
-        if (_isLoadInFlight)
+        if (_inFlightLoad is { } inFlight)
         {
-            _reloadRequestedWhileLoading = true;
-            return;
+            _pendingReload = true;
+            return inFlight;
         }
-        _isLoadInFlight = true;
-        if (unloadFirst)
-        {
-            await UnloadNowAsync(dueToIdle: false).ConfigureAwait(true);
-        }
-        await LoadAsync().ConfigureAwait(true);
-        _isLoadInFlight = false;
+        return StartLoad(unloadFirst: true);
+    }
 
-        if (_reloadRequestedWhileLoading)
+    private Task StartLoad(bool unloadFirst)
+    {
+        var task = RunLoadAsync(unloadFirst);
+        _inFlightLoad = task;
+        return task;
+    }
+
+    private async Task RunLoadAsync(bool unloadFirst)
+    {
+        try
         {
-            _reloadRequestedWhileLoading = false;
-            // 合并的请求按"重新加载"处理：确保加载期间发生的最新配置变化最终会生效，
-            // 而不是被静默吞掉。
-            await RequestLoadAsync(unloadFirst: true).ConfigureAwait(true);
+            if (unloadFirst)
+            {
+                await UnloadNowAsync(dueToIdle: false).ConfigureAwait(true);
+            }
+            await LoadAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            // 覆盖异常、取消与正常完成：加载标志一定清除，不会卡在"永远在飞"。
+            _inFlightLoad = null;
+        }
+
+        if (_pendingReload)
+        {
+            _pendingReload = false;
+            await ReloadAsync().ConfigureAwait(true);
         }
     }
 
@@ -146,14 +161,22 @@ internal sealed class AsrService : IDisposable
     /// </summary>
     public LocalAsrSession MakeSession(LlmCorrector? llmCorrector)
     {
-        if (State is not (AsrState.Ready or AsrState.Loading or AsrState.SuspendedForIdle))
+        // SuspendedForIdle 下引擎已被 Dispose 且引用置 null，必须真正发起加载，
+        // 否则空闲十分钟后每一次听写都拿不到引擎（R2-2）。
+        if (State is not (AsrState.Ready or AsrState.Loading))
         {
             _ = PreloadAsync();
         }
         _idleTimer?.Stop();
         _idleTimer?.Dispose();
         _idleTimer = null; // 录音期间不应触发空闲卸载；结束后由 SessionEnded 重新安排
-        return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, _resolvedPreviewWindowSamples);
+        return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, _resolvedPreviewWindowSamples,
+            engineLoadError: () => State switch
+            {
+                AsrState.Failed => FailureMessage ?? "模型加载失败",
+                AsrState.ModelMissing => "识别模型缺失，请在设置中下载模型",
+                _ => null,
+            });
     }
 
     /// <summary>录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。</summary>
