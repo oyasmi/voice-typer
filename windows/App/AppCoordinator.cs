@@ -133,6 +133,43 @@ internal sealed class AppCoordinator : IDisposable
         }
     }
 
+    /// <summary>
+    /// 识别页保存的单一事务（R2-4）：先做全部校验、先判断当前是否允许应用，<b>通过之后</b>再
+    /// 依次写密钥和配置。任一步失败给出准确的分状态提示（密钥写失败 / 配置写失败 / 活跃听写拒绝），
+    /// 不出现"密钥已落盘但提示保存失败"，也不出现"只改密钥后实际听写仍用旧密钥"
+    /// （密钥变化被当作显式更新信号，走控制器重建路径，让新密钥立即在下次听写生效）。
+    /// </summary>
+    private async Task SaveRecognitionAsync(AppConfig draft, string? newApiKey)
+    {
+        bool keyChanged = newApiKey is not null;
+        bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm));
+
+        if ((keyChanged || sectionsChanged) && _currentState.State.IsActiveDictation())
+        {
+            // 尚未写任何东西就拒绝。
+            throw new InvalidOperationException("正在录音/识别/输入，请等待当前听写完成后再保存识别设置");
+        }
+
+        if (keyChanged && !SecretStore.SaveLlmApiKey(newApiKey!))
+        {
+            throw new InvalidOperationException("API Key 写入失败，请重试（配置尚未保存）");
+        }
+
+        _configStore.Save(draft); // 失败会抛，SetupForm 显示"配置写失败"
+
+        if (keyChanged || sectionsChanged)
+        {
+            // 走重建路径：控制器构造时会重新从 SecretStore 读密钥，新密钥立即生效。
+            await ReloadAndReevaluateAsync().ConfigureAwait(true);
+        }
+        else
+        {
+            _config = draft.Validated();
+            _hud?.ApplyOpacity(_config.UI.Opacity);
+            _setupForm?.LoadEditableContent(_config);
+        }
+    }
+
     private static bool AsrConfigEquals(AsrConfig a, AsrConfig b) =>
         a.Language == b.Language && a.Threads == b.Threads && a.ModelDir == b.ModelDir
         && a.PreviewWindowSeconds == b.PreviewWindowSeconds && a.IdleUnloadMinutes == b.IdleUnloadMinutes;
@@ -528,7 +565,7 @@ internal sealed class AppCoordinator : IDisposable
 
         var form = new SetupForm();
         form.OnSaveConfig = draft => ApplyConfigAsync(draft);
-        form.OnSaveLlmApiKey = apiKey => SecretStore.SaveLlmApiKey(apiKey);
+        form.OnSaveRecognition = (draft, apiKey) => SaveRecognitionAsync(draft, apiKey);
         form.OnLoadLlmApiKey = () => SecretStore.LoadLlmApiKeyResult();
         form.OnStartModelDownload = StartModelDownload;
         form.OnCancelModelDownload = CancelModelDownload;

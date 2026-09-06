@@ -69,6 +69,8 @@ internal sealed class LocalAsrSession
     private volatile bool _cancelled;
     private string _lastPreview = "";
     private CancellationTokenSource? _finalizeWatchdogCts;
+    /// <summary>会话级取消源：Close 时取消，传给 LLM 纠错请求，取消后的迟到结果被静默丢弃（R2-4）。</summary>
+    private readonly CancellationTokenSource _sessionCts = new();
 
     public LocalAsrSession(AsrPump pump, Func<SenseVoiceEngine?> engineAccessor, LlmCorrector? llmCorrector,
         int previewWindowSamples, Func<string?>? engineLoadError = null)
@@ -168,6 +170,7 @@ internal sealed class LocalAsrSession
         _cancelled = true;
         _finalizeWatchdogCts?.Cancel();
         _finalizeWatchdogCts = null;
+        try { _sessionCts.Cancel(); } catch (ObjectDisposedException) { }
         _buffer = null;
     }
 
@@ -329,7 +332,15 @@ internal sealed class LocalAsrSession
 
     private async Task CorrectAndFinishAsync(string text)
     {
-        var outcome = await _llmCorrector!.CorrectAsync(text).ConfigureAwait(true);
+        LlmCorrector.CorrectionOutcome outcome;
+        try
+        {
+            outcome = await _llmCorrector!.CorrectAsync(text, _sessionCts.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // 会话已取消：丢弃迟到的纠错结果。
+        }
         if (_closed) return;
         if (outcome.DidFallBack)
         {

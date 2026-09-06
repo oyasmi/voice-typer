@@ -42,7 +42,17 @@ internal static class SecretStore
 
             var plain = Encoding.UTF8.GetBytes(apiKey);
             var protectedBytes = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(AppConstants.SecretFilePath, protectedBytes);
+            // 原子替换：先写临时文件再 File.Replace/Move，避免写一半崩溃留下截断的密钥文件（R2-4）。
+            var tmp = AppConstants.SecretFilePath + ".tmp";
+            File.WriteAllBytes(tmp, protectedBytes);
+            if (File.Exists(AppConstants.SecretFilePath))
+            {
+                File.Replace(tmp, AppConstants.SecretFilePath, destinationBackupFileName: null);
+            }
+            else
+            {
+                File.Move(tmp, AppConstants.SecretFilePath);
+            }
             return true;
         }
         catch (Exception ex)

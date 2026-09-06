@@ -144,11 +144,16 @@ internal sealed class LlmCorrector : IDisposable
     /// 使用 LLM 修正识别文本中的显著错误；任何失败（网络/超时/鉴权/解析）都回落到输入原文，
     /// 并以 <see cref="CorrectionOutcome.DidFallBack"/> 告知调用方，绝不让纠错失败丢掉已识别文本。
     /// </summary>
-    public async Task<CorrectionOutcome> CorrectAsync(string text)
+    public async Task<CorrectionOutcome> CorrectAsync(string text, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await CorrectOrThrowAsync(text).ConfigureAwait(false);
+            return await CorrectOrThrowAsync(text, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 会话已取消：不回落、不产出结果，交给调用方静默丢弃迟到结果（R2-4）。
+            throw;
         }
         catch (Exception ex)
         {
@@ -162,7 +167,7 @@ internal sealed class LlmCorrector : IDisposable
     /// 抛出而不是回落原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，否则
     /// "网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
     /// </summary>
-    public async Task<string> TestAsync(string text) => (await CorrectOrThrowAsync(text).ConfigureAwait(false)).Text;
+    public async Task<string> TestAsync(string text) => (await CorrectOrThrowAsync(text, CancellationToken.None).ConfigureAwait(false)).Text;
 
     /// <summary>
     /// 抛出：网络/超时/鉴权/HTTP/解析异常。返回：
@@ -170,7 +175,7 @@ internal sealed class LlmCorrector : IDisposable
     /// <see cref="CorrectionOutcome.FellBack"/> 语义回落原文（<c>finish_reason==length</c> 截断、
     /// 空 content、剥标签后为空）。
     /// </summary>
-    private async Task<CorrectionOutcome> CorrectOrThrowAsync(string text)
+    private async Task<CorrectionOutcome> CorrectOrThrowAsync(string text, CancellationToken cancellationToken)
     {
         // 纠错输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         var dynamicMaxTokens = Math.Max(_config.MaxTokens, text.Length * 2 + 128);
@@ -194,13 +199,18 @@ internal sealed class LlmCorrector : IDisposable
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, _config.Timeout)));
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, _config.Timeout)));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
         HttpResponseMessage response;
         try
         {
-            response = await _http.SendAsync(request, cts.Token).ConfigureAwait(false);
+            response = await _http.SendAsync(request, linkedCts.Token).ConfigureAwait(false);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw; // 外部（会话）取消：向上传播，不当成超时。
+        }
+        catch (OperationCanceledException)
         {
             throw new LlmException(LlmErrorKind.RequestFailed, "LLM 请求超时");
         }

@@ -23,8 +23,10 @@ internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General =
 internal sealed class SetupForm : Form
 {
     public Func<AppConfig, Task>? OnSaveConfig;
-    /// <summary>返回是否真正落盘成功；调用方不应在失败时仍告诉用户"设置已保存并生效"（R4-06）。</summary>
-    public Func<string, bool>? OnSaveLlmApiKey;
+    /// <summary>识别页保存：draft + 新 API Key（null = 密钥未改动）。由协调器作为单一事务处理
+    /// —— 先校验、先判断是否允许应用，通过之后再依次写密钥与配置，任一步失败给出分状态提示，
+    /// 不出现"密钥已落盘但提示保存失败"（R2-4）。</summary>
+    public Func<AppConfig, string?, Task>? OnSaveRecognition;
     /// <summary>区分"从未保存"与"读取失败"（DPAPI 解密失败等）；后者应向用户展示明确提示（R4-06）。</summary>
     public Func<(SecretReadStatus Status, string ApiKey)>? OnLoadLlmApiKey;
     public Action? OnStartModelDownload;
@@ -57,6 +59,8 @@ internal sealed class SetupForm : Form
     private readonly CheckBox _llmEnabledCheck = new();
     private readonly TextBox _llmBaseUrlField = new();
     private readonly TextBox _llmApiKeyField = new();
+    /// <summary>LoadEditableContent 时载入的 API Key 原值，用于判断用户是否改动了密钥。</summary>
+    private string _loadedApiKey = "";
     private readonly TextBox _llmModelField = new();
     private readonly NumericUpDown _llmTemperatureField = new();
     private readonly NumericUpDown _llmMaxTokensField = new();
@@ -150,6 +154,7 @@ internal sealed class SetupForm : Form
         _llmBaseUrlField.Text = config.Llm.BaseUrl;
         var (apiKeyStatus, apiKey) = OnLoadLlmApiKey?.Invoke() ?? (SecretReadStatus.NotSaved, "");
         _llmApiKeyField.Text = apiKey;
+        _loadedApiKey = apiKey;
         _llmModelField.Text = config.Llm.Model;
         _llmTemperatureField.Value = (decimal)Math.Clamp(config.Llm.Temperature, 0, 2);
         _llmMaxTokensField.Value = Math.Clamp(config.Llm.MaxTokens, 64, 8000);
@@ -659,7 +664,7 @@ internal sealed class SetupForm : Form
 
     private async Task HandleSaveRecognition()
     {
-        if (OnSaveConfig is null) return;
+        if (OnSaveRecognition is null) return;
 
         var draft = _loadedConfig.Clone();
         draft.Asr.LanguageValue = (AsrLanguage)(_languageCombo.SelectedItem ?? AsrLanguage.Auto);
@@ -673,23 +678,22 @@ internal sealed class SetupForm : Form
             Timeout = (double)_llmTimeoutField.Value,
         };
 
+        var currentKey = _llmApiKeyField.Text;
+        string? newKey = currentKey == _loadedApiKey ? null : currentKey;
+
         _saveRecognitionButton.Enabled = false;
         SetMessage(_recognitionMessage, "保存中...", Color.Gray);
         try
         {
-            // 密钥保存失败不应告诉用户"已保存并生效"——否则用户以为密钥已落盘，
-            // 实际下次启动读到的还是旧值（R4-06）。
-            if (OnSaveLlmApiKey?.Invoke(_llmApiKeyField.Text) == false)
-            {
-                SetMessage(_recognitionMessage, "API Key 保存失败，请重试。", Color.Firebrick);
-                return;
-            }
-            await OnSaveConfig(draft).ConfigureAwait(true);
+            await OnSaveRecognition(draft, newKey).ConfigureAwait(true);
             _loadedConfig = draft;
+            _loadedApiKey = currentKey;
             SetMessage(_recognitionMessage, "设置已保存并生效。", Color.SeaGreen);
         }
         catch (Exception ex)
         {
+            // 协调器在写任何东西之前做的拒绝（活跃听写 / 校验不通过）会走到这里，
+            // 此时密钥与配置都未落盘；密钥写失败 / 配置写失败也各自带明确消息。
             SetMessage(_recognitionMessage, $"保存失败：{ex.Message}", Color.Firebrick);
         }
         finally

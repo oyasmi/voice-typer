@@ -1,4 +1,4 @@
-# Windows 修复交付记录（R0–R2 部分）
+# Windows 修复交付记录（R0–R2）
 
 对应 [REPAIR_TRIAGE.md](REPAIR_TRIAGE.md) 的工单。分诊基线 `86424eb`，本轮在 **Linux、无 .NET SDK、
 无 Windows 真机** 环境完成，全部条目状态为「代码与静态验证完成」，**尚未编译、未跑测试、未真机验证**。
@@ -16,8 +16,8 @@
 | R1 | R1-4 钩子回调不同步执行业务 | 代码完成 |
 | R2 | R2-2 空闲卸载后无法恢复 | 代码完成 |
 | R2 | R2-3 模型重载无限循环 | 代码完成 |
-| R2 | R2-1 热键消费与按键状态机 | **未开始**（状态机重写，需真机验证按键序列） |
-| R2 | R2-4 API Key 保存事务 | **未开始** |
+| R2 | R2-1 热键消费与按键状态机 | 代码完成，新增 HotkeyStateMachine + 单测 |
+| R2 | R2-4 API Key 保存事务 | 代码完成，新增取消传播单测 |
 | R3 / R4 | 全部 | **未开始** |
 
 ## 逐工单交付
@@ -98,10 +98,43 @@
 - 仍需验证：假引擎统计构造/释放次数——一次点击只 1 构造 1 释放；加载中重复 Ensure 不追加；
   连改三次配置只应用最新；活跃听写期间重载被拒且引擎未释放。
 
+### R2-1 热键消费与按键状态机
+- 静态证据：所有分支 `return CallNextHookEx` → 被接管的主键与 Esc 穿透到前台应用；
+  `ReadCurrentModifiersExcluding` 的 switch 只认 `VK_CONTROL`(0x11) 等通用码，钩子实际交付
+  `VK_LCONTROL`(0xA2) 等，"先松修饰键"路径 mask 不清除 → OnRelease 不触发；Esc 取消置
+  `_isActive=false` 后主键 auto-repeat 命中"未激活 + 匹配"分支 → 立即重启录音。
+- 修改后行为：抽出 `HotkeyStateMachine`（纯逻辑）——显式状态 Idle/Engaged/AwaitingFullRelease；
+  `NormalizeModifier` 归一化左右键；自维护 `_pressedModifierKeys` 集合（左右 Ctrl 同按时松一个
+  不判定 Ctrl 释放）；被接管的主键 down/repeat/up 与生效 Esc 返回 `(IntPtr)1` 消费，修饰键
+  事件放行。安装钩子时用一次系统快照播种已按住的修饰键。
+- SetupForm：保存热键前 `HotkeyService.IsSupportedKey` 即时校验 + 空修饰键拒绝。
+- 自动化测试：`HotkeyStateMachineTests`（先松主键 / 先松修饰键 / 左右键混按 / auto-repeat /
+  Esc 后继续按住 / 通用 VK_CONTROL 归一化）。
+- 未做：切换式录音、`RegisterHotKey` 冲突检测（保留为增强）。
+- 仍需验证：**真机** 目标应用收不到被接管的热键；中文 IME、AltGr 不受影响；暂停/恢复。
+- macOS 影响：无（Windows 特有输入路径）。
+
+### R2-4 API Key 保存事务
+- 静态证据：`HandleSaveRecognition` 先 `OnSaveLlmApiKey` 落盘再 `await OnSaveConfig`，后者在活跃
+  听写期间抛异常 → 密钥已进 DPAPI 但提示"保存失败"；`Asr/Llm/HotkeyConfigEquals` 都不含密钥
+  → 只改密钥判为 `onlyUiChanged` → 控制器不重建，`LlmCorrector.ApiKey` 仍是构造时读的旧值，
+  但"测试纠错"用输入框新值（测试通过、实际听写用旧密钥）。
+- 修改后行为：新增协调器单一事务 `SaveRecognitionAsync(draft, newApiKey)`——先校验、先判断
+  是否允许应用（活跃听写则在写任何东西前拒绝），通过后再写密钥、再写配置；密钥变化作为显式
+  更新信号走控制器重建路径（重建时重新从 SecretStore 读密钥，新密钥立即生效）。
+  `SecretStore.SaveLlmApiKey` 改为临时文件 + `File.Replace`/`Move` 原子替换，保留 DPAPI 当前用户
+  保护。SetupForm 用载入时的原值判断密钥是否改动，`null` 表示未改。
+- 顺带：`LlmCorrector.CorrectAsync` 接受并传播外部 `CancellationToken`（与内部超时 CTS 用
+  `CreateLinkedTokenSource` 关联）；`LocalAsrSession` 加会话级 CTS，`Close` 时取消，取消后的
+  纠错结果被静默丢弃。
+- 自动化测试：`LlmCorrectorTests.Correct_PropagatesCancellation_InsteadOfFallingBack`。
+- 仍需验证：**真机 / 假 HTTP 服务端** 只改密钥后实际听写 Authorization 头是新值；密钥写失败 /
+  配置写失败 / 活跃听写拒绝三种情况均无虚假成功；日志/YAML/诊断包搜不到密钥。
+- macOS 影响：无。
+
 ## 给下一位实施者的接力说明
 1. 先在带 .NET SDK 的环境跑 R0 验收；编译器报出的清单外错误按 R0-1 要求一并修并记录。
-2. R2-1（热键状态机）与 R2-4（密钥事务）未动；R2-1 涉及按键序列，必须真机验证
-   （先松主键/先松修饰键/左右键/auto-repeat/Esc 后继续按住）。
+2. R3、R4 未开始。涉及 Win32/音频/剪贴板/安装的工单在只有代码检查时不得标记最终完成。
 3. 同一生命周期文件（`AudioCaptureService` / `VoiceTyperController` / `AsrService` /
    `LocalAsrSession`）不要与其他 agent 并行修改。
 4. 未触及识别管线（fbank/LFR/CMVN/CTC/后处理/模型 I/O）。

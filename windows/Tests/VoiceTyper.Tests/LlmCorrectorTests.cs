@@ -218,4 +218,22 @@ public class LlmCorrectorTests
         var result = await corrector.TestAsync("原始长文本");
         Assert.Equal("原始长文本", result);
     }
+
+    /// <summary>R2-4：会话取消后，CorrectAsync 应抛 OperationCanceledException 向上传播，
+    /// 而不是回落原文——调用方据此静默丢弃迟到结果，不让取消的会话仍上屏。</summary>
+    [Fact]
+    public async Task Correct_PropagatesCancellation_InsteadOfFallingBack()
+    {
+        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"choices":[{"message":{"content":"不该被用到"},"finish_reason":"stop"}]}"""),
+        });
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => corrector.CorrectAsync("原始文本", cts.Token));
+    }
 }
