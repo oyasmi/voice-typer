@@ -179,4 +179,20 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr hObject);
+
+    // ─── 进程令牌提权信息（R3-2：PROCESS_QUERY_LIMITED_INFORMATION 对提权进程通常也会
+    //     授予，单靠 OpenProcess 成功与否判断提权几乎恒为 false）────────────────────
+    public const uint TOKEN_QUERY = 0x0008;
+    /// <summary>TOKEN_INFORMATION_CLASS.TokenElevation。</summary>
+    public const int TokenElevation = 20;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    // TOKEN_ELEVATION 只有一个 DWORD 字段，直接用 out uint 承接。
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetTokenInformation(IntPtr TokenHandle, int TokenInformationClass,
+        out uint TokenInformation, uint TokenInformationLength, out uint ReturnLength);
 }

@@ -57,6 +57,10 @@ internal sealed class LocalAsrSession
     /// <summary>引擎尚未加载完成时，音频先攒在这里；引擎就绪后的第一次 SendAudio 会把它们一并灌入 buffer。</summary>
     private readonly List<float> _pendingAudio = new();
 
+    /// <summary>本轮录音因过短被判定为丢弃（R3-1）：随会话保存，避免新一轮 BeginRecording
+    /// 把实例字段重置掉的竞态。由 VoiceTyperController.FinishRecording 写、OnTailChunk 读。</summary>
+    public bool ShortDiscard { get; set; }
+
     private bool _previewInFlight;
     private bool _isFinalizing;
     private bool _capped;

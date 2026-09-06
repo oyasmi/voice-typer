@@ -25,6 +25,9 @@ internal sealed class HotkeyService : IDisposable
     public Action? OnRelease;
     /// <summary>录音中按下 Esc 主动取消。在 UI 线程触发。</summary>
     public Action? OnCancel;
+    /// <summary>钩子健康状态变化（R3-5）：false = 钩子已失效且自愈失败中（应向用户显示不可用），
+    /// true = （重新）安装成功。在 UI 线程触发。</summary>
+    public Action<bool>? OnHealthChanged;
 
     /// <summary>
     /// 钩子存活性自愈检查周期。<c>WH_KEYBOARD_LL</c> 的回调若超过
@@ -44,6 +47,16 @@ internal sealed class HotkeyService : IDisposable
     private System.Windows.Forms.Timer? _healthTimer;
     /// <summary>最近一次钩子回调被系统调用的时间戳（<see cref="Environment.TickCount"/>）。</summary>
     private int _lastHookActivityTick;
+    /// <summary>连续两次健康检查都可疑才真正重装——降低 GetLastInputInfo 含鼠标带来的误判影响（R3-5）。</summary>
+    private bool _healthSuspectLastTick;
+    private int _recoveryFailures;
+    private int _lastRecoveryAttemptTick;
+    private bool _lastReportedHealthy = true;
+
+    /// <summary>钩子静默这么久 + 期间确有输入才怀疑被摘钩。取 4 个周期（约 2 分钟），
+    /// 远比"用户只是没打字"保守；GetLastInputInfo 无法区分键鼠，故一次多余重装视为可接受
+    /// （定时器不受影响、按键状态会被清理）。</summary>
+    private const int SilenceSuspectMs = 4 * HealthCheckIntervalMs;
 
     public void Start(HotkeyConfig hotkey)
     {
@@ -56,9 +69,33 @@ internal sealed class HotkeyService : IDisposable
         }
 
         _hotkey = hotkey.Clone();
+        _recoveryFailures = 0;
+        _healthSuspectLastTick = false;
+        InstallHook(vk, hotkey);
+
+        // 健康检查定时器的生命周期独立于钩子实例：重装失败也不销毁它，靠它按退避重试（R3-5）。
+        if (_healthTimer is null)
+        {
+            _healthTimer = new System.Windows.Forms.Timer { Interval = HealthCheckIntervalMs };
+            _healthTimer.Tick += (_, _) => CheckHookHealth();
+        }
+        _healthTimer.Start();
+        ReportHealth(true);
+
+        AppLog.Info("hotkey", $"热键监听启动: {hotkey.DisplayString}");
+    }
+
+    /// <summary>安装（或重装）低级键盘钩子。失败抛 <see cref="HotkeyServiceException"/>。</summary>
+    private void InstallHook(int vk, HotkeyConfig hotkey)
+    {
+        if (_hookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookHandle);
+            _hookHandle = IntPtr.Zero;
+        }
+
         _stateMachine = new HotkeyStateMachine(vk, BuildExpected(hotkey.Modifiers));
-        // 钩子可能在用户已按住修饰键时（如自愈重装）安装：用一次 GetAsyncKeyState 播种初始
-        // 物理状态。这不同于"在事件里用 GetAsyncKeyState 推断释放"——只在安装这一刻取一次快照。
+        // 只在安装这一刻取一次 GetAsyncKeyState 快照播种物理修饰键（区别于"在事件里推断释放"）。
         SeedPhysicalModifierState();
 
         _proc = HookCallback;
@@ -70,13 +107,15 @@ internal sealed class HotkeyService : IDisposable
             _proc = null;
             throw new HotkeyServiceException($"安装键盘钩子失败 (Win32 error {err})");
         }
-
         _lastHookActivityTick = Environment.TickCount;
-        _healthTimer = new System.Windows.Forms.Timer { Interval = HealthCheckIntervalMs };
-        _healthTimer.Tick += (_, _) => CheckHookHealth();
-        _healthTimer.Start();
+    }
 
-        AppLog.Info("hotkey", $"热键监听启动: {hotkey.DisplayString}");
+    private void ReportHealth(bool healthy)
+    {
+        if (healthy == _lastReportedHealthy) return;
+        _lastReportedHealthy = healthy;
+        var cb = OnHealthChanged;
+        if (cb is not null) UiDispatcher.PostAsync(() => cb(healthy));
     }
 
     public void Stop()
@@ -93,38 +132,74 @@ internal sealed class HotkeyService : IDisposable
         _proc = null;
         _hotkey = null;
         _stateMachine = null;
+        _lastReportedHealthy = true;
     }
 
     /// <summary>
-    /// 用户在最近一个自愈检查周期内有输入，但钩子回调在同一时间窗内一次都没被系统调用过：
-    /// 判定钩子已被系统静默摘除，重新安装。重装本身若失败只记日志，等下一个周期再试。
+    /// 钩子存活性自愈（R3-5）：
+    /// <list type="bullet">
+    /// <item>句柄已丢失（上次重装失败）→ 按退避重试。</item>
+    /// <item>句柄仍在但长时间零回调、且期间确有输入 → 连续两次可疑才重装
+    ///   （<c>GetLastInputInfo</c> 含鼠标，无法区分键鼠，取保守窗口 + 双次确认降低误判）。</item>
+    /// </list>
+    /// 重装失败不销毁定时器，下个周期继续按退避重试，并把不可用状态报给上层。
     /// </summary>
     private void CheckHookHealth()
     {
         var hotkey = _hotkey;
-        if (_hookHandle == IntPtr.Zero || hotkey is null) return;
+        if (hotkey is null) return; // 已 Stop
 
-        var lastInput = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
-        if (!GetLastInputInfo(ref lastInput)) return;
+        var vk = MapKeyToVk(hotkey.Key);
+        if (vk == 0) return;
 
-        var now = Environment.TickCount;
-        var sinceUserInputMs = unchecked((uint)now - lastInput.dwTime);
-        var sinceHookActivityMs = unchecked((uint)(now - _lastHookActivityTick));
+        bool hookMissing = _hookHandle == IntPtr.Zero;
+        bool suspect = false;
 
-        if (sinceUserInputMs >= HealthCheckIntervalMs || sinceHookActivityMs < HealthCheckIntervalMs)
+        if (!hookMissing)
+        {
+            var lastInput = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+            if (!GetLastInputInfo(ref lastInput)) { _healthSuspectLastTick = false; return; }
+
+            var now = Environment.TickCount;
+            var sinceUserInputMs = unchecked((uint)now - lastInput.dwTime);
+            var sinceHookActivityMs = unchecked((uint)(now - _lastHookActivityTick));
+
+            bool suspectNow = sinceUserInputMs < HealthCheckIntervalMs && sinceHookActivityMs >= SilenceSuspectMs;
+            suspect = suspectNow && _healthSuspectLastTick;
+            _healthSuspectLastTick = suspectNow;
+            if (!suspect) return;
+        }
+
+        // 退避：连续失败越多，下一次尝试间隔越长（上限 5 分钟）。
+        var backoffMs = Math.Min(HealthCheckIntervalMs << Math.Min(_recoveryFailures, 4), 5 * 60_000);
+        if (_recoveryFailures > 0 && unchecked((uint)(Environment.TickCount - _lastRecoveryAttemptTick)) < backoffMs)
         {
             return;
         }
+        _lastRecoveryAttemptTick = Environment.TickCount;
 
-        AppLog.Warn("hotkey", "检测到全局键盘钩子可能已被系统摘除，尝试重新安装");
+        AppLog.Warn("hotkey", hookMissing ? "键盘钩子句柄已丢失，尝试重新安装" : "键盘钩子长时间无回调，尝试重新安装");
+
+        bool wasEngaged = _stateMachine?.IsEngaged ?? false;
         try
         {
-            Start(hotkey);
+            InstallHook(vk, hotkey);
+            _recoveryFailures = 0;
+            _healthSuspectLastTick = false;
             AppLog.Info("hotkey", "全局键盘钩子已重新安装");
+            // 协调正在进行的听写正常收尾：新钩子不会再送出旧那次按下的 OnRelease。
+            if (wasEngaged)
+            {
+                var cancel = OnCancel;
+                if (cancel is not null) UiDispatcher.PostAsync(() => cancel());
+            }
+            ReportHealth(true);
         }
         catch (Exception ex)
         {
-            AppLog.Error("hotkey", "重新安装全局键盘钩子失败", ex);
+            _recoveryFailures++;
+            AppLog.Error("hotkey", $"重新安装全局键盘钩子失败（第 {_recoveryFailures} 次）", ex);
+            ReportHealth(false);
         }
     }
 

@@ -15,8 +15,15 @@ internal enum TextInsertionResult
     /// <summary>录音开始到插入之间前台窗口已切换：为避免写入用户未预期的窗口
     /// （最坏情况是密码框），不再插入，只把结果复制到剪贴板（F-10）。</summary>
     FocusChanged,
+    /// <summary>插入前检测到 Alt/Shift/Win 仍被按住——会改变 Ctrl+V 的语义，
+    /// 放弃自动粘贴改为复制到剪贴板（R3-2）。</summary>
+    ModifiersHeld,
     Failed,
 }
+
+/// <summary>前台窗口相对本进程的提权关系（R3-2）。无法判定时为 <see cref="Unknown"/>，
+/// 不再像旧实现那样一律当作"未提权"。</summary>
+internal enum ForegroundElevation { NotElevated, Elevated, Unknown }
 
 /// <summary>
 /// 文本插入服务：剪贴板 + SendInput Ctrl+V。
@@ -26,18 +33,6 @@ internal sealed class TextInsertionService
 {
     /// <summary>恢复原剪贴板内容前的等待时长；500ms 对部分慢应用偏短（对齐 macOS d572f86）。</summary>
     private static readonly TimeSpan RestoreDelay = TimeSpan.FromSeconds(1);
-
-    /// <summary>
-    /// 三个系统级剪贴板排除格式：Win+V 历史与跨设备云剪贴板都会跳过带这些格式的写入项。
-    /// Windows 上没有 macOS 那种社区约定（org.nspasteboard.*），但有系统本身承认的等价物，
-    /// 且是系统级而非社区约定，覆盖更彻底（R3-15）。
-    /// </summary>
-    private static readonly string[] ExclusionFormats =
-    {
-        "ExcludeClipboardContentFromMonitorProcessing",
-        "CanIncludeInClipboardHistory",
-        "CanUploadToCloudClipboard",
-    };
 
     private CancellationTokenSource? _pendingRestoreCts;
 
@@ -69,6 +64,9 @@ internal sealed class TextInsertionService
     private sealed class ClipboardSnapshot
     {
         public List<(string Format, object Data)> Entries { get; } = new();
+        /// <summary>true = 读取原剪贴板本身失败（区别于"原剪贴板为空"）。恢复阶段绝不
+        /// <see cref="Clipboard.Clear"/>，优先保留识别结果、让用户自行复制（R3-2）。</summary>
+        public bool ReadFailed { get; set; }
     }
 
     /// <param name="expectedForegroundWindow">录音开始时记录的前台窗口句柄；插入前若与当前
@@ -84,6 +82,12 @@ internal sealed class TextInsertionService
         if (currentWindow != expectedForegroundWindow || currentProcessId != expectedForegroundProcessId)
         {
             return TextInsertionResult.FocusChanged;
+        }
+
+        // Alt/Shift/Win 仍按住时 Ctrl+V 会变成别的快捷键（R3-2）。放弃自动粘贴改为复制。
+        if (AreNonPasteModifiersHeld())
+        {
+            return TextInsertionResult.ModifiersHeld;
         }
 
         // 取消上一轮的剪贴板恢复任务（如果还在等待）
@@ -131,17 +135,23 @@ internal sealed class TextInsertionService
     }
 
     /// <summary>插入失败/焦点已变化时的兜底：把识别结果写入剪贴板，避免长听写内容彻底丢失。
-    /// 取消待恢复任务，防止把这次的文本又还原掉。</summary>
-    public void CopyToClipboard(string text)
+    /// 取消待恢复任务，防止把这次的文本又还原掉。返回是否真正写入成功——调用方不应在
+    /// 写失败时仍告诉用户"结果已复制到剪贴板"（R3-2）。</summary>
+    public bool CopyToClipboard(string text)
     {
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
         _pendingRestore = null;
-        if (!TryWriteConcealedText(text))
-        {
-            AppLog.Error("input", "兜底写入剪贴板失败");
-        }
+        if (TryWriteConcealedText(text)) return true;
+        AppLog.Error("input", "兜底写入剪贴板失败");
+        return false;
     }
+
+    private static bool AreNonPasteModifiersHeld() =>
+        (GetAsyncKeyState(VK_MENU) & 0x8000) != 0    // Alt
+        || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0
+        || (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0
+        || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
 
     /// <summary>
     /// 取备份快照：若仍处于上一次粘贴兜底的临时恢复窗口内、且剪贴板未被用户改动，继承上一次
@@ -186,9 +196,12 @@ internal sealed class TextInsertionService
 
     private static void ApplyClipboardExclusionFormats(DataObject dataObject)
     {
-        foreach (var format in ExclusionFormats)
+        // ExcludeClipboardContentFromMonitorProcessing 只要求格式"存在"，数据被忽略。
+        dataObject.SetData("ExcludeClipboardContentFromMonitorProcessing", false, new MemoryStream(new byte[] { 0 }));
+        // CanIncludeInClipboardHistory / CanUploadToCloudClipboard 的契约要求写 4 字节 DWORD = 0（R3-2）。
+        foreach (var format in new[] { "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard" })
         {
-            dataObject.SetData(format, false, new MemoryStream(new byte[] { 0 }));
+            dataObject.SetData(format, false, new MemoryStream(BitConverter.GetBytes(0)));
         }
     }
 
@@ -201,10 +214,11 @@ internal sealed class TextInsertionService
         try { original = Clipboard.GetDataObject(); }
         catch (Exception ex)
         {
-            AppLog.Debug("input", $"读取原剪贴板失败（忽略）: {ex.Message}");
+            AppLog.Debug("input", $"读取原剪贴板失败: {ex.Message}");
+            snapshot.ReadFailed = true;
             return snapshot;
         }
-        if (original is null) return snapshot;
+        if (original is null) return snapshot; // 原剪贴板确实为空（非读取失败）。
 
         int failedFormats = 0;
         foreach (var format in original.GetFormats(false))
@@ -233,9 +247,15 @@ internal sealed class TextInsertionService
     {
         try
         {
+            if (snapshot.ReadFailed)
+            {
+                // 此前读不出原剪贴板：不清空、不覆盖，保留识别结果让用户自行复制（R3-2）。
+                AppLog.Debug("input", "原剪贴板此前读取失败，保留识别结果不做清空");
+                return;
+            }
             if (snapshot.Entries.Count == 0)
             {
-                // 原剪贴板为空：不能"什么都不做"，否则我们写入的识别文本会永久留在剪贴板（W-08b）。
+                // 原剪贴板确实为空：不能"什么都不做"，否则我们写入的识别文本会永久留在剪贴板（W-08b）。
                 Clipboard.Clear();
                 return;
             }
@@ -277,29 +297,62 @@ internal sealed class TextInsertionService
     /// <summary>
     /// UIPI（User Interface Privilege Isolation）会阻止非提权进程向提权窗口的
     /// <c>SendInput</c> 生效——在以管理员身份运行的记事本/终端里听写会静默失败。
-    /// 用于在插入失败时给出明确提示，而不是让用户以为识别坏了。
+    /// 读取前台进程令牌的 TokenElevation 与本进程比较（R3-2）。无法判定时返回
+    /// <see cref="ForegroundElevation.Unknown"/> 而不是一律当作未提权。
     /// </summary>
-    public static bool IsForegroundWindowElevated()
+    public static ForegroundElevation CheckForegroundWindowElevation()
     {
         var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return false;
+        if (hwnd == IntPtr.Zero) return ForegroundElevation.Unknown;
 
         GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid == 0) return false;
+        if (pid == 0) return ForegroundElevation.Unknown;
 
         var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (hProcess == IntPtr.Zero)
         {
-            // 打开失败（ERROR_ACCESS_DENIED）本身就是"目标比我们权限高"的强信号。
-            return true;
+            // 连"受限查询"句柄都打不开：目标权限比本进程高的强信号。
+            return ForegroundElevation.Elevated;
         }
         try
         {
-            return false;
+            if (!OpenProcessToken(hProcess, TOKEN_QUERY, out var hToken))
+            {
+                return ForegroundElevation.Unknown;
+            }
+            try
+            {
+                if (!GetTokenInformation(hToken, TokenElevation, out var targetElevated, sizeof(uint), out _))
+                {
+                    return ForegroundElevation.Unknown;
+                }
+                // 目标已提权而本进程未提权 → UIPI 会拦 SendInput；其余情况不拦。
+                if (targetElevated != 0 && !IsSelfElevated())
+                {
+                    return ForegroundElevation.Elevated;
+                }
+                return ForegroundElevation.NotElevated;
+            }
+            finally { CloseHandle(hToken); }
         }
-        finally
+        finally { CloseHandle(hProcess); }
+    }
+
+    private static bool IsSelfElevated()
+    {
+        try
         {
-            CloseHandle(hProcess);
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out var hToken)) return false;
+            try
+            {
+                return GetTokenInformation(hToken, TokenElevation, out var elevated, sizeof(uint), out _)
+                    && elevated != 0;
+            }
+            finally { CloseHandle(hToken); }
+        }
+        catch
+        {
+            return false;
         }
     }
 

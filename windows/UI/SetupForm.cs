@@ -40,7 +40,7 @@ internal sealed class SetupForm : Form
     private AppConfig _loadedConfig = new();
     private AsrState _lastAsrState = AsrState.Unloaded;
     private bool _lastIsDownloading;
-    private bool _lastMicAccessDenied;
+    private MicProbeResult _lastMicProbe = MicProbeResult.Unknown;
     /// <summary>权限页可见且麦克风未就绪时的自愈轮询（R4-14：只刷新勾选状态，绝不
     /// 在轮询路径里抢焦点）。</summary>
     private readonly System.Windows.Forms.Timer _permissionPollTimer = new() { Interval = 4000 };
@@ -128,7 +128,7 @@ internal sealed class SetupForm : Form
     {
         var shouldPoll = Visible
             && _tabs.SelectedIndex == (int)SetupTab.Permissions
-            && _lastMicAccessDenied;
+            && _lastMicProbe is MicProbeResult.AccessDenied or MicProbeResult.NoDevice or MicProbeResult.DeviceFailure;
 
         if (shouldPoll && !_permissionPollTimer.Enabled)
         {
@@ -186,7 +186,7 @@ internal sealed class SetupForm : Form
     }
 
     public void UpdateStatus(
-        bool micAccessDenied,
+        MicProbeResult micProbe,
         AsrState asrState,
         string? asrFailureMessage,
         double? downloadProgress,
@@ -197,11 +197,18 @@ internal sealed class SetupForm : Form
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
         var isDownloading = downloadProgress is not null;
 
-        if (micAccessDenied)
+        var micBanner = micProbe switch
+        {
+            MicProbeResult.AccessDenied => "麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。",
+            MicProbeResult.NoDevice => "未检测到麦克风设备：请插入麦克风或在系统声音设置中启用输入设备。",
+            MicProbeResult.DeviceFailure => "麦克风设备打开失败：可能被其他应用独占，或驱动异常。",
+            _ => null,
+        };
+        if (micBanner is not null)
         {
             _bannerPanel.Visible = true;
             _bannerPanel.BackColor = Color.FromArgb(255, 245, 220);
-            _bannerLabel.Text = "麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。";
+            _bannerLabel.Text = micBanner;
             _bannerLabel.ForeColor = Color.FromArgb(120, 70, 0);
         }
         else
@@ -231,12 +238,16 @@ internal sealed class SetupForm : Form
                 _ => ("重新加载模型", true),
             };
 
-        _micStatusLabel.Text = micAccessDenied
-            ? "麦克风不可用：可能被系统隐私设置阻止"
-            : "麦克风可用";
-        _micStatusLabel.ForeColor = micAccessDenied ? Color.Firebrick : Color.SeaGreen;
+        (_micStatusLabel.Text, _micStatusLabel.ForeColor) = micProbe switch
+        {
+            MicProbeResult.Available => ("麦克风可用", Color.SeaGreen),
+            MicProbeResult.AccessDenied => ("麦克风不可用：被系统隐私设置阻止", Color.Firebrick),
+            MicProbeResult.NoDevice => ("未检测到麦克风设备", Color.Firebrick),
+            MicProbeResult.DeviceFailure => ("麦克风打开失败：可能被其他应用占用", Color.Firebrick),
+            _ => ("麦克风状态未知", Color.DarkGoldenrod),
+        };
 
-        _lastMicAccessDenied = micAccessDenied;
+        _lastMicProbe = micProbe;
         RefreshPermissionPolling();
     }
 

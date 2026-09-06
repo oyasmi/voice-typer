@@ -35,7 +35,7 @@ internal sealed class AppCoordinator : IDisposable
 
     private AppConfig _config = new();
     private AppStateInfo _currentState = AppStateInfo.Booting;
-    private bool _micAccessDenied;
+    private MicProbeResult _micProbe = MicProbeResult.Unknown;
     private bool _userOpenedSetup;
     /// <summary>用户是否已从托盘菜单主动暂停听写。暂停时不监听热键（W-28）。</summary>
     private bool _isPaused;
@@ -198,18 +198,14 @@ internal sealed class AppCoordinator : IDisposable
 
     private void ProbeMicrophone(bool isFirstProbe)
     {
-        _ = Task.Run(() =>
-        {
-            MicPermissionProbe.TryProbe(out var denied);
-            return denied;
-        }).ContinueWith(t =>
+        _ = Task.Run(MicPermissionProbe.Probe).ContinueWith(t =>
         {
             UiDispatcher.Post(() =>
             {
-                _micAccessDenied = t.IsCompletedSuccessfully && t.Result;
+                _micProbe = t.IsCompletedSuccessfully ? t.Result : MicProbeResult.Unknown;
                 if (isFirstProbe)
                 {
-                    if (_micAccessDenied)
+                    if (_micProbe == MicProbeResult.AccessDenied)
                     {
                         OpenSetup(SetupTab.Permissions);
                     }
@@ -586,7 +582,7 @@ internal sealed class AppCoordinator : IDisposable
     private void SyncSetupWindow()
     {
         _setupForm?.UpdateStatus(
-            micAccessDenied: _micAccessDenied,
+            micProbe: _micProbe,
             asrState: _asrService.State,
             asrFailureMessage: _asrService.FailureMessage,
             downloadProgress: _isDownloadingModel ? _downloadProgress : null,

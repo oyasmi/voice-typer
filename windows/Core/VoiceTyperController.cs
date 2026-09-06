@@ -46,8 +46,6 @@ internal sealed class VoiceTyperController : IDisposable
     private bool _isRunning;
     /// <summary>本轮录音真正开始的时间戳（Stopwatch tick），用于短录音过滤。</summary>
     private long _recordingStartedTicks;
-    /// <summary>本轮录音因过短被判定丢弃；由 OnTailChunk 回调消费。</summary>
-    private bool _discardCurrentSession;
 
     public bool IsRunning => _isRunning;
 
@@ -92,6 +90,7 @@ internal sealed class VoiceTyperController : IDisposable
         _hotkeyService.OnPress = BeginRecording;
         _hotkeyService.OnRelease = FinishRecording;
         _hotkeyService.OnCancel = CancelByUser;
+        _hotkeyService.OnHealthChanged = OnHotkeyHealthChanged;
         _hotkeyService.Start(_config.Hotkey);
 
         _audioService.OnDeviceChanged = () =>
@@ -105,12 +104,26 @@ internal sealed class VoiceTyperController : IDisposable
         AppLog.Info("controller", "Controller started");
     }
 
+    /// <summary>热键监听健康状态变化（R3-5）：失效时向用户显示不可用，恢复后回到就绪。</summary>
+    private void OnHotkeyHealthChanged(bool healthy)
+    {
+        if (!_isRunning) return;
+        if (!healthy)
+        {
+            AppLog.Error("controller", "热键监听已失效，自愈重试中");
+            StateChanged?.Invoke(AppStateInfo.ErrorWith("热键监听已失效，正在尝试自动恢复"));
+        }
+        else if (!_isRecording)
+        {
+            StateChanged?.Invoke(AppStateInfo.Idle);
+        }
+    }
+
     /// <summary>用户在录音过程中按 Esc 主动取消，通过 <see cref="Cancelled"/> 让 UI 给出"已取消"提示。</summary>
     private void CancelByUser()
     {
         if (!_isRecording) return;
         _isRecording = false;
-        _discardCurrentSession = false;
         AppLog.Info("controller", "用户取消录音");
 
         _audioService.StopWithoutResult();
@@ -142,6 +155,7 @@ internal sealed class VoiceTyperController : IDisposable
         _hotkeyService.OnPress = BeginRecording;
         _hotkeyService.OnRelease = FinishRecording;
         _hotkeyService.OnCancel = CancelByUser;
+        _hotkeyService.OnHealthChanged = OnHotkeyHealthChanged;
         try
         {
             _hotkeyService.Start(_config.Hotkey);
@@ -162,7 +176,6 @@ internal sealed class VoiceTyperController : IDisposable
         _audioService.StopWithoutResult();
         TeardownAsrSession();
         _isRecording = false;
-        _discardCurrentSession = false;
         AppLog.Info("controller", "Controller stopped");
     }
 
@@ -179,7 +192,12 @@ internal sealed class VoiceTyperController : IDisposable
     private void BeginRecording()
     {
         if (!_isRunning || _isRecording) return;
-        _discardCurrentSession = false;
+        if (_asrSession is not null)
+        {
+            // 上一段听写仍在识别 / 插入：拒绝新会话并给出可见反馈（R3-1）。
+            PreviewWarning?.Invoke("上一段听写尚未完成，请稍候再试");
+            return;
+        }
         BeginLocalRecording();
     }
 
@@ -189,8 +207,11 @@ internal sealed class VoiceTyperController : IDisposable
         _isRecording = false;
 
         var elapsed = Stopwatch.GetElapsedTime(_recordingStartedTicks);
-        _discardCurrentSession = elapsed < MinimumRecordingDuration;
-        if (_discardCurrentSession)
+        var discard = elapsed < MinimumRecordingDuration;
+        // 记在会话对象上而非实例字段：短录音 tail 经投递线程异步到达，期间即便有新一轮
+        // 录音也不会把它重置掉（R3-1）。
+        if (_asrSession is not null) _asrSession.ShortDiscard = discard;
+        if (discard)
         {
             AppLog.Info("controller", $"录音过短（{elapsed.TotalMilliseconds:F0}ms），已丢弃");
         }
@@ -205,8 +226,6 @@ internal sealed class VoiceTyperController : IDisposable
     /// </summary>
     private void DiscardShortSession(LocalAsrSession? session)
     {
-        _discardCurrentSession = false;
-
         if (session is not null && !ReferenceEquals(_asrSession, session))
         {
             session.Close();
@@ -255,6 +274,16 @@ internal sealed class VoiceTyperController : IDisposable
                 session.Close();
                 var trimmed = (text ?? "").Trim();
                 if (!_isRunning || string.IsNullOrEmpty(trimmed)) return;
+                // 旧会话在后台完成，而用户已经开始 / 正在进行下一段：不要插入到不预期的位置，
+                // 改为复制到剪贴板并提示（R3-1）。
+                if (_isRecording || _asrSession is not null)
+                {
+                    var copied = _textInsertion.CopyToClipboard(trimmed);
+                    PreviewWarning?.Invoke(copied
+                        ? "上一段听写已完成，结果已复制到剪贴板"
+                        : "上一段听写已完成，但复制到剪贴板失败");
+                    return;
+                }
                 InsertFinalText(trimmed, expectedForegroundWindow, expectedForegroundProcessId);
             }
         };
@@ -305,7 +334,7 @@ internal sealed class VoiceTyperController : IDisposable
             UiDispatcher.Post(() =>
             {
                 // 误触录音：不发 finalize，直接关闭会话。
-                if (_discardCurrentSession)
+                if (session.ShortDiscard)
                 {
                     DiscardShortSession(session);
                     return;
@@ -370,18 +399,37 @@ internal sealed class VoiceTyperController : IDisposable
 
             case TextInsertionResult.FocusChanged:
                 // 录音开始到插入之间前台窗口已切换：不写入用户未预期的窗口，只复制到剪贴板。
-                _textInsertion.CopyToClipboard(trimmed);
                 AppLog.Warn("controller", "目标窗口已变化，插入已取消，改为复制到剪贴板");
-                StateChanged?.Invoke(AppStateInfo.ErrorWith("目标窗口已变化，结果已复制到剪贴板"));
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(_textInsertion.CopyToClipboard(trimmed)
+                    ? "目标窗口已变化，结果已复制到剪贴板，可手动粘贴"
+                    : "目标窗口已变化，且复制到剪贴板也失败了，请重新听写"));
+                break;
+
+            case TextInsertionResult.ModifiersHeld:
+                AppLog.Warn("controller", "检测到修饰键被按住，未自动粘贴，改为复制到剪贴板");
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(_textInsertion.CopyToClipboard(trimmed)
+                    ? "检测到有修饰键按住，未自动粘贴，结果已复制到剪贴板"
+                    : "检测到有修饰键按住，且复制到剪贴板失败，请重新听写"));
                 break;
 
             case TextInsertionResult.Failed:
                 // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
-                _textInsertion.CopyToClipboard(trimmed);
-                // UIPI 会阻止向提权窗口 SendInput；给出针对性提示而不是让用户以为识别坏了。
-                var reason = TextInsertionService.IsForegroundWindowElevated()
-                    ? "目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，已复制到剪贴板，可手动粘贴"
-                    : "插入失败，已复制到剪贴板，可手动粘贴";
+                var copied = _textInsertion.CopyToClipboard(trimmed);
+                string reason;
+                if (!copied)
+                {
+                    reason = "插入失败，且复制到剪贴板也失败了，请重新听写";
+                }
+                else
+                {
+                    // UIPI 会阻止向提权窗口 SendInput；无法判定权限时用不确定语气（R3-2）。
+                    reason = TextInsertionService.CheckForegroundWindowElevation() switch
+                    {
+                        ForegroundElevation.Elevated => "目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，已复制到剪贴板，可手动粘贴",
+                        ForegroundElevation.Unknown => "无法判断目标窗口权限，输入注入未生效，已复制到剪贴板，可手动粘贴",
+                        _ => "插入失败，已复制到剪贴板，可手动粘贴",
+                    };
+                }
                 AppLog.Error("controller", "文本插入失败，已复制到剪贴板");
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(reason));
                 break;

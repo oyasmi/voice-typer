@@ -44,9 +44,18 @@ internal sealed class ModelDownloader : IDisposable
 
     private const string EndpointBase = "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo";
 
+    // 单请求整体超时不设上限——大文件 + Range 续传下"总时长"没有合理常数。
+    // 改用响应头超时 + 正文滑动无进度超时来杀死真正卡死的连接（R3-4）。
     private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
-    private volatile bool _cancelled;
+    private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
+
+    // 响应头必须在此时限内到达：ModelScope 302 → OSS 重定向 + TLS 握手实测个位数秒级，
+    // 30s 已是"连接确实卡死"而非慢网络的信号。
+    private static readonly TimeSpan HeaderTimeout = TimeSpan.FromSeconds(30);
+    // 正文读取的滑动无进度超时：只要有任意字节到达就重新计时；完全静默 30s = 连接已死，
+    // 交外层重试。取 30s 兼顾移动网络的短暂拥塞与"不让用户对着卡住的进度条干等几分钟"。
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// 下载全部 4 个文件到 <see cref="ModelLocator.DownloadDestination"/>；已存在且校验通过的文件跳过。
@@ -54,15 +63,18 @@ internal sealed class ModelDownloader : IDisposable
     /// <param name="onProgress">总体进度回调（0…1）。</param>
     public async Task DownloadAllAsync(Action<double> onProgress, CancellationToken ct = default)
     {
-        _cancelled = false;
         var dir = ModelLocator.DownloadDestination;
         Directory.CreateDirectory(dir);
+
+        // 把调用方 token 与内部取消源关联：Cancel() 或调用方取消都会立刻中断阻塞中的
+        // SendAsync / ReadAsync / WriteAsync（R3-4）。
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, ct);
+        var token = linkedCts.Token;
 
         long completedBytes = 0;
         foreach (var spec in Files)
         {
-            ct.ThrowIfCancellationRequested();
-            if (_cancelled) throw new OperationCanceledException();
+            token.ThrowIfCancellationRequested();
 
             var destPath = Path.Combine(dir, spec.Name);
             if (File.Exists(destPath) && Sha256Matches(destPath, spec.Sha256))
@@ -77,14 +89,17 @@ internal sealed class ModelDownloader : IDisposable
             {
                 var overall = baseBytes + spec.SizeHint * fileProgress;
                 onProgress(Math.Min(1.0, overall / TotalBytes));
-            }, ct).ConfigureAwait(false);
+            }, token).ConfigureAwait(false);
 
             completedBytes += spec.SizeHint;
             onProgress(Math.Min(1.0, (double)completedBytes / TotalBytes));
         }
     }
 
-    public void Cancel() => _cancelled = true;
+    public void Cancel()
+    {
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
 
     private async Task DownloadOneAsync(FileSpec spec, string dir, Action<double> onProgress, CancellationToken ct)
     {
@@ -134,7 +149,20 @@ internal sealed class ModelDownloader : IDisposable
             request.Headers.Range = new RangeHeaderValue(existingLength, null);
         }
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        HttpResponseMessage responseMessage;
+        using (var headerCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            headerCts.CancelAfter(HeaderTimeout);
+            try
+            {
+                responseMessage = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new ModelDownloadException($"下载 {spec.Name} 连接超时（{HeaderTimeout.TotalSeconds:F0}s 未响应），将重试。");
+            }
+        }
+        using var response = responseMessage;
 
         bool resumed = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
         if (existingLength > 0 && !resumed)
@@ -164,7 +192,6 @@ internal sealed class ModelDownloader : IDisposable
 
         var buffer = new byte[1 << 16];
         long written = existingLength;
-        int read;
         // 每读 64KB 就回调一次：241MB 的模型文件约 3800 次，每次都触发一次全量 UI 刷新
         // （托盘 + 设置窗口）代价过高。节流到"变化 ≥0.5% 或距上次 ≥200ms"，首尾两次不节流
         // （对齐 macOS b94b31e/R3-09）。
@@ -173,9 +200,24 @@ internal sealed class ModelDownloader : IDisposable
         double lastReportedProgress = -1;
         var reportStopwatch = Stopwatch.StartNew();
 
-        while ((read = await httpStream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        // 滑动无进度超时：每次成功读到字节就把定时器往后推 StallTimeout（R3-4）。
+        using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stallCts.CancelAfter(StallTimeout);
+
+        while (true)
         {
-            if (_cancelled) throw new OperationCanceledException();
+            int read;
+            try
+            {
+                read = await httpStream.ReadAsync(buffer, stallCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new ModelDownloadException($"下载 {spec.Name} 停滞（{StallTimeout.TotalSeconds:F0}s 无数据），将重试。");
+            }
+            if (read <= 0) break;
+            stallCts.CancelAfter(StallTimeout);
+
             await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             written += read;
             if (totalLength <= 0) continue;
@@ -223,6 +265,8 @@ internal sealed class ModelDownloader : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _http.Dispose();
+        _cts.Dispose();
     }
 }

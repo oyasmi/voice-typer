@@ -78,6 +78,10 @@ internal sealed class HotkeyStateMachine
         }
     }
 
+    /// <summary>是否处于"已接管组合键"的任一状态（Engaged 或等待整组释放）——
+    /// 自愈重装时据此决定是否要替正在进行的听写补一个收尾信号（R3-5）。</summary>
+    public bool IsEngaged => _state is S.Engaged or S.AwaitingFullRelease;
+
     public HotkeyModifiers CurrentModifiers
     {
         get

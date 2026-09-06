@@ -10,12 +10,24 @@ using VoiceTyper.Support;
 
 namespace VoiceTyper.Services;
 
+internal enum AudioStartFailureKind
+{
+    /// <summary>系统隐私设置或 COM 层拒绝访问麦克风。</summary>
+    AccessDenied,
+    /// <summary>没有可用的输入设备。</summary>
+    NoDevice,
+    /// <summary>设备存在但打开 / 初始化失败（含不支持的声道数）。</summary>
+    DeviceFailure,
+}
+
 internal sealed class AudioStartException : Exception
 {
-    public bool IsAccessDenied { get; }
-    public AudioStartException(string message, bool accessDenied, Exception? inner = null) : base(message, inner)
+    public AudioStartFailureKind Kind { get; }
+    public bool IsAccessDenied => Kind == AudioStartFailureKind.AccessDenied;
+
+    public AudioStartException(string message, AudioStartFailureKind kind, Exception? inner = null) : base(message, inner)
     {
-        IsAccessDenied = accessDenied;
+        Kind = kind;
     }
 }
 
@@ -93,11 +105,11 @@ internal sealed class AudioCaptureService : IDisposable
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
-                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", accessDenied: true, ex);
+                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", AudioStartFailureKind.AccessDenied, ex);
             }
             catch (Exception ex)
             {
-                throw new AudioStartException("未找到可用麦克风设备", accessDenied: false, ex);
+                throw new AudioStartException("未找到可用麦克风设备", AudioStartFailureKind.NoDevice, ex);
             }
 
             try
@@ -130,7 +142,7 @@ internal sealed class AudioCaptureService : IDisposable
                     default:
                         throw new AudioStartException(
                             $"暂不支持 {_captureFormat.Channels} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风",
-                            accessDenied: false);
+                            AudioStartFailureKind.DeviceFailure);
                 }
                 _resampledProvider = new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
 
@@ -156,13 +168,13 @@ internal sealed class AudioCaptureService : IDisposable
             {
                 _running = false;
                 Cleanup();
-                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", accessDenied: true, ex);
+                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", AudioStartFailureKind.AccessDenied, ex);
             }
             catch (Exception ex)
             {
                 _running = false;
                 Cleanup();
-                throw new AudioStartException($"启动录音失败: {ex.Message}", accessDenied: false, ex);
+                throw new AudioStartException($"启动录音失败: {ex.Message}", AudioStartFailureKind.DeviceFailure, ex);
             }
         }
 
