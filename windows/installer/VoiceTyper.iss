@@ -53,5 +53,11 @@ Name: "{group}\卸载 VoiceTyper"; Filename: "{uninstallexe}"
 [Run]
 Filename: "{app}\VoiceTyper.exe"; Description: "启动 VoiceTyper"; Flags: nowait postinstall skipifsilent unchecked
 
+[Registry]
+; 卸载时清理本应用在运行期写入的开机自启项（若用户启用过），只动本应用拥有的值。
+; 安装时不创建该值——自启由应用内 StartupRegistration 按用户选择写入（R4-2）。
+; 注：uninsdeletevalue 对运行期创建的值的清理效果需在真机卸载时确认。
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "VoiceTyper"; Flags: uninsdeletevalue
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

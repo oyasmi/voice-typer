@@ -322,7 +322,7 @@ internal sealed class TextInsertionService
             }
             try
             {
-                if (!GetTokenInformation(hToken, TokenElevation, out var targetElevated, sizeof(uint), out _))
+                if (!GetTokenInformation(hToken, TokenElevation, out var targetElevated, (uint)sizeof(uint), out uint _))
                 {
                     return ForegroundElevation.Unknown;
                 }
@@ -345,7 +345,7 @@ internal sealed class TextInsertionService
             if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out var hToken)) return false;
             try
             {
-                return GetTokenInformation(hToken, TokenElevation, out var elevated, sizeof(uint), out _)
+                return GetTokenInformation(hToken, TokenElevation, out var elevated, (uint)sizeof(uint), out uint _)
                     && elevated != 0;
             }
             finally { CloseHandle(hToken); }

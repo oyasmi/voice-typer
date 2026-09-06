@@ -1,4 +1,4 @@
-# Windows 修复交付记录（R0–R2）
+# Windows 修复交付记录（R0–R4）
 
 对应 [REPAIR_TRIAGE.md](REPAIR_TRIAGE.md) 的工单。分诊基线 `86424eb`，本轮在 **Linux、无 .NET SDK、
 无 Windows 真机** 环境完成，全部条目状态为「代码与静态验证完成」，**尚未编译、未跑测试、未真机验证**。
@@ -18,7 +18,15 @@
 | R2 | R2-3 模型重载无限循环 | 代码完成 |
 | R2 | R2-1 热键消费与按键状态机 | 代码完成，新增 HotkeyStateMachine + 单测 |
 | R2 | R2-4 API Key 保存事务 | 代码完成，新增取消传播单测 |
-| R3 / R4 | 全部 | **未开始** |
+| R3 | R3-1 单活跃听写收口 | 代码完成 |
+| R3 | R3-2 剪贴板与插入反馈 | 代码完成（TokenElevation / DWORD / ReadFailed / 修饰键） |
+| R3 | R3-3 麦克风状态误报 | 代码完成（MicProbeResult 结构化结果） |
+| R3 | R3-4 下载超时与取消 | 代码完成（CTS + 响应头/无进度超时） |
+| R3 | R3-5 钩子自愈两缺陷 | 代码完成（定时器解耦 + 退避 + 健康回调） |
+| R4 | R4-1 单实例范围 | 代码完成（Local\ + Mutex 异常处理） |
+| R4 | R4-2 安装与自启残留 | 代码完成（iss [Registry] / build.bat / SetEnabled→bool） |
+| R4 | R4-3 文档口径校准 | 完成（README / DESIGN §13.2 / §13.3 已知限制） |
+| R4 | R4-4 测试覆盖补强 | 部分：新增状态机 / INPUT 布局 / 取消传播用例；可控 HTTP 服务端矩阵、引擎生命周期计数、STA 剪贴板集成测试待补 |
 
 ## 逐工单交付
 
@@ -131,6 +139,60 @@
 - 仍需验证：**真机 / 假 HTTP 服务端** 只改密钥后实际听写 Authorization 头是新值；密钥写失败 /
   配置写失败 / 活跃听写拒绝三种情况均无虚假成功；日志/YAML/诊断包搜不到密钥。
 - macOS 影响：无。
+
+### R3-1 单活跃听写收口
+- `BeginRecording` 在 `_asrSession != null`（上一段仍在识别/插入）时拒绝新会话并 `PreviewWarning`；
+  `OnFinal` 的 else 分支若已有新会话，改为复制到剪贴板而非插入；短录音丢弃标志从实例字段移到
+  `LocalAsrSession.ShortDiscard`。
+- 仍需验证：假音频源 + 假识别，连按热键 / 短录音后立刻再按 / 各阶段取消 / 迟到 final，
+  断言每会话至多插入一次。
+
+### R3-2 剪贴板与插入反馈
+- `CopyToClipboard`→`bool`；`CanIncludeInClipboardHistory`/`CanUploadToCloudClipboard` 写 4 字节
+  DWORD；`CheckForegroundWindowElevation` 读 `TokenElevation`，无法判定返回 `Unknown`；
+  `ClipboardSnapshot.ReadFailed` 时不 `Clipboard.Clear()`；插入前 Alt/Shift/Win 按住则改为复制。
+- 仍需验证：Windows STA 集成测试（纯文本/图片/文件列表/原所有者退出/剪贴板占用/恢复期间用户
+  复制）；跨应用接受情况、UIPI 提示触发必须真机。
+
+### R3-3 麦克风状态误报
+- `AudioStartException` 增 `Kind`；`MicPermissionProbe.Probe()` 返回 `MicProbeResult`
+  （Available/NoDevice/AccessDenied/DeviceFailure/Unknown）；AppCoordinator + SetupForm 按枚举展示。
+- 仍需验证：无麦克风 / 隐私开关关闭 / 设备忙 / 拔出显式设备，显示与实际一致。
+
+### R3-4 下载超时与取消
+- `volatile bool` → `CancellationTokenSource`（与调用方 token `CreateLinkedTokenSource`），传入
+  `SendAsync`/`ReadAsync`/`WriteAsync`；响应头超时 30s + 正文滑动无进度超时 30s；`Dispose` 取消并释放。
+- 仍需验证：可控 HTTP 服务端覆盖断流 / 无限等待 / 取消 / 206 续传 / 416 / 错误哈希（列入 R4-4）。
+
+### R3-5 钩子自愈的两个缺陷
+- 健康定时器生命周期独立于钩子实例（`InstallHook` 抽出，重装失败不销毁定时器）；指数退避重试
+  （上限 5 分钟）；`OnHealthChanged` 把不可用状态报给控制器→UI；连续两次可疑才动手（降低
+  `GetLastInputInfo` 含鼠标的误判）；恢复后清理按键状态、必要时补 `OnCancel` 收尾。
+- 仍需验证：只移动鼠标不触发重装；安装失败后持续重试且有可见状态；暂停/退出不自动重启。
+
+### R4-1 单实例范围
+- `Global\` → `Local\`；`Mutex` 构造包 `UnauthorizedAccessException` /
+  `WaitHandleCannotBeOpenedException` / `IOException`，失败退化为不做单例保护。
+- 仍需验证：同会话双击只留一个实例；多用户 / 快速用户切换 / RDP 不互相误阻。
+
+### R4-2 安装与自启的残留
+- `installer/VoiceTyper.iss` 增 `[Registry]` 段（`uninsdeletevalue` 清理 `HKCU\...\Run` 的
+  `VoiceTyper` 值，不在安装时创建）；`build.bat` 的 `Compress-Archive` 加 `$ErrorActionPreference=Stop`
+  + errorlevel 检查；`StartupRegistration.SetEnabled`→`bool`，SetupForm / TrayController 写失败时
+  恢复勾选为 `IsEnabled` 真实值并提示。
+- 仍需验证：干净机器安装/卸载，卸载后无失效自启项，不删用户额外文件；ZIP 失败真的中止。
+
+### R4-3 文档口径校准
+- `windows/DESIGN.md` 顶部补 R0–R4 进度说明；§13.2 追加本轮几项待真机验证条目；新增
+  §13.3「剪贴板 + Ctrl+V 方案的固有限制」（`SendInput` 成功 ≠ 已粘贴、1s 恢复窗口）作为已知限制。
+- `windows/README.md` 热键失效排障段按 R3-5 实际行为重写。
+
+### R4-4 测试覆盖补强（部分）
+- 新增：`HotkeyStateMachineTests`（按键序列 + `IsEngaged`）、`NativeLayoutTests`（INPUT=40B）、
+  `LlmCorrectorTests` 取消传播、`FbankParityTests` 必需夹具 `Assert.Fail`。
+- 待补（需 SDK / 更多脚手架）：可控 HTTP 测试服务端的下载故障矩阵、`AsrService` 假引擎生命周期
+  计数、空闲恢复时序（可注入时钟）、Windows STA 剪贴板事务集成测试、端到端
+  `speech_zh_en_mixed.wav` 编辑距离 ≤ 2。
 
 ## 给下一位实施者的接力说明
 1. 先在带 .NET SDK 的环境跑 R0 验收；编译器报出的清单外错误按 R0-1 要求一并修并记录。

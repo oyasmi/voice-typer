@@ -3,6 +3,10 @@
 > **2026-09-06 审查补充**：[Windows 审查与修复计划](REVIEW_AND_REPAIR_PLAN.md)记录了当前实现的
 > 构建、音频、输入注入和生命周期缺陷，并给出严重程度、修复难度、任务依赖与验收标准。
 > 修复工作以该清单核对当前代码；下文历史性的“已对齐”“代码审查通过”不代表这些缺陷已经修复。
+>
+> **2026-09-06 修复进度**：R0–R4 全部工单已完成代码与静态验证（见
+> [REPAIR_DELIVERY.md](REPAIR_DELIVERY.md)），**尚未在带 .NET SDK 的环境编译、未在 Windows 真机
+> 验证**。合入后第一步是 `dotnet build` / `dotnet test` 跑绿并处理清单外的编译错误。
 
 > 目标产物：`windows/` 下一个**前后端一体**的 Windows 桌面应用，安装即用，不需要单独跑 Python 服务端。
 > 它以 `client-server/client_windows_native/` 为蓝本，把 `macos/` 已经验证过的 SenseVoice 推理链路从 Swift 直译为 C#。
@@ -831,6 +835,23 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
   4 秒是估算值，需真机确认观感是否可接受。
 - **常驻内存/推理耗时的具体数字**：本节所有改动都不改变 §4.5 标注为"待实测"的结论——仍然需要
   P0 阶段的真机测量。
+- **`INPUT` 原生布局**（`NativeMethods.InputUnion` 补 `MOUSEINPUT`/`HARDWAREINPUT`，R1-2）：结构体
+  测试断言 `Marshal.SizeOf<INPUT>() == 40`，但"记事本真的收到粘贴文本"必须真机验证，两者分别记录。
+- **前台窗口提权判定**（`TextInsertionService.CheckForegroundWindowElevation`，R3-2）：改为读
+  `TokenElevation` 与本进程比较，无法判定时返回 `Unknown`；UIPI 拦截提示的实际触发需真机验证。
+- **下载连接/无进度超时 30s**（`ModelDownloader`，R3-4）：取值理由见代码注释，真实网络下的观感待确认。
+- **单实例 `Local\` 前缀**（`Program.cs`，R4-1）：多用户 / RDP / 快速用户切换下的互不误阻需真机验证。
+- **卸载清理自启项**（`installer/VoiceTyper.iss` `[Registry]` 段，R4-2）：`uninsdeletevalue` 对运行期
+  创建的注册表值的清理效果需在真机卸载时确认。
+
+### 13.3 剪贴板 + Ctrl+V 方案的固有限制（非缺陷，不再挂待修）
+
+- **`SendInput` 成功 ≠ 目标已粘贴**：`SendInput` 只表示事件已入队；目标控件是否接收、是否支持
+  Ctrl+V 无法从注入侧确认。控制器只据此区分"已发送粘贴 / 结果已复制 / 复制失败"三态，不声称
+  通用成功（R3-2）。
+- **固定 1s 剪贴板恢复窗口**：对读取剪贴板特别慢的应用可能偏短。可靠的替代方案（UI Automation
+  逐控件写入、完整输入法）超出当前架构边界。macOS 侧同样如此。
+- 这两条与 macOS 的剪贴板兜底路径同源，作为已知限制记录，不作为待修缺陷。
 
 ---
 

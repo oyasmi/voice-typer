@@ -806,7 +806,12 @@ internal sealed class SetupForm : Form
         SetMessage(_generalMessage, "保存中...", Color.Gray);
         try
         {
-            StartupRegistration.SetEnabled(_startupCheck.Checked);
+            if (!StartupRegistration.SetEnabled(_startupCheck.Checked))
+            {
+                _startupCheck.Checked = StartupRegistration.IsEnabled; // 恢复到注册表真实状态（R4-2）
+                SetMessage(_generalMessage, "开机自启写入失败，其余设置未保存。", Color.Firebrick);
+                return;
+            }
             await OnSaveConfig(draft).ConfigureAwait(true);
             _loadedConfig = draft;
             SetMessage(_generalMessage, "设置已保存并生效。", Color.SeaGreen);

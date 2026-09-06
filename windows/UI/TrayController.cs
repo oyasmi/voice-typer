@@ -62,7 +62,11 @@ internal sealed class TrayController : IDisposable
         _startupItem.Checked = StartupRegistration.IsEnabled;
         _startupItem.Click += (_, _) =>
         {
-            StartupRegistration.SetEnabled(_startupItem.Checked);
+            if (!StartupRegistration.SetEnabled(_startupItem.Checked))
+            {
+                // 写失败：勾选状态恢复为注册表真实值，两个入口读取同一状态源（R4-2）。
+                _startupItem.Checked = StartupRegistration.IsEnabled;
+            }
         };
 
         var aboutItem = new ToolStripMenuItem("关于 VoiceTyper");

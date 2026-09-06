@@ -87,7 +87,12 @@ REM ===== Zip portable builds =====
 echo [3/4] Packaging portable zips...
 for %%R in (win-x64 win-arm64) do (
     set ZIP_NAME=VoiceTyper-%VERSION%-%%R-portable.zip
-    powershell -NoProfile -Command "Compress-Archive -Path 'dist\%%R\*' -DestinationPath 'dist\!ZIP_NAME!' -Force"
+    powershell -NoProfile -Command "$ErrorActionPreference='Stop'; try { Compress-Archive -Path 'dist\%%R\*' -DestinationPath 'dist\!ZIP_NAME!' -Force } catch { Write-Error $_; exit 1 }"
+    if errorlevel 1 (
+        echo [ERROR] Compress-Archive failed for %%R.
+        pause
+        exit /b 1
+    )
 )
 echo       OK
 echo.

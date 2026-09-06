@@ -152,4 +152,34 @@ public class HotkeyStateMachineTests
         Assert.Equal(HotkeyAction.None, a);
         Assert.True(c);
     }
+
+    [Fact]
+    public void IsEngaged_TracksActiveDictationWindow()
+    {
+        var sm = CtrlF2();
+        Assert.False(sm.IsEngaged);
+
+        sm.OnKey(VK_LCONTROL, isDown: true);
+        Assert.False(sm.IsEngaged);
+
+        sm.OnKey(F2, isDown: true);
+        Assert.True(sm.IsEngaged); // Engaged
+
+        sm.OnKey(VK_ESCAPE, isDown: true);
+        Assert.True(sm.IsEngaged); // AwaitingFullRelease（主键仍按住）
+
+        sm.OnKey(F2, isDown: false);
+        Assert.False(sm.IsEngaged); // 回到 Idle
+    }
+
+    [Fact]
+    public void ModifierDownDuringIdle_IsNeverConsumed()
+    {
+        var sm = CtrlF2();
+        var (a, c) = sm.OnKey(VK_LCONTROL, isDown: true);
+        Assert.Equal(HotkeyAction.None, a);
+        Assert.False(c); // 修饰键事件必须放行
+        var (a2, c2) = sm.OnKey(VK_LCONTROL, isDown: false);
+        Assert.False(c2);
+    }
 }
