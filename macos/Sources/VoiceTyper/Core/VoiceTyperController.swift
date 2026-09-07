@@ -65,6 +65,18 @@ final class VoiceTyperController {
     /// 单进程架构下这不再是"省流量"的约定，纯粹是防误触。
     private static let minimumRecordingDuration: TimeInterval = 0.3
 
+    /// 录音开始后的两次"是不是根本没采到声音"探测时刻（秒）。
+    ///
+    /// 1.5s 足以越过 CoreAudio 的启动延迟（实测 150~170ms）和用户按下热键后的起始停顿；
+    /// 4.5s 再补一次，因为 HUD 的警告闪现只有 1.2s，一次很容易被没在看屏幕的人错过。
+    /// 只探两次：真正静音说明设备有问题，多提示无益；正常说话时第一次探测就会被
+    /// 电平否掉，不会打扰。
+    static let silenceProbeDelays: [TimeInterval] = [1.5, 4.5]
+
+    /// 本次录音出现过的最大线性 RMS 电平。
+    private var recordingPeakLevel: Float = 0
+    private var silenceProbeWorkItems: [DispatchWorkItem] = []
+
     var onStateChange: ((AppState) -> Void)?
     var onRecognizedText: ((String) -> Void)?
     var onPreviewUpdate: ((String) -> Void)?
@@ -78,6 +90,9 @@ final class VoiceTyperController {
     var onEmptyRecognition: (() -> Void)?
     /// 未就绪时按下热键。参数是 `blockedReason` 的内容，UI 据此引导用户。
     var onBlockedAttempt: ((String) -> Void)?
+    /// ASR 已出结果、开始等待 LLM 校对。UI 据此把"识别中"改成"校对中"——
+    /// 否则用户分不清自己在等本地推理还是在等网络（后者可能长达 `llm.timeout` 秒）。
+    var onCorrectionStarted: (() -> Void)?
     /// 录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。保证在主线程触发。
     var onAudioLevel: ((Float) -> Void)?
     var isStarted: Bool { isRunning }
@@ -127,7 +142,11 @@ final class VoiceTyperController {
         // 电平回调在音频线程触发，跳回主线程再转发给 UI。
         // 音频引擎仅在录音期间运行，故无需按会话单独装卸此回调。
         audioCaptureService.onLevel = { [weak self] level in
-            Task { @MainActor [weak self] in self?.onAudioLevel?(level) }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.recordingPeakLevel = max(self.recordingPeakLevel, level)
+                self.onAudioLevel?(level)
+            }
         }
         audioCaptureService.onDeviceChanged = { [weak self] in
             Task { @MainActor [weak self] in self?.handleDeviceChanged() }
@@ -143,6 +162,7 @@ final class VoiceTyperController {
 
     func stop() {
         hotkeyService.acceptsCancelWhenInactive = false
+        cancelSilenceProbes()
         hotkeyService.stop()
         audioCaptureService.stopWithoutResult()
         if active != nil {
@@ -297,6 +317,10 @@ final class VoiceTyperController {
             self?.handleSessionCapped()
         }
 
+        session.onCorrectionStarted = { [weak self] in
+            self?.onCorrectionStarted?()
+        }
+
         audioCaptureService.onChunk = { [weak session] samples in
             Task { @MainActor [weak session] in
                 session?.sendAudio(samples)
@@ -333,7 +357,33 @@ final class VoiceTyperController {
 
         active = utterance
         previewText = ""
+        recordingPeakLevel = 0
+        scheduleSilenceProbes()
         onStateChange?(.recording)
+    }
+
+    /// 录音开始后若迟迟采不到声音，主动提示检查输入设备。
+    ///
+    /// 麦克风被静音、系统选中了错误的输入设备、蓝牙耳机走了错误的输入端——这几种情况下
+    /// 用户会对着一个什么都没录到的会话一直说，直到松手才发现结果是空的。这段录音时间
+    /// 是白花的，而信号（电平一直为 0）在第一秒就已经有了。
+    private func scheduleSilenceProbes() {
+        cancelSilenceProbes()
+        for delay in Self.silenceProbeDelays {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.isRecording else { return }
+                guard self.recordingPeakLevel < AppConstants.silenceRMSThreshold else { return }
+                AppLog.audio.warning("录音已进行 \(delay, privacy: .public)s 仍未检测到声音")
+                self.onPreviewWarning?("没有检测到声音，请检查麦克风与输入设备")
+            }
+            silenceProbeWorkItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        }
+    }
+
+    private func cancelSilenceProbes() {
+        silenceProbeWorkItems.forEach { $0.cancel() }
+        silenceProbeWorkItems.removeAll()
     }
 
     // MARK: - 唯一收尾入口
@@ -344,6 +394,7 @@ final class VoiceTyperController {
     private func finish(_ outcome: Outcome) {
         guard let utterance = active else { return }
         active = nil
+        cancelSilenceProbes()
         hotkeyService.acceptsCancelWhenInactive = false
         utterance.session.close()
         asrService.sessionEnded()

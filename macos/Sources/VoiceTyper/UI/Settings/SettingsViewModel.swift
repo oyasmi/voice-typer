@@ -75,7 +75,9 @@ final class SettingsViewModel {
     // MARK: 通用 / 识别引擎
     var launchAtLogin = false
     var hudOpacity = 0.85
+    var hudPosition: HUDPosition = .bottomCenter
     var idleUnloadMinutes = 10
+    var preloadOnLaunch = false
     var generalMessage = ""
     var generalMessageKind: SettingsMessageKind = .info
 
@@ -112,7 +114,9 @@ final class SettingsViewModel {
         hotkeyDisplay = config.hotkey.displayString
         refreshFnConflictWarning()
         hudOpacity = config.ui.opacity
+        hudPosition = config.ui.hudPosition
         idleUnloadMinutes = config.asr.idleUnloadMinutes
+        preloadOnLaunch = config.asr.preloadOnLaunch
         self.launchAtLogin = launchAtLogin
 
         recognitionMessage = ""
@@ -359,6 +363,42 @@ final class SettingsViewModel {
                 // 后续即时保存），并把失败告知用户，而不是只吞掉。
                 self.generalMessage = "HUD 透明度保存失败：\(error.localizedDescription)"
                 self.generalMessageKind = .error
+            }
+        }
+    }
+
+    func commitHUDPosition() {
+        var updated = loadedConfig
+        updated.ui.hudPosition = hudPosition
+        let previous = loadedConfig.ui.hudPosition
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+                self.generalMessage = ""
+            } catch {
+                // 保存失败要把界面退回真实生效的值，否则 Picker 会显示一个没生效的设置。
+                self.hudPosition = previous
+                self.generalMessage = "浮窗位置保存失败：\(error.localizedDescription)"
+                self.generalMessageKind = .error
+            }
+        }
+    }
+
+    func commitPreloadOnLaunch() {
+        var updated = loadedConfig
+        updated.asr.preloadOnLaunch = preloadOnLaunch
+        let previous = loadedConfig.asr.preloadOnLaunch
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+            } catch {
+                self.preloadOnLaunch = previous
+                self.recognitionMessage = "启动预加载设置保存失败：\(error.localizedDescription)"
+                self.recognitionMessageKind = .error
             }
         }
     }

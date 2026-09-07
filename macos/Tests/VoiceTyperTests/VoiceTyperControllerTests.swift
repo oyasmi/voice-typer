@@ -498,6 +498,53 @@ final class VoiceTyperControllerTests: XCTestCase {
         XCTAssertEqual(harness.states.last, .idle)
     }
 
+    // MARK: - 静音探测
+
+    private static let silenceWarning = "没有检测到声音，请检查麦克风与输入设备"
+
+    /// 麦克风被静音 / 选错输入设备时，用户会对着一个什么都没录到的会话一直说，
+    /// 直到松手才发现结果是空的。电平在第一秒就已经给出信号，不该等到那时才提示。
+    func testSilentRecordingWarnsAboutInputDevice() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+
+        // 第一次探测在 1.5s；留出余量。
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertTrue(
+            harness.warnings.contains(Self.silenceWarning),
+            "录音一直没有电平时必须主动提示，实际警告：\(harness.warnings)"
+        )
+        harness.hotkey.onRelease?()
+        await settle()
+    }
+
+    func testAudibleRecordingDoesNotWarn() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+        harness.audio.onLevel?(0.3)
+
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
+        harness.hotkey.onRelease?()
+        await settle()
+    }
+
+    /// 录音正常结束后探针必须作废：否则一次 0.4 秒的短听写会在一秒多之后
+    /// 莫名其妙地弹出"没有检测到声音"。
+    func testSilenceProbeIsCancelledWhenRecordingEnds() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "很短的一句")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+
+        try? await Task.sleep(nanoseconds: 1_600_000_000)
+        XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["很短的一句"])
+    }
+
     // MARK: - 门禁态：未就绪时按热键给出原因而不是毫无反应
 
     func testBlockedReasonRejectsRecordingAndReportsReason() async {

@@ -97,9 +97,35 @@ final class ASRService {
             }
         }
         if reloadNeeded {
-            Task { await reload() }
+            Task { [weak self] in
+                guard let self else { return }
+                // 引擎还没在内存里，就没有什么"重新加载"可言——只需重新确认新目录下
+                // 的文件在不在。否则改一次 model_dir 就会违背「启动时不预加载」的设置，
+                // 把 ~510MB 拉进内存。
+                if self.currentEngine() == nil {
+                    await self.prepareWithoutLoading()
+                } else {
+                    await self.reload()
+                }
+            }
         } else {
             scheduleIdleUnloadIfNeeded()
+        }
+    }
+
+    /// 只确认模型文件在不在，**不**构建 ORT session。
+    ///
+    /// 用于「启动时不预加载」（`ASRConfig.preloadOnLaunch == false`，默认）：文件就绪时
+    /// 进入 `.suspendedForIdle`——这个状态的语义本来就是"就绪，但引擎不在内存里，
+    /// 下次 `makeSession()` 时按需加载"，正好是我们想要的启动态：热键监听照常工作、
+    /// 菜单栏显示就绪，却不为一次可能根本不会发生的听写常驻 510MB。
+    func prepareWithoutLoading() async {
+        guard !isLoadInFlight else { return }
+        // 引擎已经在内存里就别往回降级。
+        guard currentEngine() == nil else { return }
+        let target: State = modelLocate(config.modelDir) == nil ? .modelMissing : .suspendedForIdle
+        if state != target {
+            state = target
         }
     }
 

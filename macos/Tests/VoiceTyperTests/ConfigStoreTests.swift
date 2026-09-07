@@ -25,6 +25,7 @@ final class ConfigStoreTests: XCTestCase {
         config.asr.threads = 4
         config.asr.modelDir = "/tmp/custom-model"
         config.asr.idleUnloadMinutes = 30
+        config.asr.preloadOnLaunch = true
         config.llm.enabled = true
         config.llm.baseURL = "https://api.example.com/v1"
         config.llm.model = "gpt-4o"
@@ -33,6 +34,7 @@ final class ConfigStoreTests: XCTestCase {
         config.llm.timeout = 8
         config.hotkey = HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
         config.ui.opacity = 0.7
+        config.ui.hudPosition = .nearCursor
 
         try store.save(config: config)
         let loaded = try store.loadOrCreate()
@@ -41,6 +43,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(loaded.asr.threads, 4)
         XCTAssertEqual(loaded.asr.modelDir, "/tmp/custom-model")
         XCTAssertEqual(loaded.asr.idleUnloadMinutes, 30)
+        XCTAssertEqual(loaded.asr.preloadOnLaunch, true)
         XCTAssertEqual(loaded.llm.enabled, true)
         XCTAssertEqual(loaded.llm.baseURL, "https://api.example.com/v1")
         XCTAssertEqual(loaded.llm.model, "gpt-4o")
@@ -51,6 +54,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(loaded.hotkey.key, "f2")
         XCTAssertEqual(loaded.hotkey.mode, .toggle)
         XCTAssertEqual(loaded.ui.opacity, 0.7, accuracy: 1e-9)
+        XCTAssertEqual(loaded.ui.hudPosition, .nearCursor)
     }
 
     func testCreatesDefaultFileOnFirstLoad() throws {
@@ -74,5 +78,24 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(config.asr.idleUnloadMinutes, 10)
         XCTAssertEqual(config.llm.enabled, false)
         XCTAssertEqual(config.ui.opacity, 0.85, accuracy: 1e-9)
+        // 老配置文件里没有这两个新字段：必须回落默认值而不是解码失败。
+        XCTAssertEqual(config.ui.hudPosition, .bottomCenter)
+        XCTAssertEqual(config.asr.preloadOnLaunch, false)
+    }
+
+    func testUnknownEnumValuesFallBackToDefaults() throws {
+        let yaml = """
+        asr:
+          preload_on_launch: true
+        hotkey:
+          key: "fn"
+          mode: "flip-flop"
+        ui:
+          hud_position: "somewhere-else"
+        """
+        let config = try YAMLDecoder().decode(AppConfig.self, from: yaml)
+        XCTAssertEqual(config.hotkey.mode, .hold, "无法识别的触发方式应回落，而不是让整份配置解码失败")
+        XCTAssertEqual(config.ui.hudPosition, .bottomCenter)
+        XCTAssertEqual(config.asr.preloadOnLaunch, true)
     }
 }

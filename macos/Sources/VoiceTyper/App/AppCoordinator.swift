@@ -63,6 +63,16 @@ final class AppCoordinator {
     private var lastBlockedAttemptPresentation: Date?
     private static let blockedAttemptPresentationInterval: TimeInterval = 5
 
+    /// 模型下载失败后的自动重试退避序列（秒）。
+    ///
+    /// 只试一次就放弃太保守——下载失败绝大多数是网络抖动，而首启拿不到模型意味着
+    /// 应用完全不可用，这是新用户能遇到的最糟的第一印象。断点续传数据已经落盘，
+    /// 重试的成本只是续上而不是从头再来。也不能无限重试：真的没网时那会变成一个
+    /// 用户看不见的死循环，所以给定次数用完后停下来，把手动重试交还给用户。
+    private static let downloadRetryDelays: [TimeInterval] = [5, 20, 60]
+    private var downloadRetryAttempt = 0
+    private var downloadRetryTask: Task<Void, Never>?
+
     /// 缓存的 Fn 键冲突提示。
     ///
     /// 不在 `syncAuxiliaryWindows()` 里现算：那个函数在模型下载期间会以 5Hz 被调用，
@@ -105,7 +115,7 @@ final class AppCoordinator {
         // 用户授权完立刻可用。
         asrService.updateConfig(config.asr)
         Task {
-            await asrService.preload()
+            await prepareEngineForLaunch()
             await reevaluateReadiness()
         }
     }
@@ -113,6 +123,18 @@ final class AppCoordinator {
     func openSetupWindow() {
         userOpenedSetup = true
         setupControllerIfNeeded(forceShow: true, preferredTab: nil)
+    }
+
+    /// 启动 / 尚未加载时如何准备引擎：尊重「启动时预加载模型」这项设置。
+    ///
+    /// 关闭时（默认）只确认模型文件在不在，不把 ~510MB 的引擎拉进内存——首次按热键
+    /// 才加载，且加载与录音并行（`ASRService.makeSession`），用户通常正在说第一句话。
+    private func prepareEngineForLaunch() async {
+        if config.asr.preloadOnLaunch {
+            await asrService.preload()
+        } else {
+            await asrService.prepareWithoutLoading()
+        }
     }
 
     /// 用户点应用图标（Dock / Launchpad / 访达）时的落点：引导没走完就继续引导，
@@ -200,7 +222,7 @@ final class AppCoordinator {
                 self?.startModelDownload()
             }
             controller.onCancelModelDownload = { [weak self] in
-                self?.modelDownloader?.cancel()
+                self?.cancelModelDownload()
             }
             controller.onReloadModel = { [weak self] in
                 guard let self, !self.currentState.isActiveDictation else { return }
@@ -260,7 +282,7 @@ final class AppCoordinator {
                 self?.startModelDownload()
             }
             controller.onCancelModelDownload = { [weak self] in
-                self?.modelDownloader?.cancel()
+                self?.cancelModelDownload()
             }
             controller.onClose = { [weak self] in
                 guard let self else { return }
@@ -419,7 +441,7 @@ final class AppCoordinator {
         case .modelLoading:
             gateHotkeyListening(reason: "识别引擎正在加载，请稍候再试。")
             if asrService.state == .unloaded {
-                Task { await asrService.preload() }
+                Task { await prepareEngineForLaunch() }
             }
         case .idle, .recording, .recognizing, .inserting:
             activateReadyState()
@@ -508,8 +530,15 @@ final class AppCoordinator {
 
     // MARK: - 模型下载
 
-    private func startModelDownload() {
+    /// - Parameter isAutomaticRetry: 由退避重试触发时为 true。用户手动点「重试下载」
+    ///   算作一次新的尝试序列，会把退避计数清零——那是明确的"我要它继续试"的信号。
+    private func startModelDownload(isAutomaticRetry: Bool = false) {
         guard !isDownloadingModel else { return }
+        downloadRetryTask?.cancel()
+        downloadRetryTask = nil
+        if !isAutomaticRetry {
+            downloadRetryAttempt = 0
+        }
         isDownloadingModel = true
         modelDownloadProgress = 0
         modelDownloadError = nil
@@ -536,6 +565,7 @@ final class AppCoordinator {
                 self.isDownloadingModel = false
                 self.modelDownloader = nil
                 self.modelDownloadError = nil
+                self.downloadRetryAttempt = 0
                 await self.asrService.reload()
                 await self.reevaluateReadiness()
             } catch let error as ModelDownloader.DownloadError {
@@ -558,9 +588,21 @@ final class AppCoordinator {
 
     private func handleModelDownloadFailure(_ error: Error) {
         AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
-        modelDownloadError = error.localizedDescription
+        let reason = error.localizedDescription
+
+        if downloadRetryAttempt < Self.downloadRetryDelays.count {
+            let delay = Self.downloadRetryDelays[downloadRetryAttempt]
+            downloadRetryAttempt += 1
+            modelDownloadError = "\(reason)将在 \(Int(delay)) 秒后自动重试"
+                + "（第 \(downloadRetryAttempt)/\(Self.downloadRetryDelays.count) 次）。"
+            scheduleDownloadRetry(after: delay)
+        } else {
+            modelDownloadError = "\(reason)已自动重试 \(Self.downloadRetryDelays.count) 次仍未成功，"
+                + "请检查网络后手动重试。"
+        }
+
         currentState = permissions.allRequiredGranted
-            ? .error("模型下载失败: \(error.localizedDescription)")
+            ? .error("模型下载失败: \(reason)")
             : .setupRequired
         if permissions.allRequiredGranted {
             forcedPresentations.insert(.model)
@@ -568,6 +610,25 @@ final class AppCoordinator {
         }
         updateStatusUI()
         syncAuxiliaryWindows()
+    }
+
+    private func scheduleDownloadRetry(after delay: TimeInterval) {
+        downloadRetryTask?.cancel()
+        downloadRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            // 期间用户可能已经手动下载完、或主动取消并不想再试了。
+            guard !self.isDownloadingModel, self.asrService.state == .modelMissing else { return }
+            AppLog.model.info("模型下载自动重试（第 \(self.downloadRetryAttempt, privacy: .public) 次）")
+            self.startModelDownload(isAutomaticRetry: true)
+        }
+    }
+
+    /// 用户主动取消下载：同时取消尚未触发的自动重试——他刚刚表达了"先不下"。
+    private func cancelModelDownload() {
+        downloadRetryTask?.cancel()
+        downloadRetryTask = nil
+        modelDownloader?.cancel()
     }
 
     /// 返回 `.success` 时携带模型的真实校对结果，`.failure` 时携带真实错误描述
@@ -709,6 +770,13 @@ final class AppCoordinator {
             self?.handleBlockedHotkeyAttempt(reason: reason)
         }
 
+        // 本地识别已出结果、开始等 LLM 校对：把 HUD 从"识别中"切到"校对中"。
+        // 菜单栏状态保持 .recognizing——这一层的粒度就到"正在处理"为止，
+        // 细分到底在等本地推理还是网络是 HUD 的职责。
+        voiceTyperController?.onCorrectionStarted = { [weak self] in
+            self?.recordingHUDController?.setCorrecting()
+        }
+
         voiceTyperController?.onPreviewWarning = { [weak self] message in
             self?.recordingHUDController?.flashWarning(message)
         }
@@ -805,6 +873,10 @@ final class AppCoordinator {
         if onlyUIChanged {
             // 只有 ui 段变化：不销毁/重建控制器，只更新内存配置与 HUD/设置窗口显示。
             config = updatedConfig.validated()
+            // 必须显式下发给 HUD：此前透明度是靠滑杆的实时预览回调"顺手"生效的，
+            // HUD 位置这类没有实时预览通道的设置不会有那份运气（保存后要到下次
+            // 听写才生效，且换台机器/重启后行为不一致）。
+            recordingHUDController?.updateConfig(config.ui)
             refreshSetupWindowEditorContent()
         } else {
             try await reloadAndReevaluateAfterSettingsChange()
@@ -861,7 +933,8 @@ final class AppCoordinator {
         case .ready:
             return "引擎已就绪"
         case .suspendedForIdle:
-            return "引擎已空闲卸载，下次录音自动加载"
+            // 空闲卸载后与"启动时未预加载"共用这个状态，文案要对两者都成立。
+            return "引擎按需加载，下次录音自动就绪"
         case .loading:
             return "模型加载中…"
         case .modelMissing:

@@ -99,6 +99,7 @@ final class ConfigStore {
           threads: \(config.asr.threads)
           model_dir: \(yamlString(config.asr.modelDir))
           idle_unload_minutes: \(config.asr.idleUnloadMinutes)
+          preload_on_launch: \(config.asr.preloadOnLaunch ? "true" : "false")
         llm:
           enabled: \(config.llm.enabled ? "true" : "false")
           base_url: \(yamlString(config.llm.baseURL))
@@ -112,6 +113,7 @@ final class ConfigStore {
           mode: \(yamlString(config.hotkey.mode.rawValue))
         ui:
           opacity: \(yamlNumber(config.ui.opacity))
+          hud_position: \(yamlString(config.ui.hudPosition.rawValue))
         """
     }
 

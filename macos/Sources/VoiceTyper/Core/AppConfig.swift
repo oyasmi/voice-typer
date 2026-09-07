@@ -128,17 +128,28 @@ struct ASRConfig: Codable, Equatable {
     var modelDir: String
     /// 0 = 常驻不卸载
     var idleUnloadMinutes: Int
+    /// 启动时就把模型载入内存。
+    ///
+    /// **默认 false**：常驻 ~510MB 的识别引擎对一个开机自启的菜单栏应用是很重的代价，
+    /// 而这份代价在"今天一次都没用听写"的日子里是纯浪费——旧行为是启动即加载、
+    /// `idleUnloadMinutes` 到点再卸载，等于每次开机都白花一次 0.85s 加载与十分钟 510MB。
+    /// 关掉之后首次按热键才加载，且加载与录音并行（`ASRService.makeSession`），
+    /// 用户通常正在说第一句话，感知延迟接近于零。
+    /// 打开它适合"每天都高频使用、且不在意常驻内存"的场景。
+    var preloadOnLaunch: Bool
 
     init(
         language: ASRLanguage = .auto,
         threads: Int = 0,
         modelDir: String = "",
-        idleUnloadMinutes: Int = 10
+        idleUnloadMinutes: Int = 10,
+        preloadOnLaunch: Bool = false
     ) {
         self.language = language
         self.threads = threads
         self.modelDir = modelDir
         self.idleUnloadMinutes = idleUnloadMinutes
+        self.preloadOnLaunch = preloadOnLaunch
     }
 
     init(from decoder: Decoder) throws {
@@ -148,6 +159,7 @@ struct ASRConfig: Codable, Equatable {
         self.threads = try container.decodeIfPresent(Int.self, forKey: .threads) ?? 0
         self.modelDir = try container.decodeIfPresent(String.self, forKey: .modelDir) ?? ""
         self.idleUnloadMinutes = try container.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? 10
+        self.preloadOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .preloadOnLaunch) ?? false
     }
 
     enum CodingKeys: String, CodingKey {
@@ -155,6 +167,7 @@ struct ASRConfig: Codable, Equatable {
         case threads
         case modelDir = "model_dir"
         case idleUnloadMinutes = "idle_unload_minutes"
+        case preloadOnLaunch = "preload_on_launch"
     }
 }
 
@@ -261,15 +274,50 @@ struct HotkeyConfig: Codable, Equatable {
     }
 }
 
+/// HUD 浮窗的落点。
+enum HUDPosition: String, Codable, CaseIterable {
+    /// 屏幕底部居中（默认）。
+    case bottomCenter = "bottom_center"
+    /// 屏幕右下角。
+    case bottomRight = "bottom_right"
+    /// 跟随鼠标位置，就近显示。
+    case nearCursor = "near_cursor"
+    /// 不显示浮窗。
+    ///
+    /// 语义是"不显示**过程**"，不是"什么都不显示"：错误与"没有识别到内容"这类
+    /// 提示仍会浮出来。那些信息在别处拿不到（菜单栏图标只有一个红点），
+    /// 一并静音会把一个可配置项变成一个静默失败的陷阱。
+    case hidden
+
+    var displayName: String {
+        switch self {
+        case .bottomCenter: return "底部居中"
+        case .bottomRight: return "右下角"
+        case .nearCursor: return "跟随光标"
+        case .hidden: return "不显示（仅出错时提示）"
+        }
+    }
+}
+
 struct UIConfig: Codable, Equatable {
     var opacity: Double
+    var hudPosition: HUDPosition
 
-    init(opacity: Double = 0.85) {
+    init(opacity: Double = 0.85, hudPosition: HUDPosition = .bottomCenter) {
         self.opacity = opacity
+        self.hudPosition = hudPosition
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.85
+        let rawPosition = try container.decodeIfPresent(String.self, forKey: .hudPosition)
+            ?? HUDPosition.bottomCenter.rawValue
+        self.hudPosition = HUDPosition(rawValue: rawPosition) ?? .bottomCenter
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case opacity
+        case hudPosition = "hud_position"
     }
 }

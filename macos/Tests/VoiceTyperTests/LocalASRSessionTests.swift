@@ -37,6 +37,20 @@ final class LocalASRSessionTests: XCTestCase {
         func release() { gate.signal() }
     }
 
+    /// 有能量的音频样本。
+    ///
+    /// **不能用全零**：`LocalASRSession` 现在会跳过"自上次预览以来全是静音"的那一轮预览
+    /// （省掉一次没有意义的整窗重跑）。凡是期望预览被调度的用例都必须喂真正有声音的样本，
+    /// 否则测的就不是被测逻辑，而是 VAD 的短路分支。
+    private func speech(count: Int) -> [Float] {
+        [Float](repeating: 0.3, count: count)
+    }
+
+    /// 静音样本，专门用于验证 VAD 的短路行为。
+    private func silence(count: Int) -> [Float] {
+        [Float](repeating: 0, count: count)
+    }
+
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "test.localasrsession.\(UUID().uuidString)")
     }
@@ -54,6 +68,50 @@ final class LocalASRSessionTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - 静音跳过预览（VAD）
+
+    func testSilentAudioDoesNotSchedulePreview() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+
+        session.sendAudio(silence(count: 20_000))
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertEqual(engine.callCount, 0, "整段静音时不应该跑一次注定不变的整窗推理")
+
+        // 有声音之后必须立刻恢复预览。
+        session.sendAudio(speech(count: 20_000))
+        await poll { engine.callCount == 1 }
+        XCTAssertEqual(engine.callCount, 1)
+    }
+
+    /// 静音只跳过**预览**。松手后的 finalize 永远对完整音频整段重跑——
+    /// 上屏文本的正确性不能受这条优化影响。
+    func testFinalizeStillRunsAfterOnlySilence() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+        var final: String?
+        session.onFinal = { final = $0 }
+
+        session.sendAudio(silence(count: 8_000))
+        session.finalize(timeout: 2)
+        await poll { final != nil }
+
+        XCTAssertEqual(engine.callSampleCounts, [8_000], "finalize 必须对完整音频跑一次")
+        XCTAssertNotNil(final)
+    }
+
+    func testContainsSpeechUsesEnergyThreshold() {
+        XCTAssertFalse(LocalASRSession.containsSpeech([]))
+        XCTAssertFalse(LocalASRSession.containsSpeech([Float](repeating: 0, count: 100)))
+        XCTAssertFalse(
+            LocalASRSession.containsSpeech([Float](repeating: 0.001, count: 100)),
+            "远低于阈值的底噪不应被当成语音"
+        )
+        XCTAssertTrue(LocalASRSession.containsSpeech([Float](repeating: 0.05, count: 100)))
+        // 负相位同样是声音：判据是能量而不是符号。
+        XCTAssertTrue(LocalASRSession.containsSpeech([Float](repeating: -0.05, count: 100)))
+    }
+
     // MARK: - 预览 in-flight 跳过
 
     func testPreviewInFlightSkipsReentrantScheduling() async {
@@ -61,12 +119,12 @@ final class LocalASRSessionTests: XCTestCase {
         engine.isGated = true
         let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
 
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
         await poll { engine.callCount == 1 }
         XCTAssertEqual(engine.callCount, 1)
 
         // 预览仍在执行（阻塞在 gate 上）时再次 sendAudio：不应发起第二次并发预览。
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(engine.callCount, 1, "previewInFlight 时不应发起第二次并发预览")
 
@@ -75,7 +133,7 @@ final class LocalASRSessionTests: XCTestCase {
         // previewInFlight 复位是异步落地的（asrQueue 回到 MainActor 有一跳），
         // 用重试而不是单次盲发 sendAudio，避免踩中复位前的窄窗口。
         for _ in 0..<50 where engine.callCount < 2 {
-            session.sendAudio([Float](repeating: 0, count: 1_000))
+            session.sendAudio(speech(count: 1_000))
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertEqual(engine.callCount, 2, "previewInFlight 复位后，下一次 sendAudio 应能重新调度预览")
@@ -87,7 +145,7 @@ final class LocalASRSessionTests: XCTestCase {
         let engine = GatedFakeEngine()
         engine.isGated = true
         let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
 
         var receivedError: String?
         session.onError = { receivedError = $0 }
@@ -115,7 +173,7 @@ final class LocalASRSessionTests: XCTestCase {
         )
 
         // 引擎未就绪：样本应该攒进 pendingAudio，而不是报错或丢弃。
-        session.sendAudio([Float](repeating: 0, count: 5_000))
+        session.sendAudio(speech(count: 5_000))
 
         var finalText: String?
         session.onFinal = { finalText = $0 }
@@ -145,15 +203,15 @@ final class LocalASRSessionTests: XCTestCase {
 
         // 一次性喂满上限（120s@16kHz）：刚好达到上限的这次 append 本身不应触发回调，
         // 上限检查发生在下一次 sendAudio 的入口。
-        session.sendAudio([Float](repeating: 0, count: 120 * 16_000))
+        session.sendAudio(speech(count: 120 * 16_000))
         XCTAssertEqual(cappedCount, 0)
 
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         XCTAssertEqual(cappedCount, 1)
         XCTAssertEqual(warnings.count, 1)
 
         // 再来一次不应重复触发。
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         XCTAssertEqual(cappedCount, 1, "上限回调只应触发一次")
         XCTAssertEqual(warnings.count, 1)
 
@@ -175,14 +233,14 @@ final class LocalASRSessionTests: XCTestCase {
         session.onSessionCapped = { cappedCount += 1 }
 
         // 恰好喂满上限：这一次 append 本身不触发（检查在下一次入口）。
-        session.sendAudio([Float](repeating: 0, count: 120 * 16_000))
+        session.sendAudio(speech(count: 120 * 16_000))
         XCTAssertEqual(cappedCount, 0)
 
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         XCTAssertEqual(cappedCount, 1)
         XCTAssertEqual(warnings.count, 1)
 
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         XCTAssertEqual(cappedCount, 1, "上限回调只应触发一次")
         XCTAssertEqual(warnings.count, 1)
     }
@@ -200,16 +258,16 @@ final class LocalASRSessionTests: XCTestCase {
         session.onWarning = { warnings.append($0) }
         session.onSessionCapped = { cappedCount += 1 }
 
-        session.sendAudio([Float](repeating: 0, count: max - 1))
+        session.sendAudio(speech(count: max - 1))
         XCTAssertEqual(cappedCount, 0)
 
         // 剩余容量 1，来 2 个：追加 1 个后立即触发。
-        session.sendAudio([Float](repeating: 0, count: 2))
+        session.sendAudio(speech(count: 2))
         XCTAssertEqual(cappedCount, 1)
         XCTAssertEqual(warnings.count, 1)
 
         // 之后继续发也不再触发。
-        session.sendAudio([Float](repeating: 0, count: 5))
+        session.sendAudio(speech(count: 5))
         XCTAssertEqual(cappedCount, 1)
 
         var finalText: String?
@@ -237,11 +295,11 @@ final class LocalASRSessionTests: XCTestCase {
         session.onWarning = { warnings.append($0) }
         session.onSessionCapped = { cappedCount += 1 }
 
-        session.sendAudio([Float](repeating: 0, count: max + 5_000))
+        session.sendAudio(speech(count: max + 5_000))
         XCTAssertEqual(cappedCount, 1)
         XCTAssertEqual(warnings.count, 1)
 
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         XCTAssertEqual(cappedCount, 1, "cap 只触发一次")
 
         var finalText: String?
@@ -278,12 +336,64 @@ final class LocalASRSessionTests: XCTestCase {
         session.onWarning = { warnings.append($0) }
         session.onFinal = { finalText = $0 }
 
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
         session.finalize(timeout: 5)
 
         await poll(timeout: 3) { finalText != nil }
         XCTAssertEqual(finalText, "raw-asr-text")
         XCTAssertTrue(warnings.contains("智能校对未成功，已使用识别原文"))
+    }
+
+    /// 进入 LLM 校对阶段必须发一次 `onCorrectionStarted`：没有它，HUD 会一直停在
+    /// "识别中"，用户分不清自己在等本地推理（几百毫秒）还是在等网络（最长 llm.timeout）。
+    func testCorrectionStartedFiresOnceBeforeFinal() async {
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "raw-asr-text" }
+
+        StubURLProtocol.handler = { _ in (500, "boom") }
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [StubURLProtocol.self]
+        let corrector = LLMCorrector(
+            config: LLMCorrector.Config(
+                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
+                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
+            ),
+            urlSession: URLSession(configuration: sessionConfig)
+        )
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: corrector)
+
+        var correctionStartedCount = 0
+        var finalText: String?
+        var sawCorrectionBeforeFinal = false
+        session.onCorrectionStarted = { correctionStartedCount += 1 }
+        session.onFinal = {
+            sawCorrectionBeforeFinal = correctionStartedCount == 1
+            finalText = $0
+        }
+
+        session.sendAudio(speech(count: 20_000))
+        session.finalize(timeout: 5)
+
+        await poll(timeout: 3) { finalText != nil }
+        XCTAssertEqual(correctionStartedCount, 1)
+        XCTAssertTrue(sawCorrectionBeforeFinal, "校对开始的信号必须早于最终结果")
+    }
+
+    /// 没有启用校对时不应该发这个信号——否则 HUD 会显示一个根本不存在的"校对中"阶段。
+    func testCorrectionStartedIsNotFiredWithoutCorrector() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+
+        var correctionStartedCount = 0
+        var finalText: String?
+        session.onCorrectionStarted = { correctionStartedCount += 1 }
+        session.onFinal = { finalText = $0 }
+
+        session.sendAudio(speech(count: 8_000))
+        session.finalize(timeout: 2)
+        await poll { finalText != nil }
+
+        XCTAssertEqual(correctionStartedCount, 0)
     }
 
     // MARK: - close() 后的迟到回调抑制
@@ -298,7 +408,7 @@ final class LocalASRSessionTests: XCTestCase {
         session.onPartial = { _ in partialCalls += 1 }
         session.onError = { _ in errorCalls += 1 }
 
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
         await poll { engine.callCount >= 1 } // 确认已经进入（阻塞的）asrQueue 调用
 
         session.close()
@@ -309,7 +419,7 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(errorCalls, 0)
 
         // close() 之后 sendAudio/finalize 应该都是 no-op，不应该崩溃或产生新副作用。
-        session.sendAudio([Float](repeating: 0, count: 1_000))
+        session.sendAudio(speech(count: 1_000))
         var finalCalls = 0
         session.onFinal = { _ in finalCalls += 1 }
         session.finalize(timeout: 0.05)
@@ -354,7 +464,7 @@ final class LocalASRSessionTests: XCTestCase {
         session.onPartial = { partialTexts.append($0) }
         session.onFinal = { _ in finalCalls += 1 }
 
-        session.sendAudio([Float](repeating: 0, count: 20_000))
+        session.sendAudio(speech(count: 20_000))
         session.finalize(timeout: 5)
 
         // completeWithASRText 会先用 onPartial 顶一次原文，再发起 LLM 校对。

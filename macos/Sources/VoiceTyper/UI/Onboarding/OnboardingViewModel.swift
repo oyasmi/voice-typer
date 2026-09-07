@@ -96,10 +96,6 @@ final class OnboardingViewModel {
     /// 本次试用录音里出现过的最大电平。用于在识别结果为空时区分"没出声"与"识别不出"。
     private var trialPeakLevel: Float = 0
 
-    /// 低于此电平视为基本没有采到声音（线性 RMS，约 -48dBFS）。
-    /// 只用来细化提示措辞，判错的代价仅仅是提示不够精准，不影响任何流程。
-    private static let silenceLevelThreshold: Float = 0.004
-
     // MARK: 注入的回调
 
     var onRequestPermission: ((PermissionKind) -> Void)?
@@ -198,7 +194,7 @@ final class OnboardingViewModel {
         case .inserted(let text):
             trial = .succeeded(text)
         case .emptyResult:
-            trial = trialPeakLevel < Self.silenceLevelThreshold ? .noSpeech : .failed(
+            trial = trialPeakLevel < AppConstants.silenceRMSThreshold ? .noSpeech : .failed(
                 "采到了声音，但没有识别出文字。请靠近麦克风、放慢一点再试一次。"
             )
         case .cancelled:

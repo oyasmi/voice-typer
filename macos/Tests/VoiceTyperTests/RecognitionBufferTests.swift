@@ -51,6 +51,33 @@ final class RecognitionBufferTests: XCTestCase {
         XCTAssertEqual(text, "[call0:118400][call1:131600]", "预览文本应是已固化前缀 + 窗口内识别结果")
     }
 
+    /// VAD 会跳过"整段静音"的预览，于是两次预览之间可能积累了**超过一个窗口**的音频。
+    /// 那时必须连续滚动直到窗口右侧回到阈值以内——只滚一次的话，窗口会持续超长，
+    /// 每次预览的推理耗时随录音时长一路涨上去。
+    func testPreviewRollsRepeatedlyWhenBacklogExceedsMultipleWindows() throws {
+        let engine = FakeEngine()
+        let buffer = RecognitionBuffer(engine: engine)
+        // 一次性灌入约 3 个窗口的音频，模拟长时间没有触发预览之后突然恢复。
+        buffer.append([Float](repeating: 0, count: RecognitionBuffer.previewWindowSamples * 3))
+
+        _ = try buffer.preview()
+
+        XCTAssertGreaterThan(engine.callLengths.count, 2, "积压超过一个窗口时应连续滚动，而不是只滚一次")
+        // 最后一次调用是窗口内的识别，长度必须已经回落到窗口以内。
+        XCTAssertLessThanOrEqual(
+            engine.callLengths.last ?? .max,
+            RecognitionBuffer.previewWindowSamples,
+            "滚动结束后窗口右侧不应再超过窗口长度"
+        )
+    }
+
+    func testReservedCapacityDoesNotChangeContents() {
+        let engine = FakeEngine()
+        let buffer = RecognitionBuffer(engine: engine, reservedSampleCapacity: 1_920_000)
+        buffer.append([Float](repeating: 0.5, count: 1_000))
+        XCTAssertEqual(buffer.sampleCount, 1_000, "预留容量只影响分配策略，不应改变已累积的样本数")
+    }
+
     func testSecondPreviewAfterRollDoesNotRollAgainImmediately() throws {
         let engine = FakeEngine()
         let buffer = RecognitionBuffer(engine: engine)
