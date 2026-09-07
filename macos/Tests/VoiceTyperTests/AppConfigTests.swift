@@ -47,10 +47,12 @@ final class AppConfigTests: XCTestCase {
     /// 正常打字都会触发录音。`validated()` 必须是这条规则的最后一道防线。
     func testValidatedFallsBackToFnWhenNonFnKeyHasNoModifier() {
         var config = AppConfig()
-        config.hotkey = HotkeyConfig(modifiers: [], key: "d")
+        config.hotkey = HotkeyConfig(modifiers: [], key: "d", mode: .toggle)
         let validated = config.validated()
         XCTAssertEqual(validated.hotkey.key, "fn")
         XCTAssertTrue(validated.hotkey.modifiers.isEmpty)
+        // 回落只针对"按哪个键"；触发方式是独立且合法的用户选择，不该被连坐重置。
+        XCTAssertEqual(validated.hotkey.mode, .toggle)
     }
 
     func testValidatedFallsBackToFnForUnsupportedKeyName() {

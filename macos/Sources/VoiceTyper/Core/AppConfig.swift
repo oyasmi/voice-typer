@@ -56,13 +56,15 @@ struct AppConfig: Codable {
     /// 校验的第二道防线，越界回落到默认热键 fn，不静默接受。
     private static func validatedHotkey(_ hotkey: HotkeyConfig) -> HotkeyConfig {
         let key = hotkey.key.lowercased()
+        // 回落只针对"按哪个键"这件事；`mode`（按住 / 切换）是独立且始终合法的用户选择，
+        // 不应被一个非法键名连坐重置。
         guard HotkeyService.isSupportedKey(key) else {
             AppLog.app.warning("配置字段 hotkey.key 不支持(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
-            return HotkeyConfig()
+            return HotkeyConfig(mode: hotkey.mode)
         }
         guard key == "fn" || !hotkey.modifiers.isEmpty else {
             AppLog.app.warning("配置字段 hotkey 未搭配修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
-            return HotkeyConfig()
+            return HotkeyConfig(mode: hotkey.mode)
         }
         return hotkey
     }
@@ -201,19 +203,47 @@ struct LLMConfig: Codable, Equatable {
     }
 }
 
+/// 热键的触发语义。
+///
+/// 默认 `hold`（按住说话）不变；`toggle` 是为长听写（写邮件、写文档）准备的：
+/// 手指不必一直按着，按一次开始、再按一次结束。
+///
+/// 刻意**不做**"短按 toggle / 长按 hold"的自动判别：那会把今天被
+/// `VoiceTyperController.minimumRecordingDuration` 当成误触丢弃的一次轻碰，变成一段
+/// 用户毫无察觉就开始了的持续录音——误触的代价从"什么都没发生"升级为"一直在录"，
+/// 这是比手指累更糟的失败模式。宁可让用户显式选一次模式。
+enum HotkeyMode: String, Codable, CaseIterable {
+    /// 按住热键录音，松开结束。
+    case hold
+    /// 按一次开始录音，再按一次结束。
+    case toggle
+
+    var displayName: String {
+        switch self {
+        case .hold: return "按住说话"
+        case .toggle: return "按一次开始，再按一次结束"
+        }
+    }
+}
+
 struct HotkeyConfig: Codable, Equatable {
     var modifiers: [String]
     var key: String
+    var mode: HotkeyMode
 
-    init(modifiers: [String] = [], key: String = "fn") {
+    init(modifiers: [String] = [], key: String = "fn", mode: HotkeyMode = .hold) {
         self.modifiers = modifiers
         self.key = key
+        self.mode = mode
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.modifiers = try container.decodeIfPresent([String].self, forKey: .modifiers) ?? []
         self.key = try container.decodeIfPresent(String.self, forKey: .key) ?? "fn"
+        // 无法识别的 mode 回落 hold，而不是解码失败——与本文件其余字段的容错一致。
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .mode) ?? HotkeyMode.hold.rawValue
+        self.mode = HotkeyMode(rawValue: rawMode) ?? .hold
     }
 
     var displayString: String {
@@ -222,6 +252,12 @@ struct HotkeyConfig: Codable, Equatable {
         }
         let parts = modifiers + [key]
         return parts.map { $0.uppercased() }.joined(separator: "+")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modifiers
+        case key
+        case mode
     }
 }
 

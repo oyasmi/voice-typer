@@ -44,6 +44,19 @@ final class VoiceTyperController {
     private var isRunning = false
     private var previewText = ""
 
+    /// 非 nil 表示"热键监听已启动，但现在还不能听写"，字符串是给用户看的原因
+    /// （缺权限、模型还在下载…）。
+    ///
+    /// 存在的意义：此前只要没完全就绪，`AppCoordinator` 就干脆不启动控制器，于是按下
+    /// 热键**什么都不会发生**——用户得到的反馈与"应用挂了"完全一致，无从判断缺什么。
+    /// 现在只要输入监控权限具备，热键就照常监听，按下时把缺什么明确说出来（B3）。
+    var blockedReason: String? {
+        didSet {
+            // 门禁期间不可能有进行中的听写，顺手关掉识别阶段的 Esc 取消窗口。
+            if blockedReason != nil { hotkeyService.acceptsCancelWhenInactive = false }
+        }
+    }
+
     /// 派生自 `active`，不再是独立事实源：不支持重叠听写，同一时刻只可能有
     /// 一段录音在进行（AGENTS.md 的主流程本就是单段 Idle→Recording→Recognizing→Inserting）。
     private var isRecording: Bool { active?.phase == .recording }
@@ -57,8 +70,14 @@ final class VoiceTyperController {
     var onPreviewUpdate: ((String) -> Void)?
     /// 非致命提示（预览失败等），UI 可短暂闪烁状态但不打断录音。
     var onPreviewWarning: ((String) -> Void)?
-    /// 用户主动取消（录音中按 Esc）。与 .idle 区分，便于 UI 给出"已取消"提示。
+    /// 用户主动取消（录音中或识别中按 Esc）。与 .idle 区分，便于 UI 给出"已取消"提示。
     var onCancelled: (() -> Void)?
+    /// 识别成功但结果为空（没说话、麦克风静音、环境噪声被判为无语音）。
+    /// 与"插入成功"和"识别失败"都要区分：此前这条路径直接静默回到 `.idle`，
+    /// HUD 一声不响地消失，用户分不清是没识别到还是插进去了没看见（B4）。
+    var onEmptyRecognition: (() -> Void)?
+    /// 未就绪时按下热键。参数是 `blockedReason` 的内容，UI 据此引导用户。
+    var onBlockedAttempt: ((String) -> Void)?
     /// 录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。保证在主线程触发。
     var onAudioLevel: ((Float) -> Void)?
     var isStarted: Bool { isRunning }
@@ -97,10 +116,10 @@ final class VoiceTyperController {
         guard !isRunning else { return }
 
         hotkeyService.onPress = { [weak self] in
-            Task { @MainActor [weak self] in self?.beginRecording() }
+            Task { @MainActor [weak self] in self?.handleHotkeyPress() }
         }
         hotkeyService.onRelease = { [weak self] in
-            Task { @MainActor [weak self] in self?.finishRecording() }
+            Task { @MainActor [weak self] in self?.handleHotkeyRelease() }
         }
         hotkeyService.onCancel = { [weak self] in
             Task { @MainActor [weak self] in self?.cancelByUser() }
@@ -115,10 +134,15 @@ final class VoiceTyperController {
         }
         try hotkeyService.start(with: config.hotkey)
         isRunning = true
-        onStateChange?(.idle)
+        // 被门禁时不能发 `.idle`：那会把 AppCoordinator 的 currentState 从"待授权/下载中"
+        // 覆盖成"就绪"，菜单栏显示与真实能力脱节。就绪后由协调器自己置 `.idle`。
+        if blockedReason == nil {
+            onStateChange?(.idle)
+        }
     }
 
     func stop() {
+        hotkeyService.acceptsCancelWhenInactive = false
         hotkeyService.stop()
         audioCaptureService.stopWithoutResult()
         if active != nil {
@@ -152,6 +176,37 @@ final class VoiceTyperController {
 
     // MARK: - 录音流程
 
+    /// 热键按下的唯一入口，按 `hotkey.mode` 分发。
+    ///
+    /// - `.hold`：按下开始，交给 `handleHotkeyRelease()` 结束（原有行为，默认）。
+    /// - `.toggle`：按下开始，**再按一次**结束；松开事件被忽略。
+    private func handleHotkeyPress() {
+        guard isRunning else { return }
+        if let blockedReason {
+            onBlockedAttempt?(blockedReason)
+            return
+        }
+        switch config.hotkey.mode {
+        case .hold:
+            beginRecording()
+        case .toggle:
+            if isRecording {
+                finishRecording()
+            } else {
+                // 非录音态（含 active 已进入 .recognizing）统一走 beginRecording()：
+                // 它自带"上一段听写尚未完成"的拒绝分支，toggle 模式无需重复判断。
+                beginRecording()
+            }
+        }
+    }
+
+    /// 热键松开。仅 `.hold` 模式有意义；`.toggle` 模式下松开不是结束信号。
+    private func handleHotkeyRelease() {
+        guard isRunning, blockedReason == nil else { return }
+        guard config.hotkey.mode == .hold else { return }
+        finishRecording()
+    }
+
     private func beginRecording() {
         guard isRunning else { return }
         guard active == nil else {
@@ -176,10 +231,20 @@ final class VoiceTyperController {
         audioCaptureService.stop()
     }
 
-    /// 用户在录音过程中按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
+    /// 用户按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
+    ///
+    /// 录音中与识别中都受理。识别中取消**不会**中断已经在 asrQueue 上跑的那次推理
+    /// （ORT 的 ObjC 绑定没暴露 `SetTerminate`，见 DESIGN.md §11.1），但会丢弃它的
+    /// 结果、不插入任何文本——用户真正要的是"别把这段写进去"，而不是省下几百毫秒 CPU。
     private func cancelByUser() {
-        guard let utterance = active, utterance.phase == .recording else { return }
-        audioCaptureService.stopWithoutResult()
+        guard let utterance = active else { return }
+        switch utterance.phase {
+        case .recording:
+            audioCaptureService.stopWithoutResult()
+        case .recognizing:
+            // 采集早已在松键时停止；这里只需要走收尾，让 session.close() 抑制迟到回调。
+            break
+        }
         finish(.cancelled)
     }
 
@@ -245,6 +310,9 @@ final class VoiceTyperController {
                     session?.sendAudio(samples)
                 }
                 self.active?.phase = .recognizing
+                // 松手之后到结果上屏之前，Esc 仍可取消（HotkeyService 默认只在按住期间
+                // 受理 Esc）。收尾时由 finish(_:) 统一关闭这个窗口。
+                self.hotkeyService.acceptsCancelWhenInactive = true
                 // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
                 session?.finalize(timeout: 30)
                 self.onStateChange?(.recognizing)
@@ -276,6 +344,7 @@ final class VoiceTyperController {
     private func finish(_ outcome: Outcome) {
         guard let utterance = active else { return }
         active = nil
+        hotkeyService.acceptsCancelWhenInactive = false
         utterance.session.close()
         asrService.sessionEnded()
         audioCaptureService.onChunk = nil
@@ -307,6 +376,10 @@ final class VoiceTyperController {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
+            // 识别链路跑通了但一个字都没有：几乎总是"没说话/麦克风静音/选错输入设备"。
+            // 必须给一个可见反馈，否则 HUD 静默消失，与"插进去了但没看见"无法区分（B4）。
+            AppLog.asr.info("识别结果为空，未插入任何文本")
+            onEmptyRecognition?()
             onStateChange?(.idle)
             return
         }

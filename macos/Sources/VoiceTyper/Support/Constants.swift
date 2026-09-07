@@ -18,4 +18,7 @@ enum SystemSettingsURL {
     static let microphone = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
     static let accessibility = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
     static let inputMonitoring = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
+    /// 「系统设置 → 键盘」。用于引导用户把「按下🌐键」改成"不执行任何操作"，
+    /// 避免与默认的 Fn 热键冲突（见 `SystemKeyboardSettings`）。
+    static let keyboard = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
 }

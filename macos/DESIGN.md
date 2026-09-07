@@ -486,7 +486,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 
 理由：跨平台共享配置的初衷在 mac-only 一体化 App 里不再成立；`Application Support` 是 macOS 惯例；
 同时天然避开与改名后的 `VoiceTyperClient`（继续用 `~/.config/voice_typer/`）互相覆写。
-目录下同时放 `logs/`、可选的 `models/`。菜单「打开配置目录」指向它。
+目录下同时放 `logs/`、可选的 `models/`。（曾经的菜单项「打开配置目录」已移除，见 §5.6。）
 
 **首次启动一次性迁移**（`ConfigMigrator`）：若新路径无配置而 `~/.config/voice_typer/config.yaml` 存在，
 则继承其中的 `hotkey` 与 `ui.opacity`，`server` 段丢弃。老用户换过来热键不用重设。
@@ -546,11 +546,17 @@ header 显示「下载模型 42% · 96/240 MB」。
 │ ✅  开机自启
 ├──────────────────────
 │ ⚙️  权限与设置…                    ⌘,
-│ 📁  打开配置目录
+│ ✨  使用引导…
+├──────────────────────
+│ 🔄  检查更新…
 │ ℹ️  关于 VoiceTyper
 ├──────────────────────
 │ ⏻  退出                            ⌘Q
 ```
+
+「打开配置目录」已移除（R5-B9）：`config.yaml` 是内部存储而不是配置入口——所有配置项都有界面，
+运行期不监听该文件（改了要重启），手改还会绕过 UI 校验。菜单里给出这个入口只会把用户导向一条
+只制造困惑的路径。
 
 header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模型加载中… / 模型加载失败」。
 
@@ -560,7 +566,7 @@ header 第三段从「已连接 127.0.0.1:6008」改为「引擎已就绪 / 模�
 | --- | --- |
 | 权限 | 麦克风 / 辅助功能 / 输入监听（原样保留）。**删掉服务端连通性检查项** |
 | 识别 | ① **模型卡片**：首启自动下载，显示百分比进度 +「取消」；失败后显示原因 +「重试下载」；就绪时显示「SenseVoice-Small · int8 · 已就绪」+「重新加载」；空闲卸载后下次录音自动重新加载<br>② 空闲 N 分钟后卸载模型<br>③ 识别语言 Picker（自动/中文/英文/粤语/日语/韩语）<br>④ 智能校对：开关 + Base URL + API Key(SecureField) + 模型 + 温度 + 超时 +「测试校对」 |
-| 通用 | 热键（Fn 或组合键，支持按键录制）、开机自启、HUD 不透明度 |
+| 通用 | 热键（Fn 或组合键，支持按键录制）、触发方式（`hold` / `toggle`）、Fn 键与系统「按下🌐键」的冲突检测、开机自启、HUD 不透明度 |
 
 ---
 
@@ -721,15 +727,51 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
   （CoreAudio HAL 设备启动，非 Swift 侧代码可控，见 §4.3 的实测与两个候选方案的否决理由）。
   用户如果按键后立刻开口，最开头的一两个字可能不会被录进去。Pre-roll（麦克风常开）能完全盖掉，
   但与本项目的隐私定位冲突；预热 converter/prepare() 只能省掉小头，不采纳。
-- **松手后（`.recognizing` 阶段）没有主动取消入口**：`HotkeyService` 的 Esc 取消只在热键仍按住
-  （`isActive`）时生效，松手后 Esc 不再起作用，HUD 又设了 `ignoresMouseEvents`。用户唯一能做的是
-  等——最坏情况是 `LocalASRSession.finalize(timeout: 30)` 的 30s 看门狗，加上启用智能校对时
-  `llm.timeout` 最长可配到 120s（`AppConfig.validated()` 的夹逼上限），合计最长约 150s 卡在无法
-  中断的状态。R4 这轮已经补上"识别中按热键给出可见反馈"（不再是完全无声），但反馈不等于能取消——
-  真要支持取消，需要让 `HotkeyService` 在按键释放后仍能响应 Esc、并把取消信号一路传给
-  `LocalASRSession` 的 `cancelFlag`/`close()`，这是一次新的、跨两层的改动（不是小修）。给定默认
-  `llm.timeout=5s`、且只有刻意调大超时 + 端点恰好卡死才会撞到分钟级等待，判断这轮投入产出比不够，
-  按与"finalize 超时不中断计算"（上一条）相同的理由暂不做，等真的观察到用户被卡住再立项。
+  代码层面仍不修，但**已在产品层面缓解**：HUD 的入场动画（180ms）恰好覆盖这段延迟，因此
+  首启引导与 README 都明确写了"看到浮窗再开口"，把一个隐藏的固有延迟变成一条可教的操作。
+- ~~**松手后（`.recognizing` 阶段）没有主动取消入口**~~ —— **已实现**（见下方 §11.2 R5-04）。
+  此前这条按"等真的观察到用户被卡住再立项"暂缓，理由是把它当成了"用户要等多久"的问题。
+  重新评估后认为定性错了：真正的问题不是等待时长，而是**结果会被自动写进光标位置，而用户在
+  松手之后没有任何阻止手段**（HUD 还设了 `ignoresMouseEvents`）。"说错了想撤回"是高频需求，
+  且实现成本远低于原估计——不需要中断 ORT 推理，只要丢弃结果不插入即可，`LocalASRSession.close()`
+  与 `cancelFlag` 早就具备抑制迟到回调的能力。
+
+---
+
+## 11.2 R5：从"能用"到"好用"
+
+本轮不改识别管线，只针对**上手与日常顺手程度**。所有改动都在 macOS 侧；Windows 的识别管线
+契约（fbank / LFR-CMVN / CTC / 文本后处理 / 模型 I/O）未被触碰，无需同步评估。
+
+| # | 改动 | 为什么 |
+| --- | --- | --- |
+| R5-01 | **首启四步引导**（`UI/Onboarding/`）：欢迎 → 权限 → 模型 → **试一试** | 三项权限全绿 ≠ 能用。真实链路是「热键 → 麦克风 → 识别 → 插入」，任何一环坏掉，用户看到的现象都是同一个"按了没反应"。最后一步在引导窗口自己的输入框里跑一次真实听写，并在失败时指出断在哪一环——这是唯一能在用户撞上问题**之前**暴露问题的地方 |
+| R5-02 | **Fn 键冲突检测**（`Support/SystemKeyboardSettings.swift`） | 默认热键是 Fn🌐，而事件 tap 是 `.listenOnly`（不吞事件）。「系统设置 → 键盘 → 按下🌐键」非"不执行任何操作"时，松手瞬间系统自己的 Fn 行为也会触发（弹表情面板 / 切输入法）。这与 VoiceTyper 的代码无关，用户几乎不可能自己定位到 |
+| R5-03 | **`hotkey.mode` = `hold` / `toggle`** | 长段口述（写邮件、写文档）一直按住手指很累。**刻意不做**"短按 toggle、长按 hold"的自动判别：那会把今天被 `minimumRecordingDuration` 丢弃的一次轻碰变成用户毫无察觉就开始的持续录音，误触代价从"什么都没发生"升级为"一直在录" |
+| R5-04 | **`.recognizing` 阶段可按 Esc 取消**（`HotkeyService.acceptsCancelWhenInactive`） | 见 §11.1 对原判断的修正。不中断已在飞的 ORT 推理，只丢弃结果不插入 |
+| R5-05 | **签名状态自检 + 手动检查更新**（`Support/CodeSigningInfo.swift`、`Services/UpdateChecker.swift`） | ad-hoc 签名下每次更新都可能丢失三项 TCC 授权，这是当前最影响长期使用体验的一件事。真正的解法是 Developer ID 签名（需要账号，不在代码范围内），代码能做的是**让用户事先知道**，并在拿到证书后自动闭嘴。检查更新只在用户主动点菜单时联网一次，不做后台轮询、不引入 Sparkle（appcast 托管 + 更新签名密钥管理不在本轮范围） |
+
+同批修掉的具体问题：
+
+| # | 问题 | 位置 |
+| --- | --- | --- |
+| B1 | 下载进度动效每 200ms 被打断重建——`appliedState != state` 用 `AppState` 全等，而 `.downloadingModel(Double)` 带进度载荷 | `StatusBarController` 改为比较"外观三元组"（符号 / 着色 / 动效） |
+| B2 | 权限没给全时菜单栏完全看不到模型下载进度：下载中 `asrState` 仍是 `.modelMissing`，而 `computeTargetState` 又会先行返回 `.setupRequired` | `engineStatusText()` 自行感知 `isDownloadingModel` |
+| B3 | 未就绪时按热键毫无反应 | 只要输入监控已授权就照常监听热键，`VoiceTyperController.blockedReason` 门禁住录音，按下时经 `onBlockedAttempt` 说明缺什么 |
+| B4 | 识别结果为空时 HUD 静默消失，与"插进去了但没看见"无法区分 | 新增 `onEmptyRecognition` → `RecordingHUDController.showNoSpeech()` |
+| B5 | 窗口已存在（可能在别的 Space / 被遮挡）时点图标毫无反应 | `applicationShouldHandleReopen` 不再看 `hasVisibleWindows` |
+| B6 | 状态栏图标没有 tooltip | `statusItem.button?.toolTip` |
+| B7 | 取消下载后设置窗口反而抢焦点跳到最前 | `setupControllerIfNeeded` 的"是否抢焦点"改为**只**由 `forceShow` 决定（原先还有 `|| !permissions.allRequiredGranted || !isModelReady`），并加 `forcedPresentations` 做每个理由一次 |
+| B8 | 每次保存非 UI 配置都重建整个 `RecordingHUDController` | 改为 `RecordingHUDController.updateConfig(_:)` 就地生效 |
+| B9 | 菜单「打开配置目录」把用户导向手改 YAML 这条只制造困惑的路径 | 移除该菜单项与 `ConfigStore.openConfigDirectory()`；README 改为明确标注 `config.yaml` 是内部存储。**刻意不做**文件热重载：那是在往相反方向加固一条本就不该鼓励的入口 |
+
+**待真机验证**（本轮在 Linux 上完成编码，未经 macOS 编译与运行）：
+
+- `SystemKeyboardSettings.fnKeyUsage()` 读的 `AppleFnUsageType` 是未公开偏好项，四个取值的映射
+  需要在真机上对照「系统设置 → 键盘 → 按下🌐键」逐项核对；读不到时按"可能冲突"提示，是保守方向。
+- `CodeSigningInfo` 对 ad-hoc 与 Developer ID 两种构建的判定。
+- 引导「试一试」步骤里，文本能否真的通过 AX / 粘贴写进引导窗口自己的输入框。
+- `toggle` 模式与 `.recognizing` 阶段 Esc 取消的真实按键时序。
 
 ---
 
@@ -742,3 +784,6 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
 | D3 | 新 App 版本号 | ✅ **3.2.1**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 |
 | D4 | 空闲卸载默认值 | ✅ **10 分钟**（`ASRConfig.idleUnloadMinutes` 默认值） | 备选（默认关闭、常驻 510MB）已否决；早已随实现发布，此前这里一直标注"待定"与代码不符（R4-12） |
+| D6 | 热键触发方式 | ✅ **显式二选一 `hold`（默认）/ `toggle`** | 否决"短按 toggle、长按 hold"的自动判别：会把被丢弃的误触升级为用户无察觉的持续录音（§11.2 R5-03） |
+| D7 | 版本更新提醒 | ✅ **菜单里手动「检查更新…」**，不引入 Sparkle、不做后台轮询 | 后台自动检查与"音频只在本机处理"的定位相悖；Sparkle 需要 appcast 托管与更新签名密钥管理，不在本轮范围（§11.2 R5-05） |
+| D8 | 配置文件的定位 | ✅ **内部存储，不是配置入口** | 移除菜单「打开配置目录」，也不做文件热重载：手改会绕过 UI 校验且需重启才生效，给入口只会制造困惑（§11.2 B9） |

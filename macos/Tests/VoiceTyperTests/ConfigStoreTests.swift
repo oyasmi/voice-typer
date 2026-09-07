@@ -31,7 +31,7 @@ final class ConfigStoreTests: XCTestCase {
         config.llm.temperature = 0.3
         config.llm.maxTokens = 1200
         config.llm.timeout = 8
-        config.hotkey = HotkeyConfig(modifiers: ["ctrl"], key: "f2")
+        config.hotkey = HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
         config.ui.opacity = 0.7
 
         try store.save(config: config)
@@ -49,6 +49,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(loaded.llm.timeout, 8, accuracy: 1e-9)
         XCTAssertEqual(loaded.hotkey.modifiers, ["ctrl"])
         XCTAssertEqual(loaded.hotkey.key, "f2")
+        XCTAssertEqual(loaded.hotkey.mode, .toggle)
         XCTAssertEqual(loaded.ui.opacity, 0.7, accuracy: 1e-9)
     }
 
@@ -57,6 +58,7 @@ final class ConfigStoreTests: XCTestCase {
         let config = try store.loadOrCreate()
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.configURL.path))
         XCTAssertEqual(config.hotkey.key, "fn") // 默认值
+        XCTAssertEqual(config.hotkey.mode, .hold) // 默认值
         XCTAssertEqual(config.asr.idleUnloadMinutes, 10) // 默认值
     }
 
@@ -66,6 +68,8 @@ final class ConfigStoreTests: XCTestCase {
         let config = try YAMLDecoder().decode(AppConfig.self, from: partialYAML)
 
         XCTAssertEqual(config.hotkey.key, "f2")
+        // 老配置文件里没有 mode 字段：必须回落 hold，而不是解码失败。
+        XCTAssertEqual(config.hotkey.mode, .hold)
         XCTAssertEqual(config.asr.language, .auto)
         XCTAssertEqual(config.asr.idleUnloadMinutes, 10)
         XCTAssertEqual(config.llm.enabled, false)

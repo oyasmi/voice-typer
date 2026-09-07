@@ -67,6 +67,10 @@ final class SettingsViewModel {
     var hotkeyConfig = HotkeyConfig()
     var hotkeyMessage = ""
     var hotkeyMessageKind: SettingsMessageKind = .info
+    /// Fn 与系统「按下🌐键」行为冲突时的提示文案；无冲突为 nil。
+    /// 只在打开设置窗口与用户主动重新检测时刷新——`SystemKeyboardSettings` 每次查询都会
+    /// 丢弃偏好缓存，不适合放在每秒会跑很多次的同步路径上。
+    var fnConflictWarning: String?
 
     // MARK: 通用 / 识别引擎
     var launchAtLogin = false
@@ -84,6 +88,7 @@ final class SettingsViewModel {
     var onSuspendHotkey: ((Bool) -> Bool)?
     var onPreviewHUDOpacity: ((Double) -> Void)?
     var onToggleLaunchAtLogin: ((Bool) -> Void)?
+    var onOpenKeyboardSettings: (() -> Void)?
     var onStartModelDownload: (() -> Void)?
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
@@ -105,6 +110,7 @@ final class SettingsViewModel {
         llmTimeout = config.llm.timeout
         hotkeyConfig = config.hotkey
         hotkeyDisplay = config.hotkey.displayString
+        refreshFnConflictWarning()
         hudOpacity = config.ui.opacity
         idleUnloadMinutes = config.asr.idleUnloadMinutes
         self.launchAtLogin = launchAtLogin
@@ -242,8 +248,14 @@ final class SettingsViewModel {
 
     // MARK: - 热键
 
+    /// 重新探测系统「按下🌐键」的设置。用户很可能刚去系统设置改完切回来。
+    func refreshFnConflictWarning() {
+        fnConflictWarning = SystemKeyboardSettings.fnConflictWarning(for: hotkeyConfig)
+    }
+
     /// 录制器捕获到新热键后调用：校验、落盘、更新显示。
-    func applyHotkey(_ config: HotkeyConfig) {
+    /// - Parameter successMessage: 保存成功后的提示文案；nil 表示用默认的"热键已更新为…"。
+    func applyHotkey(_ config: HotkeyConfig, successMessage: String? = nil) {
         let key = config.key.lowercased()
         guard HotkeyService.isSupportedKey(key) else {
             hotkeyMessage = SettingsValidationError.unsupportedHotkeyKey(config.key).localizedDescription
@@ -257,8 +269,10 @@ final class SettingsViewModel {
             hotkeyMessageKind = .error
             return
         }
+        let previousConfig = hotkeyConfig
         hotkeyConfig = config
         hotkeyDisplay = config.displayString
+        refreshFnConflictWarning()
         var updated = loadedConfig
         updated.hotkey = config
         Task { [weak self] in
@@ -267,9 +281,14 @@ final class SettingsViewModel {
                 // 保存会重建并重启控制器（即从录制态恢复热键监听）。
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
-                self.hotkeyMessage = "热键已更新为 \(config.displayString)。"
+                self.hotkeyMessage = successMessage ?? "热键已更新为 \(config.displayString)。"
                 self.hotkeyMessageKind = .success
             } catch {
+                // 保存失败（例如正在听写中）必须把界面回退到真实生效的值，否则 Picker /
+                // 录制框会显示一个其实没有生效的设置。
+                self.hotkeyConfig = previousConfig
+                self.hotkeyDisplay = previousConfig.displayString
+                self.refreshFnConflictWarning()
                 self.hotkeyMessage = "保存失败：\(error.localizedDescription)"
                 self.hotkeyMessageKind = .error
                 self.onSuspendHotkey?(false)
@@ -277,8 +296,25 @@ final class SettingsViewModel {
         }
     }
 
+    /// 按键录制器捕获到新组合后调用。
+    ///
+    /// 录制器只知道"按了哪个键"，它构造的 `HotkeyConfig` 里 `mode` 一定是默认值。
+    /// 如果直接落盘，用户每重新录一次热键就会被悄悄拽回「按住说话」——触发方式是一项
+    /// 独立的选择，不该被"换个键"这个动作连坐重置。这里显式沿用当前的 mode。
+    func applyRecordedHotkey(_ recorded: HotkeyConfig) {
+        applyHotkey(HotkeyConfig(modifiers: recorded.modifiers, key: recorded.key, mode: hotkeyConfig.mode))
+    }
+
+    /// 切换按住 / 按一次 的触发方式。复用 `applyHotkey` 的校验与落盘路径。
+    func applyHotkeyMode(_ mode: HotkeyMode) {
+        guard mode != hotkeyConfig.mode else { return }
+        var updated = hotkeyConfig
+        updated.mode = mode
+        applyHotkey(updated, successMessage: "触发方式已改为「\(mode.displayName)」。")
+    }
+
     func resetHotkeyToFn() {
-        applyHotkey(HotkeyConfig(modifiers: [], key: "fn"))
+        applyHotkey(HotkeyConfig(modifiers: [], key: "fn", mode: hotkeyConfig.mode))
     }
 
     /// 录制开始：挂起全局热键监听，避免录制时按 Fn 当场触发录音。

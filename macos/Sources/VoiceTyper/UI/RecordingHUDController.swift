@@ -190,6 +190,19 @@ final class RecordingHUDController: NSWindowController {
         )
     }
 
+    /// 识别跑通但结果为空的一次性提示。与"错误"分开：这不是故障，而是没采到语音，
+    /// 用户需要的是"去检查麦克风/输入设备"这条具体线索，而不是一个红色叉（B4）。
+    func showNoSpeech() {
+        showTransient(
+            status: "没有识别到内容",
+            message: "没听到说话内容，请确认麦克风未静音、输入设备选择正确。",
+            glyph: "waveform.slash",
+            color: .systemOrange,
+            expanded: true,
+            autoHideAfter: 2.5
+        )
+    }
+
     /// "已取消"提示浮层，约 1.0s 后自动隐藏（用户按 Esc 取消录音）。
     func showCanceled() {
         showTransient(
@@ -236,6 +249,17 @@ final class RecordingHUDController: NSWindowController {
         case .hidden, .transient:
             statusLabel.textColor = Self.statusTextColor
         }
+    }
+
+    /// 应用已保存的 UI 配置。
+    ///
+    /// 存在的意义：此前配置保存走的是"整个 `RecordingHUDController` 重建一份"，于是每次
+    /// 改热键（与 HUD 毫无关系）都会丢弃当前实例、连带丢掉已构建的视图层与几何状态（B8）。
+    /// HUD 是长生命周期的单例式组件，配置变更就地生效即可。
+    func updateConfig(_ config: UIConfig) {
+        ensureUIBuilt()
+        hudOpacity = config.opacity
+        applyDimOpacity()
     }
 
     /// 临时以给定不透明度预览 HUD 背景（设置页透明度滑杆用）。

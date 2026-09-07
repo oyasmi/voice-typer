@@ -50,7 +50,7 @@ final class ModelDownloader: NSObject {
     private var isCancelled = false
     /// 节流状态：241MB 的文件下载会产生几千次 `didWriteData` 回调，若每次都不加过滤地
     /// 跳到 MainActor 触发 `onProgress`，`AppCoordinator` 侧会跟着做几千次全量 UI 刷新
-    /// （`updateStatusUI` + `syncSetupWindow`）（R3-09）。`nonisolated(unsafe)`：需要在
+    /// （`updateStatusUI` + `syncAuxiliaryWindows`）（R3-09）。`nonisolated(unsafe)`：需要在
     /// `didWriteData`（nonisolated 的 delegate 回调）里同步判断是否要跳过本次回调，避免
     /// 为每一次回调都创建一个 `Task { @MainActor }`。只在 `URLSession` 的私有串行 delegate
     /// 队列（写）与 `performDownload` 在任务 resume 之前（重置）访问，二者有明确的先后关系，

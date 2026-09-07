@@ -34,6 +34,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onSuspendHotkey: ((Bool) -> Bool)?
     /// 实时预览 HUD 背景不透明度。
     var onPreviewHUDOpacity: ((Double) -> Void)?
+    /// 打开「系统设置 → 键盘」，引导用户解决 Fn 与系统行为的冲突。
+    var onOpenKeyboardSettings: (() -> Void)?
     /// 窗口关闭时通知（用于复位"用户主动打开"标记）。
     var onClose: (() -> Void)?
     var onStartModelDownload: (() -> Void)?
@@ -128,6 +130,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
 
+        // 用户可能刚在系统设置里改过「按下🌐键」；每次窗口出现时重新探测一次。
+        viewModel.refreshFnConflictWarning()
+
         if !viewModel.permissions.allRequiredGranted {
             startPermissionPollIfNeeded()
         }
@@ -177,6 +182,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
         viewModel.onSuspendHotkey = { [weak self] suspend in self?.onSuspendHotkey?(suspend) ?? false }
         viewModel.onPreviewHUDOpacity = { [weak self] opacity in self?.onPreviewHUDOpacity?(opacity) }
+        viewModel.onOpenKeyboardSettings = { [weak self] in self?.onOpenKeyboardSettings?() }
         viewModel.onStartModelDownload = { [weak self] in self?.onStartModelDownload?() }
         viewModel.onCancelModelDownload = { [weak self] in self?.onCancelModelDownload?() }
         viewModel.onReloadModel = { [weak self] in self?.onReloadModel?() }
