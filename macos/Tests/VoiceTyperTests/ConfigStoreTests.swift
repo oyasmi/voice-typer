@@ -80,7 +80,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(config.ui.opacity, 0.85, accuracy: 1e-9)
         // 老配置文件里没有这两个新字段：必须回落默认值而不是解码失败。
         XCTAssertEqual(config.ui.hudPosition, .bottomCenter)
-        XCTAssertEqual(config.asr.preloadOnLaunch, false)
+        XCTAssertEqual(config.asr.preloadOnLaunch, true)
     }
 
     func testUnknownEnumValuesFallBackToDefaults() throws {

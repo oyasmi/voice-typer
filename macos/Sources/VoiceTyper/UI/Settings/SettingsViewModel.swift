@@ -77,7 +77,7 @@ final class SettingsViewModel {
     var hudOpacity = 0.85
     var hudPosition: HUDPosition = .bottomCenter
     var idleUnloadMinutes = 10
-    var preloadOnLaunch = false
+    var preloadOnLaunch = true
     var generalMessage = ""
     var generalMessageKind: SettingsMessageKind = .info
 

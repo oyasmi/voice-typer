@@ -209,7 +209,7 @@ asr:
   threads: 0                 # 0 = 自动（min(4, 核数)）
   model_dir: ""               # 留空 = 自动定位（下载目录 / ModelScope 缓存）
   idle_unload_minutes: 10     # 0 = 常驻不卸载
-  preload_on_launch: false    # 启动即加载模型；默认 false（首次按热键才加载）
+  preload_on_launch: true     # 启动即加载模型；默认 true（关掉则首次按热键才加载）
 llm:
   enabled: false
   base_url: ""

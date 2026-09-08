@@ -115,7 +115,7 @@ final class ASRService {
 
     /// 只确认模型文件在不在，**不**构建 ORT session。
     ///
-    /// 用于「启动时不预加载」（`ASRConfig.preloadOnLaunch == false`，默认）：文件就绪时
+    /// 用于「启动时不预加载」（`ASRConfig.preloadOnLaunch == false`）：文件就绪时
     /// 进入 `.suspendedForIdle`——这个状态的语义本来就是"就绪，但引擎不在内存里，
     /// 下次 `makeSession()` 时按需加载"，正好是我们想要的启动态：热键监听照常工作、
     /// 菜单栏显示就绪，却不为一次可能根本不会发生的听写常驻 510MB。

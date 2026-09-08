@@ -130,12 +130,10 @@ struct ASRConfig: Codable, Equatable {
     var idleUnloadMinutes: Int
     /// 启动时就把模型载入内存。
     ///
-    /// **默认 false**：常驻 ~510MB 的识别引擎对一个开机自启的菜单栏应用是很重的代价，
-    /// 而这份代价在"今天一次都没用听写"的日子里是纯浪费——旧行为是启动即加载、
-    /// `idleUnloadMinutes` 到点再卸载，等于每次开机都白花一次 0.85s 加载与十分钟 510MB。
+    /// **默认 true**：多数用户是"每天高频使用"的场景，启动即加载能让首次按热键零等待。
     /// 关掉之后首次按热键才加载，且加载与录音并行（`ASRService.makeSession`），
-    /// 用户通常正在说第一句话，感知延迟接近于零。
-    /// 打开它适合"每天都高频使用、且不在意常驻内存"的场景。
+    /// 用户通常正在说第一句话，感知延迟也接近于零；适合"今天可能一次都不用听写、
+    /// 且在意常驻 ~510MB 内存"的场景。
     var preloadOnLaunch: Bool
 
     init(
@@ -143,7 +141,7 @@ struct ASRConfig: Codable, Equatable {
         threads: Int = 0,
         modelDir: String = "",
         idleUnloadMinutes: Int = 10,
-        preloadOnLaunch: Bool = false
+        preloadOnLaunch: Bool = true
     ) {
         self.language = language
         self.threads = threads
@@ -159,7 +157,7 @@ struct ASRConfig: Codable, Equatable {
         self.threads = try container.decodeIfPresent(Int.self, forKey: .threads) ?? 0
         self.modelDir = try container.decodeIfPresent(String.self, forKey: .modelDir) ?? ""
         self.idleUnloadMinutes = try container.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? 10
-        self.preloadOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .preloadOnLaunch) ?? false
+        self.preloadOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .preloadOnLaunch) ?? true
     }
 
     enum CodingKeys: String, CodingKey {
