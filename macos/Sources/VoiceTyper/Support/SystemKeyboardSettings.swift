@@ -46,10 +46,14 @@ enum FnKeyUsage: Equatable {
 }
 
 enum SystemKeyboardSettings {
-    /// NSGlobalDomain 里的键名。这是一个未公开的偏好项，因此所有分支都必须能容忍
+    /// 「按下🌐键」的取值键名。这是一个未公开的偏好项，因此所有分支都必须能容忍
     /// "读不到"或"读到没见过的值"，绝不能据此阻断任何流程——它只用来决定要不要多显示
     /// 一条提示。
     private static let fnUsageKey = "AppleFnUsageType"
+
+    /// 实测（macOS 15）该项写在 `com.apple.HIToolbox`，而非 NSGlobalDomain。
+    /// 老系统上曾出现在全局域，因此两个域都查一遍：先 HIToolbox，读不到再退回全局域。
+    private static let fnUsageDomains = ["com.apple.HIToolbox", kCFPreferencesAnyApplication as String]
 
     /// 读取当前的「按下🌐键」设置。
     ///
@@ -57,12 +61,20 @@ enum SystemKeyboardSettings {
     /// 来回切换，需要每次都读到最新值。`CFPreferencesAppSynchronize` 会丢弃本进程缓存，
     /// 让紧随其后的读取反映用户刚刚在系统设置里做的修改。
     static func fnKeyUsage() -> FnKeyUsage {
-        _ = CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
-        guard let value = CFPreferencesCopyAppValue(fnUsageKey as CFString, kCFPreferencesAnyApplication),
-              let number = value as? NSNumber else {
+        var raw: Int?
+        for domainName in fnUsageDomains {
+            let domain = domainName as CFString
+            _ = CFPreferencesAppSynchronize(domain)
+            if let value = CFPreferencesCopyAppValue(fnUsageKey as CFString, domain),
+               let number = value as? NSNumber {
+                raw = number.intValue
+                break
+            }
+        }
+        guard let intValue = raw else {
             return .unspecified
         }
-        switch number.intValue {
+        switch intValue {
         case 0: return .doNothing
         case 1: return .changeInputSource
         case 2: return .showEmojiAndSymbols

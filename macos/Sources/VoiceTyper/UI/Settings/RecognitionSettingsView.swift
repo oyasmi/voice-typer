@@ -31,13 +31,6 @@ struct RecognitionSettingsView: View {
                 .help("SenseVoice 支持自动判断语种，也可指定为固定语言以提升准确率。")
             } header: {
                 Text("语音模型")
-            } footer: {
-                Text("SenseVoice 常驻内存约 500MB。默认不在启动时加载——开机自启的场景下，"
-                     + "那份内存在「今天一次都没用」的日子里是纯浪费。首次按热键才加载，"
-                     + "加载与录音并行（约 1 秒），只是首句预览稍晚出现，不影响最终识别结果。"
-                     + "空闲达到设定时长后同样会自动释放。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section {
