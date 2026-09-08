@@ -7,7 +7,12 @@ struct PermissionsSettingsView: View {
         Form {
             Section {
                 ForEach(PermissionKind.allCases, id: \.self) { kind in
-                    permissionRow(kind)
+                    PermissionRow(
+                        kind: kind,
+                        status: vm.permissions.status(for: kind),
+                        onRequest: { vm.onRequestPermission?(kind) },
+                        onOpenSystemSettings: { vm.onOpenSystemSettings?(kind) }
+                    )
                 }
             } header: {
                 Text("权限")
@@ -16,32 +21,30 @@ struct PermissionsSettingsView: View {
             Section {
                 summaryBanner
             }
+
+            // 只在确实是 ad-hoc / 未签名的构建里出现；用 Developer ID 签名分发后自动消失。
+            if CodeSigningInfo.mayLosePermissionsOnUpdate {
+                Section {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                        // 注意：这里是多个字符串字面量拼接出的 String，不是字面量，
+                        // 因此 SwiftUI 不会按 Markdown 解析——不要在里面写 ** 之类的标记。
+                        Text("当前这份 VoiceTyper 使用本机（ad-hoc）签名，没有稳定的开发者签名标识。"
+                             + "系统的权限授权记录以代码签名为键，因此更新到新版本后，上面三项权限可能需要重新授权一次。"
+                             + "这是未签名分发的固有限制，不是出了故障。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 2)
+                } header: {
+                    Text("关于更新后重新授权")
+                }
+            }
         }
         .formStyle(.grouped)
-    }
-
-    @ViewBuilder
-    private func permissionRow(_ kind: PermissionKind) -> some View {
-        let status = vm.permissions.status(for: kind)
-        HStack(spacing: 10) {
-            Image(systemName: symbol(for: status))
-                .foregroundStyle(color(for: status))
-                .font(.system(size: 15))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text("\(kind.purpose) · \(status.displayText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if status != .authorized {
-                Button("授权") { vm.onRequestPermission?(kind) }
-                    .buttonStyle(.borderedProminent)
-                Button("系统设置") { vm.onOpenSystemSettings?(kind) }
-            }
-        }
-        .padding(.vertical, 2)
     }
 
     private var summaryBanner: some View {
@@ -65,21 +68,5 @@ struct PermissionsSettingsView: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private func symbol(for status: PermissionStatus) -> String {
-        switch status {
-        case .authorized: return "checkmark.circle.fill"
-        case .denied: return "xmark.circle.fill"
-        case .notDetermined: return "exclamationmark.circle.fill"
-        }
-    }
-
-    private func color(for status: PermissionStatus) -> Color {
-        switch status {
-        case .authorized: return .green
-        case .denied: return .red
-        case .notDetermined: return .orange
-        }
     }
 }

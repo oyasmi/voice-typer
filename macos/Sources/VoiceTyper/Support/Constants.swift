@@ -10,6 +10,14 @@ enum AppConstants {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0-dev"
     static let repositoryURL = URL(string: "https://github.com/oyasmi/voice-typer")!
     static let targetSampleRate: Double = 16_000
+    /// 低于此线性 RMS 视为"基本没有采到声音"（约 -48 dBFS）。
+    ///
+    /// 两处共用同一个门限，语义才一致：
+    /// - `LocalASRSession` 用它跳过"这一轮全是静音"的预览（省 CPU）；
+    /// - `VoiceTyperController` 用它判断"录了一会儿还是一片死寂"，提示用户检查输入设备。
+    /// 判错的代价都只是提示措辞或多跑一次推理，不影响最终识别结果，
+    /// 因此用最简单的能量门限而不是真正的 VAD。
+    static let silenceRMSThreshold: Float = 0.004
     static let appSupportDirectoryName = "VoiceTyper"
     static let configFileName = "config.yaml"
 }
@@ -18,4 +26,7 @@ enum SystemSettingsURL {
     static let microphone = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
     static let accessibility = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
     static let inputMonitoring = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
+    /// 「系统设置 → 键盘」。用于引导用户把「按下🌐键」改成"不执行任何操作"，
+    /// 避免与默认的 Fn 热键冲突（见 `SystemKeyboardSettings`）。
+    static let keyboard = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
 }

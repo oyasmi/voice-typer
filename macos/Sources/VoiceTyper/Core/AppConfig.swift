@@ -56,13 +56,15 @@ struct AppConfig: Codable {
     /// 校验的第二道防线，越界回落到默认热键 fn，不静默接受。
     private static func validatedHotkey(_ hotkey: HotkeyConfig) -> HotkeyConfig {
         let key = hotkey.key.lowercased()
+        // 回落只针对"按哪个键"这件事；`mode`（按住 / 切换）是独立且始终合法的用户选择，
+        // 不应被一个非法键名连坐重置。
         guard HotkeyService.isSupportedKey(key) else {
             AppLog.app.warning("配置字段 hotkey.key 不支持(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
-            return HotkeyConfig()
+            return HotkeyConfig(mode: hotkey.mode)
         }
         guard key == "fn" || !hotkey.modifiers.isEmpty else {
             AppLog.app.warning("配置字段 hotkey 未搭配修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
-            return HotkeyConfig()
+            return HotkeyConfig(mode: hotkey.mode)
         }
         return hotkey
     }
@@ -126,17 +128,26 @@ struct ASRConfig: Codable, Equatable {
     var modelDir: String
     /// 0 = 常驻不卸载
     var idleUnloadMinutes: Int
+    /// 启动时就把模型载入内存。
+    ///
+    /// **默认 true**：多数用户是"每天高频使用"的场景，启动即加载能让首次按热键零等待。
+    /// 关掉之后首次按热键才加载，且加载与录音并行（`ASRService.makeSession`），
+    /// 用户通常正在说第一句话，感知延迟也接近于零；适合"今天可能一次都不用听写、
+    /// 且在意常驻 ~510MB 内存"的场景。
+    var preloadOnLaunch: Bool
 
     init(
         language: ASRLanguage = .auto,
         threads: Int = 0,
         modelDir: String = "",
-        idleUnloadMinutes: Int = 10
+        idleUnloadMinutes: Int = 10,
+        preloadOnLaunch: Bool = true
     ) {
         self.language = language
         self.threads = threads
         self.modelDir = modelDir
         self.idleUnloadMinutes = idleUnloadMinutes
+        self.preloadOnLaunch = preloadOnLaunch
     }
 
     init(from decoder: Decoder) throws {
@@ -146,6 +157,7 @@ struct ASRConfig: Codable, Equatable {
         self.threads = try container.decodeIfPresent(Int.self, forKey: .threads) ?? 0
         self.modelDir = try container.decodeIfPresent(String.self, forKey: .modelDir) ?? ""
         self.idleUnloadMinutes = try container.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? 10
+        self.preloadOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .preloadOnLaunch) ?? true
     }
 
     enum CodingKeys: String, CodingKey {
@@ -153,6 +165,7 @@ struct ASRConfig: Codable, Equatable {
         case threads
         case modelDir = "model_dir"
         case idleUnloadMinutes = "idle_unload_minutes"
+        case preloadOnLaunch = "preload_on_launch"
     }
 }
 
@@ -201,19 +214,47 @@ struct LLMConfig: Codable, Equatable {
     }
 }
 
+/// 热键的触发语义。
+///
+/// 默认 `hold`（按住说话）不变；`toggle` 是为长听写（写邮件、写文档）准备的：
+/// 手指不必一直按着，按一次开始、再按一次结束。
+///
+/// 刻意**不做**"短按 toggle / 长按 hold"的自动判别：那会把今天被
+/// `VoiceTyperController.minimumRecordingDuration` 当成误触丢弃的一次轻碰，变成一段
+/// 用户毫无察觉就开始了的持续录音——误触的代价从"什么都没发生"升级为"一直在录"，
+/// 这是比手指累更糟的失败模式。宁可让用户显式选一次模式。
+enum HotkeyMode: String, Codable, CaseIterable {
+    /// 按住热键录音，松开结束。
+    case hold
+    /// 按一次开始录音，再按一次结束。
+    case toggle
+
+    var displayName: String {
+        switch self {
+        case .hold: return "按住说话"
+        case .toggle: return "按一次开始，再按一次结束"
+        }
+    }
+}
+
 struct HotkeyConfig: Codable, Equatable {
     var modifiers: [String]
     var key: String
+    var mode: HotkeyMode
 
-    init(modifiers: [String] = [], key: String = "fn") {
+    init(modifiers: [String] = [], key: String = "fn", mode: HotkeyMode = .hold) {
         self.modifiers = modifiers
         self.key = key
+        self.mode = mode
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.modifiers = try container.decodeIfPresent([String].self, forKey: .modifiers) ?? []
         self.key = try container.decodeIfPresent(String.self, forKey: .key) ?? "fn"
+        // 无法识别的 mode 回落 hold，而不是解码失败——与本文件其余字段的容错一致。
+        let rawMode = try container.decodeIfPresent(String.self, forKey: .mode) ?? HotkeyMode.hold.rawValue
+        self.mode = HotkeyMode(rawValue: rawMode) ?? .hold
     }
 
     var displayString: String {
@@ -223,17 +264,58 @@ struct HotkeyConfig: Codable, Equatable {
         let parts = modifiers + [key]
         return parts.map { $0.uppercased() }.joined(separator: "+")
     }
+
+    enum CodingKeys: String, CodingKey {
+        case modifiers
+        case key
+        case mode
+    }
+}
+
+/// HUD 浮窗的落点。
+enum HUDPosition: String, Codable, CaseIterable {
+    /// 屏幕底部居中（默认）。
+    case bottomCenter = "bottom_center"
+    /// 屏幕右下角。
+    case bottomRight = "bottom_right"
+    /// 跟随鼠标位置，就近显示。
+    case nearCursor = "near_cursor"
+    /// 不显示浮窗。
+    ///
+    /// 语义是"不显示**过程**"，不是"什么都不显示"：错误与"没有识别到内容"这类
+    /// 提示仍会浮出来。那些信息在别处拿不到（菜单栏图标只有一个红点），
+    /// 一并静音会把一个可配置项变成一个静默失败的陷阱。
+    case hidden
+
+    var displayName: String {
+        switch self {
+        case .bottomCenter: return "底部居中"
+        case .bottomRight: return "右下角"
+        case .nearCursor: return "跟随光标"
+        case .hidden: return "不显示（仅出错时提示）"
+        }
+    }
 }
 
 struct UIConfig: Codable, Equatable {
     var opacity: Double
+    var hudPosition: HUDPosition
 
-    init(opacity: Double = 0.85) {
+    init(opacity: Double = 0.85, hudPosition: HUDPosition = .bottomCenter) {
         self.opacity = opacity
+        self.hudPosition = hudPosition
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.85
+        let rawPosition = try container.decodeIfPresent(String.self, forKey: .hudPosition)
+            ?? HUDPosition.bottomCenter.rawValue
+        self.hudPosition = HUDPosition(rawValue: rawPosition) ?? .bottomCenter
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case opacity
+        case hudPosition = "hud_position"
     }
 }

@@ -68,6 +68,7 @@ final class ModelDownloaderTests: XCTestCase {
 
     override func tearDown() {
         DownloadStubURLProtocol.handler = nil
+        DownloadStubURLProtocol.responseHandler = nil
         super.tearDown()
     }
 
@@ -228,18 +229,28 @@ final class AttemptCounter: @unchecked Sendable {
 /// 拦截下载任务请求，交给测试用例设置的 handler 决定响应状态码与响应体。
 final class DownloadStubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
+    /// 需要自定义响应头（分段下载要读 `Content-Range`）时用这个，优先于 `handler`。
+    nonisolated(unsafe) static var responseHandler: ((URLRequest) -> (Int, Data, [String: String]))?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = Self.handler else {
+        let outcome: (Int, Data, [String: String])?
+        if let responseHandler = Self.responseHandler {
+            outcome = responseHandler(request)
+        } else if let handler = Self.handler {
+            let (status, body) = handler(request)
+            outcome = (status, body, [:])
+        } else {
+            outcome = nil
+        }
+        guard let (status, body, headers) = outcome else {
             client?.urlProtocol(self, didFailWithError: URLError(.unknown))
             return
         }
-        let (status, body) = handler(request)
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil
+            url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)

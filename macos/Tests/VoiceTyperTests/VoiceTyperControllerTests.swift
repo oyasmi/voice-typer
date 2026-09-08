@@ -12,6 +12,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         var onPress: (() -> Void)?
         var onRelease: (() -> Void)?
         var onCancel: (() -> Void)?
+        var acceptsCancelWhenInactive = false
         private(set) var startCallCount = 0
         private(set) var stopCallCount = 0
         /// 非 nil 时，下一次 `start` 抛出该错误（模拟 tap 创建失败/超时）。
@@ -21,7 +22,10 @@ final class VoiceTyperControllerTests: XCTestCase {
             startCallCount += 1
             if let startError { throw startError }
         }
-        func stop() { stopCallCount += 1 }
+        func stop() {
+            stopCallCount += 1
+            acceptsCancelWhenInactive = false
+        }
     }
 
     private final class FakeAudioCaptureService: AudioCapturing {
@@ -120,6 +124,8 @@ final class VoiceTyperControllerTests: XCTestCase {
         var states: [AppState] { recorder.states }
         var warnings: [String] { recorder.warnings }
         var cancelledCount: Int { recorder.cancelledCount }
+        var emptyRecognitionCount: Int { recorder.emptyRecognitionCount }
+        var blockedReasons: [String] { recorder.blockedReasons }
     }
 
     /// 引用类型：`onStateChange` 等回调需要跨 `makeHarness()` 的返回边界持续可见的
@@ -128,9 +134,14 @@ final class VoiceTyperControllerTests: XCTestCase {
         var states: [AppState] = []
         var warnings: [String] = []
         var cancelledCount = 0
+        var emptyRecognitionCount = 0
+        var blockedReasons: [String] = []
     }
 
-    private func makeHarness() async -> Harness {
+    private func makeHarness(
+        config: AppConfig = AppConfig(),
+        blockedReasonBeforeStart: String? = nil
+    ) async -> Harness {
         let engine = ScriptedEngine()
         let scheduler = FakeIdleScheduler()
         let asrService = ASRService(
@@ -155,7 +166,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         let audio = FakeAudioCaptureService()
         let textInsertion = FakeTextInsertionService()
         let controller = VoiceTyperController(
-            config: AppConfig(),
+            config: config,
             asrService: asrService,
             hotkeyService: hotkey,
             audioCaptureService: audio,
@@ -166,6 +177,9 @@ final class VoiceTyperControllerTests: XCTestCase {
         controller.onStateChange = { recorder.states.append($0) }
         controller.onPreviewWarning = { recorder.warnings.append($0) }
         controller.onCancelled = { recorder.cancelledCount += 1 }
+        controller.onEmptyRecognition = { recorder.emptyRecognitionCount += 1 }
+        controller.onBlockedAttempt = { recorder.blockedReasons.append($0) }
+        controller.blockedReason = blockedReasonBeforeStart
         try? controller.start()
 
         return Harness(
@@ -363,6 +377,202 @@ final class VoiceTyperControllerTests: XCTestCase {
         harness.hotkey.startError = nil
         XCTAssertNoThrow(try harness.controller.start())
         XCTAssertTrue(harness.controller.isStarted)
+    }
+
+    // MARK: - toggle 触发方式（按一次开始，再按一次结束）
+
+    private var toggleConfig: AppConfig {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: [], key: "fn", mode: .toggle)
+        return config
+    }
+
+    func testToggleModeStartsOnFirstPressAndFinishesOnSecondPress() async {
+        let harness = await makeHarness(config: toggleConfig)
+        harness.engine.script(text: "切换模式听写")
+
+        harness.hotkey.onPress?()
+        await settle()
+        XCTAssertEqual(harness.audio.startCallCount, 1)
+        XCTAssertEqual(harness.states.last, .recording)
+
+        // toggle 模式下松开不是结束信号：必须仍在录音。
+        harness.hotkey.onRelease?()
+        await holdPastMinimumDuration()
+        XCTAssertEqual(harness.audio.stopCallCount, 0, "toggle 模式下松开热键不应结束录音")
+        XCTAssertEqual(harness.states.last, .recording)
+
+        // 再按一次才结束。
+        harness.hotkey.onPress?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.audio.stopCallCount, 1)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["切换模式听写"])
+        XCTAssertEqual(harness.states.last, .idle)
+    }
+
+    /// toggle 模式下的第二次按下只在"正在录音"时才是结束信号；识别阶段再按仍应被拒绝，
+    /// 不能覆盖尚未收尾的上一段听写（R2-01 的不变量在新模式下同样成立）。
+    func testToggleModePressDuringRecognizingIsRejected() async {
+        let harness = await makeHarness(config: toggleConfig)
+        harness.engine.script(text: "第一段", delayNanoseconds: 300_000_000)
+
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onPress?() // 结束录音，进入 .recognizing
+        await settle()
+        XCTAssertEqual(harness.states.last, .recognizing)
+
+        harness.hotkey.onPress?() // 识别中再按
+        await settle()
+        XCTAssertEqual(harness.audio.startCallCount, 1, "识别中不应开始第二段录音")
+        XCTAssertEqual(harness.warnings.last, "上一段听写尚未完成")
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["第一段"])
+    }
+
+    func testToggleModeShortTapIsStillDiscardedAsAccidental() async {
+        let harness = await makeHarness(config: toggleConfig)
+        harness.hotkey.onPress?()
+        await settle()
+        harness.hotkey.onPress?() // 远短于 300ms 阈值
+        await settle()
+
+        XCTAssertTrue(harness.textInsertion.insertedTexts.isEmpty)
+        XCTAssertEqual(harness.audio.stopWithoutResultCallCount, 1)
+        XCTAssertEqual(harness.states.last, .idle)
+    }
+
+    // MARK: - 识别阶段（松手之后）按 Esc 取消
+
+    func testEscDuringRecognizingCancelsAndSuppressesInsertion() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "不该上屏", delayNanoseconds: 400_000_000)
+
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        await settle()
+        XCTAssertEqual(harness.states.last, .recognizing)
+        XCTAssertTrue(
+            harness.hotkey.acceptsCancelWhenInactive,
+            "进入识别阶段后必须打开 Esc 取消窗口，否则松手就再也没有反悔机会"
+        )
+
+        harness.hotkey.onCancel?()
+        await settle()
+        XCTAssertEqual(harness.cancelledCount, 1)
+        XCTAssertFalse(harness.hotkey.acceptsCancelWhenInactive, "收尾后必须关闭取消窗口")
+
+        // 等那次仍在飞的推理跑完，确认它的结果被丢弃而不是插入。
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertTrue(harness.textInsertion.insertedTexts.isEmpty, "取消后迟到的识别结果不应被插入")
+    }
+
+    func testCancelWindowIsClosedAfterNormalCompletion() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "正常完成")
+
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["正常完成"])
+        XCTAssertFalse(harness.hotkey.acceptsCancelWhenInactive)
+    }
+
+    // MARK: - 空识别结果
+
+    func testEmptyRecognitionReportsExplicitlyAndInsertsNothing() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "   \n  ")
+
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.emptyRecognitionCount, 1, "空结果必须有显式回调，不能静默回 idle")
+        XCTAssertTrue(harness.textInsertion.insertedTexts.isEmpty)
+        XCTAssertEqual(harness.states.last, .idle)
+    }
+
+    // MARK: - 静音探测
+
+    private static let silenceWarning = "没有检测到声音，请检查麦克风与输入设备"
+
+    /// 麦克风被静音 / 选错输入设备时，用户会对着一个什么都没录到的会话一直说，
+    /// 直到松手才发现结果是空的。电平在第一秒就已经给出信号，不该等到那时才提示。
+    func testSilentRecordingWarnsAboutInputDevice() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+
+        // 第一次探测在 1.5s；留出余量。
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertTrue(
+            harness.warnings.contains(Self.silenceWarning),
+            "录音一直没有电平时必须主动提示，实际警告：\(harness.warnings)"
+        )
+        harness.hotkey.onRelease?()
+        await settle()
+    }
+
+    func testAudibleRecordingDoesNotWarn() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+        harness.audio.onLevel?(0.3)
+
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
+        harness.hotkey.onRelease?()
+        await settle()
+    }
+
+    /// 录音正常结束后探针必须作废：否则一次 0.4 秒的短听写会在一秒多之后
+    /// 莫名其妙地弹出"没有检测到声音"。
+    func testSilenceProbeIsCancelledWhenRecordingEnds() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "很短的一句")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+
+        try? await Task.sleep(nanoseconds: 1_600_000_000)
+        XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["很短的一句"])
+    }
+
+    // MARK: - 门禁态：未就绪时按热键给出原因而不是毫无反应
+
+    func testBlockedReasonRejectsRecordingAndReportsReason() async {
+        let harness = await makeHarness()
+        harness.controller.blockedReason = "还缺「麦克风」权限，暂时无法听写。"
+
+        harness.hotkey.onPress?()
+        await settle()
+
+        XCTAssertEqual(harness.audio.startCallCount, 0, "门禁态不应开始录音")
+        XCTAssertEqual(harness.blockedReasons, ["还缺「麦克风」权限，暂时无法听写。"])
+
+        // 解除门禁后必须能立刻正常听写。
+        harness.controller.blockedReason = nil
+        harness.engine.script(text: "解除后可用")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["解除后可用"])
+    }
+
+    /// 门禁态下 `start()` 不能发 `.idle`：那会把协调器的"待授权/下载中"覆盖成"就绪"，
+    /// 菜单栏显示与真实能力脱节。
+    func testStartWhileBlockedDoesNotEmitIdle() async {
+        let harness = await makeHarness(blockedReasonBeforeStart: "模型还在下载")
+        XCTAssertTrue(harness.controller.isStarted)
+        XCTAssertFalse(harness.states.contains(.idle), "门禁态启动不应发出 .idle")
     }
 
     /// stop()：控制器整体停止时若识别仍在飞，必须立刻收尾（不发额外状态变化），

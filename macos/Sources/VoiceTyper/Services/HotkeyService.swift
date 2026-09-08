@@ -57,6 +57,22 @@ final class HotkeyService: @unchecked Sendable {
     /// 录音进行中按下 Esc 的取消回调。保证在主线程触发。
     var onCancel: (() -> Void)?
 
+    /// 松开热键之后（识别中）是否仍然接受 Esc 取消。
+    ///
+    /// 默认 false：Esc 只在热键按住期间生效。`VoiceTyperController` 会在进入
+    /// `.recognizing` 时置 true、收尾时置 false——因为"松手后才发现说错了"是高频场景，
+    /// 而此刻结果**会被自动写进光标位置**，用户在没有这个开关时完全没有阻止手段
+    /// （HUD 还设了 `ignoresMouseEvents`）。
+    ///
+    /// 跨线程：读发生在事件 tap 的 worker 线程，写发生在主线程，故用锁保护而不是裸字段。
+    var acceptsCancelWhenInactive: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _acceptsCancelWhenInactive }
+        set { stateLock.lock(); _acceptsCancelWhenInactive = newValue; stateLock.unlock() }
+    }
+
+    private let stateLock = NSLock()
+    private var _acceptsCancelWhenInactive = false
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var runLoop: CFRunLoop?
@@ -143,6 +159,9 @@ final class HotkeyService: @unchecked Sendable {
         hotkey = nil
         isActive = false
         isRunning = false
+        // 防御性复位：正常路径由 VoiceTyperController 在收尾时关掉，但 stop() 也可能
+        // 在听写进行中被调用（整体停止 / 挂起监听），不能把取消窗口遗留给下一次 start()。
+        acceptsCancelWhenInactive = false
     }
 
     private func runEventLoop(startupBox: StartupResultBox, lifecycle: WorkerLifecycle, context: TapContext) {
@@ -246,10 +265,12 @@ final class HotkeyService: @unchecked Sendable {
             return
         }
 
-        // 录音进行中（热键仍处于激活态）按 Esc → 取消本次录音。
+        // 按 Esc → 取消本次听写。两种情况下生效：
+        // (a) 热键仍处于激活态（录音中）；
+        // (b) 已松开但控制器打开了 `acceptsCancelWhenInactive`（识别中，结果尚未上屏）。
         // 放在热键分支之前，Fn 与组合键两种模式都能触发。tap 为 listenOnly，
         // 不吞事件，Esc 仍会照常传递给前台应用。
-        if isActive,
+        if isActive || acceptsCancelWhenInactive,
            eventType == .keyDown,
            event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Escape) {
             DispatchQueue.main.async { [weak self] in

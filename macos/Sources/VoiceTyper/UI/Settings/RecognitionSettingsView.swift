@@ -17,6 +17,12 @@ struct RecognitionSettingsView: View {
                     Text("从不").tag(0)
                 }
 
+                Toggle("启动时预加载模型", isOn: Binding(
+                    get: { vm.preloadOnLaunch },
+                    set: { vm.preloadOnLaunch = $0; vm.commitPreloadOnLaunch() }
+                ))
+                .help("关闭时首次按热键才加载模型，加载与录音并行，约 1 秒；开机自启的场景下能省下常驻内存。")
+
                 Picker("识别语言", selection: $vm.language) {
                     ForEach(ASRLanguage.allCases, id: \.self) { lang in
                         Text(lang.displayName).tag(lang)
@@ -25,10 +31,6 @@ struct RecognitionSettingsView: View {
                 .help("SenseVoice 支持自动判断语种，也可指定为固定语言以提升准确率。")
             } header: {
                 Text("语音模型")
-            } footer: {
-                Text("SenseVoice 常驻内存约 500MB。空闲达到设定时长后自动释放；下次按热键会与录音并行自动重新加载（约 1 秒），首句预览会稍晚出现，不影响最终识别结果。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -103,9 +105,11 @@ struct RecognitionSettingsView: View {
             HStack(spacing: 10) {
                 Image(systemName: "moon.zzz").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("引擎已空闲卸载")
+                    // 这个状态既可能是空闲卸载后的，也可能是"启动时没有预加载"的初始态，
+                    // 文案要对两种情况都成立，不能一口咬定"已卸载"。
+                    Text("模型已就绪，引擎未常驻内存")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("下次录音会自动重新加载，无需手动操作。")
+                    Text("下次录音会自动加载（约 1 秒），无需手动操作。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

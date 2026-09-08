@@ -30,8 +30,19 @@ final class RecognitionBuffer: @unchecked Sendable {
     private var committedText = ""
     private var committedN = 0
 
-    init(engine: any SenseVoiceRecognizing) {
+    /// - Parameter reservedSampleCapacity: 一次性预留的样本容量，通常传单段会话上限。
+    ///   `reserveCapacity` 分配的是虚拟地址空间，物理页要等真正写入才提交，因此按上限
+    ///   预留几乎不花内存，却能把整段录音期间的重新分配次数降到零。
+    ///
+    ///   为什么值得做：`append` 跑在主线程（`sendAudio` 经
+    ///   `Task { @MainActor }` 派发），120 秒上限下数组最终 7.7MB，按倍增策略扩容时
+    ///   最大的一次要在主线程上 memcpy 整个缓冲区——这发生在用户正在说话、
+    ///   HUD 正在刷新预览的时候，是能被感知的卡顿来源。
+    init(engine: any SenseVoiceRecognizing, reservedSampleCapacity: Int = 0) {
         self.engine = engine
+        if reservedSampleCapacity > 0 {
+            samples.reserveCapacity(reservedSampleCapacity)
+        }
     }
 
     /// 累计接收的样本数，供调用方做会话时长上限判断。可从任意线程调用。
@@ -52,7 +63,12 @@ final class RecognitionBuffer: @unchecked Sendable {
     /// 返回全量预览文本 = 已固化前缀 + 当前窗口的识别结果。只应在 asrQueue 上调用。
     func preview() throws -> String {
         let audio = audioSnapshot()
-        if audio.count - committedN > Self.previewWindowSamples {
+        // 用 while 而不是 if：`LocalASRSession` 现在会跳过"这一轮全是静音"的预览
+        // （见那里的 VAD 说明），于是两次预览之间可能积累了超过一个窗口的音频。
+        // 只滚一次会让窗口右侧持续超长，推理耗时随之失控。
+        // 循环必然终止：`roll` 的切点落在 `committedN + 窗口/2` 附近（搜索半径仅
+        // 100ms，远小于半个窗口），每轮都严格推进 `committedN`。
+        while audio.count - committedN > Self.previewWindowSamples {
             try roll(audio)
         }
         let tail = Array(audio[committedN...])

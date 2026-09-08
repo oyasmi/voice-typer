@@ -1,7 +1,14 @@
-import AppKit
 import Foundation
 import Yams
 
+/// `config.yaml` 的读写。
+///
+/// **定位：这是应用的内部存储，不是面向用户的配置入口。** 所有配置项都由设置窗口提供
+/// 界面，菜单里不再暴露「打开配置目录」，文档也不再引导用户手改 YAML——手改绕过了
+/// `AppConfig.validated()` 之外的全部 UI 校验（例如热键必须搭配修饰键），且应用在运行期
+/// 不监听该文件，改了也要重启才生效，是一条只会制造困惑的路径。
+/// 保留容错解析（缺字段回落默认、越界夹逼）是为了历史配置与手工误改能自愈，
+/// 不代表鼓励手改。
 final class ConfigStore {
     private let fileManager: FileManager
     private let legacyConfigURLOverride: URL?
@@ -71,10 +78,6 @@ final class ConfigStore {
         }
     }
 
-    func openConfigDirectory() {
-        NSWorkspace.shared.open(configDirectoryURL)
-    }
-
     private func defaultConfigYAML() -> String {
         serializedYAML(for: AppConfig())
     }
@@ -96,6 +99,7 @@ final class ConfigStore {
           threads: \(config.asr.threads)
           model_dir: \(yamlString(config.asr.modelDir))
           idle_unload_minutes: \(config.asr.idleUnloadMinutes)
+          preload_on_launch: \(config.asr.preloadOnLaunch ? "true" : "false")
         llm:
           enabled: \(config.llm.enabled ? "true" : "false")
           base_url: \(yamlString(config.llm.baseURL))
@@ -106,8 +110,10 @@ final class ConfigStore {
         hotkey:
         \(hotkeyModifiersBlock)
           key: \(yamlString(config.hotkey.key))
+          mode: \(yamlString(config.hotkey.mode.rawValue))
         ui:
           opacity: \(yamlNumber(config.ui.opacity))
+          hud_position: \(yamlString(config.ui.hudPosition.rawValue))
         """
     }
 

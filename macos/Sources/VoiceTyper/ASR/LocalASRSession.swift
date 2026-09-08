@@ -37,6 +37,9 @@ final class LocalASRSession {
     /// 已停止收音的会话继续说话）。调用方应据此立即结束本次录音、把已录到的内容正常上屏，
     /// 而不是任由用户继续说下去、内容却被静默丢弃（R3-03）。
     var onSessionCapped: (() -> Void)?
+    /// ASR 已出结果、开始等待 LLM 校对时触发一次。
+    /// 没有这个信号时 HUD 会一直停在"识别中"，用户不知道自己在等的是本地推理还是网络。
+    var onCorrectionStarted: (() -> Void)?
 
     /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
     /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
@@ -52,6 +55,13 @@ final class LocalASRSession {
     private var pendingAudio: [Float] = []
 
     private var previewInFlight = false
+    /// 自上一次预览以来，是否收到过能量高于静音阈值的音频。
+    ///
+    /// SenseVoice 非流式，预览靠"对已累积音频重跑"实现；如果这 600ms 全是静音，
+    /// 重跑一遍窗口只会得到和上次一样的结果——稳态下这是约 28% 单核的纯浪费，
+    /// 而用户思考停顿在口述里占比并不低。跳过它对结果没有任何影响：
+    /// 松手后的 `finalize()` 永远对完整音频整段重跑。
+    private var hasSpeechSinceLastPreview = false
     private var isFinalizing = false
     private var capped = false
     private var closed = false
@@ -84,6 +94,9 @@ final class LocalASRSession {
         let accepted = acceptWithinCap(samples, currentCount: buffer.sampleCount)
         guard !accepted.isEmpty else { return }
 
+        if Self.containsSpeech(accepted) {
+            hasSpeechSinceLastPreview = true
+        }
         buffer.append(accepted)
         schedulePreview()
     }
@@ -148,7 +161,7 @@ final class LocalASRSession {
 
     private func ensureBufferIfPossible() {
         guard buffer == nil, let engine = engineAccessor() else { return }
-        let newBuffer = RecognitionBuffer(engine: engine)
+        let newBuffer = RecognitionBuffer(engine: engine, reservedSampleCapacity: Self.maxSessionSamples)
         if !pendingAudio.isEmpty {
             newBuffer.append(pendingAudio)
             pendingAudio.removeAll()
@@ -156,8 +169,24 @@ final class LocalASRSession {
         buffer = newBuffer
     }
 
+    /// 这一段音频里是否有可能是语音（线性 RMS 超过静音阈值）。
+    /// 判断只用于"要不要跑这次预览"，判错的代价上限是多跑或少跑一次预览，
+    /// 最终文本不受影响——因此刻意用最简单的能量门限，不引入真正的 VAD 模型。
+    nonisolated static func containsSpeech(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return false }
+        var sumSquares: Float = 0
+        for sample in samples {
+            sumSquares += sample * sample
+        }
+        let rms = (sumSquares / Float(samples.count)).squareRoot()
+        return rms >= AppConstants.silenceRMSThreshold
+    }
+
     private func schedulePreview() {
         guard !isFinalizing, !previewInFlight, let buffer else { return }
+        // 这一轮没有新的语音：跳过整窗重跑，HUD 保持上一次的预览文本。
+        guard hasSpeechSinceLastPreview else { return }
+        hasSpeechSinceLastPreview = false
         previewInFlight = true
         asrQueue.async { [weak self] in
             if self?.cancelFlag.isSet == true { return }
@@ -232,6 +261,7 @@ final class LocalASRSession {
         }
 
         onPartial?(text)
+        onCorrectionStarted?()
         Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
             let outcome = await llmCorrector.correct(text)
