@@ -52,7 +52,7 @@ final class ModelDownloader: NSObject {
     /// 继续加分段对单机下载的边际收益很快趋近于零。
     static let segmentCount = 4
     /// 拼接分段文件时的搬运块大小。固定 1MB，让内存占用与文件大小无关。
-    private static let fileCopyChunkSize = 1 << 20
+    nonisolated private static let fileCopyChunkSize = 1 << 20
 
     private var session: URLSession!
     /// 分段并行下载专用的会话：**不设 delegate**，与上面那个 delegate 驱动的
@@ -278,7 +278,8 @@ final class ModelDownloader: NSObject {
 
         do {
             let task = Task { [weak self] in
-                try await self?.runSegments(spec, totalBytes: total, into: dir, partURL: partURL, onProgress: onProgress)
+                guard let self else { return }
+                try await self.runSegments(spec, totalBytes: total, into: dir, partURL: partURL, onProgress: onProgress)
             }
             activeSegmentedTask = task
             defer { activeSegmentedTask = nil }
@@ -445,7 +446,7 @@ final class ModelDownloader: NSObject {
     }
 
     /// 把临时文件的内容追加到分段文件末尾。目标不存在时直接 move（零拷贝）。
-    private static func appendFile(at source: URL, to destination: URL) throws {
+    nonisolated private static func appendFile(at source: URL, to destination: URL) throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: destination.path) else {
             try fileManager.moveItem(at: source, to: destination)
