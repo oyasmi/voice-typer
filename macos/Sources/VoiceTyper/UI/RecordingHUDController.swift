@@ -913,9 +913,13 @@ final class RecordingHUDController: NSWindowController {
     }
 
     private func applyDimOpacity() {
-        // opacity 越大背景越沉、文字对比越强；下限保底可读性。
-        let clamped = min(max(hudOpacity, 0.5), 1.0)
-        dimView.layer?.opacity = Float(clamped * 0.4)
+        // hudOpacity 直接作为磨砂背景层的整体不透明度：越低，面板越透、桌面越明显。
+        // 文字与状态行是 contentView 的兄弟视图，不在 effectView 内，不随之变淡，保证可读性。
+        // 之前只在 0.2~0.4 之间调一层黑色叠层的 alpha，磨砂材质本身始终不透明，
+        // 所以滑杆全程看不出任何透明变化（用户反馈的 bug）。下限 40%。
+        let clamped = min(max(hudOpacity, 0.4), 1.0)
+        effectView.alphaValue = CGFloat(clamped)
+        dimView.layer?.opacity = Float(0.35)
     }
 
     private func displayText(for text: String) -> String {

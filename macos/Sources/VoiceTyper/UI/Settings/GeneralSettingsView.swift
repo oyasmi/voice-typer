@@ -43,7 +43,7 @@ struct GeneralSettingsView: View {
                             get: { vm.hudOpacity },
                             set: { vm.hudOpacityPreview($0) }
                         ),
-                        in: 0.5...1.0,
+                        in: 0.4...1.0,
                         onEditingChanged: { editing in
                             if !editing { vm.commitHUDOpacity() }
                         }
