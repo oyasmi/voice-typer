@@ -411,7 +411,7 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 }
 ```
 - 持有 `asrQueue`（串行，`.userInitiated`）。**所有推理串行**，与服务端单 worker executor 一致。
-- **空闲卸载**：`asr.idle_unload_minutes`（默认 10，0=永不）。计时器到点后在 `asrQueue` 上释放
+- **空闲卸载**：`asr.idle_unload_minutes`（默认 0=永不卸载，可设 5/10/30 分钟）。计时器到点后在 `asrQueue` 上释放
   engine，`state = .suspendedForIdle`（与"尚未加载"的 `.unloaded` 区分，避免状态变化被无差别
   转发时又反向触发自动预加载）；热键监听不受影响，`makeSession()` 发现未加载时**异步重新
   加载并与录音并行**，首个 partial 延后约 0.85s，finalize 不受影响（除非用户只说了不到 1 秒）。
@@ -498,7 +498,7 @@ asr:
   language: "auto"          # auto / zh / en / yue / ja / ko
   threads: 0                # 0 = 自动（min(4, 核数)）
   model_dir: ""             # 留空 = 按 ModelLocator 优先级自动定位（§5.2）
-  idle_unload_minutes: 10   # 0 = 常驻不卸载
+  idle_unload_minutes: 0    # 0 = 常驻不卸载（默认）
 llm:
   enabled: false
   base_url: ""
@@ -701,7 +701,7 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | 风险 | 影响 | 对策 |
 | --- | --- | --- |
 | **fbank 数值对不齐** | 识别质量下降且难察觉 | 金标准逐帧比对（1e-3）；退路是 vendoring knf 五个 C++ 文件（半天工作量） |
-| **常驻内存 ~510MB** | 菜单栏 App 偏重 | 已实测 `disable_prepacking` 省 290MB 且零性能代价；再加空闲卸载（默认 10 分钟） |
+| **常驻内存 ~510MB** | 菜单栏 App 偏重 | 已实测 `disable_prepacking` 省 290MB 且零性能代价；空闲卸载默认改为"从不"以换取零等待，内存紧张的机器可在设置里改回定时卸载 |
 | **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | 断点续传 + sha256 校验 + 小文件先行；识别页显示失败原因并提供手动重试，下次启动自动续传；`fetch_model.sh` 作为手动逃生口；`ModelLocator` 会复用 `~/.cache/modelscope/` 已有模型 |
 | **ModelScope 接口变更** | 首启下载全面失效 | URL 与 sha256 都是常量，改起来是一次小版本发布；`asr.model_dir` 手动指定是永久逃生口 |
 | **模型权重许可** | 分发合规 | 改为用户自行下载后 App 不再分发权重，压力大幅下降；仍在「关于」面板署名 |
@@ -820,7 +820,7 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
 | D3 | 新 App 版本号 | ✅ **3.3.0**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 → 3.3.0 |
-| D4 | 空闲卸载默认值 | ✅ **10 分钟**（`ASRConfig.idleUnloadMinutes` 默认值） | 备选（默认关闭、常驻 510MB）已否决；早已随实现发布，此前这里一直标注"待定"与代码不符（R4-12） |
+| D4 | 空闲卸载默认值 | ✅ **从不卸载**（`ASRConfig.idleUnloadMinutes` 默认 0） | 初版默认 10 分钟，3.3.0 后改为"从不"：与"启动时预加载"默认开启配套，让按热键始终零等待；内存代价（~510MB 常驻）由用户按需改回定时卸载 |
 | D6 | 热键触发方式 | ✅ **显式二选一 `hold`（默认）/ `toggle`** | 否决"短按 toggle、长按 hold"的自动判别：会把被丢弃的误触升级为用户无察觉的持续录音（§11.2 R5-03） |
 | D7 | 版本更新提醒 | ✅ **菜单里手动「检查更新…」**，不引入 Sparkle、不做后台轮询 | 后台自动检查与"音频只在本机处理"的定位相悖；Sparkle 需要 appcast 托管与更新签名密钥管理，不在本轮范围（§11.2 R5-05） |
 | D8 | 配置文件的定位 | ✅ **内部存储，不是配置入口** | 移除菜单「打开配置目录」，也不做文件热重载：手改会绕过 UI 校验且需重启才生效，给入口只会制造困惑（§11.2 B9） |

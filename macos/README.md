@@ -208,7 +208,7 @@ asr:
   language: "auto"          # auto / zh / en / yue / ja / ko
   threads: 0                 # 0 = 自动（min(4, 核数)）
   model_dir: ""               # 留空 = 自动定位（下载目录 / ModelScope 缓存）
-  idle_unload_minutes: 10     # 0 = 常驻不卸载
+  idle_unload_minutes: 0      # 0 = 常驻不卸载（默认；可设 5/10/30 分钟定时卸载）
   preload_on_launch: true     # 启动即加载模型；默认 true（关掉则首次按热键才加载）
 llm:
   enabled: false

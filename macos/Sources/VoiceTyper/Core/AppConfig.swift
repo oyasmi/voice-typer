@@ -126,7 +126,8 @@ struct ASRConfig: Codable, Equatable {
     var threads: Int
     /// 留空 = 按 ModelLocator 优先级自动定位
     var modelDir: String
-    /// 0 = 常驻不卸载
+    /// 0 = 常驻不卸载（**默认 0**：模型常驻约 510MB 内存，换来按热键零等待；
+    /// 内存紧张的机器可改回定时卸载）
     var idleUnloadMinutes: Int
     /// 启动时就把模型载入内存。
     ///
@@ -140,7 +141,7 @@ struct ASRConfig: Codable, Equatable {
         language: ASRLanguage = .auto,
         threads: Int = 0,
         modelDir: String = "",
-        idleUnloadMinutes: Int = 10,
+        idleUnloadMinutes: Int = 0,
         preloadOnLaunch: Bool = true
     ) {
         self.language = language
@@ -156,7 +157,7 @@ struct ASRConfig: Codable, Equatable {
         self.language = ASRLanguage(rawValue: rawLanguage) ?? .auto
         self.threads = try container.decodeIfPresent(Int.self, forKey: .threads) ?? 0
         self.modelDir = try container.decodeIfPresent(String.self, forKey: .modelDir) ?? ""
-        self.idleUnloadMinutes = try container.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? 10
+        self.idleUnloadMinutes = try container.decodeIfPresent(Int.self, forKey: .idleUnloadMinutes) ?? 0
         self.preloadOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .preloadOnLaunch) ?? true
     }
 

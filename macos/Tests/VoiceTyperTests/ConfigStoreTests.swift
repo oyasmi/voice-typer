@@ -63,7 +63,7 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.configURL.path))
         XCTAssertEqual(config.hotkey.key, "fn") // 默认值
         XCTAssertEqual(config.hotkey.mode, .hold) // 默认值
-        XCTAssertEqual(config.asr.idleUnloadMinutes, 10) // 默认值
+        XCTAssertEqual(config.asr.idleUnloadMinutes, 0) // 默认值：从不卸载
     }
 
     func testMissingFieldsFallBackToDefaults() throws {
@@ -75,7 +75,7 @@ final class ConfigStoreTests: XCTestCase {
         // 老配置文件里没有 mode 字段：必须回落 hold，而不是解码失败。
         XCTAssertEqual(config.hotkey.mode, .hold)
         XCTAssertEqual(config.asr.language, .auto)
-        XCTAssertEqual(config.asr.idleUnloadMinutes, 10)
+        XCTAssertEqual(config.asr.idleUnloadMinutes, 0)
         XCTAssertEqual(config.llm.enabled, false)
         XCTAssertEqual(config.ui.opacity, 0.85, accuracy: 1e-9)
         // 老配置文件里没有这两个新字段：必须回落默认值而不是解码失败。
