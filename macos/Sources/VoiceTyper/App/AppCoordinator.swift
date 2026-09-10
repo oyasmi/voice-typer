@@ -352,8 +352,22 @@ final class AppCoordinator {
         if isDownloadingModel { return .downloadingModel(downloadProgress) }
 
         switch asrState {
-        case .unloaded, .loading:
+        case .unloaded:
             return .modelLoading
+        case .loading:
+            // 空闲卸载后首次按热键：makeSession() 会一边异步加载模型、一边立刻开始录音，
+            // 因此模型进入 .loading 时上一轮 AppState 已稳定为活动听写态。若这里无条件
+            // 返回 .modelLoading，reevaluateReadiness() 会判定"进行中的听写被未就绪覆盖"
+            // 而调用 voiceTyperController.stop()，把首段录音音频丢掉（F-xx）。
+            // LocalASRSession 已支持引擎未就绪时缓存 pendingAudio 并在就绪后回灌，
+            // 所以听写期间的 .loading 应保留活动态，让加载与录音并行完成。
+            // .unloaded（引擎从未加载）不做同样的保护：那是真正需要等待的情形。
+            switch previous {
+            case .recording, .recognizing, .inserting:
+                return previous
+            default:
+                return .modelLoading
+            }
         case .modelMissing:
             return .modelMissing
         case .failed(let message):

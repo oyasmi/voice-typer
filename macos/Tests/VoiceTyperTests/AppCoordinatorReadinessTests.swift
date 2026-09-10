@@ -45,7 +45,7 @@ final class AppCoordinatorReadinessTests: XCTestCase {
         XCTAssertEqual(target, .downloadingModel(0.42))
     }
 
-    func testUnloadedAndLoadingBothMapToModelLoading() {
+    func testUnloadedAndLoadingBothMapToModelLoadingFromInactivePrevious() {
         XCTAssertEqual(
             AppCoordinator.computeTargetState(
                 permissions: granted, isPaused: false, isDownloadingModel: false,
@@ -60,6 +60,42 @@ final class AppCoordinatorReadinessTests: XCTestCase {
             ),
             .modelLoading
         )
+    }
+
+    /// 空闲卸载后首次按热键：makeSession() 异步加载模型的同时立刻开始录音，模型进入
+    /// .loading 时上一轮 AppState 已是活动听写态。此时 .loading 必须保留 previous，
+    /// 否则 reevaluateReadiness() 会因"进行中的听写被未就绪覆盖"而 stop()，丢掉首段音频。
+    func testLoadingPreservesActiveDictationStates() {
+        for active: AppState in [.recording, .recognizing, .inserting] {
+            let target = AppCoordinator.computeTargetState(
+                permissions: granted, isPaused: false, isDownloadingModel: false,
+                downloadProgress: 0, asrState: .loading, previous: active
+            )
+            XCTAssertEqual(target, active, "听写进行中的 .loading 不应被覆盖为 .modelLoading")
+        }
+    }
+
+    /// 非活动 / 启动态下的 .loading 仍应进入 .modelLoading（等待引擎加载完成）。
+    func testLoadingBecomesModelLoadingFromInactivePrevious() {
+        for previous: AppState in [.idle, .booting, .error("x"), .paused, .setupRequired] {
+            let target = AppCoordinator.computeTargetState(
+                permissions: granted, isPaused: false, isDownloadingModel: false,
+                downloadProgress: 0, asrState: .loading, previous: previous
+            )
+            XCTAssertEqual(target, .modelLoading)
+        }
+    }
+
+    /// 不对称：.unloaded（引擎从未加载）即使 previous 是活动听写态，也仍返回 .modelLoading。
+    /// 只有 .loading 才享有"加载与录音并行"的保护。
+    func testUnloadedDoesNotPreserveActiveDictation() {
+        for active: AppState in [.recording, .recognizing, .inserting] {
+            let target = AppCoordinator.computeTargetState(
+                permissions: granted, isPaused: false, isDownloadingModel: false,
+                downloadProgress: 0, asrState: .unloaded, previous: active
+            )
+            XCTAssertEqual(target, .modelLoading, ".unloaded 不参与活动听写保护")
+        }
     }
 
     func testModelMissingMapsDirectly() {
