@@ -39,7 +39,7 @@ final class RecordingHUDController: NSWindowController {
     private let dotView = PulseDotView()
     private let glyphView = NSImageView()
     private let waveformView = WaveformView()
-    private let statusLabel = NSTextField(labelWithString: "录音中")
+    private let statusLabel = NSTextField(labelWithString: L("录音中"))
     private let timeLabel = NSTextField(labelWithString: "")
     private let previewLabel = NSTextField(labelWithString: "")
     private let previewClipView = NSView()
@@ -88,9 +88,9 @@ final class RecordingHUDController: NSWindowController {
     private var previewLineCount = 1
     private var previewHeightConstraint: NSLayoutConstraint?
     /// 录音期状态行的基准文案（含输入设备名）。警告闪现结束后要恢复成它。
-    private var recordingStatusText = "录音中"
+    private var recordingStatusText = L("录音中")
     /// 识别 / 校对阶段状态行的基准文案。
-    private var recognizingStatusText = "识别中"
+    private var recognizingStatusText = L("识别中")
 
     // MARK: - 初始化
 
@@ -194,7 +194,7 @@ final class RecordingHUDController: NSWindowController {
         timer?.invalidate()
         timer = nil
         phase = .recognizing
-        recognizingStatusText = "识别中"
+        recognizingStatusText = L("识别中")
         setStatus(recognizingStatusText)
         showGlyph(false)
         dotView.isHidden = false
@@ -212,7 +212,7 @@ final class RecordingHUDController: NSWindowController {
         guard !suppressesProgressHUD else { return }
         guard phase == .recognizing else { return }
         cancelWarningRestore()
-        recognizingStatusText = "校对中…"
+        recognizingStatusText = L("校对中…")
         setStatus(recognizingStatusText)
         dotView.setStatic(color: .systemBlue)
     }
@@ -230,7 +230,7 @@ final class RecordingHUDController: NSWindowController {
     func showSuccess() {
         guard !suppressesProgressHUD else { return }
         showTransient(
-            status: "已输入",
+            status: L("已输入"),
             message: "",
             glyph: "checkmark.circle.fill",
             color: .systemGreen,
@@ -242,8 +242,8 @@ final class RecordingHUDController: NSWindowController {
     /// 一次性错误浮层，约 2.5s 后自动隐藏。
     func showError(_ message: String) {
         showTransient(
-            status: "错误",
-            message: message.isEmpty ? "服务异常" : message,
+            status: L("错误"),
+            message: message.isEmpty ? L("服务异常") : message,
             glyph: "exclamationmark.circle.fill",
             color: .systemRed,
             expanded: true,
@@ -255,8 +255,8 @@ final class RecordingHUDController: NSWindowController {
     /// 用户需要的是"去检查麦克风/输入设备"这条具体线索，而不是一个红色叉（B4）。
     func showNoSpeech() {
         showTransient(
-            status: "没有识别到内容",
-            message: "没听到说话内容，请确认麦克风未静音、输入设备选择正确。",
+            status: L("没有识别到内容"),
+            message: L("没听到说话内容，请确认麦克风未静音、输入设备选择正确。"),
             glyph: "waveform.slash",
             color: .systemOrange,
             expanded: true,
@@ -268,7 +268,7 @@ final class RecordingHUDController: NSWindowController {
     func showCanceled() {
         guard !suppressesProgressHUD else { return }
         showTransient(
-            status: "已取消",
+            status: L("已取消"),
             message: "",
             glyph: "xmark.circle.fill",
             color: NSColor(white: 0.7, alpha: 1),
@@ -284,7 +284,7 @@ final class RecordingHUDController: NSWindowController {
     func flashWarning(_ message: String) {
         guard phase == .recording || phase == .recognizing else { return }
         cancelWarningRestore()
-        statusLabel.stringValue = message.isEmpty ? "识别提示" : message
+        statusLabel.stringValue = message.isEmpty ? L("识别提示") : message
         statusLabel.textColor = .systemOrange
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -347,7 +347,7 @@ final class RecordingHUDController: NSWindowController {
         }
 
         phase = .transient
-        setStatus("背景预览")
+        setStatus(L("背景预览"))
         timeLabel.stringValue = ""
         previewLabel.alphaValue = 0
         showGlyph(false)
@@ -485,12 +485,12 @@ final class RecordingHUDController: NSWindowController {
     static func recordingStatus(inputDeviceName: String?) -> String {
         guard let name = inputDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty else {
-            return "录音中"
+            return L("录音中")
         }
         let shortened = name.count > Self.inputDeviceNameLimit
             ? String(name.prefix(Self.inputDeviceNameLimit)) + Self.leadingEllipsis
             : name
-        return "录音中 · \(shortened)"
+        return LF("录音中 · %@", shortened)
     }
 
     // MARK: - 一次性提示
@@ -924,7 +924,7 @@ final class RecordingHUDController: NSWindowController {
 
     private func displayText(for text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "正在聆听…" : trimmed
+        return trimmed.isEmpty ? L("正在聆听…") : trimmed
     }
 
     // MARK: - 计时器

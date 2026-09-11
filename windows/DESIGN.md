@@ -569,6 +569,7 @@ hotkey:
   key: "f2"
 ui:
   opacity: 0.85
+  interface_language: "zh"   # zh / en；界面语言（默认中文），重启后全面生效
 ```
 
 **API Key 存 DPAPI**，不落 YAML：

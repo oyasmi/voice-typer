@@ -26,9 +26,9 @@ private enum SettingsValidationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedHotkeyKey(let key):
-            return "不支持的主键 \(key)。可用：字母 a–z、数字 0–9、space、tab、enter、F1–F12。"
+            return LF("不支持的主键 %@。可用：字母 a–z、数字 0–9、space、tab、enter、F1–F12。", key)
         case .missingModifier(let key):
-            return "\(key) 必须搭配至少一个修饰键（⌘/⌃/⌥/⇧），否则会在任何应用里把这个键变成录音热键。"
+            return LF("%@ 必须搭配至少一个修饰键（⌘/⌃/⌥/⇧），否则会在任何应用里把这个键变成录音热键。", key)
         }
     }
 }
@@ -45,7 +45,7 @@ final class SettingsViewModel {
     var downloadProgress: Double?
     /// 自动下载的最近一次失败。重试启动后清空。
     var modelDownloadError: String?
-    var engineStatus = "检查中"
+    var engineStatus = L("检查中")
     var hotkeyDisplay = "Fn🌐"
 
     // MARK: 识别（草稿，显式保存）
@@ -78,6 +78,7 @@ final class SettingsViewModel {
     var hudPosition: HUDPosition = .bottomCenter
     var idleUnloadMinutes = 0
     var preloadOnLaunch = true
+    var interfaceLanguage: AppLanguage = .zh
     var generalMessage = ""
     var generalMessageKind: SettingsMessageKind = .info
 
@@ -115,6 +116,7 @@ final class SettingsViewModel {
         refreshFnConflictWarning()
         hudOpacity = config.ui.opacity
         hudPosition = config.ui.hudPosition
+        interfaceLanguage = config.ui.interfaceLanguage
         idleUnloadMinutes = config.asr.idleUnloadMinutes
         preloadOnLaunch = config.asr.preloadOnLaunch
         self.launchAtLogin = launchAtLogin
@@ -129,7 +131,7 @@ final class SettingsViewModel {
             llmAPIKey = key
         case .failure:
             llmAPIKey = ""
-            recognitionMessage = "无法从 Keychain 读取已保存的 API Key，请重新填写并保存。"
+            recognitionMessage = L("无法从 Keychain 读取已保存的 API Key，请重新填写并保存。")
             recognitionMessageKind = .error
         }
     }
@@ -139,7 +141,7 @@ final class SettingsViewModel {
     func testLLMCorrection() {
         let draft = draftLLMConfig()
         guard draft.enabled, !draft.baseURL.trimmingCharacters(in: .whitespaces).isEmpty else {
-            recognitionMessage = "请先启用智能校对并填写 Base URL。"
+            recognitionMessage = L("请先启用智能校对并填写 Base URL。")
             recognitionMessageKind = .error
             return
         }
@@ -149,28 +151,28 @@ final class SettingsViewModel {
             return
         }
         recognitionBusy = true
-        recognitionMessage = "正在测试校对…"
+        recognitionMessage = L("正在测试校对…")
         recognitionMessageKind = .info
         let apiKey = llmAPIKey
         let startedAt = Date()
         Task { [weak self] in
             guard let self else { return }
             let outcome = await self.onTestLLMCorrection?(draft, apiKey)
-                ?? .failure(SimpleMessageError(message: "内部错误：测试通道不可用"))
+                ?? .failure(SimpleMessageError(message: L("内部错误：测试通道不可用")))
             let elapsed = Date().timeIntervalSince(startedAt)
             self.recognitionBusy = false
             // 成功/失败严格以是否抛出异常为准，不再用"文本是否发生变化"猜测——网络不通
             // 与"模型认为无需修改"此前会被误判成同一个结果，用户拿不到真实原因（R3-13）。
             switch outcome {
             case .success(let corrected):
-                self.recognitionMessage = String(
-                    format: "校对测试成功：模型正常响应（耗时 %.2f 秒）。返回结果：%@",
+                self.recognitionMessage = LF(
+                    "校对测试成功：模型正常响应（耗时 %.2f 秒）。返回结果：%@",
                     elapsed, corrected
                 )
                 self.recognitionMessageKind = .success
             case .failure(let error):
-                self.recognitionMessage = String(
-                    format: "校对测试失败：%@（耗时 %.2f 秒）。",
+                self.recognitionMessage = LF(
+                    "校对测试失败：%@（耗时 %.2f 秒）。",
                     error.message, elapsed
                 )
                 self.recognitionMessageKind = .error
@@ -181,7 +183,7 @@ final class SettingsViewModel {
     func saveRecognitionSettings() {
         let draftLLM = draftLLMConfig()
         if draftLLM.enabled, case .failure(let error) = LLMEndpoint.resolve(draftLLM.baseURL) {
-            recognitionMessage = "\(error.localizedDescription)设置未保存。"
+            recognitionMessage = LF("%@设置未保存。", error.localizedDescription)
             recognitionMessageKind = .error
             return
         }
@@ -189,7 +191,7 @@ final class SettingsViewModel {
         config.asr.language = language
         config.llm = draftLLM
         recognitionBusy = true
-        recognitionMessage = "正在保存并应用设置…"
+        recognitionMessage = L("正在保存并应用设置…")
         recognitionMessageKind = .info
         let apiKey = llmAPIKey
         let previousAPIKeyResult = KeychainStore.loadLLMAPIKeyResult()
@@ -198,7 +200,7 @@ final class SettingsViewModel {
             // 先写 Keychain、检查返回值（原先被丢弃）：写失败必须中止，
             // 否则界面显示"已保存"而校对永远 401（F-13）。
             guard KeychainStore.saveLLMAPIKey(apiKey) else {
-                self.recognitionMessage = "API Key 写入 Keychain 失败，设置未保存。"
+                self.recognitionMessage = L("API Key 写入 Keychain 失败，设置未保存。")
                 self.recognitionMessageKind = .error
                 self.recognitionBusy = false
                 return
@@ -206,7 +208,7 @@ final class SettingsViewModel {
             do {
                 try await self.onSaveConfig?(config)
                 self.loadedConfig = config
-                self.recognitionMessage = "设置已保存并生效。"
+                self.recognitionMessage = L("设置已保存并生效。")
                 self.recognitionMessageKind = .success
             } catch {
                 // YAML 写入失败：尽力把 Keychain 回滚到保存前的值，避免两者状态不一致——
@@ -218,7 +220,7 @@ final class SettingsViewModel {
                 } else {
                     AppLog.app.error("保存识别设置失败，且无法读取保存前的 API Key，跳过 Keychain 回滚以避免误删")
                 }
-                self.recognitionMessage = "保存失败：\(error.localizedDescription)"
+                self.recognitionMessage = LF("保存失败：%@", error.localizedDescription)
                 self.recognitionMessageKind = .error
             }
             self.recognitionBusy = false
@@ -285,7 +287,7 @@ final class SettingsViewModel {
                 // 保存会重建并重启控制器（即从录制态恢复热键监听）。
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
-                self.hotkeyMessage = successMessage ?? "热键已更新为 \(config.displayString)。"
+                self.hotkeyMessage = successMessage ?? LF("热键已更新为 %@。", config.displayString)
                 self.hotkeyMessageKind = .success
             } catch {
                 // 保存失败（例如正在听写中）必须把界面回退到真实生效的值，否则 Picker /
@@ -293,7 +295,7 @@ final class SettingsViewModel {
                 self.hotkeyConfig = previousConfig
                 self.hotkeyDisplay = previousConfig.displayString
                 self.refreshFnConflictWarning()
-                self.hotkeyMessage = "保存失败：\(error.localizedDescription)"
+                self.hotkeyMessage = LF("保存失败：%@", error.localizedDescription)
                 self.hotkeyMessageKind = .error
                 self.onSuspendHotkey?(false)
             }
@@ -314,7 +316,7 @@ final class SettingsViewModel {
         guard mode != hotkeyConfig.mode else { return }
         var updated = hotkeyConfig
         updated.mode = mode
-        applyHotkey(updated, successMessage: "触发方式已改为「\(mode.displayName)」。")
+        applyHotkey(updated, successMessage: LF("触发方式已改为「%@」。", mode.displayName))
     }
 
     func resetHotkeyToFn() {
@@ -328,11 +330,11 @@ final class SettingsViewModel {
     @discardableResult
     func beginHotkeyRecording() -> Bool {
         guard onSuspendHotkey?(true) == true else {
-            hotkeyMessage = "正在听写中，请稍后再录制热键。"
+            hotkeyMessage = L("正在听写中，请稍后再录制热键。")
             hotkeyMessageKind = .error
             return false
         }
-        hotkeyMessage = "正在录制：按下想要的快捷键（Esc 取消，Delete 恢复默认）。"
+        hotkeyMessage = L("正在录制：按下想要的快捷键（Esc 取消，Delete 恢复默认）。")
         hotkeyMessageKind = .info
         return true
     }
@@ -361,7 +363,7 @@ final class SettingsViewModel {
             } catch {
                 // 不静默吞掉异常（AGENTS.md）：失败不更新 loadedConfig（避免以错误基线覆盖
                 // 后续即时保存），并把失败告知用户，而不是只吞掉。
-                self.generalMessage = "HUD 透明度保存失败：\(error.localizedDescription)"
+                self.generalMessage = LF("HUD 透明度保存失败：%@", error.localizedDescription)
                 self.generalMessageKind = .error
             }
         }
@@ -380,7 +382,7 @@ final class SettingsViewModel {
             } catch {
                 // 保存失败要把界面退回真实生效的值，否则 Picker 会显示一个没生效的设置。
                 self.hudPosition = previous
-                self.generalMessage = "浮窗位置保存失败：\(error.localizedDescription)"
+                self.generalMessage = LF("浮窗位置保存失败：%@", error.localizedDescription)
                 self.generalMessageKind = .error
             }
         }
@@ -397,7 +399,7 @@ final class SettingsViewModel {
                 self.loadedConfig = updated
             } catch {
                 self.preloadOnLaunch = previous
-                self.recognitionMessage = "启动预加载设置保存失败：\(error.localizedDescription)"
+                self.recognitionMessage = LF("启动预加载设置保存失败：%@", error.localizedDescription)
                 self.recognitionMessageKind = .error
             }
         }
@@ -412,8 +414,30 @@ final class SettingsViewModel {
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
             } catch {
-                self.recognitionMessage = "空闲卸载时长保存失败：\(error.localizedDescription)"
+                self.recognitionMessage = LF("空闲卸载时长保存失败：%@", error.localizedDescription)
                 self.recognitionMessageKind = .error
+            }
+        }
+    }
+
+    /// 提交界面语言。落盘成功后同步 `L10n`（新构造的界面立即用新语言），
+    /// 但已经建好的菜单栏与窗口要重启才会改写，所以这里明确给出重启提示。
+    func commitInterfaceLanguage() {
+        var updated = loadedConfig
+        updated.ui.interfaceLanguage = interfaceLanguage
+        let previous = loadedConfig.ui.interfaceLanguage
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+                L10n.apply(self.interfaceLanguage)
+                self.generalMessage = L("界面语言已保存。请重启 VoiceTyper 使全部界面文本生效。")
+                self.generalMessageKind = .success
+            } catch {
+                self.interfaceLanguage = previous
+                self.generalMessage = LF("界面语言保存失败：%@", error.localizedDescription)
+                self.generalMessageKind = .error
             }
         }
     }

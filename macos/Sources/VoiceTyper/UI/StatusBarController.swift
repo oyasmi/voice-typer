@@ -19,13 +19,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private let headerView = StatusMenuHeaderView()
     private let headerItem = NSMenuItem()
-    private let pauseMenuItem = NSMenuItem(title: "暂停听写", action: #selector(handleTogglePause), keyEquivalent: "")
-    private let setupMenuItem = NSMenuItem(title: "权限与设置…", action: #selector(handleOpenSetup), keyEquivalent: ",")
-    private let onboardingMenuItem = NSMenuItem(title: "使用引导…", action: #selector(handleOpenOnboarding), keyEquivalent: "")
-    private let checkUpdatesMenuItem = NSMenuItem(title: "检查更新…", action: #selector(handleCheckForUpdates), keyEquivalent: "")
-    private let launchAtLoginMenuItem = NSMenuItem(title: "开机自启", action: #selector(handleToggleLaunchAtLogin), keyEquivalent: "")
-    private let aboutMenuItem = NSMenuItem(title: "关于 \(AppConstants.appName)", action: #selector(handleAbout), keyEquivalent: "")
-    private let quitMenuItem = NSMenuItem(title: "退出", action: #selector(handleQuit), keyEquivalent: "q")
+    private let pauseMenuItem = NSMenuItem(title: L("暂停听写"), action: #selector(handleTogglePause), keyEquivalent: "")
+    private let setupMenuItem = NSMenuItem(title: L("权限与设置…"), action: #selector(handleOpenSetup), keyEquivalent: ",")
+    private let onboardingMenuItem = NSMenuItem(title: L("使用引导…"), action: #selector(handleOpenOnboarding), keyEquivalent: "")
+    private let checkUpdatesMenuItem = NSMenuItem(title: L("检查更新…"), action: #selector(handleCheckForUpdates), keyEquivalent: "")
+    private let launchAtLoginMenuItem = NSMenuItem(title: L("开机自启"), action: #selector(handleToggleLaunchAtLogin), keyEquivalent: "")
+    private let aboutMenuItem = NSMenuItem(title: LF("关于 %@", AppConstants.appName), action: #selector(handleAbout), keyEquivalent: "")
+    private let quitMenuItem = NSMenuItem(title: L("退出"), action: #selector(handleQuit), keyEquivalent: "q")
 
     /// 已应用到状态栏图标的外观。用于避免重复设置图标而打断符号动效。
     ///
@@ -191,7 +191,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func updatePauseItem(for state: AppState) {
         let isPaused = state == .paused
-        pauseMenuItem.title = isPaused ? "恢复听写" : "暂停听写"
+        pauseMenuItem.title = isPaused ? L("恢复听写") : L("暂停听写")
         updatePauseItemImage(isPaused: isPaused)
         // 录音/识别/插入进行中，以及启动/待授权/模型加载阶段不允许切换。
         switch state {
@@ -256,7 +256,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         } catch {
             AppLog.app.error("切换开机自启失败: \(error.localizedDescription, privacy: .public)")
             let alert = NSAlert()
-            alert.messageText = "无法更改开机自启设置"
+            alert.messageText = L("无法更改开机自启设置")
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .warning
             alert.runModal()
@@ -281,21 +281,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         paragraphStyle.lineSpacing = 3
 
         let credits = NSMutableAttributedString(
-            string: "本地优先的离线语音输入工具\n",
+            string: L("本地优先的离线语音输入工具") + "\n",
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
             ]
         )
         credits.append(NSAttributedString(
-            string: "音频仅在设备端处理\n\n",
+            string: L("音频仅在设备端处理") + "\n\n",
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]
         ))
         credits.append(NSAttributedString(
-            string: "GitHub 项目主页 ↗",
+            string: L("GitHub 项目主页 ↗"),
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.linkColor,

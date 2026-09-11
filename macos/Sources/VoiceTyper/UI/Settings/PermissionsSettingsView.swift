@@ -15,7 +15,7 @@ struct PermissionsSettingsView: View {
                     )
                 }
             } header: {
-                Text("权限")
+                Text(L("权限"))
             }
 
             Section {
@@ -30,9 +30,7 @@ struct PermissionsSettingsView: View {
                             .foregroundStyle(.secondary)
                         // 注意：这里是多个字符串字面量拼接出的 String，不是字面量，
                         // 因此 SwiftUI 不会按 Markdown 解析——不要在里面写 ** 之类的标记。
-                        Text("当前这份 VoiceTyper 使用本机（ad-hoc）签名，没有稳定的开发者签名标识。"
-                             + "系统的权限授权记录以代码签名为键，因此更新到新版本后，上面三项权限可能需要重新授权一次。"
-                             + "这是未签名分发的固有限制，不是出了故障。")
+                        Text(L("当前这份 VoiceTyper 使用本机（ad-hoc）签名，没有稳定的开发者签名标识。系统的权限授权记录以代码签名为键，因此更新到新版本后，上面三项权限可能需要重新授权一次。这是未签名分发的固有限制，不是出了故障。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -40,7 +38,7 @@ struct PermissionsSettingsView: View {
                     }
                     .padding(.vertical, 2)
                 } header: {
-                    Text("关于更新后重新授权")
+                    Text(L("关于更新后重新授权"))
                 }
             }
         }
@@ -53,18 +51,18 @@ struct PermissionsSettingsView: View {
             Image(systemName: ready ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(ready ? .green : .orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text(ready ? "权限检查通过" : "仍需完成授权")
+                Text(ready ? L("权限检查通过") : L("仍需完成授权"))
                     .font(.system(size: 13, weight: .semibold))
                 Text(ready
-                     ? "权限已就绪；识别引擎的状态请查看「识别」页。"
-                     : "请先完成上方未授权项，处理完成后本窗口会自动更新状态。")
+                     ? L("权限已就绪；识别引擎的状态请查看「识别」页。")
+                     : L("请先完成上方未授权项，处理完成后本窗口会自动更新状态。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             if !ready {
-                Button("重新检测") { vm.onRetryReadinessCheck?() }
+                Button(L("重新检测")) { vm.onRetryReadinessCheck?() }
             }
         }
         .padding(.vertical, 2)

@@ -117,7 +117,7 @@ final class LocalASRSession {
     private func triggerCapOnce() {
         guard !capped else { return }
         capped = true
-        onWarning?("录音已达 \(Self.maxSessionSamples / 16000) 秒上限，自动结束本次听写")
+        onWarning?(LF("录音已达 %d 秒上限，自动结束本次听写", Self.maxSessionSamples / 16000))
         onSessionCapped?()
     }
 
@@ -133,7 +133,7 @@ final class LocalASRSession {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard !Task.isCancelled, let self, !self.closed else { return }
                 AppLog.asr.error("finalize 超时（\(timeout, privacy: .public)s）")
-                self.onError?("识别超时")
+                self.onError?(L("识别超时"))
             }
         }
 
@@ -215,7 +215,7 @@ final class LocalASRSession {
         guard attempt < 50, !closed else {
             if !closed {
                 isFinalizing = false
-                onError?("识别引擎尚未就绪")
+                onError?(L("识别引擎尚未就绪"))
             }
             return
         }
@@ -270,7 +270,7 @@ final class LocalASRSession {
                 // DESIGN.md 约定：校对失败回落原文时要给用户一个非致命提示。
                 // 这条 warning 可能在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，
                 // 不引入额外的 UI 调度。
-                self.onWarning?("智能校对未成功，已使用识别原文")
+                self.onWarning?(L("智能校对未成功，已使用识别原文"))
             }
             self.onFinal?(outcome.text)
         }

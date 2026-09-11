@@ -45,20 +45,20 @@ internal sealed class TrayController : IDisposable
             ShowImageMargin = false,
         };
 
-        _statusItem = new ToolStripMenuItem("启动中") { Enabled = false };
-        _hotkeyItem = new ToolStripMenuItem("热键：-") { Enabled = false };
-        _engineItem = new ToolStripMenuItem("引擎：检查中") { Enabled = false };
+        _statusItem = new ToolStripMenuItem(L10n.T("启动中")) { Enabled = false };
+        _hotkeyItem = new ToolStripMenuItem(L10n.F("热键：{0}", "-")) { Enabled = false };
+        _engineItem = new ToolStripMenuItem(L10n.F("引擎：{0}", L10n.T("检查中"))) { Enabled = false };
 
-        var setupItem = new ToolStripMenuItem("设置...");
+        var setupItem = new ToolStripMenuItem(L10n.T("设置..."));
         setupItem.Click += (_, _) => OnOpenSetup?.Invoke();
 
-        _pauseItem = new ToolStripMenuItem("暂停听写") { CheckOnClick = false };
+        _pauseItem = new ToolStripMenuItem(L10n.T("暂停听写")) { CheckOnClick = false };
         _pauseItem.Click += (_, _) => OnTogglePause?.Invoke();
 
-        var openConfigItem = new ToolStripMenuItem("打开配置目录");
+        var openConfigItem = new ToolStripMenuItem(L10n.T("打开配置目录"));
         openConfigItem.Click += (_, _) => OnOpenConfigDirectory?.Invoke();
 
-        _startupItem = new ToolStripMenuItem("开机自启") { CheckOnClick = true };
+        _startupItem = new ToolStripMenuItem(L10n.T("开机自启")) { CheckOnClick = true };
         _startupItem.Checked = StartupRegistration.IsEnabled;
         _startupItem.Click += (_, _) =>
         {
@@ -69,10 +69,10 @@ internal sealed class TrayController : IDisposable
             }
         };
 
-        var aboutItem = new ToolStripMenuItem("关于 VoiceTyper");
+        var aboutItem = new ToolStripMenuItem(L10n.F("关于 {0}", "VoiceTyper"));
         aboutItem.Click += (_, _) => ShowAbout();
 
-        var quitItem = new ToolStripMenuItem("退出");
+        var quitItem = new ToolStripMenuItem(L10n.T("退出"));
         quitItem.Click += (_, _) => OnQuit?.Invoke();
 
         _menu.Items.AddRange(new ToolStripItem[]
@@ -104,9 +104,9 @@ internal sealed class TrayController : IDisposable
     public void Update(AppStateInfo info, string hotkeyDisplay, string engineStatus)
     {
         _statusItem.Text = info.MenuTitle;
-        _hotkeyItem.Text = $"热键：{hotkeyDisplay}";
-        _engineItem.Text = $"引擎：{engineStatus}";
-        _pauseItem.Text = info.State == AppState.Paused ? "恢复听写" : "暂停听写";
+        _hotkeyItem.Text = L10n.F("热键：{0}", hotkeyDisplay);
+        _engineItem.Text = L10n.F("引擎：{0}", engineStatus);
+        _pauseItem.Text = info.State == AppState.Paused ? L10n.T("恢复听写") : L10n.T("暂停听写");
         _pauseItem.Enabled = info.State is not (AppState.Booting or AppState.SetupRequired);
 
         if (info.State != _lastState)
@@ -140,8 +140,9 @@ internal sealed class TrayController : IDisposable
     private void ShowAbout()
     {
         MessageBox.Show(
-            $"VoiceTyper {AppConstants.Version}\n\n离线语音输入工具，基于 SenseVoice-Small。\nPowered by SenseVoice-Small (FunAudioLLM)",
-            "关于 VoiceTyper",
+            $"VoiceTyper {AppConstants.Version}\n\n" + L10n.T("离线语音输入工具，基于 SenseVoice-Small。")
+                + "\nPowered by SenseVoice-Small (FunAudioLLM)",
+            L10n.F("关于 {0}", "VoiceTyper"),
             MessageBoxButtons.OK,
             MessageBoxIcon.Information
         );

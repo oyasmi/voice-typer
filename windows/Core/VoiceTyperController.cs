@@ -96,7 +96,7 @@ internal sealed class VoiceTyperController : IDisposable
         _audioService.OnDeviceChanged = () =>
         {
             if (_asrSession is null) return;
-            PreviewWarning?.Invoke("输入设备已变化，本次录音已结束");
+            PreviewWarning?.Invoke(L10n.T("输入设备已变化，本次录音已结束"));
         };
 
         _isRunning = true;
@@ -111,7 +111,7 @@ internal sealed class VoiceTyperController : IDisposable
         if (!healthy)
         {
             AppLog.Error("controller", "热键监听已失效，自愈重试中");
-            StateChanged?.Invoke(AppStateInfo.ErrorWith("热键监听已失效，正在尝试自动恢复"));
+            StateChanged?.Invoke(AppStateInfo.ErrorWith(L10n.T("热键监听已失效，正在尝试自动恢复")));
         }
         else if (!_isRecording)
         {
@@ -195,7 +195,7 @@ internal sealed class VoiceTyperController : IDisposable
         if (_asrSession is not null)
         {
             // 上一段听写仍在识别 / 插入：拒绝新会话并给出可见反馈（R3-1）。
-            PreviewWarning?.Invoke("上一段听写尚未完成，请稍候再试");
+            PreviewWarning?.Invoke(L10n.T("上一段听写尚未完成，请稍候再试"));
             return;
         }
         BeginLocalRecording();
@@ -280,8 +280,8 @@ internal sealed class VoiceTyperController : IDisposable
                 {
                     var copied = _textInsertion.CopyToClipboard(trimmed);
                     PreviewWarning?.Invoke(copied
-                        ? "上一段听写已完成，结果已复制到剪贴板"
-                        : "上一段听写已完成，但复制到剪贴板失败");
+                        ? L10n.T("上一段听写已完成，结果已复制到剪贴板")
+                        : L10n.T("上一段听写已完成，但复制到剪贴板失败"));
                     return;
                 }
                 InsertFinalText(trimmed, expectedForegroundWindow, expectedForegroundProcessId);
@@ -355,7 +355,7 @@ internal sealed class VoiceTyperController : IDisposable
         {
             AppLog.Error("controller", "启动录音失败", ex);
             session.Close();
-            var msg = ex.IsAccessDenied ? "麦克风权限被拒绝，请在 Windows 设置中允许应用访问麦克风" : "开始录音失败";
+            var msg = ex.IsAccessDenied ? L10n.T("麦克风权限被拒绝，请在 Windows 设置中允许应用访问麦克风") : L10n.T("开始录音失败");
             StateChanged?.Invoke(AppStateInfo.ErrorWith(msg));
             return;
         }
@@ -401,15 +401,15 @@ internal sealed class VoiceTyperController : IDisposable
                 // 录音开始到插入之间前台窗口已切换：不写入用户未预期的窗口，只复制到剪贴板。
                 AppLog.Warn("controller", "目标窗口已变化，插入已取消，改为复制到剪贴板");
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(_textInsertion.CopyToClipboard(trimmed)
-                    ? "目标窗口已变化，结果已复制到剪贴板，可手动粘贴"
-                    : "目标窗口已变化，且复制到剪贴板也失败了，请重新听写"));
+                    ? L10n.T("目标窗口已变化，结果已复制到剪贴板，可手动粘贴")
+                    : L10n.T("目标窗口已变化，且复制到剪贴板也失败了，请重新听写")));
                 break;
 
             case TextInsertionResult.ModifiersHeld:
                 AppLog.Warn("controller", "检测到修饰键被按住，未自动粘贴，改为复制到剪贴板");
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(_textInsertion.CopyToClipboard(trimmed)
-                    ? "检测到有修饰键按住，未自动粘贴，结果已复制到剪贴板"
-                    : "检测到有修饰键按住，且复制到剪贴板失败，请重新听写"));
+                    ? L10n.T("检测到有修饰键按住，未自动粘贴，结果已复制到剪贴板")
+                    : L10n.T("检测到有修饰键按住，且复制到剪贴板失败，请重新听写")));
                 break;
 
             case TextInsertionResult.Failed:
@@ -418,16 +418,16 @@ internal sealed class VoiceTyperController : IDisposable
                 string reason;
                 if (!copied)
                 {
-                    reason = "插入失败，且复制到剪贴板也失败了，请重新听写";
+                    reason = L10n.T("插入失败，且复制到剪贴板也失败了，请重新听写");
                 }
                 else
                 {
                     // UIPI 会阻止向提权窗口 SendInput；无法判定权限时用不确定语气（R3-2）。
                     reason = TextInsertionService.CheckForegroundWindowElevation() switch
                     {
-                        ForegroundElevation.Elevated => "目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，已复制到剪贴板，可手动粘贴",
-                        ForegroundElevation.Unknown => "无法判断目标窗口权限，输入注入未生效，已复制到剪贴板，可手动粘贴",
-                        _ => "插入失败，已复制到剪贴板，可手动粘贴",
+                        ForegroundElevation.Elevated => L10n.T("目标窗口以管理员身份运行，Windows 安全机制阻止了输入注入，已复制到剪贴板，可手动粘贴"),
+                        ForegroundElevation.Unknown => L10n.T("无法判断目标窗口权限，输入注入未生效，已复制到剪贴板，可手动粘贴"),
+                        _ => L10n.T("插入失败，已复制到剪贴板，可手动粘贴"),
                     };
                 }
                 AppLog.Error("controller", "文本插入失败，已复制到剪贴板");

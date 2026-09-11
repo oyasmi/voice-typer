@@ -123,12 +123,12 @@ internal static class AsrLanguageExtensions
 
     public static string DisplayName(this AsrLanguage lang) => lang switch
     {
-        AsrLanguage.Auto => "自动",
-        AsrLanguage.Zh => "中文",
-        AsrLanguage.En => "英文",
-        AsrLanguage.Yue => "粤语",
-        AsrLanguage.Ja => "日语",
-        AsrLanguage.Ko => "韩语",
+        AsrLanguage.Auto => L10n.T("自动"),
+        AsrLanguage.Zh => L10n.T("中文"),
+        AsrLanguage.En => L10n.T("英文"),
+        AsrLanguage.Yue => L10n.T("粤语"),
+        AsrLanguage.Ja => L10n.T("日语"),
+        AsrLanguage.Ko => L10n.T("韩语"),
         _ => lang.ToString(),
     };
 
@@ -268,8 +268,19 @@ internal sealed class UIConfig
     [YamlMember(Alias = "opacity")]
     public double Opacity { get; set; } = 0.85;
 
+    /// <summary>界面语言（zh / en）。默认中文；改动需要重启应用才全面生效（设置页已明示）。</summary>
+    [YamlMember(Alias = "interface_language")]
+    public string InterfaceLanguage { get; set; } = "zh";
+
+    public AppLanguage InterfaceLanguageValue
+    {
+        get => AppLanguageExtensions.Parse(InterfaceLanguage);
+        set => InterfaceLanguage = value.ToYamlValue();
+    }
+
     public UIConfig Clone() => new()
     {
         Opacity = Opacity,
+        InterfaceLanguage = InterfaceLanguage,
     };
 }

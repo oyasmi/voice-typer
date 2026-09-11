@@ -36,7 +36,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         self.init(window: window)
-        window.title = "\(AppConstants.appName) 使用引导"
+        window.title = LF("%@ 使用引导", AppConstants.appName)
         window.isReleasedWhenClosed = false
         window.delegate = self
         ensureUIBuilt()

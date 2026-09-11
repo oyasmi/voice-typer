@@ -90,7 +90,7 @@ final class AppCoordinator {
             try reloadConfigurationFromDisk()
         } catch {
             AppLog.app.error("配置加载失败: \(error.localizedDescription, privacy: .public)")
-            currentState = .error("配置加载失败")
+            currentState = .error(L("配置加载失败"))
             updateStatusUI()
             return
         }
@@ -229,7 +229,7 @@ final class AppCoordinator {
                 Task { await self.asrService.reload() }
             }
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
-                await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? .failure(SimpleMessageError(message: "应用未就绪"))
+                await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? .failure(SimpleMessageError(message: L("应用未就绪")))
             }
             controller.loadWindow()
             setupWindowController = controller
@@ -371,7 +371,7 @@ final class AppCoordinator {
         case .modelMissing:
             return .modelMissing
         case .failed(let message):
-            return .error("模型加载失败: \(message)")
+            return .error(LF("模型加载失败: %@", message))
         case .ready, .suspendedForIdle:
             // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
             // 由 makeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
@@ -448,12 +448,12 @@ final class AppCoordinator {
             presentBlockingGuidance(.permissions, preferredTab: .permissions)
         case .modelMissing:
             recordingHUDController?.hideHUD()
-            gateHotkeyListening(reason: "语音模型还没准备好，无法开始听写。")
+            gateHotkeyListening(reason: L("语音模型还没准备好，无法开始听写。"))
             presentBlockingGuidance(.model, preferredTab: .recognition)
         case .downloadingModel(let progress):
-            gateHotkeyListening(reason: "语音模型正在下载（\(Int(progress * 100))%），完成后即可开始听写。")
+            gateHotkeyListening(reason: LF("语音模型正在下载（%d%%），完成后即可开始听写。", Int(progress * 100)))
         case .modelLoading:
-            gateHotkeyListening(reason: "识别引擎正在加载，请稍候再试。")
+            gateHotkeyListening(reason: L("识别引擎正在加载，请稍候再试。"))
             if asrService.state == .unloaded {
                 Task { await prepareEngineForLaunch() }
             }
@@ -472,8 +472,8 @@ final class AppCoordinator {
         let missing = PermissionKind.allCases
             .filter { permissions.status(for: $0) != .authorized }
             .map(\.title)
-        guard !missing.isEmpty else { return "还有准备工作没有完成。" }
-        return "还缺「\(missing.joined(separator: "」「"))」权限，暂时无法听写。"
+        guard !missing.isEmpty else { return L("还有准备工作没有完成。") }
+        return LF("还缺「%@」权限，暂时无法听写。", missing.joined(separator: "」「"))
     }
 
     /// 门禁态：热键照常监听，但按下时只给提示、不开始录音。
@@ -519,7 +519,7 @@ final class AppCoordinator {
             do {
                 try controller.start()
             } catch {
-                currentState = .error("热键监听失败: \(error.localizedDescription)")
+                currentState = .error(LF("热键监听失败: %@", error.localizedDescription))
                 AppLog.hotkey.error("热键监听启动失败: \(error.localizedDescription, privacy: .public)")
                 recordingHUDController?.hideHUD()
                 return
@@ -607,16 +607,20 @@ final class AppCoordinator {
         if downloadRetryAttempt < Self.downloadRetryDelays.count {
             let delay = Self.downloadRetryDelays[downloadRetryAttempt]
             downloadRetryAttempt += 1
-            modelDownloadError = "\(reason)将在 \(Int(delay)) 秒后自动重试"
-                + "（第 \(downloadRetryAttempt)/\(Self.downloadRetryDelays.count) 次）。"
+            modelDownloadError = LF(
+                "%@将在 %d 秒后自动重试（第 %d/%d 次）。",
+                reason, Int(delay), downloadRetryAttempt, Self.downloadRetryDelays.count
+            )
             scheduleDownloadRetry(after: delay)
         } else {
-            modelDownloadError = "\(reason)已自动重试 \(Self.downloadRetryDelays.count) 次仍未成功，"
-                + "请检查网络后手动重试。"
+            modelDownloadError = LF(
+                "%@已自动重试 %d 次仍未成功，请检查网络后手动重试。",
+                reason, Self.downloadRetryDelays.count
+            )
         }
 
         currentState = permissions.allRequiredGranted
-            ? .error("模型下载失败: \(reason)")
+            ? .error(LF("模型下载失败: %@", reason))
             : .setupRequired
         if permissions.allRequiredGranted {
             forcedPresentations.insert(.model)
@@ -649,7 +653,7 @@ final class AppCoordinator {
     /// （401 / 超时 / 网络不通…），而不是把"网络不通"与"模型认为无需修改"混为一谈（R3-13）。
     private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Result<String, SimpleMessageError> {
         guard let chatURL = LLMEndpoint.chatCompletionsURL(from: llmConfig.baseURL) else {
-            return .failure(SimpleMessageError(message: "Base URL 无法解析为合法请求地址"))
+            return .failure(SimpleMessageError(message: L("Base URL 无法解析为合法请求地址")))
         }
         let corrector = LLMCorrector(config: LLMCorrector.Config(
             chatCompletionsURL: chatURL,
@@ -680,8 +684,8 @@ final class AppCoordinator {
             } catch {
                 AppLog.app.warning("检查更新失败: \(error.localizedDescription, privacy: .public)")
                 self.presentAlert(
-                    title: "无法检查更新",
-                    message: "\(error.localizedDescription)\n可以稍后重试，或直接到 GitHub 发布页查看。",
+                    title: L("无法检查更新"),
+                    message: LF("%@\n可以稍后重试，或直接到 GitHub 发布页查看。", error.localizedDescription),
                     openURL: AppConstants.repositoryURL.appendingPathComponent("releases")
                 )
             }
@@ -691,25 +695,25 @@ final class AppCoordinator {
     private func presentUpdateOutcome(_ outcome: UpdateChecker.Outcome) {
         switch outcome {
         case .upToDate(let current):
-            presentAlert(title: "已是最新版本", message: "当前版本 \(current)。", openURL: nil)
+            presentAlert(title: L("已是最新版本"), message: LF("当前版本 %@。", current), openURL: nil)
         case .updateAvailable(let release):
             presentAlert(
-                title: "有新版本可用",
-                message: "最新版本 \(release.version)，当前版本 \(AppConstants.version)。",
+                title: L("有新版本可用"),
+                message: LF("最新版本 %@，当前版本 %@。", release.version, AppConstants.version),
                 openURL: release.pageURL,
-                openButtonTitle: "打开发布页"
+                openButtonTitle: L("打开发布页")
             )
         case .indeterminate(let pageURL):
             presentAlert(
-                title: "无法比较版本号",
-                message: "已获取到最新的发布信息，但无法解析版本号。请自行到发布页确认。",
+                title: L("无法比较版本号"),
+                message: L("已获取到最新的发布信息，但无法解析版本号。请自行到发布页确认。"),
                 openURL: pageURL,
-                openButtonTitle: "打开发布页"
+                openButtonTitle: L("打开发布页")
             )
         }
     }
 
-    private func presentAlert(title: String, message: String, openURL: URL?, openButtonTitle: String = "打开") {
+    private func presentAlert(title: String, message: String, openURL: URL?, openButtonTitle: String = L("打开")) {
         // `.accessory` 应用不会自动到前台，不激活的话弹窗可能出现在其他窗口后面。
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -718,9 +722,9 @@ final class AppCoordinator {
         alert.alertStyle = .informational
         if openURL != nil {
             alert.addButton(withTitle: openButtonTitle)
-            alert.addButton(withTitle: "好")
+            alert.addButton(withTitle: L("好"))
         } else {
-            alert.addButton(withTitle: "好")
+            alert.addButton(withTitle: L("好"))
         }
         let response = alert.runModal()
         if let openURL, response == .alertFirstButtonReturn {
@@ -849,6 +853,9 @@ final class AppCoordinator {
 
     private func reloadConfigurationFromDisk() throws {
         config = try configStore.loadOrCreate()
+        // config.yaml 是界面语言的事实来源；这里顺带刷新 L10n 的 UserDefaults 镜像，
+        // 让下次启动的菜单栏与主菜单（它们在配置读出来之前就构造完成）用上正确的语言。
+        L10n.apply(config.ui.interfaceLanguage)
         // 热键可能刚被改成组合键，那样就不再有 Fn 冲突可言。
         refreshFnConflictWarning()
         // HUD 是长生命周期组件：配置变更就地生效，不重建。此前每次保存非 UI 配置
@@ -868,7 +875,7 @@ final class AppCoordinator {
         case dictationInProgress
 
         var errorDescription: String? {
-            "正在录音/识别/输入，请等待当前听写完成后再保存此项设置"
+            L("正在录音/识别/输入，请等待当前听写完成后再保存此项设置")
         }
     }
 
@@ -938,25 +945,25 @@ final class AppCoordinator {
     /// 下载进度（B2）。
     private func engineStatusText() -> String {
         if isDownloadingModel {
-            return "模型下载中 \(Int(modelDownloadProgress * 100))%"
+            return LF("模型下载中 %d%%", Int(modelDownloadProgress * 100))
         }
         if let modelDownloadError {
-            return "模型下载失败：\(modelDownloadError)"
+            return LF("模型下载失败：%@", modelDownloadError)
         }
         switch asrService.state {
         case .ready:
-            return "引擎已就绪"
+            return L("引擎已就绪")
         case .suspendedForIdle:
             // 空闲卸载后与"启动时未预加载"共用这个状态，文案要对两者都成立。
-            return "引擎按需加载，下次录音自动就绪"
+            return L("引擎按需加载，下次录音自动就绪")
         case .loading:
-            return "模型加载中…"
+            return L("模型加载中…")
         case .modelMissing:
-            return "需要下载语音模型"
+            return L("需要下载语音模型")
         case .unloaded:
-            return "引擎未加载"
+            return L("引擎未加载")
         case .failed(let message):
-            return "模型加载失败: \(message)"
+            return LF("模型加载失败: %@", message)
         }
     }
 }

@@ -30,27 +30,27 @@ enum AppState: Equatable {
     var menuTitle: String {
         switch self {
         case .booting:
-            return "启动中"
+            return L("启动中")
         case .setupRequired:
-            return "需要完成授权与设置"
+            return L("需要完成授权与设置")
         case .modelMissing:
-            return "需要下载语音模型"
+            return L("需要下载语音模型")
         case .downloadingModel(let progress):
-            return "下载模型 \(Int(progress * 100))%"
+            return LF("下载模型 %d%%", Int(progress * 100))
         case .modelLoading:
-            return "模型加载中…"
+            return L("模型加载中…")
         case .idle:
-            return "就绪"
+            return L("就绪")
         case .recording:
-            return "录音中..."
+            return L("录音中...")
         case .recognizing:
-            return "识别中..."
+            return L("识别中...")
         case .inserting:
-            return "输入中..."
+            return L("输入中...")
         case .paused:
-            return "已暂停"
+            return L("已暂停")
         case .error(let message):
-            return "错误: \(message)"
+            return LF("错误: %@", message)
         }
     }
 

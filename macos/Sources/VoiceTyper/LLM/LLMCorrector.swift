@@ -182,11 +182,11 @@ actor LLMCorrector {
         var errorDescription: String? {
             switch self {
             case .invalidResponse:
-                return "LLM 服务响应无效"
+                return L("LLM 服务响应无效")
             case .httpStatus(let code):
-                return "LLM API 错误 (\(code))"
+                return LF("LLM API 错误 (%d)", code)
             case .malformedResponse:
-                return "LLM 响应格式无法解析"
+                return L("LLM 响应格式无法解析")
             }
         }
     }

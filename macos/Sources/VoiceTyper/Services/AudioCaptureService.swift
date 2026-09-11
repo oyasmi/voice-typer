@@ -104,14 +104,14 @@ final class AudioCaptureService: @unchecked Sendable {
             throw NSError(
                 domain: AppConstants.bundleIdentifier,
                 code: 1003,
-                userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备，请检查麦克风连接"]
+                userInfo: [NSLocalizedDescriptionKey: L("没有可用的音频输入设备，请检查麦克风连接")]
             )
         }
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             throw NSError(
                 domain: AppConstants.bundleIdentifier,
                 code: 1001,
-                userInfo: [NSLocalizedDescriptionKey: "无法创建音频格式转换器"]
+                userInfo: [NSLocalizedDescriptionKey: L("无法创建音频格式转换器")]
             )
         }
 

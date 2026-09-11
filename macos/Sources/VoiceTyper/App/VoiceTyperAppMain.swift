@@ -4,6 +4,8 @@ import AppKit
 enum VoiceTyperAppMain {
     @MainActor
     static func main() {
+        // 菜单栏与主菜单在 AppDelegate 构造时就已经带着文案生成，语言必须在这之前定下来。
+        L10n.bootstrap()
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

@@ -65,7 +65,7 @@ internal sealed class HotkeyService : IDisposable
         var vk = MapKeyToVk(hotkey.Key);
         if (vk == 0)
         {
-            throw new HotkeyServiceException($"不支持的热键主键: {hotkey.Key}");
+            throw new HotkeyServiceException(L10n.F("不支持的热键主键: {0}", hotkey.Key));
         }
 
         _hotkey = hotkey.Clone();
@@ -105,7 +105,7 @@ internal sealed class HotkeyService : IDisposable
         {
             var err = Marshal.GetLastWin32Error();
             _proc = null;
-            throw new HotkeyServiceException($"安装键盘钩子失败 (Win32 error {err})");
+            throw new HotkeyServiceException(L10n.F("安装键盘钩子失败 (Win32 error {0})", err));
         }
         _lastHookActivityTick = Environment.TickCount;
     }

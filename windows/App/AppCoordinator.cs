@@ -73,7 +73,7 @@ internal sealed class AppCoordinator : IDisposable
         catch (Exception ex)
         {
             AppLog.Error("coordinator", "加载配置失败", ex);
-            _currentState = AppStateInfo.ErrorWith("配置加载失败");
+            _currentState = AppStateInfo.ErrorWith(L10n.T("配置加载失败"));
             UpdateTray();
             return;
         }
@@ -100,6 +100,8 @@ internal sealed class AppCoordinator : IDisposable
     private void ReloadConfigurationFromDisk()
     {
         _config = _configStore.LoadOrCreate();
+        // config.yaml 是界面语言的事实来源（Program.Main 里的 Bootstrap 只是启动期的快照）。
+        L10n.Apply(_config.UI.InterfaceLanguageValue);
         _hud?.Dispose();
         _hud = new RecordingHud(_config.UI);
     }
@@ -116,7 +118,7 @@ internal sealed class AppCoordinator : IDisposable
 
         if (!onlyUiChanged && _currentState.State.IsActiveDictation())
         {
-            throw new InvalidOperationException("正在录音/识别/输入，请等待当前听写完成后再保存此项设置");
+            throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存此项设置"));
         }
 
         _configStore.Save(draft);
@@ -147,12 +149,12 @@ internal sealed class AppCoordinator : IDisposable
         if ((keyChanged || sectionsChanged) && _currentState.State.IsActiveDictation())
         {
             // 尚未写任何东西就拒绝。
-            throw new InvalidOperationException("正在录音/识别/输入，请等待当前听写完成后再保存识别设置");
+            throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存识别设置"));
         }
 
         if (keyChanged && !SecretStore.SaveLlmApiKey(newApiKey!))
         {
-            throw new InvalidOperationException("API Key 写入失败，请重试（配置尚未保存）");
+            throw new InvalidOperationException(L10n.T("API Key 写入失败，请重试（配置尚未保存）"));
         }
 
         _configStore.Save(draft); // 失败会抛，SetupForm 显示"配置写失败"
@@ -265,7 +267,7 @@ internal sealed class AppCoordinator : IDisposable
                 OpenSetup(SetupTab.Recognition);
                 break;
             case AsrState.Failed:
-                _currentState = AppStateInfo.ErrorWith(_asrService.FailureMessage ?? "未知错误");
+                _currentState = AppStateInfo.ErrorWith(_asrService.FailureMessage ?? L10n.T("未知错误"));
                 break;
             case AsrState.Ready:
             case AsrState.SuspendedForIdle:
@@ -311,7 +313,7 @@ internal sealed class AppCoordinator : IDisposable
             catch (Exception ex)
             {
                 AppLog.Error("coordinator", "启动 controller 失败", ex);
-                _currentState = AppStateInfo.ErrorWith($"热键监听失败：{ex.Message}");
+                _currentState = AppStateInfo.ErrorWith(L10n.F("热键监听失败：{0}", ex.Message));
                 return;
             }
         }
@@ -456,7 +458,7 @@ internal sealed class AppCoordinator : IDisposable
                     _isDownloadingModel = false;
                     _modelDownloader?.Dispose();
                     _modelDownloader = null;
-                    if (!_isPaused) _currentState = AppStateInfo.ErrorWith($"模型下载失败: {ex.Message}");
+                    if (!_isPaused) _currentState = AppStateInfo.ErrorWith(L10n.F("模型下载失败: {0}", ex.Message));
                     UpdateTray();
                     SyncSetupWindow();
                 });
@@ -476,7 +478,7 @@ internal sealed class AppCoordinator : IDisposable
         catch (Exception ex)
         {
             AppLog.Error("coordinator", "下载完成后重新加载模型失败", ex);
-            _currentState = AppStateInfo.ErrorWith($"模型加载失败: {ex.Message}");
+            _currentState = AppStateInfo.ErrorWith(L10n.F("模型加载失败: {0}", ex.Message));
             UpdateTray();
             SyncSetupWindow();
         }
@@ -492,7 +494,7 @@ internal sealed class AppCoordinator : IDisposable
         // 与 ApplyConfigAsync 相同的拒绝逻辑（R2-3）。
         if (_currentState.State.IsActiveDictation())
         {
-            _currentState = AppStateInfo.ErrorWith("正在听写，请等待当前听写完成后再重新加载模型");
+            _currentState = AppStateInfo.ErrorWith(L10n.T("正在听写，请等待当前听写完成后再重新加载模型"));
             UpdateTray();
             SyncSetupWindow();
             ScheduleDictationErrorRecovery();
@@ -535,7 +537,7 @@ internal sealed class AppCoordinator : IDisposable
         try
         {
             await corrector.TestAsync(sample).ConfigureAwait(true);
-            return new LlmTestResult(true, "纠错测试成功，配置可用。");
+            return new LlmTestResult(true, L10n.T("纠错测试成功，配置可用。"));
         }
         catch (Exception ex)
         {
@@ -603,16 +605,16 @@ internal sealed class AppCoordinator : IDisposable
     /// </summary>
     private string EngineStatusText()
     {
-        if (_isDownloadingModel) return $"下载中 {(int)(_downloadProgress * 100)}%";
+        if (_isDownloadingModel) return L10n.F("下载中 {0}%", (int)(_downloadProgress * 100));
 
         return _asrService.State switch
         {
-            AsrState.Ready => "引擎已就绪",
-            AsrState.SuspendedForIdle => "引擎已空闲卸载，下次录音自动加载",
-            AsrState.Loading => "模型加载中…",
-            AsrState.ModelMissing => "需要下载语音模型",
-            AsrState.Unloaded => "引擎未加载",
-            AsrState.Failed => $"模型加载失败: {_asrService.FailureMessage}",
+            AsrState.Ready => L10n.T("引擎已就绪"),
+            AsrState.SuspendedForIdle => L10n.T("引擎已空闲卸载，下次录音自动加载"),
+            AsrState.Loading => L10n.T("模型加载中…"),
+            AsrState.ModelMissing => L10n.T("需要下载语音模型"),
+            AsrState.Unloaded => L10n.T("引擎未加载"),
+            AsrState.Failed => L10n.F("模型加载失败: {0}", _asrService.FailureMessage),
             _ => "",
         };
     }

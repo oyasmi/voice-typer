@@ -16,11 +16,14 @@ internal static class Program
     {
         // 单例保护；与 client_windows_native（VoiceTyperClient）用不同的 mutex 名，
         // 两个 App 可以同时装但不建议同时跑（见 windows/DESIGN.md §11 "两个 App 同时安装"）。
+        // 托盘菜单与设置窗口都是带着文案构造出来的，界面语言必须在这之前定下来。
+        L10n.Bootstrap();
+
         using var mutex = TryCreateSingleInstanceMutex(out var createdNew);
         if (!createdNew)
         {
             MessageBox.Show(
-                "VoiceTyper 已经在运行（请检查系统托盘）。",
+                L10n.T("VoiceTyper 已经在运行（请检查系统托盘）。"),
                 "VoiceTyper",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
@@ -69,7 +72,7 @@ internal static class Program
         catch (Exception ex)
         {
             AppLog.Error("app", "Application.Run 异常退出", ex);
-            try { MessageBox.Show($"VoiceTyper 启动失败：\n\n{ex.Message}", "VoiceTyper", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            try { MessageBox.Show(L10n.F("VoiceTyper 启动失败：\n\n{0}", ex.Message), "VoiceTyper", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             catch { }
             return 1;
         }

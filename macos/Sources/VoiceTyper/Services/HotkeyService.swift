@@ -11,11 +11,11 @@ enum HotkeyServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedKey(let key):
-            return "不支持的热键: \(key)"
+            return LF("不支持的热键: %@", key)
         case .inputMonitoringDenied:
-            return "输入监控权限缺失，无法启动热键监听"
+            return L("输入监控权限缺失，无法启动热键监听")
         case .startupTimedOut:
-            return "热键监听启动超时"
+            return L("热键监听启动超时")
         case .startupFailed(let message):
             return message
         }
@@ -222,7 +222,7 @@ final class HotkeyService: @unchecked Sendable {
             CFMachPortInvalidate(tap)
             Unmanaged<TapContext>.fromOpaque(contextPtr).release()
             if !lifecycle.cancelled {
-                startupBox.error = HotkeyServiceError.startupFailed("无法创建热键事件源")
+                startupBox.error = HotkeyServiceError.startupFailed(L("无法创建热键事件源"))
                 startupBox.semaphore.signal()
             }
             lifecycle.shutdownSemaphore.signal()

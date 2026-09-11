@@ -50,7 +50,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(AppConstants.appName) · \(vm.step.title)")
                     .font(.system(size: 15, weight: .semibold))
-                Text("第 \(vm.step.rawValue + 1) 步 / 共 \(OnboardingStep.allCases.count) 步")
+                Text(LF("第 %d 步 / 共 %d 步", vm.step.rawValue + 1, OnboardingStep.allCases.count))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -71,11 +71,11 @@ struct OnboardingView: View {
     private var footer: some View {
         HStack {
             if vm.canGoBack {
-                Button("上一步") { vm.goBack() }
+                Button(L("上一步")) { vm.goBack() }
             }
             Spacer()
             if vm.step == .trial, case .succeeded = vm.trial {
-                Button("完成") { vm.finish() }
+                Button(L("完成")) { vm.finish() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             } else if vm.step == .trial {
@@ -108,29 +108,27 @@ struct OnboardingView: View {
     private var welcomeStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("按住 \(vm.hotkeyDisplay) 说话，松开就上屏")
+                Text(LF("按住 %@ 说话，松开就上屏", vm.hotkeyDisplay))
                     .font(.system(size: 20, weight: .semibold))
-                Text("识别完全在这台 Mac 上完成，音频不会离开设备，也不需要联网。")
+                Text(L("识别完全在这台 Mac 上完成，音频不会离开设备，也不需要联网。"))
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 12) {
                 bullet(
                     "keyboard",
-                    "按住热键",
-                    "默认是 \(vm.hotkeyDisplay)。之后可以在「设置 → 通用」里换成组合键，"
-                        + "或改成「按一次开始、再按一次结束」，方便长段口述。"
+                    L("按住热键"),
+                    LF("默认是 %@。之后可以在「设置 → 通用」里换成组合键，或改成「按一次开始、再按一次结束」，方便长段口述。", vm.hotkeyDisplay)
                 )
                 bullet(
                     "waveform.circle",
-                    "看到浮窗再开口",
-                    "按下热键后麦克风还需要约 0.2 秒才真正开始出声。等屏幕下方的浮窗出现再说话，"
-                        + "开头的字就不会被吞掉。"
+                    L("看到浮窗再开口"),
+                    L("按下热键后麦克风还需要约 0.2 秒才真正开始出声。等屏幕下方的浮窗出现再说话，开头的字就不会被吞掉。")
                 )
                 bullet(
                     "escape",
-                    "说错了就按 Esc",
-                    "录音中和识别中都可以按 Esc 取消，这次的结果不会被插入到任何地方。"
+                    L("说错了就按 Esc"),
+                    L("录音中和识别中都可以按 Esc 取消，这次的结果不会被插入到任何地方。")
                 )
             }
 
@@ -138,13 +136,13 @@ struct OnboardingView: View {
                 calloutBox(
                     symbol: "exclamationmark.triangle.fill",
                     tint: .orange,
-                    title: "先改一个系统设置，否则按 Fn 会同时触发系统功能",
+                    title: L("先改一个系统设置，否则按 Fn 会同时触发系统功能"),
                     detail: warning,
                     actions: [
-                        OnboardingCalloutAction(title: "打开键盘设置", isProminent: true) {
+                        OnboardingCalloutAction(title: L("打开键盘设置"), isProminent: true) {
                             vm.onOpenKeyboardSettings?()
                         },
-                        OnboardingCalloutAction(title: "已改好，重新检测") {
+                        OnboardingCalloutAction(title: L("已改好，重新检测")) {
                             vm.onRefreshStatus?()
                         },
                     ]
@@ -155,9 +153,8 @@ struct OnboardingView: View {
                 calloutBox(
                     symbol: "info.circle",
                     tint: .secondary,
-                    title: "关于以后更新",
-                    detail: "这份 VoiceTyper 使用本机（ad-hoc）签名。系统的权限记录以代码签名为键，"
-                        + "所以更新到新版本后，下一步的三项权限可能需要重新授权一次。这是未签名分发的固有限制。"
+                    title: L("关于以后更新"),
+                    detail: L("这份 VoiceTyper 使用本机（ad-hoc）签名。系统的权限记录以代码签名为键，所以更新到新版本后，下一步的三项权限可能需要重新授权一次。这是未签名分发的固有限制。")
                 )
             }
         }
@@ -168,14 +165,13 @@ struct OnboardingView: View {
     private var permissionsStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("已完成 \(vm.grantedPermissionCount) / \(PermissionKind.allCases.count) 项")
+                Text(LF("已完成 %d / %d 项", vm.grantedPermissionCount, PermissionKind.allCases.count))
                     .font(.system(size: 17, weight: .semibold))
                 ProgressView(
                     value: Double(vm.grantedPermissionCount),
                     total: Double(PermissionKind.allCases.count)
                 )
-                Text("三项缺一不可。点「授权」，系统会弹出授权窗口或跳到对应设置页；"
-                     + "「输入监控」通常不会自动弹窗，需要在系统设置里手动打开开关。")
+                Text(L("三项缺一不可。点「授权」，系统会弹出授权窗口或跳到对应设置页；「输入监控」通常不会自动弹窗，需要在系统设置里手动打开开关。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -199,15 +195,15 @@ struct OnboardingView: View {
 
             HStack(spacing: 10) {
                 if vm.permissions.allRequiredGranted {
-                    Label("权限已齐全", systemImage: "checkmark.seal.fill")
+                    Label(L("权限已齐全"), systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                 } else {
-                    Text("授权完成后本页会自动更新；也可以手动重新检测。")
+                    Text(L("授权完成后本页会自动更新；也可以手动重新检测。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("重新检测") { vm.onRefreshStatus?() }
+                Button(L("重新检测")) { vm.onRefreshStatus?() }
             }
         }
     }
@@ -217,10 +213,9 @@ struct OnboardingView: View {
     private var modelStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("语音模型")
+                Text(L("语音模型"))
                     .font(.system(size: 17, weight: .semibold))
-                Text("SenseVoice-Small，约 230 MB，只需下载这一次。下载与上一步的授权是并行的，"
-                     + "不必等它结束再去授权。完成后 VoiceTyper 完全离线可用。")
+                Text(L("SenseVoice-Small，约 230 MB，只需下载这一次。下载与上一步的授权是并行的，不必等它结束再去授权。完成后 VoiceTyper 完全离线可用。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -237,30 +232,30 @@ struct OnboardingView: View {
     @ViewBuilder
     private var modelStatusCard: some View {
         if vm.isModelReady {
-            statusLine("checkmark.circle.fill", .green, "模型已就绪", "离线识别引擎可以直接使用。")
+            statusLine("checkmark.circle.fill", .green, L("模型已就绪"), L("离线识别引擎可以直接使用。"))
         } else if let progress = vm.downloadProgress {
-            statusLine("arrow.down.circle", .accentColor, "正在下载 \(Int(progress * 100))%",
-                       "支持断点续传，取消后可以随时继续。")
+            statusLine("arrow.down.circle", .accentColor, LF("正在下载 %d%%", Int(progress * 100)),
+                       L("支持断点续传，取消后可以随时继续。"))
             ProgressView(value: progress)
             HStack {
                 Spacer()
-                Button("取消") { vm.onCancelModelDownload?() }
+                Button(L("取消")) { vm.onCancelModelDownload?() }
             }
         } else if case .failed(let message) = vm.asrState {
-            statusLine("exclamationmark.triangle.fill", .red, "模型加载失败", message)
+            statusLine("exclamationmark.triangle.fill", .red, L("模型加载失败"), message)
             // 这里接的是"重新下载"而不是"重新加载"，是刻意的：`downloadAll` 会先按 sha256
             // 校验已有文件，文件完好就直接跳过、随后照样触发一次 `asrService.reload()`。
             // 于是同一个按钮既能修"文件损坏"也能修"只是加载失败"，引导里不必让用户去分辨
             // 自己遇到的是哪一种。
-            trailingButton("重试") { vm.onStartModelDownload?() }
+            trailingButton(L("重试")) { vm.onStartModelDownload?() }
         } else if let error = vm.modelDownloadError {
-            statusLine("exclamationmark.triangle.fill", .red, "下载失败", error)
-            trailingButton("重试下载") { vm.onStartModelDownload?() }
+            statusLine("exclamationmark.triangle.fill", .red, L("下载失败"), error)
+            trailingButton(L("重试下载")) { vm.onStartModelDownload?() }
         } else if vm.asrState == .modelMissing {
-            statusLine("arrow.down.circle", .orange, "尚未下载", "点右侧按钮开始下载。")
-            trailingButton("开始下载") { vm.onStartModelDownload?() }
+            statusLine("arrow.down.circle", .orange, L("尚未下载"), L("点右侧按钮开始下载。"))
+            trailingButton(L("开始下载")) { vm.onStartModelDownload?() }
         } else {
-            statusLine("clock", .secondary, "正在准备…", "正在检查本地模型并加载识别引擎。")
+            statusLine("clock", .secondary, L("正在准备…"), L("正在检查本地模型并加载识别引擎。"))
         }
     }
 
@@ -269,20 +264,19 @@ struct OnboardingView: View {
     private var trialStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("在下面的输入框里试一次")
+                Text(L("在下面的输入框里试一次"))
                     .font(.system(size: 17, weight: .semibold))
                 Text(vm.hotkeyMode == .hold
-                     ? "把光标放进输入框，按住 \(vm.hotkeyDisplay) 说一句话，然后松开。"
-                     : "把光标放进输入框，按一下 \(vm.hotkeyDisplay) 开始说话，说完再按一下结束。")
+                     ? LF("把光标放进输入框，按住 %@ 说一句话，然后松开。", vm.hotkeyDisplay)
+                     : LF("把光标放进输入框，按一下 %@ 开始说话，说完再按一下结束。", vm.hotkeyDisplay))
                     .foregroundStyle(.secondary)
-                Text("这一步会真正跑一遍「热键 → 麦克风 → 本地识别 → 文本插入」，"
-                     + "任何一环有问题都会在下面直接指出来。")
+                Text(L("这一步会真正跑一遍「热键 → 麦克风 → 本地识别 → 文本插入」，任何一环有问题都会在下面直接指出来。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            TextField("识别结果会出现在这里", text: $vm.trialText, axis: .vertical)
+            TextField(L("识别结果会出现在这里"), text: $vm.trialText, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 14))
                 .lineLimit(2...4)
@@ -293,7 +287,7 @@ struct OnboardingView: View {
                 calloutBox(
                     symbol: "exclamationmark.triangle.fill",
                     tint: .orange,
-                    title: "还不能试",
+                    title: L("还不能试"),
                     detail: hint
                 )
             } else if let summary = vm.trialSummary {
@@ -306,13 +300,11 @@ struct OnboardingView: View {
                 )
             }
 
-            DisclosureGroup("按下热键完全没反应？") {
+            DisclosureGroup(L("按下热键完全没反应？")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    troubleshooting("「输入监控」权限没给全——回到上一步确认三项都是绿色。")
-                    troubleshooting("热键被别的应用抢走了（如 Spotlight ⌘Space、输入法切换 ⌃Space）；"
-                                    + "可以在「设置 → 通用」里换一个热键。")
-                    troubleshooting("刚更新过版本：本机签名的构建在更新后可能需要重新授权，"
-                                    + "先到「系统设置 → 隐私与安全性」把 VoiceTyper 移除再重新添加。")
+                    troubleshooting(L("「输入监控」权限没给全——回到上一步确认三项都是绿色。"))
+                    troubleshooting(L("热键被别的应用抢走了（如 Spotlight ⌘Space、输入法切换 ⌃Space）；可以在「设置 → 通用」里换一个热键。"))
+                    troubleshooting(L("刚更新过版本：本机签名的构建在更新后可能需要重新授权，先到「系统设置 → 隐私与安全性」把 VoiceTyper 移除再重新添加。"))
                 }
                 .padding(.top, 6)
             }
@@ -326,7 +318,7 @@ struct OnboardingView: View {
         case .succeeded, .idle, .recording, .recognizing:
             return []
         case .noSpeech, .cancelled, .failed, .blocked:
-            return [OnboardingCalloutAction(title: "再试一次") {
+            return [OnboardingCalloutAction(title: L("再试一次")) {
                 vm.resetTrial()
                 vm.trialText = ""
                 trialFieldFocused = true

@@ -7,7 +7,7 @@ struct HotkeySettingsView: View {
     var body: some View {
         Section {
             HStack {
-                Text("快捷键")
+                Text(L("快捷键"))
                 Spacer()
                 HotkeyRecorder(
                     config: vm.hotkeyConfig,
@@ -17,9 +17,9 @@ struct HotkeySettingsView: View {
                 )
                 .frame(width: 240, height: 30)
             }
-            Button("使用 Fn🌐（推荐）") { vm.resetHotkeyToFn() }
+            Button(L("使用 Fn🌐（推荐）")) { vm.resetHotkeyToFn() }
 
-            Picker("触发方式", selection: Binding(
+            Picker(L("触发方式"), selection: Binding(
                 get: { vm.hotkeyConfig.mode },
                 set: { vm.applyHotkeyMode($0) }
             )) {
@@ -27,12 +27,11 @@ struct HotkeySettingsView: View {
                     Text(mode.displayName).tag(mode)
                 }
             }
-            .help("长段口述（写邮件、写文档）时不必一直按住热键，可以改成按一次开始、再按一次结束。")
+            .help(L("长段口述（写邮件、写文档）时不必一直按住热键，可以改成按一次开始、再按一次结束。"))
         } header: {
-            Text("热键")
+            Text(L("热键"))
         } footer: {
-            Text("点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；也可设为组合键，如 ⌃⌥Space。"
-                 + "录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。")
+            Text(L("点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；也可设为组合键，如 ⌃⌥Space。录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -52,9 +51,9 @@ struct HotkeySettingsView: View {
                     }
                     HStack(spacing: 8) {
                         Spacer()
-                        Button("打开键盘设置") { vm.onOpenKeyboardSettings?() }
+                        Button(L("打开键盘设置")) { vm.onOpenKeyboardSettings?() }
                             .buttonStyle(.borderedProminent)
-                        Button("已改好，重新检测") { vm.refreshFnConflictWarning() }
+                        Button(L("已改好，重新检测")) { vm.refreshFnConflictWarning() }
                     }
                 }
             }

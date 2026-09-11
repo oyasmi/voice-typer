@@ -22,9 +22,9 @@ struct PermissionRow: View {
             }
             Spacer()
             if status != .authorized {
-                Button("授权", action: onRequest)
+                Button(L("授权"), action: onRequest)
                     .buttonStyle(.borderedProminent)
-                Button("系统设置", action: onOpenSystemSettings)
+                Button(L("系统设置"), action: onOpenSystemSettings)
             }
         }
         .padding(.vertical, 2)

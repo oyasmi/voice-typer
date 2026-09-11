@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using VoiceTyper.Support;
 
 namespace VoiceTyper.Llm;
 
@@ -33,9 +34,9 @@ internal static class LlmEndpoint
 
         public string ErrorMessage => Error switch
         {
-            ErrorKind.Malformed => "Base URL 格式不合法，请检查协议头（http/https）与地址。",
+            ErrorKind.Malformed => L10n.T("Base URL 格式不合法，请检查协议头（http/https）与地址。"),
             ErrorKind.InsecurePlaintextHost =>
-                $"{_insecureHost} 是公网地址，明文 HTTP 只允许本机或局域网地址，公网请使用 https://。",
+                L10n.F("{0} 是公网地址，明文 HTTP 只允许本机或局域网地址，公网请使用 https://。", _insecureHost),
             _ => "",
         };
     }

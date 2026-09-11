@@ -22,11 +22,11 @@ final class ModelDownloader: NSObject {
         var errorDescription: String? {
             switch self {
             case .checksumMismatch(let name):
-                return "文件 \(name) 校验失败，可能是下载损坏，请重试。"
+                return LF("文件 %@ 校验失败，可能是下载损坏，请重试。", name)
             case .httpStatus(let name, let code):
-                return "下载 \(name) 失败（HTTP \(code)）。"
+                return LF("下载 %@ 失败（HTTP %d）。", name, code)
             case .cancelled:
-                return "下载已取消。"
+                return L("下载已取消。")
             }
         }
     }

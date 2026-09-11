@@ -86,6 +86,7 @@ internal sealed class SetupForm : Form
 
     // ─ Tab 4：通用 ────────────────────────────────────────────
     private readonly CheckBox _startupCheck = new();
+    private readonly ComboBox _interfaceLanguageCombo = new();
     private readonly NumericUpDown _opacityField = new();
     private readonly NumericUpDown _idleUnloadField = new();
     private readonly NumericUpDown _previewWindowField = new();
@@ -97,7 +98,7 @@ internal sealed class SetupForm : Form
 
     public SetupForm()
     {
-        Text = "VoiceTyper 设置";
+        Text = L10n.F("{0} 设置", "VoiceTyper");
         Size = new Size(760, 640);
         MinimumSize = new Size(680, 560);
         StartPosition = FormStartPosition.CenterScreen;
@@ -169,13 +170,14 @@ internal sealed class SetupForm : Form
         UpdateHotkeyPreview();
 
         _startupCheck.Checked = StartupRegistration.IsEnabled;
+        _interfaceLanguageCombo.SelectedItem = config.UI.InterfaceLanguageValue;
         _opacityField.Value = (decimal)Math.Clamp(config.UI.Opacity, 0.4, 1.0);
         _idleUnloadField.Value = Math.Clamp(config.Asr.IdleUnloadMinutes, 0, 120);
         _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, 0, 30);
 
         if (apiKeyStatus == SecretReadStatus.Failed)
         {
-            SetMessage(_recognitionMessage, "无法读取已保存的 API Key，请重新填写并保存。", Color.Firebrick);
+            SetMessage(_recognitionMessage, L10n.T("无法读取已保存的 API Key，请重新填写并保存。"), Color.Firebrick);
         }
         else
         {
@@ -199,9 +201,9 @@ internal sealed class SetupForm : Form
 
         var micBanner = micProbe switch
         {
-            MicProbeResult.AccessDenied => "麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。",
-            MicProbeResult.NoDevice => "未检测到麦克风设备：请插入麦克风或在系统声音设置中启用输入设备。",
-            MicProbeResult.DeviceFailure => "麦克风设备打开失败：可能被其他应用独占，或驱动异常。",
+            MicProbeResult.AccessDenied => L10n.T("麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。"),
+            MicProbeResult.NoDevice => L10n.T("未检测到麦克风设备：请插入麦克风或在系统声音设置中启用输入设备。"),
+            MicProbeResult.DeviceFailure => L10n.T("麦克风设备打开失败：可能被其他应用独占，或驱动异常。"),
             _ => null,
         };
         if (micBanner is not null)
@@ -219,32 +221,32 @@ internal sealed class SetupForm : Form
         _lastAsrState = asrState;
         _lastIsDownloading = isDownloading;
         _modelStatusLabel.Text = ModelStatusText(asrState, isDownloading, asrFailureMessage);
-        _modelPathLabel.Text = asrState == AsrState.Ready ? $"模型目录：{ModelLocator.DownloadDestination}" : "";
+        _modelPathLabel.Text = asrState == AsrState.Ready ? L10n.F("模型目录：{0}", ModelLocator.DownloadDestination) : "";
 
         var progress = downloadProgress ?? 0;
         _modelProgressBar.Visible = isDownloading;
         _modelProgressBar.Value = Math.Clamp((int)(progress * 100), 0, 100);
 
         (_modelActionButton.Text, _modelActionButton.Enabled) = isDownloading
-            ? ("取消下载", true)
+            ? (L10n.T("取消下载"), true)
             : asrState switch
             {
-                AsrState.ModelMissing => ("开始下载模型", true),
-                AsrState.Loading => ("加载中...", false),
-                AsrState.Ready => ("重新加载模型", true),
-                AsrState.SuspendedForIdle => ("重新加载模型", true),
-                AsrState.Failed => ("重试加载", true),
-                AsrState.Unloaded => ("重新加载模型", true),
-                _ => ("重新加载模型", true),
+                AsrState.ModelMissing => (L10n.T("开始下载模型"), true),
+                AsrState.Loading => (L10n.T("加载中..."), false),
+                AsrState.Ready => (L10n.T("重新加载模型"), true),
+                AsrState.SuspendedForIdle => (L10n.T("重新加载模型"), true),
+                AsrState.Failed => (L10n.T("重试加载"), true),
+                AsrState.Unloaded => (L10n.T("重新加载模型"), true),
+                _ => (L10n.T("重新加载模型"), true),
             };
 
         (_micStatusLabel.Text, _micStatusLabel.ForeColor) = micProbe switch
         {
-            MicProbeResult.Available => ("麦克风可用", Color.SeaGreen),
-            MicProbeResult.AccessDenied => ("麦克风不可用：被系统隐私设置阻止", Color.Firebrick),
-            MicProbeResult.NoDevice => ("未检测到麦克风设备", Color.Firebrick),
-            MicProbeResult.DeviceFailure => ("麦克风打开失败：可能被其他应用占用", Color.Firebrick),
-            _ => ("麦克风状态未知", Color.DarkGoldenrod),
+            MicProbeResult.Available => (L10n.T("麦克风可用"), Color.SeaGreen),
+            MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), Color.Firebrick),
+            MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), Color.Firebrick),
+            MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), Color.Firebrick),
+            _ => (L10n.T("麦克风状态未知"), Color.DarkGoldenrod),
         };
 
         _lastMicProbe = micProbe;
@@ -269,16 +271,16 @@ internal sealed class SetupForm : Form
 
     private static string ModelStatusText(AsrState state, bool isDownloading, string? failureMessage)
     {
-        if (isDownloading) return "正在下载模型...";
+        if (isDownloading) return L10n.T("正在下载模型...");
 
         return state switch
         {
-            AsrState.ModelMissing => "需要下载语音模型（约 230 MB）",
-            AsrState.Loading => "模型加载中...",
-            AsrState.Ready => "SenseVoice-Small（int8）· 已就绪",
-            AsrState.SuspendedForIdle => "引擎已空闲卸载（下次录音自动重新加载）",
-            AsrState.Unloaded => "引擎未加载（空闲卸载后会在下次录音时自动重新加载）",
-            AsrState.Failed => $"模型加载失败：{failureMessage}",
+            AsrState.ModelMissing => L10n.T("需要下载语音模型（约 230 MB）"),
+            AsrState.Loading => L10n.T("模型加载中..."),
+            AsrState.Ready => L10n.T("SenseVoice-Small（int8）· 已就绪"),
+            AsrState.SuspendedForIdle => L10n.T("引擎已空闲卸载（下次录音自动重新加载）"),
+            AsrState.Unloaded => L10n.T("引擎未加载（空闲卸载后会在下次录音时自动重新加载）"),
+            AsrState.Failed => L10n.F("模型加载失败：{0}", failureMessage),
             _ => "",
         };
     }
@@ -298,7 +300,7 @@ internal sealed class SetupForm : Form
         _bannerLabel.Dock = DockStyle.Fill;
         _bannerLabel.TextAlign = ContentAlignment.MiddleLeft;
 
-        _bannerOpenMicSettings.Text = "打开麦克风设置";
+        _bannerOpenMicSettings.Text = L10n.T("打开麦克风设置");
         _bannerOpenMicSettings.AutoSize = true;
         _bannerOpenMicSettings.Dock = DockStyle.Right;
         _bannerOpenMicSettings.Click += (_, _) => OpenMicrophonePrivacySettings();
@@ -312,10 +314,10 @@ internal sealed class SetupForm : Form
         _tabs.Dock = DockStyle.Fill;
         _tabs.Padding = new Point(14, 6);
 
-        var recognitionPage = new TabPage("识别") { BackColor = SystemColors.Control };
-        var hotkeyPage = new TabPage("热键") { BackColor = SystemColors.Control };
-        var permissionsPage = new TabPage("权限") { BackColor = SystemColors.Control };
-        var generalPage = new TabPage("通用") { BackColor = SystemColors.Control };
+        var recognitionPage = new TabPage(L10n.T("识别")) { BackColor = SystemColors.Control };
+        var hotkeyPage = new TabPage(L10n.T("热键")) { BackColor = SystemColors.Control };
+        var permissionsPage = new TabPage(L10n.T("权限")) { BackColor = SystemColors.Control };
+        var generalPage = new TabPage(L10n.T("通用")) { BackColor = SystemColors.Control };
 
         BuildRecognitionPage(recognitionPage);
         BuildHotkeyPage(hotkeyPage);
@@ -330,7 +332,7 @@ internal sealed class SetupForm : Form
 
     private void BuildFooter()
     {
-        _versionLabel.Text = $"版本 {AppConstants.Version} · Powered by SenseVoice-Small (FunAudioLLM)";
+        _versionLabel.Text = L10n.F("版本 {0}", AppConstants.Version) + " · Powered by SenseVoice-Small (FunAudioLLM)";
         _versionLabel.Dock = DockStyle.Bottom;
         _versionLabel.Height = 24;
         _versionLabel.Padding = new Padding(16, 4, 16, 4);
@@ -352,7 +354,7 @@ internal sealed class SetupForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         // 模型卡片
-        layout.Controls.Add(MakeFieldLabel("语音模型："), 0, 0);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("语音模型：")), 0, 0);
         var modelBox = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
         _modelStatusLabel.AutoSize = true;
         _modelPathLabel.AutoSize = true;
@@ -360,7 +362,7 @@ internal sealed class SetupForm : Form
         _modelPathLabel.Font = new Font(Font.FontFamily, 8f);
         _modelProgressBar.Width = 380;
         _modelProgressBar.Visible = false;
-        _modelActionButton.Text = "开始下载模型";
+        _modelActionButton.Text = L10n.T("开始下载模型");
         _modelActionButton.AutoSize = true;
         _modelActionButton.Padding = new Padding(10, 4, 10, 4);
         _modelActionButton.Margin = new Padding(0, 6, 0, 0);
@@ -371,7 +373,7 @@ internal sealed class SetupForm : Form
         modelBox.Controls.Add(_modelActionButton);
         layout.Controls.Add(modelBox, 1, 0);
 
-        layout.Controls.Add(MakeFieldLabel("识别语言："), 0, 1);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("识别语言：")), 0, 1);
         _languageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _languageCombo.FormattingEnabled = true;
         _languageCombo.Width = 160;
@@ -386,22 +388,22 @@ internal sealed class SetupForm : Form
         layout.Controls.Add(_languageCombo, 1, 1);
 
         // LLM 纠错分组
-        _llmEnabledCheck.Text = "启用智能纠错（LLM）";
+        _llmEnabledCheck.Text = L10n.T("启用智能纠错（LLM）");
         _llmEnabledCheck.AutoSize = true;
         layout.Controls.Add(new Panel { Height = 8, Width = 1 }, 0, 2);
         layout.Controls.Add(_llmEnabledCheck, 1, 3);
 
-        layout.Controls.Add(MakeFieldLabel("Base URL："), 0, 4);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("Base URL：")), 0, 4);
         _llmBaseUrlField.Width = 380;
         _llmBaseUrlField.PlaceholderText = "https://api.openai.com/v1";
         layout.Controls.Add(_llmBaseUrlField, 1, 4);
 
-        layout.Controls.Add(MakeFieldLabel("API Key："), 0, 5);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("API Key：")), 0, 5);
         _llmApiKeyField.Width = 380;
         _llmApiKeyField.UseSystemPasswordChar = true;
         layout.Controls.Add(_llmApiKeyField, 1, 5);
 
-        layout.Controls.Add(MakeFieldLabel("模型："), 0, 6);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("模型：")), 0, 6);
         _llmModelField.Width = 200;
         layout.Controls.Add(_llmModelField, 1, 6);
 
@@ -418,16 +420,16 @@ internal sealed class SetupForm : Form
         _llmTimeoutField.Minimum = 1;
         _llmTimeoutField.Maximum = 60;
         _llmTimeoutField.Width = 70;
-        llmParamsRow.Controls.Add(MakeInlineLabel("温度"));
+        llmParamsRow.Controls.Add(MakeInlineLabel(L10n.T("温度")));
         llmParamsRow.Controls.Add(_llmTemperatureField);
-        llmParamsRow.Controls.Add(MakeInlineLabel("  最大 Token"));
+        llmParamsRow.Controls.Add(MakeInlineLabel("  " + L10n.T("最大 Token")));
         llmParamsRow.Controls.Add(_llmMaxTokensField);
-        llmParamsRow.Controls.Add(MakeInlineLabel("  超时(秒)"));
+        llmParamsRow.Controls.Add(MakeInlineLabel("  " + L10n.T("超时(秒)")));
         llmParamsRow.Controls.Add(_llmTimeoutField);
-        layout.Controls.Add(MakeFieldLabel("参数："), 0, 7);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("参数：")), 0, 7);
         layout.Controls.Add(llmParamsRow, 1, 7);
 
-        _llmTestButton.Text = "测试纠错";
+        _llmTestButton.Text = L10n.T("测试纠错");
         _llmTestButton.AutoSize = true;
         _llmTestButton.Padding = new Padding(10, 4, 10, 4);
         _llmTestButton.Click += async (_, _) => await HandleTestLlmCorrection();
@@ -439,7 +441,7 @@ internal sealed class SetupForm : Form
         _recognitionMessage.ForeColor = Color.Gray;
         layout.Controls.Add(_recognitionMessage, 1, 9);
 
-        _saveRecognitionButton.Text = "保存并应用";
+        _saveRecognitionButton.Text = L10n.T("保存并应用");
         _saveRecognitionButton.AutoSize = true;
         _saveRecognitionButton.Padding = new Padding(10, 4, 10, 4);
         _saveRecognitionButton.Click += async (_, _) => await HandleSaveRecognition();
@@ -459,7 +461,7 @@ internal sealed class SetupForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(MakeFieldLabel("修饰键："), 0, 0);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("修饰键：")), 0, 0);
         var modsRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
         _modCtrl.Text = "Ctrl";
         _modAlt.Text = "Alt";
@@ -474,12 +476,12 @@ internal sealed class SetupForm : Form
         }
         layout.Controls.Add(modsRow, 1, 0);
 
-        layout.Controls.Add(MakeFieldLabel("主键："), 0, 1);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("主键：")), 0, 1);
         _hotkeyKey.Width = 160;
         _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
         layout.Controls.Add(_hotkeyKey, 1, 1);
 
-        layout.Controls.Add(MakeFieldLabel("预览："), 0, 2);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("预览：")), 0, 2);
         _hotkeyPreview.AutoSize = true;
         _hotkeyPreview.Font = new Font("Consolas", 11f, FontStyle.Bold);
         _hotkeyPreview.ForeColor = Color.RoyalBlue;
@@ -487,7 +489,7 @@ internal sealed class SetupForm : Form
 
         var hotkeyHint = new Label
         {
-            Text = "支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→",
+            Text = L10n.T("支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→"),
             ForeColor = Color.Gray,
             AutoSize = false,
             Width = 460,
@@ -500,7 +502,7 @@ internal sealed class SetupForm : Form
         _hotkeyMessage.ForeColor = Color.Gray;
         layout.Controls.Add(_hotkeyMessage, 1, 4);
 
-        _saveHotkeyButton.Text = "保存并应用";
+        _saveHotkeyButton.Text = L10n.T("保存并应用");
         _saveHotkeyButton.AutoSize = true;
         _saveHotkeyButton.Padding = new Padding(10, 4, 10, 4);
         _saveHotkeyButton.Click += async (_, _) => await HandleSaveHotkey();
@@ -520,14 +522,14 @@ internal sealed class SetupForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(MakeFieldLabel("麦克风："), 0, 0);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("麦克风：")), 0, 0);
         var micRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
         _micStatusLabel.AutoSize = true;
-        _micRetryButton.Text = "重新检测";
+        _micRetryButton.Text = L10n.T("重新检测");
         _micRetryButton.AutoSize = true;
         _micRetryButton.Margin = new Padding(12, 0, 0, 0);
         _micRetryButton.Click += (_, _) => OnRetryMicProbe?.Invoke();
-        _micOpenSettingsButton.Text = "打开麦克风设置";
+        _micOpenSettingsButton.Text = L10n.T("打开麦克风设置");
         _micOpenSettingsButton.AutoSize = true;
         _micOpenSettingsButton.Margin = new Padding(12, 0, 0, 0);
         _micOpenSettingsButton.Click += (_, _) => OpenMicrophonePrivacySettings();
@@ -538,8 +540,7 @@ internal sealed class SetupForm : Form
 
         var uipiNote = new Label
         {
-            Text = "已知限制：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，"
-                 + "这是 Windows UIPI 安全机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动粘贴。",
+            Text = L10n.T("已知限制：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，这是 Windows UIPI 安全机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动粘贴。"),
             ForeColor = Color.Gray,
             AutoSize = false,
             Width = 480,
@@ -562,11 +563,11 @@ internal sealed class SetupForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        _startupCheck.Text = "开机自启";
+        _startupCheck.Text = L10n.T("开机自启");
         _startupCheck.AutoSize = true;
         layout.Controls.Add(_startupCheck, 1, 0);
 
-        layout.Controls.Add(MakeFieldLabel("HUD 不透明度："), 0, 1);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("HUD 不透明度：")), 0, 1);
         _opacityField.DecimalPlaces = 2;
         _opacityField.Increment = 0.05m;
         _opacityField.Minimum = 0.4m;
@@ -575,34 +576,54 @@ internal sealed class SetupForm : Form
         _opacityField.ValueChanged += (_, _) => OnPreviewHudOpacity?.Invoke((double)_opacityField.Value);
         layout.Controls.Add(_opacityField, 1, 1);
 
-        layout.Controls.Add(MakeFieldLabel("空闲卸载模型："), 0, 2);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("空闲卸载模型：")), 0, 2);
         var idleRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
         _idleUnloadField.Minimum = 0;
         _idleUnloadField.Maximum = 120;
         _idleUnloadField.Width = 70;
         idleRow.Controls.Add(_idleUnloadField);
-        idleRow.Controls.Add(MakeInlineLabel(" 分钟（0 = 常驻不卸载）"));
+        idleRow.Controls.Add(MakeInlineLabel(" " + L10n.T("分钟（0 = 常驻不卸载）")));
         layout.Controls.Add(idleRow, 1, 2);
 
-        layout.Controls.Add(MakeFieldLabel("预览窗口（进阶）："), 0, 3);
+        layout.Controls.Add(MakeFieldLabel(L10n.T("预览窗口（进阶）：")), 0, 3);
         var previewRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
         _previewWindowField.Minimum = 0;
         _previewWindowField.Maximum = 30;
         _previewWindowField.Width = 70;
         previewRow.Controls.Add(_previewWindowField);
-        previewRow.Controls.Add(MakeInlineLabel(" 秒（0 = 首次加载后自动按本机性能校准）"));
+        previewRow.Controls.Add(MakeInlineLabel(" " + L10n.T("秒（0 = 首次加载后自动按本机性能校准）")));
         layout.Controls.Add(previewRow, 1, 3);
 
-        _generalMessage.AutoSize = false;
-        _generalMessage.Height = 22;
-        _generalMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_generalMessage, 1, 4);
+        // 界面语言只能在重启后全面生效：托盘菜单、HUD、本窗口都是带着文案构造出来的。
+        // 与其做半套实时刷新，不如把"需要重启"明确写在旁边。
+        layout.Controls.Add(MakeFieldLabel(L10n.T("界面语言：")), 0, 4);
+        var languageRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        _interfaceLanguageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _interfaceLanguageCombo.FormattingEnabled = true;
+        _interfaceLanguageCombo.Width = 140;
+        foreach (var language in Enum.GetValues<AppLanguage>())
+        {
+            _interfaceLanguageCombo.Items.Add(language);
+        }
+        _interfaceLanguageCombo.Format += (_, e) =>
+        {
+            if (e.ListItem is AppLanguage language) e.Value = language.DisplayName();
+        };
+        languageRow.Controls.Add(_interfaceLanguageCombo);
+        languageRow.Controls.Add(MakeInlineLabel("  " + L10n.T("切换后需重启 VoiceTyper 才会全面生效")));
+        layout.Controls.Add(languageRow, 1, 4);
 
-        _saveGeneralButton.Text = "保存并应用";
+        _generalMessage.AutoSize = false;
+        _generalMessage.Height = 40;
+        _generalMessage.Width = 420;
+        _generalMessage.ForeColor = Color.Gray;
+        layout.Controls.Add(_generalMessage, 1, 5);
+
+        _saveGeneralButton.Text = L10n.T("保存并应用");
         _saveGeneralButton.AutoSize = true;
         _saveGeneralButton.Padding = new Padding(10, 4, 10, 4);
         _saveGeneralButton.Click += async (_, _) => await HandleSaveGeneral();
-        layout.Controls.Add(_saveGeneralButton, 1, 5);
+        layout.Controls.Add(_saveGeneralButton, 1, 6);
 
         page.Controls.Add(layout);
     }
@@ -693,19 +714,19 @@ internal sealed class SetupForm : Form
         string? newKey = currentKey == _loadedApiKey ? null : currentKey;
 
         _saveRecognitionButton.Enabled = false;
-        SetMessage(_recognitionMessage, "保存中...", Color.Gray);
+        SetMessage(_recognitionMessage, L10n.T("保存中..."), Color.Gray);
         try
         {
             await OnSaveRecognition(draft, newKey).ConfigureAwait(true);
             _loadedConfig = draft;
             _loadedApiKey = currentKey;
-            SetMessage(_recognitionMessage, "设置已保存并生效。", Color.SeaGreen);
+            SetMessage(_recognitionMessage, L10n.T("设置已保存并生效。"), Color.SeaGreen);
         }
         catch (Exception ex)
         {
             // 协调器在写任何东西之前做的拒绝（活跃听写 / 校验不通过）会走到这里，
             // 此时密钥与配置都未落盘；密钥写失败 / 配置写失败也各自带明确消息。
-            SetMessage(_recognitionMessage, $"保存失败：{ex.Message}", Color.Firebrick);
+            SetMessage(_recognitionMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
         }
         finally
         {
@@ -728,7 +749,7 @@ internal sealed class SetupForm : Form
         };
 
         _llmTestButton.Enabled = false;
-        SetMessage(_recognitionMessage, "正在测试纠错...", Color.Gray);
+        SetMessage(_recognitionMessage, L10n.T("正在测试纠错..."), Color.Gray);
         try
         {
             var result = await OnTestLlmCorrection(llmConfig, _llmApiKeyField.Text).ConfigureAwait(true);
@@ -736,7 +757,7 @@ internal sealed class SetupForm : Form
         }
         catch (Exception ex)
         {
-            SetMessage(_recognitionMessage, $"纠错测试失败：{ex.Message}", Color.Firebrick);
+            SetMessage(_recognitionMessage, L10n.F("纠错测试失败：{0}", ex.Message), Color.Firebrick);
         }
         finally
         {
@@ -751,13 +772,13 @@ internal sealed class SetupForm : Form
         var key = _hotkeyKey.Text.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(key))
         {
-            SetMessage(_hotkeyMessage, "主键不能为空", Color.Firebrick);
+            SetMessage(_hotkeyMessage, L10n.T("主键不能为空"), Color.Firebrick);
             return;
         }
         // 保存前即时校验，避免保存流程先提示"已保存并生效"、HotkeyService.Start 再抛异常回退默认（R2-1）。
         if (!HotkeyService.IsSupportedKey(key))
         {
-            SetMessage(_hotkeyMessage, $"不支持的主键：{key}。可用：字母、数字、F1–F12、Space、Tab、方向键等。", Color.Firebrick);
+            SetMessage(_hotkeyMessage, L10n.F("不支持的主键：{0}。可用：字母、数字、F1–F12、Space、Tab、方向键等。", key), Color.Firebrick);
             return;
         }
 
@@ -768,7 +789,7 @@ internal sealed class SetupForm : Form
         if (_modWin.Checked) mods.Add("win");
         if (mods.Count == 0)
         {
-            SetMessage(_hotkeyMessage, "至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。", Color.Firebrick);
+            SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), Color.Firebrick);
             return;
         }
 
@@ -776,16 +797,16 @@ internal sealed class SetupForm : Form
         draft.Hotkey = new HotkeyConfig { Modifiers = mods, Key = key };
 
         _saveHotkeyButton.Enabled = false;
-        SetMessage(_hotkeyMessage, "保存中...", Color.Gray);
+        SetMessage(_hotkeyMessage, L10n.T("保存中..."), Color.Gray);
         try
         {
             await OnSaveConfig(draft).ConfigureAwait(true);
             _loadedConfig = draft;
-            SetMessage(_hotkeyMessage, "热键已保存并生效。", Color.SeaGreen);
+            SetMessage(_hotkeyMessage, L10n.T("热键已保存并生效。"), Color.SeaGreen);
         }
         catch (Exception ex)
         {
-            SetMessage(_hotkeyMessage, $"保存失败：{ex.Message}", Color.Firebrick);
+            SetMessage(_hotkeyMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
         }
         finally
         {
@@ -799,26 +820,37 @@ internal sealed class SetupForm : Form
 
         var draft = _loadedConfig.Clone();
         draft.UI.Opacity = (double)_opacityField.Value;
+        draft.UI.InterfaceLanguageValue = (AppLanguage)(_interfaceLanguageCombo.SelectedItem ?? AppLanguage.Zh);
         draft.Asr.IdleUnloadMinutes = (int)_idleUnloadField.Value;
         draft.Asr.PreviewWindowSeconds = (int)_previewWindowField.Value;
+        var languageChanged = draft.UI.InterfaceLanguageValue != _loadedConfig.UI.InterfaceLanguageValue;
 
         _saveGeneralButton.Enabled = false;
-        SetMessage(_generalMessage, "保存中...", Color.Gray);
+        SetMessage(_generalMessage, L10n.T("保存中..."), Color.Gray);
         try
         {
             if (!StartupRegistration.SetEnabled(_startupCheck.Checked))
             {
                 _startupCheck.Checked = StartupRegistration.IsEnabled; // 恢复到注册表真实状态（R4-2）
-                SetMessage(_generalMessage, "开机自启写入失败，其余设置未保存。", Color.Firebrick);
+                SetMessage(_generalMessage, L10n.T("开机自启写入失败，其余设置未保存。"), Color.Firebrick);
                 return;
             }
             await OnSaveConfig(draft).ConfigureAwait(true);
             _loadedConfig = draft;
-            SetMessage(_generalMessage, "设置已保存并生效。", Color.SeaGreen);
+            if (languageChanged)
+            {
+                // 新构造的界面立刻用新语言，但已经建好的托盘菜单与本窗口要重启才会改写。
+                L10n.Apply(draft.UI.InterfaceLanguageValue);
+                SetMessage(_generalMessage, L10n.T("界面语言已保存。请重启 VoiceTyper 使全部界面文本生效。"), Color.SeaGreen);
+            }
+            else
+            {
+                SetMessage(_generalMessage, L10n.T("设置已保存并生效。"), Color.SeaGreen);
+            }
         }
         catch (Exception ex)
         {
-            SetMessage(_generalMessage, $"保存失败：{ex.Message}", Color.Firebrick);
+            SetMessage(_generalMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
         }
         finally
         {

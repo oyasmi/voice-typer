@@ -29,10 +29,10 @@ enum OnboardingStep: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .welcome: return "欢迎"
-        case .permissions: return "系统权限"
-        case .model: return "语音模型"
-        case .trial: return "试一试"
+        case .welcome: return L("欢迎")
+        case .permissions: return L("系统权限")
+        case .model: return L("语音模型")
+        case .trial: return L("试一试")
         }
     }
 }
@@ -124,19 +124,19 @@ final class OnboardingViewModel {
     var trialBlockingHint: String? {
         guard !canRunTrial else { return nil }
         if !permissions.allRequiredGranted {
-            return "还有系统权限没有授予，请回到上一步完成授权。"
+            return L("还有系统权限没有授予，请回到上一步完成授权。")
         }
-        return "语音模型还没准备好，请等待或回到上一步重试下载。"
+        return L("语音模型还没准备好，请等待或回到上一步重试下载。")
     }
 
     /// 底部主按钮文案。
     var primaryActionTitle: String {
         switch step {
         case .welcome, .permissions, .model:
-            return "下一步"
+            return L("下一步")
         case .trial:
-            if case .succeeded = trial { return "完成" }
-            return "先跳过"
+            if case .succeeded = trial { return L("完成") }
+            return L("先跳过")
         }
     }
 
@@ -195,7 +195,7 @@ final class OnboardingViewModel {
             trial = .succeeded(text)
         case .emptyResult:
             trial = trialPeakLevel < AppConstants.silenceRMSThreshold ? .noSpeech : .failed(
-                "采到了声音，但没有识别出文字。请靠近麦克风、放慢一点再试一次。"
+                L("采到了声音，但没有识别出文字。请靠近麦克风、放慢一点再试一次。")
             )
         case .cancelled:
             trial = .cancelled
@@ -214,23 +214,22 @@ final class OnboardingViewModel {
         case .idle:
             return nil
         case .recording:
-            return ("mic.fill", .red, "正在录音…", "说一句话，然后\(hotkeyMode == .hold ? "松开热键" : "再按一次热键")。")
+            return ("mic.fill", .red, L("正在录音…"), LF("说一句话，然后%@。", hotkeyMode == .hold ? L("松开热键") : L("再按一次热键")))
         case .recognizing:
-            return ("waveform", .orange, "识别中…", "本地引擎正在处理这段音频。")
+            return ("waveform", .orange, L("识别中…"), L("本地引擎正在处理这段音频。"))
         case .succeeded(let text):
-            return ("checkmark.seal.fill", .green, "全部跑通了", "已插入：\(text)")
+            return ("checkmark.seal.fill", .green, L("全部跑通了"), LF("已插入：%@", text))
         case .noSpeech:
             return (
-                "waveform.slash", .orange, "没有采到声音",
-                "热键与识别链路是通的，但这段录音几乎是静音。请检查麦克风是否被静音、"
-                    + "「系统设置 → 声音 → 输入」里选中的设备是否正确，然后再试一次。"
+                "waveform.slash", .orange, L("没有采到声音"),
+                L("热键与识别链路是通的，但这段录音几乎是静音。请检查麦克风是否被静音、「系统设置 → 声音 → 输入」里选中的设备是否正确，然后再试一次。")
             )
         case .cancelled:
-            return ("xmark.circle.fill", .secondary, "已取消", "按 Esc 可以随时取消，识别结果不会被插入。再试一次吧。")
+            return ("xmark.circle.fill", .secondary, L("已取消"), L("按 Esc 可以随时取消，识别结果不会被插入。再试一次吧。"))
         case .failed(let message):
-            return ("exclamationmark.triangle.fill", .red, "没有成功", message)
+            return ("exclamationmark.triangle.fill", .red, L("没有成功"), message)
         case .blocked(let reason):
-            return ("exclamationmark.triangle.fill", .orange, "还不能开始", reason)
+            return ("exclamationmark.triangle.fill", .orange, L("还不能开始"), reason)
         }
     }
 }

@@ -91,7 +91,7 @@ internal sealed class LocalAsrSession
         if (_closed || _isFinalizing) return;
         if (data.Length % 4 != 0)
         {
-            OnWarning?.Invoke($"音频帧长度 {data.Length} 不是 4 的倍数，已丢弃");
+            OnWarning?.Invoke(L10n.F("音频帧长度 {0} 不是 4 的倍数，已丢弃", data.Length));
             return;
         }
         if (data.Length == 0) return;
@@ -135,7 +135,7 @@ internal sealed class LocalAsrSession
     {
         if (_capped) return;
         _capped = true;
-        OnWarning?.Invoke($"录音已达 {MaxSessionSamples / AppConstants.TargetSampleRate} 秒上限，自动结束本次听写");
+        OnWarning?.Invoke(L10n.F("录音已达 {0} 秒上限，自动结束本次听写", MaxSessionSamples / AppConstants.TargetSampleRate));
         OnSessionCapped?.Invoke();
     }
 
@@ -195,7 +195,7 @@ internal sealed class LocalAsrSession
         {
             if (_closed) return;
             AppLog.Error("asr", $"finalize 超时（{timeout.TotalSeconds}s）");
-            OnError?.Invoke("识别超时");
+            OnError?.Invoke(L10n.T("识别超时"));
         });
     }
 
@@ -267,7 +267,7 @@ internal sealed class LocalAsrSession
         if (attempt >= MaxEngineWaitAttempts)
         {
             _isFinalizing = false;
-            OnError?.Invoke("识别引擎加载超时，请稍后重试");
+            OnError?.Invoke(L10n.T("识别引擎加载超时，请稍后重试"));
             return;
         }
 
@@ -350,7 +350,7 @@ internal sealed class LocalAsrSession
         {
             // DESIGN.md 约定：纠错失败回落原文时要给用户一个非致命提示。这条 warning 可能
             // 在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，不引入额外的 UI 调度。
-            OnWarning?.Invoke("智能纠错未成功，已使用识别原文");
+            OnWarning?.Invoke(L10n.T("智能纠错未成功，已使用识别原文"));
         }
         OnFinal?.Invoke(outcome.Text);
     }

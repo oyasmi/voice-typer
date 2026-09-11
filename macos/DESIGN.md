@@ -512,6 +512,7 @@ hotkey:
   key: "fn"
 ui:
   opacity: 0.85
+  interface_language: "zh"   # zh / en；界面语言（默认中文），重启后全面生效
 ```
 
 **LLM API Key 存 Keychain**，不落 YAML：

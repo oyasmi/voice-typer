@@ -53,7 +53,7 @@ final class ConfigStore {
                 domain: AppConstants.bundleIdentifier,
                 code: 1002,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "配置文件解析失败，请检查 \(configURL.path)",
+                    NSLocalizedDescriptionKey: LF("配置文件解析失败，请检查 %@", configURL.path),
                     NSUnderlyingErrorKey: error,
                 ]
             )
@@ -114,6 +114,7 @@ final class ConfigStore {
         ui:
           opacity: \(yamlNumber(config.ui.opacity))
           hud_position: \(yamlString(config.ui.hudPosition.rawValue))
+          interface_language: \(yamlString(config.ui.interfaceLanguage.rawValue))
         """
     }
 

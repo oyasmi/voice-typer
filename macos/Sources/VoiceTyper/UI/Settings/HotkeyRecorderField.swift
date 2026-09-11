@@ -112,7 +112,7 @@ final class HotkeyRecorderView: NSView {
                 return
             }
             guard let name = HotkeyService.keyName(for: code) else {
-                label.stringValue = "不支持该键，请重试"
+                label.stringValue = L("不支持该键，请重试")
                 return
             }
             let mods = modifiers(from: event.modifierFlags)
@@ -120,7 +120,7 @@ final class HotkeyRecorderView: NSView {
             // 一旦生效，此后每次在任何应用里打这个字母都会同时触发录音，且用户很可能
             // 因此无法再用键盘正常操作、包括打开设置页改回来（R3-05）。
             guard !mods.isEmpty else {
-                label.stringValue = "请至少同时按住一个修饰键（⌘/⌃/⌥/⇧）"
+                label.stringValue = L("请至少同时按住一个修饰键（⌘/⌃/⌥/⇧）")
                 return
             }
             finish(HotkeyConfig(modifiers: mods, key: name))
@@ -154,7 +154,7 @@ final class HotkeyRecorderView: NSView {
     }
 
     private func updateAppearance() {
-        label.stringValue = isRecording ? "按下快捷键…" : config.displayString
+        label.stringValue = isRecording ? L("按下快捷键…") : config.displayString
         label.textColor = isRecording ? .controlAccentColor : .labelColor
         layer?.borderColor = (isRecording ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
         layer?.borderWidth = isRecording ? 2 : 1

@@ -98,12 +98,12 @@ enum ASRLanguage: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .auto: return "自动"
-        case .zh: return "中文"
-        case .en: return "英文"
-        case .yue: return "粤语"
-        case .ja: return "日语"
-        case .ko: return "韩语"
+        case .auto: return L("自动")
+        case .zh: return L("中文")
+        case .en: return L("英文")
+        case .yue: return L("粤语")
+        case .ja: return L("日语")
+        case .ko: return L("韩语")
         }
     }
 
@@ -232,8 +232,8 @@ enum HotkeyMode: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .hold: return "按住说话"
-        case .toggle: return "按一次开始，再按一次结束"
+        case .hold: return L("按住说话")
+        case .toggle: return L("按一次开始，再按一次结束")
         }
     }
 }
@@ -290,10 +290,10 @@ enum HUDPosition: String, Codable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .bottomCenter: return "底部居中"
-        case .bottomRight: return "右下角"
-        case .nearCursor: return "跟随光标"
-        case .hidden: return "不显示（仅出错时提示）"
+        case .bottomCenter: return L("底部居中")
+        case .bottomRight: return L("右下角")
+        case .nearCursor: return L("跟随光标")
+        case .hidden: return L("不显示（仅出错时提示）")
         }
     }
 }
@@ -301,10 +301,17 @@ enum HUDPosition: String, Codable, CaseIterable {
 struct UIConfig: Codable, Equatable {
     var opacity: Double
     var hudPosition: HUDPosition
+    /// 界面语言。默认中文；改动需要重启应用才全面生效（设置页已明示）。
+    var interfaceLanguage: AppLanguage
 
-    init(opacity: Double = 0.85, hudPosition: HUDPosition = .bottomCenter) {
+    init(
+        opacity: Double = 0.85,
+        hudPosition: HUDPosition = .bottomCenter,
+        interfaceLanguage: AppLanguage = .zh
+    ) {
         self.opacity = opacity
         self.hudPosition = hudPosition
+        self.interfaceLanguage = interfaceLanguage
     }
 
     init(from decoder: Decoder) throws {
@@ -313,10 +320,15 @@ struct UIConfig: Codable, Equatable {
         let rawPosition = try container.decodeIfPresent(String.self, forKey: .hudPosition)
             ?? HUDPosition.bottomCenter.rawValue
         self.hudPosition = HUDPosition(rawValue: rawPosition) ?? .bottomCenter
+        // 无法识别的语言回落中文，与本文件其余字段的容错一致。
+        let rawLanguage = try container.decodeIfPresent(String.self, forKey: .interfaceLanguage)
+            ?? AppLanguage.zh.rawValue
+        self.interfaceLanguage = AppLanguage(rawValue: rawLanguage) ?? .zh
     }
 
     enum CodingKeys: String, CodingKey {
         case opacity
         case hudPosition = "hud_position"
+        case interfaceLanguage = "interface_language"
     }
 }

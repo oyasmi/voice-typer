@@ -173,8 +173,8 @@ internal sealed class AsrService : IDisposable
         return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, _resolvedPreviewWindowSamples,
             engineLoadError: () => State switch
             {
-                AsrState.Failed => FailureMessage ?? "模型加载失败",
-                AsrState.ModelMissing => "识别模型缺失，请在设置中下载模型",
+                AsrState.Failed => FailureMessage ?? L10n.T("模型加载失败"),
+                AsrState.ModelMissing => L10n.T("识别模型缺失，请在设置中下载模型"),
                 _ => null,
             });
     }

@@ -1,9 +1,11 @@
 # VoiceTyper — 一体化 macOS App
 
+**简体中文** | [English](README.en.md)
+
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [更新日志](CHANGELOG.md) · [分体式客户端](../client-server/client_macos_swift/README.md)
 
 单进程 macOS 菜单栏应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 Swift 重写并
-内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.3.1**，
+内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.4.0**，
 应用名 **VoiceTyper**，Bundle ID `com.voicetyper.app`。
 
 **本文适合**：想在自己 Mac 上直接用的用户，以及要自行编译或二次开发的人。深入的架构决策、
@@ -38,6 +40,7 @@
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
 - 可选的 LLM 智能校对，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
 - 识别语言可指定为自动 / 中文 / 英文 / 粤语 / 日语 / 韩语
+- 界面语言可选中文（默认）或英文；菜单栏、设置窗口与浮窗文案对等，切换后重启生效
 - 默认不在启动时加载模型（首次按热键才加载，与录音并行），空闲一段时间后也会自动释放引擎内存
 - 录音时浮窗显示当前输入设备名；持续采不到声音会主动提示检查麦克风
 - 浮窗位置可选底部居中 / 右下角 / 跟随光标 / 不显示，不透明度可调
@@ -188,7 +191,13 @@ Fn 功能也会触发——表现为弹出表情面板或切走输入法。引�
 | --- | --- |
 | **权限** | 三项权限状态、授权按钮、跳转系统设置 |
 | **识别** | 模型状态卡片（自动下载/加载/就绪/失败 + 重试/重新加载）、空闲多久后卸载模型、启动时是否预加载模型、识别语言、智能校对（开关 + Base URL + API Key + 模型 + 温度 + 超时 + 测试校对） |
-| **通用** | 热键（Fn 或组合键，支持按键录制）、触发方式（按住 / 按一次切换）、Fn 键冲突检测、开机自启、浮窗位置与背景不透明度 |
+| **通用** | 热键（Fn 或组合键，支持按键录制）、触发方式（按住 / 按一次切换）、Fn 键冲突检测、开机自启、**界面语言**、浮窗位置与背景不透明度 |
+
+### 界面语言
+
+默认中文。在「通用」页切换为英文后设置会立即落盘，但菜单栏、设置窗口与浮窗都是**按启动时的语言构造**
+出来的，因此需要**重启 VoiceTyper** 才会全部改用新语言。界面语言与「识别」页的识别语言相互独立：
+可以用英文界面听写中文，反之亦然。
 
 ### 配置文件（内部存储，不建议手改）
 
@@ -225,6 +234,7 @@ hotkey:
 ui:
   opacity: 0.85
   hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
+  interface_language: "zh"        # zh / en；界面语言，重启后全面生效
 ```
 
 LLM API Key 出于安全考虑不落配置文件，存在系统 Keychain 里。
@@ -353,6 +363,7 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
 | `ConfigMigratorTests` | 老配置迁移只继承 hotkey 与 HUD 不透明度 |
 | `AppConfigTests` | 配置校验：越界夹逼、NaN/Inf 重置、非 fn 裸键回落默认热键 |
+| `LocalizationTests` | 中英双语覆盖率：源码里每条 `L(...)` / `LF(...)` 都有英文翻译、占位符一致、查不到时回落中文 |
 | `LLMCorrectorTests` | 校对客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） |
 | `LLMEndpointTests` | 校对 Base URL 的结构化解析（scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重） |
 | `ModelDownloaderTests` | sha256 校验、文件清单自洽性、下载顺序与单次自动触发策略 |
@@ -416,6 +427,7 @@ log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
 
 ## 相关链接
 
+- [English version of this document](README.en.md)
 - [VoiceTyper 主项目](../README.md)
 - [设计方案](DESIGN.md)
 - [分体式客户端（多设备共享服务端场景）](../client-server/client_macos_swift/README.md)

@@ -9,9 +9,9 @@ enum SetupTab: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .permissions: return "权限"
-        case .recognition: return "识别"
-        case .general: return "通用"
+        case .permissions: return L("权限")
+        case .recognition: return L("识别")
+        case .general: return L("通用")
         }
     }
 
@@ -69,7 +69,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         self.init(window: window)
-        window.title = "\(AppConstants.appName) 设置"
+        window.title = LF("%@ 设置", AppConstants.appName)
         window.isReleasedWhenClosed = false
         window.delegate = self
         ensureUIBuilt()
@@ -187,7 +187,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.onCancelModelDownload = { [weak self] in self?.onCancelModelDownload?() }
         viewModel.onReloadModel = { [weak self] in self?.onReloadModel?() }
         viewModel.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
-            await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? .failure(SimpleMessageError(message: "内部错误：测试通道不可用"))
+            await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? .failure(SimpleMessageError(message: L("内部错误：测试通道不可用")))
         }
         viewModel.onToggleLaunchAtLogin = { [weak viewModel] enabled in
             do {
@@ -195,7 +195,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             } catch {
                 AppLog.app.error("切换开机自启失败: \(error.localizedDescription, privacy: .public)")
                 let alert = NSAlert()
-                alert.messageText = "无法更改开机自启设置"
+                alert.messageText = L("无法更改开机自启设置")
                 alert.informativeText = error.localizedDescription
                 alert.alertStyle = .warning
                 alert.runModal()

@@ -12,22 +12,22 @@ enum PermissionKind: CaseIterable {
     var title: String {
         switch self {
         case .microphone:
-            return "麦克风"
+            return L("麦克风")
         case .accessibility:
-            return "辅助功能"
+            return L("辅助功能")
         case .inputMonitoring:
-            return "输入监控"
+            return L("输入监控")
         }
     }
 
     var purpose: String {
         switch self {
         case .microphone:
-            return "用于录音"
+            return L("用于录音")
         case .accessibility:
-            return "用于插入文本"
+            return L("用于插入文本")
         case .inputMonitoring:
-            return "用于监听全局热键（尤其是 Fn 键）"
+            return L("用于监听全局热键（尤其是 Fn 键）")
         }
     }
 }
@@ -40,11 +40,11 @@ enum PermissionStatus: Equatable {
     var displayText: String {
         switch self {
         case .authorized:
-            return "已授权"
+            return L("已授权")
         case .denied:
-            return "未授权"
+            return L("未授权")
         case .notDetermined:
-            return "待请求"
+            return L("待请求")
         }
     }
 }
@@ -154,10 +154,10 @@ final class PermissionCenter {
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "请在系统设置中允许“输入监控”"
-        alert.informativeText = "macOS 通常不会直接弹出“输入监控”的授权窗口。点击“打开系统设置”后，请在“隐私与安全性 > 输入监控”中启用 VoiceTyper，然后返回本窗口。"
-        alert.addButton(withTitle: "打开系统设置")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L("请在系统设置中允许“输入监控”")
+        alert.informativeText = L("macOS 通常不会直接弹出“输入监控”的授权窗口。点击“打开系统设置”后，请在“隐私与安全性 > 输入监控”中启用 VoiceTyper，然后返回本窗口。")
+        alert.addButton(withTitle: L("打开系统设置"))
+        alert.addButton(withTitle: L("取消"))
 
         if alert.runModal() == .alertFirstButtonReturn {
             openSystemSettings(for: .inputMonitoring)

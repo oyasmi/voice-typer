@@ -35,12 +35,12 @@ enum FnKeyUsage: Equatable {
     /// 当前设置的中文描述，用于把提示落到用户在系统设置里真正看到的那几个字上。
     var displayName: String {
         switch self {
-        case .doNothing: return "不执行任何操作"
-        case .changeInputSource: return "更改输入法"
-        case .showEmojiAndSymbols: return "显示表情与符号"
-        case .startDictation: return "开始听写"
-        case .unknown(let raw): return "未知设置（\(raw)）"
-        case .unspecified: return "系统默认"
+        case .doNothing: return L("不执行任何操作")
+        case .changeInputSource: return L("更改输入法")
+        case .showEmojiAndSymbols: return L("显示表情与符号")
+        case .startDictation: return L("开始听写")
+        case .unknown(let raw): return LF("未知设置（%d）", raw)
+        case .unspecified: return L("系统默认")
         }
     }
 }
@@ -89,9 +89,8 @@ enum SystemKeyboardSettings {
         let usage = fnKeyUsage()
         guard usage.conflictsWithFnHotkey else { return nil }
         let current = usage == .unspecified
-            ? "当前为系统默认设置"
-            : "当前是「\(usage.displayName)」"
-        return "「系统设置 → 键盘 → 按下🌐键」建议设为「不执行任何操作」（\(current)）。"
-            + "否则按住 Fn 说话时，系统自己的 Fn 功能也会同时触发——松手的一瞬间可能弹出表情面板或切走输入法。"
+            ? L("当前为系统默认设置")
+            : LF("当前是「%@」", usage.displayName)
+        return LF("「系统设置 → 键盘 → 按下🌐键」建议设为「不执行任何操作」（%@）。否则按住 Fn 说话时，系统自己的 Fn 功能也会同时触发——松手的一瞬间可能弹出表情面板或切走输入法。", current)
     }
 }

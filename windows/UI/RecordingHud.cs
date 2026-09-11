@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Windows.Forms;
 using VoiceTyper.Core;
+using VoiceTyper.Support;
 using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.UI;
@@ -25,7 +26,7 @@ internal sealed class RecordingHud : Form
     private HudMode _mode = HudMode.Recording;
     private double _pulsePhase;
     private string _preview = "";
-    private string _statusText = "录音中";
+    private string _statusText = L10n.T("录音中");
     private string _elapsedText = "";
     /// <summary>状态文字是否处于 FlashWarning 的警示色闪现期（约 1.2s）。</summary>
     private bool _statusWarning;
@@ -104,7 +105,7 @@ internal sealed class RecordingHud : Form
         CancelWarningRestore();
 
         _mode = HudMode.Recording;
-        _statusText = "录音中";
+        _statusText = L10n.T("录音中");
         _preview = "";
         _startedAt = DateTime.UtcNow;
         _elapsedText = "";
@@ -124,7 +125,7 @@ internal sealed class RecordingHud : Form
         CancelTransientHide();
         CancelWarningRestore();
         _mode = HudMode.Recognizing;
-        _statusText = "识别中";
+        _statusText = L10n.T("识别中");
         // 松键后冻结计时并停止重绘（与 macOS 对齐）：点为静态橙色、无波形、计时不走，
         // 继续 20fps Invalidate 只是无谓的空刷。下次 ShowRecording 会重新 Start。
         _timer.Stop();
@@ -147,14 +148,14 @@ internal sealed class RecordingHud : Form
     }
 
     /// <summary>final 文本插入成功后的一次性反馈，约 0.7s 后自动隐藏。</summary>
-    public void ShowSuccess() => ShowTransient(HudMode.Success, "已输入", "", TimeSpan.FromSeconds(0.7));
+    public void ShowSuccess() => ShowTransient(HudMode.Success, L10n.T("已输入"), "", TimeSpan.FromSeconds(0.7));
 
     /// <summary>一次性错误提示，约 2.5s 后自动隐藏——菜单栏/托盘的错误态回落时长与此对齐（R3-04）。</summary>
     public void ShowError(string message) =>
-        ShowTransient(HudMode.Error, "错误", string.IsNullOrEmpty(message) ? "服务异常" : message, TimeSpan.FromSeconds(2.5));
+        ShowTransient(HudMode.Error, L10n.T("错误"), string.IsNullOrEmpty(message) ? L10n.T("服务异常") : message, TimeSpan.FromSeconds(2.5));
 
     /// <summary>用户按 Esc 取消录音后的一次性提示，约 1.0s 后自动隐藏。</summary>
-    public void ShowCanceled() => ShowTransient(HudMode.Canceled, "已取消", "", TimeSpan.FromSeconds(1.0));
+    public void ShowCanceled() => ShowTransient(HudMode.Canceled, L10n.T("已取消"), "", TimeSpan.FromSeconds(1.0));
 
     /// <summary>
     /// 录音中或识别中的非致命提示（如预览失败、上一段听写尚未完成）。仅闪烁状态文字，
@@ -166,7 +167,7 @@ internal sealed class RecordingHud : Form
         if (_mode is not (HudMode.Recording or HudMode.Recognizing)) return;
 
         CancelWarningRestore();
-        _statusText = string.IsNullOrEmpty(message) ? "识别提示" : message;
+        _statusText = string.IsNullOrEmpty(message) ? L10n.T("识别提示") : message;
         _statusWarning = true;
         Invalidate();
 
@@ -179,8 +180,8 @@ internal sealed class RecordingHud : Form
             _statusWarning = false;
             _statusText = _mode switch
             {
-                HudMode.Recording => "录音中",
-                HudMode.Recognizing => "识别中",
+                HudMode.Recording => L10n.T("录音中"),
+                HudMode.Recognizing => L10n.T("识别中"),
                 _ => _statusText,
             };
             Invalidate();

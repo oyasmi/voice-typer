@@ -1,3 +1,5 @@
+using VoiceTyper.Support;
+
 namespace VoiceTyper.Core;
 
 internal enum AppState
@@ -30,17 +32,17 @@ internal readonly record struct AppStateInfo(AppState State, string? Message = n
 {
     public string MenuTitle => State switch
     {
-        AppState.Booting => "启动中",
-        AppState.SetupRequired => "需要完成设置",
-        AppState.ModelMissing => "需要下载语音模型",
-        AppState.DownloadingModel => $"下载模型 {(int)(Progress * 100)}%",
-        AppState.ModelLoading => "模型加载中…",
-        AppState.Idle => "就绪",
-        AppState.Recording => "录音中...",
-        AppState.Recognizing => "识别中...",
-        AppState.Inserting => "输入中...",
-        AppState.Paused => "已暂停",
-        AppState.Error => string.IsNullOrEmpty(Message) ? "错误" : $"错误：{Message}",
+        AppState.Booting => L10n.T("启动中"),
+        AppState.SetupRequired => L10n.T("需要完成设置"),
+        AppState.ModelMissing => L10n.T("需要下载语音模型"),
+        AppState.DownloadingModel => L10n.F("下载模型 {0}%", (int)(Progress * 100)),
+        AppState.ModelLoading => L10n.T("模型加载中…"),
+        AppState.Idle => L10n.T("就绪"),
+        AppState.Recording => L10n.T("录音中..."),
+        AppState.Recognizing => L10n.T("识别中..."),
+        AppState.Inserting => L10n.T("输入中..."),
+        AppState.Paused => L10n.T("已暂停"),
+        AppState.Error => string.IsNullOrEmpty(Message) ? L10n.T("错误") : L10n.F("错误：{0}", Message),
         _ => State.ToString(),
     };
 

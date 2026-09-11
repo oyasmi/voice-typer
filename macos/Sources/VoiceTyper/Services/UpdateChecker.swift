@@ -29,9 +29,9 @@ enum UpdateChecker {
         var errorDescription: String? {
             switch self {
             case .httpStatus(let code):
-                return "GitHub 返回 HTTP \(code)"
+                return LF("GitHub 返回 HTTP %d", code)
             case .malformedResponse:
-                return "无法解析 GitHub 的响应"
+                return L("无法解析 GitHub 的响应")
             }
         }
     }

@@ -1,5 +1,7 @@
 # VoiceTyper — 一体化 Windows 应用
 
+**简体中文** | [English](README.en.md)
+
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [审查与修复计划](REVIEW_AND_REPAIR_PLAN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
 单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
@@ -35,6 +37,7 @@
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
 - 可选的 LLM 智能纠错，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
 - 识别语言可指定为自动 / 中文 / 英文 / 粤语 / 日语 / 韩语
+- 界面语言可选中文（默认）或英文；托盘菜单、设置窗口与 HUD 文案对等，切换后重启生效
 - 空闲一段时间后自动释放识别引擎内存，下次按热键与录音并行自动重新加载
 - 开机自启、HUD 不透明度可调
 - **同时支持 x64 与 arm64**（含 Snapdragon X 系列 Windows 笔记本）
@@ -152,7 +155,12 @@
 | **识别** | 模型状态卡片（下载/加载/就绪/失败 + 重新加载）、识别语言、智能纠错（开关 + Base URL + API Key + 模型 + 温度 + 最大 Token + 超时 + 测试纠错） |
 | **热键** | 修饰键（Ctrl/Alt/Shift/Win）组合 + 主键，支持预览 |
 | **权限** | 麦克风可用性检测、跳转 Windows 隐私设置、UIPI 限制说明 |
-| **通用** | 开机自启、HUD 背景不透明度、空闲多久后卸载模型、预览窗口（进阶，0=自动按本机性能校准） |
+| **通用** | 开机自启、HUD 背景不透明度、空闲多久后卸载模型、预览窗口（进阶，0=自动按本机性能校准）、**界面语言** |
+
+### 界面语言
+
+默认中文。在「通用」页切换为英文并保存后设置会立即落盘，但托盘菜单、设置窗口与 HUD 都是**按启动时的
+语言构造**出来的，因此需要**重启 VoiceTyper** 才会全部改用新语言。界面语言与「识别」页的识别语言相互独立。
 
 配置文件：
 
@@ -182,6 +190,7 @@ hotkey:
   key: "f2"
 ui:
   opacity: 0.85
+  interface_language: "zh"   # zh / en；界面语言，重启后全面生效
 ```
 
 LLM API Key 出于安全考虑不落配置文件，用 Windows DPAPI（`ProtectedData`，当前用户范围）加密后存
@@ -291,6 +300,7 @@ dotnet test
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） | 否 |
 | `ConfigStoreTests` | 配置模型与 YAML 序列化往返（不接触真实 `%APPDATA%`） | 否 |
 | `AppConfigValidationTests` | 配置字段越界夹逼、非有限浮点重置、裸键热键回落默认值 | 否 |
+| `LocalizationTests` | 中英双语覆盖率：源码里每条 `L10n.T(...)` / `L10n.F(...)` 都有英文翻译、占位符一致、查不到时回落中文、Bootstrap 能读出 `interface_language` | 否 |
 | `LlmCorrectorTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文）、`tags-only` 响应不丢文本、`TestAsync` 抛出真实错误且不含响应正文 | 否 |
 | `LlmEndpointTests` | Base URL 结构化解析：scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重 | 否 |
 | `AudioChunkerTests` | 定长分帧、跨调用累积余量、`Drain` 尾音、空输入 | 否 |
@@ -351,6 +361,7 @@ VoiceTyper 的钩子回调已做到只做按键判定与异步投递、立即返
 
 ## 相关链接
 
+- [English version of this document](README.en.md)
 - [VoiceTyper 主项目](../README.md)
 - [设计方案](DESIGN.md)
 - [分体式客户端（多设备共享服务端场景）](../client-server/client_windows_native/README.md)

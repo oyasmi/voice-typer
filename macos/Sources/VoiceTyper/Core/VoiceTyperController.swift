@@ -230,7 +230,7 @@ final class VoiceTyperController {
     private func beginRecording() {
         guard isRunning else { return }
         guard active == nil else {
-            onPreviewWarning?("上一段听写尚未完成")
+            onPreviewWarning?(L("上一段听写尚未完成"))
             return
         }
         beginDictationSession()
@@ -273,7 +273,7 @@ final class VoiceTyperController {
     /// 这里只需要把"设备变了"这件事明确告知用户（R2-03）。
     private func handleDeviceChanged() {
         guard active != nil else { return }
-        onPreviewWarning?("输入设备已变化，本次录音已结束")
+        onPreviewWarning?(L("输入设备已变化，本次录音已结束"))
     }
 
     /// 会话达到单段录音上限：不能任由用户继续说下去而内容被静默丢弃，主动走一次与
@@ -351,7 +351,7 @@ final class VoiceTyperController {
             asrService.sessionEnded()
             audioCaptureService.onChunk = nil
             audioCaptureService.onTailChunk = nil
-            onStateChange?(.error("开始录音失败"))
+            onStateChange?(.error(L("开始录音失败")))
             return
         }
 
@@ -374,7 +374,7 @@ final class VoiceTyperController {
                 guard let self, self.isRecording else { return }
                 guard self.recordingPeakLevel < AppConstants.silenceRMSThreshold else { return }
                 AppLog.audio.warning("录音已进行 \(delay, privacy: .public)s 仍未检测到声音")
-                self.onPreviewWarning?("没有检测到声音，请检查麦克风与输入设备")
+                self.onPreviewWarning?(L("没有检测到声音，请检查麦克风与输入设备"))
             }
             silenceProbeWorkItems.append(item)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
@@ -446,12 +446,12 @@ final class VoiceTyperController {
             // 录音开始到插入之间前台应用已切换：不写入用户未预期的窗口，只复制到剪贴板。
             textInsertionService.copyToClipboard(text: trimmed)
             AppLog.app.warning("目标窗口已变化，插入已取消，改为复制到剪贴板")
-            onStateChange?(.error("目标窗口已变化，结果已复制到剪贴板"))
+            onStateChange?(.error(L("目标窗口已变化，结果已复制到剪贴板")))
         case .failed:
             // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
             textInsertionService.copyToClipboard(text: trimmed)
             AppLog.app.error("文本插入失败，已复制到剪贴板")
-            onStateChange?(.error("插入失败，已复制到剪贴板，可手动粘贴"))
+            onStateChange?(.error(L("插入失败，已复制到剪贴板，可手动粘贴")))
         }
     }
 }

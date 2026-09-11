@@ -20,9 +20,9 @@ enum LLMEndpoint {
         var errorDescription: String? {
             switch self {
             case .malformed:
-                return "Base URL 格式不合法，请检查协议头（http/https）与地址。"
+                return L("Base URL 格式不合法，请检查协议头（http/https）与地址。")
             case .insecurePlaintextHost(let host):
-                return "\(host) 是公网地址，明文 HTTP 只允许本机或局域网地址，公网请使用 https://。"
+                return LF("%@ 是公网地址，明文 HTTP 只允许本机或局域网地址，公网请使用 https://。", host)
             }
         }
     }

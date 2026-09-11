@@ -115,7 +115,7 @@ internal sealed class ModelDownloader : IDisposable
                 if (!Sha256Matches(partPath, spec.Sha256))
                 {
                     TryDelete(partPath);
-                    lastError = new ModelDownloadException($"文件 {spec.Name} 校验失败，可能是下载损坏，请重试。");
+                    lastError = new ModelDownloadException(L10n.F("文件 {0} 校验失败，可能是下载损坏，请重试。", spec.Name));
                     continue;
                 }
                 TryDelete(destPath);
@@ -135,7 +135,7 @@ internal sealed class ModelDownloader : IDisposable
                 }
             }
         }
-        throw lastError ?? new ModelDownloadException($"下载 {spec.Name} 失败。");
+        throw lastError ?? new ModelDownloadException(L10n.F("下载 {0} 失败。", spec.Name));
     }
 
     private async Task PerformDownloadAsync(FileSpec spec, string partPath, Action<double> onProgress, CancellationToken ct)
@@ -159,7 +159,7 @@ internal sealed class ModelDownloader : IDisposable
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                throw new ModelDownloadException($"下载 {spec.Name} 连接超时（{HeaderTimeout.TotalSeconds:F0}s 未响应），将重试。");
+                throw new ModelDownloadException(L10n.F("下载 {0} 连接超时（{1:F0}s 未响应），将重试。", spec.Name, HeaderTimeout.TotalSeconds));
             }
         }
         using var response = responseMessage;
@@ -172,7 +172,7 @@ internal sealed class ModelDownloader : IDisposable
         }
         if (!response.IsSuccessStatusCode)
         {
-            throw new ModelDownloadException($"下载 {spec.Name} 失败（HTTP {(int)response.StatusCode}）。");
+            throw new ModelDownloadException(L10n.F("下载 {0} 失败（HTTP {1}）。", spec.Name, (int)response.StatusCode));
         }
 
         var totalLength = response.Content.Headers.ContentRange?.Length
@@ -213,7 +213,7 @@ internal sealed class ModelDownloader : IDisposable
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                throw new ModelDownloadException($"下载 {spec.Name} 停滞（{StallTimeout.TotalSeconds:F0}s 无数据），将重试。");
+                throw new ModelDownloadException(L10n.F("下载 {0} 停滞（{1:F0}s 无数据），将重试。", spec.Name, StallTimeout.TotalSeconds));
             }
             if (read <= 0) break;
             stallCts.CancelAfter(StallTimeout);

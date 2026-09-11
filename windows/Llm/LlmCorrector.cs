@@ -212,11 +212,11 @@ internal sealed class LlmCorrector : IDisposable
         }
         catch (OperationCanceledException)
         {
-            throw new LlmException(LlmErrorKind.RequestFailed, "LLM 请求超时");
+            throw new LlmException(LlmErrorKind.RequestFailed, L10n.T("LLM 请求超时"));
         }
         catch (HttpRequestException ex)
         {
-            throw new LlmException(LlmErrorKind.RequestFailed, $"LLM 服务连接失败: {ex.Message}");
+            throw new LlmException(LlmErrorKind.RequestFailed, L10n.F("LLM 服务连接失败: {0}", ex.Message));
         }
 
         using (response)
@@ -225,7 +225,7 @@ internal sealed class LlmCorrector : IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 // 响应正文可能回显了送去的识别文本，绝不拼进异常消息（W-02）。
-                throw new LlmException(LlmErrorKind.HttpStatus, $"LLM API 错误 ({(int)response.StatusCode})");
+                throw new LlmException(LlmErrorKind.HttpStatus, L10n.F("LLM API 错误 ({0})", (int)response.StatusCode));
             }
 
             JsonDocument doc;
@@ -235,21 +235,21 @@ internal sealed class LlmCorrector : IDisposable
             }
             catch (JsonException)
             {
-                throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
+                throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
             }
 
             using (doc)
             {
                 if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
                 {
-                    throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
+                    throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
                 }
                 var first = choices[0];
                 if (!first.TryGetProperty("message", out var messageEl)
                     || !messageEl.TryGetProperty("content", out var contentEl)
                     || contentEl.GetString() is not { } content)
                 {
-                    throw new LlmException(LlmErrorKind.MalformedResponse, "LLM 响应格式无法解析");
+                    throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
                 }
 
                 if (first.TryGetProperty("finish_reason", out var finishReasonEl)

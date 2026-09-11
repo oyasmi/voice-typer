@@ -105,11 +105,11 @@ internal sealed class AudioCaptureService : IDisposable
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
-                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", AudioStartFailureKind.AccessDenied, ex);
+                throw new AudioStartException(L10n.T("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风"), AudioStartFailureKind.AccessDenied, ex);
             }
             catch (Exception ex)
             {
-                throw new AudioStartException("未找到可用麦克风设备", AudioStartFailureKind.NoDevice, ex);
+                throw new AudioStartException(L10n.T("未找到可用麦克风设备"), AudioStartFailureKind.NoDevice, ex);
             }
 
             try
@@ -141,7 +141,7 @@ internal sealed class AudioCaptureService : IDisposable
                         break;
                     default:
                         throw new AudioStartException(
-                            $"暂不支持 {_captureFormat.Channels} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风",
+                            L10n.F("暂不支持 {0} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风", _captureFormat.Channels),
                             AudioStartFailureKind.DeviceFailure);
                 }
                 _resampledProvider = new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
@@ -168,13 +168,13 @@ internal sealed class AudioCaptureService : IDisposable
             {
                 _running = false;
                 Cleanup();
-                throw new AudioStartException("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风", AudioStartFailureKind.AccessDenied, ex);
+                throw new AudioStartException(L10n.T("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风"), AudioStartFailureKind.AccessDenied, ex);
             }
             catch (Exception ex)
             {
                 _running = false;
                 Cleanup();
-                throw new AudioStartException($"启动录音失败: {ex.Message}", AudioStartFailureKind.DeviceFailure, ex);
+                throw new AudioStartException(L10n.F("启动录音失败: {0}", ex.Message), AudioStartFailureKind.DeviceFailure, ex);
             }
         }
 
