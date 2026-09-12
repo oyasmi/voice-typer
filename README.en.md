@@ -235,3 +235,10 @@ high-quality, offline-capable speech recognition something an ordinary desktop a
 
 > Design documents (`DESIGN.md`) and the client–server documentation are currently maintained in
 > Chinese only.
+
+## License
+
+This project is released under the [Apache License 2.0](LICENSE).
+
+Third-party components (such as the SenseVoice model and ONNX Runtime) remain under their own
+original licenses.

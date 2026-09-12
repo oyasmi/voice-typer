@@ -202,3 +202,9 @@ dotnet test
 VoiceTyper 的本地识别能力建立在
 [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) 和
 [ONNX Runtime](https://github.com/microsoft/onnxruntime) 之上。感谢这些项目让高质量、可离线的语音识别能够真正进入普通桌面应用。
+
+## 许可证
+
+本项目基于 [Apache License 2.0](LICENSE) 发布。
+
+第三方组件（如 SenseVoice 模型与 ONNX Runtime）各自遵循其原始许可证。
