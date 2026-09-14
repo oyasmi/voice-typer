@@ -70,7 +70,12 @@ internal sealed class RecognitionBuffer
     public string Preview()
     {
         var (buffer, count) = Snapshot();
-        if (count - _committedN > _previewWindowSamples)
+        // 用 while 而不是 if：两次预览之间可能因为跳过静音段（见 LocalAsrSession 的
+        // hasSpeechSinceLastPreview）或单次预览耗时较长而累积超过一个窗口的音频。
+        // 只滚一次会让窗口右侧持续超长，推理耗时随之失控（VW-12，对齐 macOS RecognitionBuffer.preview）。
+        // 循环必然终止：Roll 的切点落在 _committedN + 窗口/2 附近（搜索半径仅 100ms，
+        // 远小于半个窗口），每轮都严格推进 _committedN。
+        while (count - _committedN > _previewWindowSamples)
         {
             Roll(buffer, count);
         }

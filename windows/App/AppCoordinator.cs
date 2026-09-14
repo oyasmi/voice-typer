@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -39,6 +40,15 @@ internal sealed class AppCoordinator : IDisposable
     private bool _userOpenedSetup;
     /// <summary>用户是否已从托盘菜单主动暂停听写。暂停时不监听热键（W-28）。</summary>
     private bool _isPaused;
+
+    /// <summary>已经"强制弹窗"过的理由。每个理由在一次未就绪期内只抢一次焦点。
+    ///
+    /// 此前 <see cref="ReevaluateReadinessAsync"/> 的 ModelMissing 分支每次重评估都会
+    /// 无条件 <see cref="OpenSetup"/>——用户刚点完"取消下载"，窗口反而抢焦点跳到最前面
+    /// （VW-11，对齐 macOS 的 B7）。恢复就绪时清空（见 <see cref="ActivateReadyState"/>），
+    /// 这样"就绪 → 又不就绪"仍然会再提醒一次。</summary>
+    private readonly HashSet<ForcedPresentation> _forcedPresentations = new();
+    private enum ForcedPresentation { Permissions, Model }
 
     private ModelDownloader? _modelDownloader;
     private bool _isDownloadingModel;
@@ -102,8 +112,18 @@ internal sealed class AppCoordinator : IDisposable
         _config = _configStore.LoadOrCreate();
         // config.yaml 是界面语言的事实来源（Program.Main 里的 Bootstrap 只是启动期的快照）。
         L10n.Apply(_config.UI.InterfaceLanguageValue);
-        _hud?.Dispose();
-        _hud = new RecordingHud(_config.UI);
+        // HUD 是长生命周期组件：配置变更就地生效，不重建。此前每次保存非 UI 配置
+        // （例如改热键）都会丢弃整个 HUD 实例、连带丢弃窗口句柄与几何状态（VW-15，
+        // 对齐 macOS 的 B8）。界面语言文案在每次 Show*() 调用时通过 L10n.T 现取，
+        // 不需要重建实例就能反映语言变化。
+        if (_hud is null)
+        {
+            _hud = new RecordingHud(_config.UI);
+        }
+        else
+        {
+            _hud.ApplyOpacity(_config.UI.Opacity);
+        }
     }
 
     /// <summary>
@@ -209,7 +229,7 @@ internal sealed class AppCoordinator : IDisposable
                 {
                     if (_micProbe == MicProbeResult.AccessDenied)
                     {
-                        OpenSetup(SetupTab.Permissions);
+                        PresentBlockingGuidance(ForcedPresentation.Permissions, SetupTab.Permissions);
                     }
                     // 权限与模型是两条互不依赖的准备线：麦克风没就绪时模型照样在后台加载。
                     _ = _asrService.PreloadAsync();
@@ -260,11 +280,21 @@ internal sealed class AppCoordinator : IDisposable
                 _currentState = AppStateInfo.ModelLoading;
                 break;
             case AsrState.Loading:
-                _currentState = AppStateInfo.ModelLoading;
+                // 空闲卸载后首次按热键：MakeSession() 会一边异步加载模型、一边立刻开始录音，
+                // 因此模型进入 Loading 时上一轮状态已经是活动听写态（Recording/Recognizing/
+                // Inserting）。若这里无条件覆盖成 ModelLoading，托盘状态会被"未就绪"覆盖，
+                // 而 LocalAsrSession 已支持引擎未就绪时缓存 pendingAudio 并在就绪后回灌，
+                // 录音本身并未受影响——只是状态显示被错误地打断（VW-13，对齐 macOS
+                // computeTargetState 对 .loading 分支的 previous 保护）。
+                // Unloaded（引擎从未加载）不做同样的保护：那是真正需要等待的情形。
+                if (!_currentState.State.IsActiveDictation())
+                {
+                    _currentState = AppStateInfo.ModelLoading;
+                }
                 break;
             case AsrState.ModelMissing:
                 _currentState = AppStateInfo.ModelMissing;
-                OpenSetup(SetupTab.Recognition);
+                PresentBlockingGuidance(ForcedPresentation.Model, SetupTab.Recognition);
                 break;
             case AsrState.Failed:
                 _currentState = AppStateInfo.ErrorWith(_asrService.FailureMessage ?? L10n.T("未知错误"));
@@ -303,6 +333,8 @@ internal sealed class AppCoordinator : IDisposable
 
     private void ActivateReadyState()
     {
+        // 就绪：允许"下次再不就绪时"重新提醒一次（VW-11）。
+        _forcedPresentations.Clear();
         EnsureController();
         if (_controller is { IsRunning: false } controller)
         {
@@ -550,11 +582,38 @@ internal sealed class AppCoordinator : IDisposable
     private void OpenSetup(SetupTab? preferredTab = null)
     {
         _userOpenedSetup = true;
+        PresentSetupForced(preferredTab);
+    }
+
+    /// <summary>
+    /// 强制把设置窗口摆到用户面前，但**不**把它标记为"用户主动打开"——与 <see cref="OpenSetup"/>
+    /// 的区别在于 <see cref="_userOpenedSetup"/>：这里的调用方（未就绪时的引导弹窗）不应该让
+    /// <see cref="HideSetupWindowIfVisible"/> 从此永久失效，就绪后仍要能自动收起窗口（VW-11）。
+    /// </summary>
+    private void PresentSetupForced(SetupTab? preferredTab)
+    {
         EnsureSetupForm();
         _setupForm!.LoadEditableContent(_config);
         SyncSetupWindow();
         if (preferredTab is { } tab) _setupForm.SelectTab(tab);
         _setupForm.Present();
+    }
+
+    /// <summary>未就绪时的强制弹窗：同一个理由在一次未就绪期内只抢一次焦点（VW-11，对齐
+    /// macOS 的 <c>presentBlockingGuidance</c>）。之后只同步窗口内容，不再抢焦点。</summary>
+    private void PresentBlockingGuidance(ForcedPresentation reason, SetupTab preferredTab)
+    {
+        if (_forcedPresentations.Contains(reason))
+        {
+            if (_setupForm is { IsDisposed: false })
+            {
+                _setupForm.LoadEditableContent(_config);
+                SyncSetupWindow();
+            }
+            return;
+        }
+        _forcedPresentations.Add(reason);
+        PresentSetupForced(preferredTab);
     }
 
     private void EnsureSetupForm()

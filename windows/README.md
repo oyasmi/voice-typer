@@ -176,7 +176,7 @@ asr:
   threads: 0                # 0 = 自动（min(4, 核数)）
   model_dir: ""              # 留空 = 自动定位（下载目录 / ModelScope 缓存）
   preview_window: 0          # 秒；0 = 首次加载后自动按本机性能校准
-  idle_unload_minutes: 10    # 0 = 常驻不卸载（与 macOS 默认值一致）
+  idle_unload_minutes: 0     # 0 = 常驻不卸载（默认值，与 macOS 一致）
 llm:
   enabled: false
   base_url: ""

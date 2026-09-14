@@ -1,0 +1,74 @@
+name: Windows build & test
+
+# 仅覆盖 windows/ 应用；macOS 与 client-server 由各自的验证方式负责，不在此工作流范围内。
+# 背景见 windows/REVIEW_2026-09-14.md VW-22：本仓库此前从未有任何自动化构建，
+# windows/REPAIR_DELIVERY.md 里几乎每一条都停留在"代码完成，待 dotnet build 确认"。
+# 这个工作流把"能不能编译、测试能不能跑绿、能不能发布"这三件事变成每次改动自动验证，
+# 而不是继续依赖人工在真机上手动确认。
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          # 本仓库钉死使用 .NET 10（见 VoiceTyper.csproj 的 net10.0-windows），
+          # GA 版本发布节奏未知时允许安装预览通道，避免工作流因 SDK 版本不可用而失败。
+          dotnet-quality: "ga"
+
+      - name: Restore
+        run: dotnet restore VoiceTyper.sln
+
+      - name: Build (Release)
+        run: dotnet build VoiceTyper.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test VoiceTyper.sln -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish win-x64
+        run: >
+          dotnet publish VoiceTyper.csproj -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=false
+          -o dist/win-x64 --nologo
+
+      - name: Publish win-arm64
+        run: >
+          dotnet publish VoiceTyper.csproj -c Release -r win-arm64
+          --self-contained true -p:PublishSingleFile=false
+          -o dist/win-arm64 --nologo
+
+      - name: Verify test assemblies are not bundled into the publish output
+        shell: pwsh
+        run: |
+          $offenders = Get-ChildItem -Path dist -Recurse -Include "xunit.*.dll","VoiceTyper.Tests.dll" -ErrorAction SilentlyContinue
+          if ($offenders) {
+            Write-Error "发布目录混入了测试程序集: $($offenders.FullName -join ', ')"
+            exit 1
+          }
+
+      - name: Upload publish artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicetyper-windows-dist
+          path: windows/dist
+          retention-days: 7

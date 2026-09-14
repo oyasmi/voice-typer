@@ -456,7 +456,7 @@ sealed class AsrService {                      // 所有公共方法在 UI 线�
     public void SessionEnded();                // 重新安排空闲卸载计时
 }
 ```
-持有 `AsrPump`。**空闲卸载**：`asr.idle_unload_minutes`（默认 10，与 macOS 一致，0=永不），
+持有 `AsrPump`。**空闲卸载**：`asr.idle_unload_minutes`（默认 0=永不，与 macOS 一致），
 用 `System.Windows.Forms.Timer`（UI 线程，与状态机同域）。卸载时 `engine.Dispose()` +
 `SetProcessWorkingSetSize(-1,-1)`。`MakeSession()` 发现未加载时**异步重新加载并与录音并行**。
 
@@ -761,7 +761,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | --- | --- | --- |
 | **⚠️ Windows CPU 上预览跟不上 600ms 节奏** | 预览刷新变慢、CPU/风扇吵 | 已被 `previewInFlight` 跳过机制兜住（优雅降级，非故障）；再加 `preview_window` 自校准（§4.5）与 `allow_spinning=0`。**P0 必须先测出真实数字** |
 | **fbank 数值对不齐** | 识别质量下降且难察觉 | 夹具已现成（✅ 已入库），1e-3 逐点比对；三个已知陷阱（`FLT_MIN`、预加重倒序、double 构造滤波器）已写进 §4.3；退路是逐帧二分定位 |
-| **常驻内存 ~500MB** | 任务管理器里显眼，用户投诉 | `disable_prepacking`（macOS 实测省 290MB 零代价）+ 空闲卸载（默认 10 分钟，D13）+ 卸载后 `SetProcessWorkingSetSize` 归还工作集 |
+| **常驻内存 ~500MB** | 任务管理器里显眼，用户投诉 | `disable_prepacking`（macOS 实测省 290MB 零代价）+ 空闲卸载（可配置，默认从不，D13）+ 卸载后 `SetProcessWorkingSetSize` 归还工作集 |
 | **首启下载失败**（断网、ModelScope 抽风、磁盘满） | 新用户第一印象直接卡死 | Range 续传（✅ 本次实测 206 可用）+ sha256 校验（✅ 三个小文件本次实测全对）+ 小文件先行；失败文案给手动放置路径与 `fetch_model.ps1`；`ModelLocator` 复用 `~/.cache/modelscope/` |
 | **未签名安装包被 SmartScreen 拦** | 新用户装不上 | README 图文说明"更多信息 → 仍要运行"；长期解法是买 EV 证书（与 macOS 公证同一个决策位，本轮都不做） |
 | **UIPI：无法向提权窗口插入文本** | 在管理员终端里听写静默失败 | 检测目标窗口提权并给明确提示，而不是让用户以为识别坏了；README 记为已知限制 |
@@ -789,7 +789,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | D10 | 架构覆盖 | ✅ **x64 + arm64** | ORT 两个 RID 原生库齐备，没有 macOS 侧"放弃 Intel"那种被迫取舍 |
 | D11 | 文本插入 | ✅ **维持剪贴板 + SendInput** | Windows 没有 macOS AX 直写的可靠对等物（UIA `TextPattern` 只读、`ValuePattern` 整体替换语义错误） |
 | D12 | Windows 版本下限 | 待定，暂按 **Win10 1809+** | 若接受只支持 Win11 24H2+，Windows ML/NPU 路线才成立。取决于目标用户构成，P0 前定即可 |
-| D13 | 空闲卸载默认值 | ~~待定，暂按 5 分钟~~ → **10 分钟**（3.1.0 起，见 §13） | 与 macOS 默认值一致；此前的分歧没有实测支撑的理由，直接统一 |
+| D13 | 空闲卸载默认值 | ~~待定，暂按 5 分钟~~ → ~~10 分钟~~（3.1.0 起，见 §13）→ **0（从不）**（跟进 macOS 默认调整，见 REVIEW_2026-09-14.md VW-06） | 与 macOS 默认值一致；此前的分歧没有实测支撑的理由，直接统一 |
 
 ---
 

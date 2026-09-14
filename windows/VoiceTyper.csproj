@@ -10,10 +10,13 @@
     <AssemblyName>VoiceTyper</AssemblyName>
     <RootNamespace>VoiceTyper</RootNamespace>
     <!-- 版本与 macOS 拉齐：3.1.0 对齐 macOS 3.1.9 行为基线；3.2.1 补齐 macOS
-         4c33be2「本地听写恢复路径加固」的 4 处直译（见 DESIGN.md §14）。 -->
-    <Version>3.2.1</Version>
-    <AssemblyVersion>3.2.1.0</AssemblyVersion>
-    <FileVersion>3.2.1.0</FileVersion>
+         4c33be2「本地听写恢复路径加固」的 4 处直译（见 DESIGN.md §14）；3.2.2 落地
+         REVIEW_2026-09-14.md 第二轮审查的高性价比修复批次（预览滚窗死循环风险、
+         听写中被模型状态覆盖、设置窗口反复抢焦点且自动隐藏永久失效、HUD 重建、
+         空闲卸载默认值，见该文档）。 -->
+    <Version>3.2.2</Version>
+    <AssemblyVersion>3.2.2.0</AssemblyVersion>
+    <FileVersion>3.2.2.0</FileVersion>
     <Company>VoiceTyper</Company>
     <Product>VoiceTyper</Product>
     <Description>VoiceTyper —— 前后端一体的离线语音输入工具（Windows 原生，内嵌 SenseVoice-Small 识别引擎）</Description>

@@ -202,7 +202,7 @@ asr:
   threads: 0                 # 0 = automatic (min(4, core count))
   model_dir: ""              # empty = locate automatically (download folder / ModelScope cache)
   preview_window: 0          # seconds; 0 = calibrated automatically after the first load
-  idle_unload_minutes: 10    # 0 = stay resident (same default as macOS)
+  idle_unload_minutes: 0     # 0 = stay resident (default, same as macOS)
 llm:
   enabled: false
   base_url: ""

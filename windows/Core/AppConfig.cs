@@ -172,10 +172,12 @@ internal sealed class AsrConfig
     [YamlMember(Alias = "preview_window")]
     public int PreviewWindowSeconds { get; set; } = 0;
 
-    /// <summary>0 = 常驻不卸载。默认值与 macOS 保持一致（W-30：此前 Windows 默认 5 分钟，
-    /// macOS 默认 10 分钟，属无理由分歧）。</summary>
+    /// <summary>0 = 常驻不卸载。默认值与 macOS 保持一致：Windows 启动后总是立即预加载模型
+    /// （没有 macOS 那样可关闭的 preload_on_launch 开关），因此与 macOS「预加载默认开启 +
+    /// 空闲默认从不卸载」的配套决策保持一致——按热键始终零等待（VW-06；此前的 W-30 把
+    /// Windows 从 5 分钟改成 10 分钟对齐 macOS，但 macOS 此后已把默认改成 0，这里跟进）。</summary>
     [YamlMember(Alias = "idle_unload_minutes")]
-    public int IdleUnloadMinutes { get; set; } = 10;
+    public int IdleUnloadMinutes { get; set; } = 0;
 
     public AsrLanguage LanguageValue
     {
