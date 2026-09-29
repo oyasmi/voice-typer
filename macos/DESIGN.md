@@ -34,7 +34,7 @@
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
-| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.3.1**（当前版本，见 D3） |
+| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.5.0**（当前版本，见 D3） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
 > 代价：老客户端用户升级到改名版后需要**重新授权一次**三项权限。由于两个 App 都是 adhoc 签名、

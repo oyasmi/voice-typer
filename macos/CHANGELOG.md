@@ -4,9 +4,9 @@ macOS 一体化 App（`macos/`）的版本变更记录。3.3.1 之前的版本�
 [`DESIGN.md`](DESIGN.md) 决策记录 D3；旧客户端—服务端架构的变更见
 [`client-server/server/CHANGELOG.md`](../client-server/server/CHANGELOG.md)。
 
-## 未发布
+## 3.5.0
 
-R7 批次（版本号由维护者发版时确定）。单元测试全部通过；涉及热键、麦克风、剪贴板与浮窗观感的部分
+R7 批次。单元测试全部通过；涉及热键、麦克风、剪贴板与浮窗观感的部分
 **尚未在真机验证**，见 [`DESIGN.md`](DESIGN.md) §11.4。
 
 ### 新增
