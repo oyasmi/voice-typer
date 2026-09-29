@@ -60,6 +60,52 @@ final class SettingsViewModelHotkeyTests: XCTestCase {
         XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle)
     }
 
+    func testModifierOnlyHotkeyIsAcceptedAndKeepsMode() async {
+        let (vm, recorder) = makeViewModel(
+            initialHotkey: HotkeyConfig(modifiers: [], key: "fn", mode: .toggle)
+        )
+
+        vm.applyRecordedHotkey(HotkeyConfig(modifiers: [], key: "right_command"))
+        await settle()
+
+        XCTAssertEqual(recorder.callCount, 1)
+        XCTAssertEqual(recorder.saved?.hotkey.key, "right_command")
+        XCTAssertEqual(recorder.saved?.hotkey.modifiers, [])
+        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle, "录制不应重置触发方式")
+        XCTAssertEqual(vm.hotkeyMessageKind, .success)
+    }
+
+    func testResetToRightCommandPreservesTriggerMode() async {
+        let (vm, recorder) = makeViewModel(
+            initialHotkey: HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
+        )
+
+        vm.resetHotkeyToRightCommand()
+        await settle()
+
+        XCTAssertEqual(recorder.saved?.hotkey.key, "right_command")
+        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle)
+    }
+
+    func testCommitAudioInputPolicyPersistsChoiceAndRevertsOnFailure() async {
+        let vm = SettingsViewModel()
+        var saved: AppConfig?
+        vm.onSaveConfig = { saved = $0 }
+
+        vm.audioInputPolicy = .systemDefault
+        vm.commitAudioInputPolicy()
+        await settle()
+        XCTAssertEqual(saved?.audio.inputDevice, "system")
+
+        struct SaveFailure: Error {}
+        vm.onSaveConfig = { _ in throw SaveFailure() }
+        vm.audioInputPolicy = .automatic
+        vm.commitAudioInputPolicy()
+        await settle()
+        XCTAssertEqual(vm.audioInputPolicy, .systemDefault, "保存失败必须退回真实生效的值")
+        XCTAssertEqual(vm.generalMessageKind, .error)
+    }
+
     func testApplyHotkeyModeChangesOnlyTheMode() async {
         let (vm, recorder) = makeViewModel(
             initialHotkey: HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .hold)

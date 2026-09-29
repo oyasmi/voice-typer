@@ -19,6 +19,7 @@ actor LLMCorrector {
     private let config: Config
     private let systemPrompt: String
     private let session: URLSession
+    private let capabilityStore: any LLMCapabilityStoring
 
     /// 把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。
     private static func wrap(_ text: String) -> String { "<asr_text>\n\(text)\n</asr_text>" }
@@ -48,9 +49,16 @@ actor LLMCorrector {
         ["role": "assistant", "content": "周报"],
     ]
 
-    /// - Parameter urlSession: 仅供测试注入打桩的 URLSession（配合 URLProtocol）。
-    init(config: Config, urlSession: URLSession? = nil) {
+    /// - Parameters:
+    ///   - urlSession: 仅供测试注入打桩的 URLSession（配合 URLProtocol）。
+    ///   - capabilityStore: "接口是否拒绝 thinking 字段"的缓存；测试注入内存实现，避免污染 UserDefaults。
+    init(
+        config: Config,
+        urlSession: URLSession? = nil,
+        capabilityStore: any LLMCapabilityStoring = UserDefaultsLLMCapabilityStore.shared
+    ) {
         self.config = config
+        self.capabilityStore = capabilityStore
         self.systemPrompt = Self.loadSystemPrompt()
         if let urlSession {
             self.session = urlSession
@@ -86,58 +94,140 @@ actor LLMCorrector {
         }
     }
 
+    /// `thinking` 字段的使用情况，供耗时日志与「测试校对」展示。
+    enum ThinkingParameterUsage {
+        /// 带着字段发出，服务接受。
+        case sent
+        /// 缓存显示该接口不支持，本次没带字段。
+        case omittedByCache
+        /// 带着字段被拒绝，已去掉字段重发。
+        case rejectedThenOmitted
+    }
+
+    /// 「测试校对」的成功结果：模型返回的文本 + `thinking` 字段的使用情况。
+    struct TestResult {
+        let text: String
+        let thinkingParameter: ThinkingParameterUsage
+    }
+
+    struct CorrectionReport {
+        let outcome: CorrectionOutcome
+        let thinkingParameter: ThinkingParameterUsage
+    }
+
     /// 使用 LLM 校对识别文本中的显著错误；任何失败（网络/超时/鉴权/解析）都回落到
     /// 输入原文，并以 `.fellBack` 告知调用方，绝不让校对失败丢掉已经识别出的文本。
     func correct(_ text: String) async -> CorrectionOutcome {
+        await correctWithReport(text).outcome
+    }
+
+    func correctWithReport(_ text: String) async -> CorrectionReport {
+        var usage = ThinkingParameterUsage.sent
         do {
-            return try await correctOrThrow(text)
+            let outcome = try await correctOrThrow(text, probeFresh: false, usage: &usage)
+            return CorrectionReport(outcome: outcome, thinkingParameter: usage)
         } catch {
             AppLog.llm.warning("LLM 校对失败，使用原始文本: \(String(describing: error), privacy: .public)")
-            return .fellBack(text)
+            return CorrectionReport(outcome: .fellBack(text), thinkingParameter: usage)
         }
     }
 
     /// 供设置页「测试校对」按钮使用：与 `correct` 不同，失败时把具体错误抛出而不是回落
     /// 原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，而不是笼统的"未通过"，
     /// 否则"网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
-    func test(_ text: String) async throws -> String {
-        try await correctOrThrow(text).text
+    ///
+    /// 总是忽略缓存、先带 `thinking` 字段探测：用户换了服务或服务升级后，点一次测试就能纠正缓存。
+    func test(_ text: String) async throws -> TestResult {
+        var usage = ThinkingParameterUsage.sent
+        let outcome = try await correctOrThrow(text, probeFresh: true, usage: &usage)
+        return TestResult(text: outcome.text, thinkingParameter: usage)
     }
 
-    /// 抛出：网络/超时/鉴权/HTTP/解析异常。返回：
-    /// - `.corrected` 模型给出非空校对文本；
-    /// - `.fellBack` 语义回落原文（`finish_reason==length` 截断、空 content、剥标签后为空）。
-    private func correctOrThrow(_ text: String) async throws -> CorrectionOutcome {
+    /// 请求体。`thinking: {"type": "disabled"}` 是火山方舟、智谱等服务的混合推理模型
+    /// 关闭深度思考的写法；不支持的服务会以 400/422 拒绝，由 `correctOrThrow` 去掉字段重发。
+    static func buildPayload(
+        config: Config, systemPrompt: String, text: String, includeThinking: Bool
+    ) -> [String: Any] {
         // 校对输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         // 中文大致 1 字 ≈ 1~2 token，留足冗余。
         let dynamicMaxTokens = max(config.maxTokens, text.count * 2 + 128)
 
         var messages: [[String: String]] = [["role": "system", "content": systemPrompt]]
-        messages.append(contentsOf: Self.fewShotMessages)
-        messages.append(["role": "user", "content": Self.wrap(text)])
+        messages.append(contentsOf: fewShotMessages)
+        messages.append(["role": "user", "content": wrap(text)])
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": config.model,
             "messages": messages,
             "temperature": config.temperature,
             "max_tokens": dynamicMaxTokens,
         ]
+        if includeThinking {
+            payload["thinking"] = ["type": "disabled"]
+        }
+        return payload
+    }
 
+    /// 抛出：网络/超时/鉴权/HTTP/解析异常。返回：
+    /// - `.corrected` 模型给出非空校对文本；
+    /// - `.fellBack` 语义回落原文（`finish_reason==length` 截断、空 content、剥标签后为空）。
+    private func correctOrThrow(
+        _ text: String, probeFresh: Bool, usage: inout ThinkingParameterUsage
+    ) async throws -> CorrectionOutcome {
+        let fingerprint = LLMCapabilityFingerprint.make(chatURL: config.chatCompletionsURL, model: config.model)
+        let startedAt = Date()
+        let data: Data
+
+        if !probeFresh, capabilityStore.isThinkingParameterUnsupported(fingerprint: fingerprint) {
+            usage = .omittedByCache
+            data = try await send(text: text, includeThinking: false, timeout: config.timeout)
+        } else {
+            usage = .sent
+            do {
+                data = try await send(text: text, includeThinking: true, timeout: config.timeout)
+                if probeFresh {
+                    capabilityStore.setThinkingParameterUnsupported(false, fingerprint: fingerprint)
+                }
+            } catch LLMError.thinkingParameterRejected {
+                capabilityStore.setThinkingParameterUnsupported(true, fingerprint: fingerprint)
+                usage = .rejectedThenOmitted
+                // 重发只吃"剩余预算"，保证整体不会比用户设置的超时多出太多。
+                let remaining = max(1, config.timeout - Date().timeIntervalSince(startedAt))
+                data = try await send(text: text, includeThinking: false, timeout: remaining)
+            }
+        }
+        return try Self.parseOutcome(data, original: text)
+    }
+
+    /// 发送一次请求并返回 2xx 响应体。
+    /// 400/422 且响应体提到 `thinking`（只在本次确实带了该字段时判定）→ `thinkingParameterRejected`。
+    /// 响应体只用于判定，绝不写日志。
+    private func send(text: String, includeThinking: Bool, timeout: TimeInterval) async throws -> Data {
+        let payload = Self.buildPayload(
+            config: config, systemPrompt: systemPrompt, text: text, includeThinking: includeThinking
+        )
         var request = URLRequest(url: config.chatCompletionsURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        request.timeoutInterval = config.timeout
+        request.timeoutInterval = timeout
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw LLMError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
+            if includeThinking, http.statusCode == 400 || http.statusCode == 422,
+               String(decoding: data.prefix(4096), as: UTF8.self).lowercased().contains("thinking") {
+                throw LLMError.thinkingParameterRejected
+            }
             throw LLMError.httpStatus(http.statusCode)
         }
+        return data
+    }
 
+    private static func parseOutcome(_ data: Data, original text: String) throws -> CorrectionOutcome {
         let responseObject: Any
         do {
             responseObject = try JSONSerialization.jsonObject(with: data)
@@ -178,6 +268,8 @@ actor LLMCorrector {
         case invalidResponse
         case httpStatus(Int)
         case malformedResponse
+        /// 内部错误：服务拒绝了 `thinking` 字段。只用于触发重发，不会展示给用户。
+        case thinkingParameterRejected
 
         var errorDescription: String? {
             switch self {
@@ -187,6 +279,8 @@ actor LLMCorrector {
                 return LF("LLM API 错误 (%d)", code)
             case .malformedResponse:
                 return L("LLM 响应格式无法解析")
+            case .thinkingParameterRejected:
+                return nil
             }
         }
     }

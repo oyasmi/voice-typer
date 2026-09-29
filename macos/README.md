@@ -43,6 +43,12 @@
 - 界面语言可选中文（默认）或英文；菜单栏、设置窗口与浮窗文案对等，切换后重启生效
 - 默认不在启动时加载模型（首次按热键才加载，与录音并行），空闲一段时间后也会自动释放引擎内存
 - 录音时浮窗显示当前输入设备名；持续采不到声音会主动提示检查麦克风
+- 热键除 `Fn`、组合键外，还可设为**单独的右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃**（外接键盘没有 Fn 时使用）；
+  按住它再按别的键仍是普通快捷键
+- 戴蓝牙耳机时默认自动改用电脑内置麦克风录音（耳机麦克风走通话模式，音质差且会拖垮耳机里的音乐），
+  可在设置里改为严格跟随系统默认输入
+- LLM 校对请求默认关闭「深度思考」（对支持 `thinking` 参数的混合推理模型显著降低耗时），不支持的服务自动改用普通请求
+- 模拟粘贴按当前键盘布局取键码，Dvorak / Colemak 下也是 ⌘V
 - 浮窗位置可选底部居中 / 右下角 / 跟随光标 / 不显示，不透明度可调
 - 开机自启
 - 菜单栏可暂停听写、重看使用引导、手动检查更新（不做后台自动检查）
@@ -50,7 +56,13 @@
 **不支持 / 已知限制**
 
 - 只支持 **Apple Silicon**（arm64），不支持 Intel Mac
-- 热键主键限于字母、数字、`space`/`tab`/`enter`、`F1`–`F12`，以及独立的 `fn`
+- 热键主键限于字母、数字、`space`/`tab`/`enter`、`F1`–`F12`，以及独立的 `fn`；单独修饰键限右 ⌘ / 右 ⌥ /
+  左 ⌥ / 右 ⌃（左 ⌘ 参与的快捷键太多，Shift 与输入法中英切换冲突，左 ⌃ 常用于 Emacs 风格编辑，均不支持）
+- 单独修饰键作热键时，每次把它当修饰键用（如右 ⌘ + C）都会短暂打开麦克风，菜单栏的麦克风指示点会闪一下，
+  不会产生任何录音结果。常用右 ⌘ 组合快捷键的用户建议改用右 ⌥，或改用「按一次开始、再按一次结束」
+  （该模式下只有干净的单击才会开始录音，不会打开麦克风）
+- 热键录制按物理键位记录：在 Dvorak 等非 QWERTY 布局下，录制框显示的键名可能与键帽不一致，
+  但录制与匹配使用同一键码，功能正确
 - 应用未做签名公证，首次打开需在「系统设置 → 隐私与安全性」手动放行
 - 只支持 SenseVoice-Small 模型，不支持更换为 paraformer；热词在两种形态里都已移除
   （如需 paraformer，用[分体式客户端](../client-server/client_macos_swift/README.md) +
@@ -191,7 +203,7 @@ Fn 功能也会触发——表现为弹出表情面板或切走输入法。引�
 | --- | --- |
 | **权限** | 三项权限状态、授权按钮、跳转系统设置 |
 | **识别** | 模型状态卡片（自动下载/加载/就绪/失败 + 重试/重新加载）、空闲多久后卸载模型、启动时是否预加载模型、识别语言、智能校对（开关 + Base URL + API Key + 模型 + 温度 + 超时 + 测试校对） |
-| **通用** | 热键（Fn 或组合键，支持按键录制）、触发方式（按住 / 按一次切换）、Fn 键冲突检测、开机自启、**界面语言**、浮窗位置与背景不透明度 |
+| **通用** | 热键（Fn、单独的右 ⌘/右 ⌥ 或组合键，支持按键录制）、触发方式（按住 / 按一次切换）、Fn 键冲突检测、开机自启、**界面语言**、**麦克风**（自动 / 跟随系统）、浮窗位置与背景不透明度 |
 
 ### 界面语言
 
@@ -229,8 +241,10 @@ llm:
   # api_key 不在这里，存在 Keychain（service com.voicetyper.app, account llm_api_key）
 hotkey:
   modifiers: []
-  key: "fn"
+  key: "fn"                   # 另可为 right_command / right_option / left_option / right_control（单独修饰键，modifiers 须为空）
   mode: "hold"                # hold = 按住说话；toggle = 按一次开始、再按一次结束
+audio:
+  input_device: "auto"        # auto = 戴蓝牙耳机时改用内置麦克风；system = 严格跟随系统默认输入；也可为设备 UID（暂无界面）
 ui:
   opacity: 0.85
   hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
@@ -386,7 +400,7 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 
 日志走统一日志系统（`os.Logger`），不落地为独立的 `.log` 文件，subsystem 为
 `com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `asr` / `llm` /
-`model` 几个 category。
+`model` / `metrics` 几个 category。
 
 **命令行**（`log` 是系统自带工具）：
 
@@ -397,7 +411,15 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "asr"'
 
 # 查看历史（过去 10 分钟）
 log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
+
+# 每次听写一行的分阶段耗时摘要
+log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metrics"'
 ```
+
+`metrics` 每次听写结束输出一行，只含数字与枚举，不含任何识别文本。常用字段：`outcome`（inserted / empty /
+cancelled / discarded / gesture_cancelled / failed …）、`release_to_done`（松手到上屏，核心指标）、
+`asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、`input`
+（`builtin*` 表示由自动策略从系统默认输入切换到内置麦克风）、`cold`（引擎是否冷加载）。
 
 **图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，
 搜索框输入 `com.voicetyper.app` 过滤即可；也可以按 category 进一步筛选（如 `llm`、`hotkey`）。

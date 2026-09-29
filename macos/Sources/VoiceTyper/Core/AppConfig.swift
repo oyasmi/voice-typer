@@ -4,17 +4,20 @@ struct AppConfig: Codable {
     var asr: ASRConfig
     var llm: LLMConfig
     var hotkey: HotkeyConfig
+    var audio: AudioConfig
     var ui: UIConfig
 
     init(
         asr: ASRConfig = .init(),
         llm: LLMConfig = .init(),
         hotkey: HotkeyConfig = .init(),
+        audio: AudioConfig = .init(),
         ui: UIConfig = .init()
     ) {
         self.asr = asr
         self.llm = llm
         self.hotkey = hotkey
+        self.audio = audio
         self.ui = ui
     }
 
@@ -23,6 +26,7 @@ struct AppConfig: Codable {
         self.asr = try container.decodeIfPresent(ASRConfig.self, forKey: .asr) ?? .init()
         self.llm = try container.decodeIfPresent(LLMConfig.self, forKey: .llm) ?? .init()
         self.hotkey = try container.decodeIfPresent(HotkeyConfig.self, forKey: .hotkey) ?? .init()
+        self.audio = try container.decodeIfPresent(AudioConfig.self, forKey: .audio) ?? .init()
         self.ui = try container.decodeIfPresent(UIConfig.self, forKey: .ui) ?? .init()
     }
 
@@ -30,6 +34,7 @@ struct AppConfig: Codable {
         case asr
         case llm
         case hotkey
+        case audio
         case ui
     }
 
@@ -61,6 +66,14 @@ struct AppConfig: Codable {
         guard HotkeyService.isSupportedKey(key) else {
             AppLog.app.warning("配置字段 hotkey.key 不支持(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
             return HotkeyConfig(mode: hotkey.mode)
+        }
+        // 单独修饰键（右 ⌘ 等）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
+        // 对不上，忽略并记 warning。
+        if ModifierHotkey(rawValue: key) != nil {
+            if !hotkey.modifiers.isEmpty {
+                AppLog.app.warning("配置字段 hotkey.modifiers 与单独修饰键(\(key, privacy: .public))同时出现，已忽略 modifiers")
+            }
+            return HotkeyConfig(modifiers: [], key: key, mode: hotkey.mode)
         }
         guard key == "fn" || !hotkey.modifiers.isEmpty else {
             AppLog.app.warning("配置字段 hotkey 未搭配修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
@@ -258,9 +271,20 @@ struct HotkeyConfig: Codable, Equatable {
         self.mode = HotkeyMode(rawValue: rawMode) ?? .hold
     }
 
+    /// 热键是单独的修饰键（右 ⌘ 等）：单击即触发，按住它再按别的键则作为快捷键照常使用。
+    var isModifierOnly: Bool { ModifierHotkey(rawValue: key.lowercased()) != nil }
+
+    var kind: DictationMetrics.HotkeyKind {
+        if key.lowercased() == "fn" { return .fn }
+        return isModifierOnly ? .modifier : .combo
+    }
+
     var displayString: String {
         if key.lowercased() == "fn" {
             return "Fn🌐"
+        }
+        if let modifier = ModifierHotkey(rawValue: key.lowercased()) {
+            return modifier.displayName
         }
         let parts = modifiers + [key]
         return parts.map { $0.uppercased() }.joined(separator: "+")
@@ -270,6 +294,28 @@ struct HotkeyConfig: Codable, Equatable {
         case modifiers
         case key
         case mode
+    }
+}
+
+/// 录音输入设备。
+struct AudioConfig: Codable, Equatable {
+    /// `auto`（默认：戴蓝牙耳机时改用内置麦克风）/ `system`（严格跟随系统默认输入）/
+    /// 设备 UID（为后续的手选设备预留，暂无界面）。
+    var inputDevice: String
+
+    init(inputDevice: String = "auto") {
+        self.inputDevice = inputDevice
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try container.decodeIfPresent(String.self, forKey: .inputDevice) ?? "auto"
+        // 空串与缺失一样回落默认，避免手改配置留空后落成"指定一个名叫空串的设备"。
+        self.inputDevice = raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "auto" : raw
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case inputDevice = "input_device"
     }
 }
 

@@ -10,19 +10,74 @@ final class LLMCorrectorTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
-    private func makeCorrector(session: URLSession) -> LLMCorrector {
+    /// 内存版能力缓存：绝不能让单测写到真实的 UserDefaults。
+    private final class MemoryCapabilityStore: LLMCapabilityStoring, @unchecked Sendable {
+        private let lock = NSLock()
+        private var fingerprints = Set<String>()
+        var all: Set<String> { lock.lock(); defer { lock.unlock() }; return fingerprints }
+
+        func isThinkingParameterUnsupported(fingerprint: String) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return fingerprints.contains(fingerprint)
+        }
+
+        func setThinkingParameterUnsupported(_ unsupported: Bool, fingerprint: String) {
+            lock.lock(); defer { lock.unlock() }
+            if unsupported { fingerprints.insert(fingerprint) } else { fingerprints.remove(fingerprint) }
+        }
+    }
+
+    /// 记录每次请求的请求体（URLProtocol 里 `httpBody` 常为 nil，需读 `httpBodyStream`）。
+    private final class RequestRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bodies: [[String: Any]] = []
+        var requests: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return bodies }
+
+        func record(_ request: URLRequest) {
+            lock.lock(); bodies.append(Self.parseBody(of: request)); lock.unlock()
+        }
+
+        static func parseBody(of request: URLRequest) -> [String: Any] {
+            var data = request.httpBody
+            if data == nil, let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var collected = Data()
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count <= 0 { break }
+                    collected.append(buffer, count: count)
+                }
+                data = collected
+            }
+            return data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
+        }
+    }
+
+    private static let okBody = #"{"choices":[{"message":{"content":"修正后的文本"},"finish_reason":"stop"}]}"#
+    private let modelURL = LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!
+
+    private func makeCorrector(
+        session: URLSession,
+        apiKey: String = "test-key",
+        store: (any LLMCapabilityStoring)? = nil
+    ) -> LLMCorrector {
         LLMCorrector(
             config: LLMCorrector.Config(
-                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
-                apiKey: "test-key",
+                chatCompletionsURL: modelURL,
+                apiKey: apiKey,
                 model: "gpt-4o-mini",
                 temperature: 0,
                 maxTokens: 800,
                 timeout: 5
             ),
-            urlSession: session
+            urlSession: session,
+            capabilityStore: store ?? MemoryCapabilityStore()
         )
     }
+
+    private var fingerprint: String { LLMCapabilityFingerprint.make(chatURL: modelURL, model: "gpt-4o-mini") }
 
     override func tearDown() {
         StubURLProtocol.handler = nil
@@ -142,8 +197,8 @@ final class LLMCorrectorTests: XCTestCase {
             return (200, body)
         }
         let corrector = makeCorrector(session: makeSession())
-        let text = try await corrector.test("原文")
-        XCTAssertEqual(text, "修正后的文本")
+        let result = try await corrector.test("原文")
+        XCTAssertEqual(result.text, "修正后的文本")
     }
 
     func testTestThrowsOnHTTPError() async {
@@ -157,6 +212,153 @@ final class LLMCorrectorTests: XCTestCase {
         }
     }
 
+    // MARK: - A1：关闭深度思考与能力缓存
+
+    func testDefaultRequestDisablesThinking() async throws {
+        let recorder = RequestRecorder()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (200, Self.okBody)
+        }
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+
+        assertCorrected(report.outcome, "修正后的文本")
+        XCTAssertEqual(report.thinkingParameter, .sent)
+        let thinking = try XCTUnwrap(recorder.requests.first?["thinking"] as? [String: String])
+        XCTAssertEqual(thinking, ["type": "disabled"])
+    }
+
+    func testRejectedThinkingParameterRetriesOnceWithoutItAndCachesTheAnswer() async {
+        let recorder = RequestRecorder()
+        let store = MemoryCapabilityStore()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            if recorder.requests.last?["thinking"] != nil {
+                return (400, #"{"error":{"message":"Unrecognized request argument supplied: thinking"}}"#)
+            }
+            return (200, Self.okBody)
+        }
+        let report = await makeCorrector(session: makeSession(), store: store).correctWithReport("原文")
+
+        assertCorrected(report.outcome, "修正后的文本")
+        XCTAssertEqual(report.thinkingParameter, .rejectedThenOmitted)
+        XCTAssertEqual(recorder.requests.count, 2)
+        XCTAssertNotNil(recorder.requests[0]["thinking"])
+        XCTAssertNil(recorder.requests[1]["thinking"])
+        XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: fingerprint))
+    }
+
+    func testCachedUnsupportedSkipsTheParameterWithASingleRequest() async {
+        let recorder = RequestRecorder()
+        let store = MemoryCapabilityStore()
+        store.setThinkingParameterUnsupported(true, fingerprint: fingerprint)
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (200, Self.okBody)
+        }
+        let report = await makeCorrector(session: makeSession(), store: store).correctWithReport("原文")
+
+        XCTAssertEqual(report.thinkingParameter, .omittedByCache)
+        XCTAssertEqual(recorder.requests.count, 1)
+        XCTAssertNil(recorder.requests[0]["thinking"])
+    }
+
+    /// 换 Key 不改变接口能力：缓存与 API Key 无关。
+    func testCapabilityCacheIsSharedAcrossAPIKeys() async {
+        let store = MemoryCapabilityStore()
+        StubURLProtocol.handler = { _ in (400, "thinking is not supported") }
+        _ = await makeCorrector(session: makeSession(), apiKey: "key-A", store: store).correctWithReport("原文")
+        XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: fingerprint))
+
+        let recorder = RequestRecorder()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (200, Self.okBody)
+        }
+        let report = await makeCorrector(session: makeSession(), apiKey: "key-B", store: store).correctWithReport("原文")
+        XCTAssertEqual(report.thinkingParameter, .omittedByCache)
+        XCTAssertEqual(recorder.requests.count, 1)
+    }
+
+    func testUnrelated400DoesNotRetry() async {
+        let recorder = RequestRecorder()
+        let store = MemoryCapabilityStore()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (400, #"{"error":{"message":"model not found"}}"#)
+        }
+        let report = await makeCorrector(session: makeSession(), store: store).correctWithReport("原文")
+
+        assertFellBack(report.outcome, "原文")
+        XCTAssertEqual(recorder.requests.count, 1, "与 thinking 无关的 400 不应重发")
+        XCTAssertTrue(store.all.isEmpty)
+    }
+
+    func testFailureAfterRetryFallsBackWithAtMostTwoRequests() async {
+        let recorder = RequestRecorder()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            if recorder.requests.last?["thinking"] != nil { return (422, "unknown field: thinking") }
+            return (500, "internal error")
+        }
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+
+        assertFellBack(report.outcome, "原文")
+        XCTAssertEqual(report.thinkingParameter, .rejectedThenOmitted)
+        XCTAssertEqual(recorder.requests.count, 2)
+    }
+
+    func testTestAlwaysProbesWithParameterAndClearsCacheWhenAccepted() async throws {
+        let recorder = RequestRecorder()
+        let store = MemoryCapabilityStore()
+        store.setThinkingParameterUnsupported(true, fingerprint: fingerprint)
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (200, Self.okBody)
+        }
+        let result = try await makeCorrector(session: makeSession(), store: store).test("原文")
+
+        XCTAssertEqual(result.thinkingParameter, .sent)
+        XCTAssertNotNil(recorder.requests.first?["thinking"], "测试校对应忽略缓存重新探测")
+        XCTAssertFalse(store.isThinkingParameterUnsupported(fingerprint: fingerprint))
+    }
+
+    func testTestRecordsRejectionAndReportsFallbackRequest() async throws {
+        let store = MemoryCapabilityStore()
+        StubURLProtocol.handler = { request in
+            RequestRecorder.parseBody(of: request)["thinking"] != nil
+                ? (400, "thinking not allowed") : (200, Self.okBody)
+        }
+        let result = try await makeCorrector(session: makeSession(), store: store).test("原文")
+        XCTAssertEqual(result.thinkingParameter, .rejectedThenOmitted)
+        XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: fingerprint))
+    }
+
+    func testFingerprintDependsOnURLAndModelOnly() {
+        let a = LLMCapabilityFingerprint.make(chatURL: modelURL, model: "m1")
+        XCTAssertEqual(a, LLMCapabilityFingerprint.make(chatURL: modelURL, model: "m1"))
+        XCTAssertNotEqual(a, LLMCapabilityFingerprint.make(chatURL: modelURL, model: "m2"))
+        XCTAssertNotEqual(a, LLMCapabilityFingerprint.make(chatURL: URL(string: "https://other.invalid/v1/chat/completions")!, model: "m1"))
+        XCTAssertEqual(a.count, 16)
+        XCTAssertTrue(a.allSatisfy { $0.isHexDigit })
+    }
+
+    func testUserDefaultsStoreRoundTripAndCapsEntries() throws {
+        let suite = "com.voicetyper.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsLLMCapabilityStore(defaults: defaults)
+
+        store.setThinkingParameterUnsupported(true, fingerprint: "a")
+        XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: "a"))
+        store.setThinkingParameterUnsupported(false, fingerprint: "a")
+        XCTAssertFalse(store.isThinkingParameterUnsupported(fingerprint: "a"))
+
+        for index in 0..<40 { store.setThinkingParameterUnsupported(true, fingerprint: "f\(index)") }
+        XCTAssertFalse(store.isThinkingParameterUnsupported(fingerprint: "f0"), "超出 32 个时应丢最旧的")
+        XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: "f39"))
+    }
+
     /// test() 遇到语义回落（如 finish_reason=length）仍返回文本、不抛错——契约不变。
     func testTestReturnsOriginalTextOnSemanticFallback() async throws {
         StubURLProtocol.handler = { _ in
@@ -164,8 +366,8 @@ final class LLMCorrectorTests: XCTestCase {
             return (200, body)
         }
         let corrector = makeCorrector(session: makeSession())
-        let text = try await corrector.test("原始长文本")
-        XCTAssertEqual(text, "原始长文本")
+        let result = try await corrector.test("原始长文本")
+        XCTAssertEqual(result.text, "原始长文本")
     }
 }
 
@@ -177,7 +379,7 @@ final class SettingsViewModelTests: XCTestCase {
         vm.llmBaseURL = "https://stub.invalid/v1"
         vm.onTestLLMCorrection = { _, _ in
             try? await Task.sleep(nanoseconds: 20_000_000)
-            return .success("修正后的文本")
+            return .success(LLMCorrector.TestResult(text: "修正后的文本", thinkingParameter: .sent))
         }
 
         vm.testLLMCorrection()

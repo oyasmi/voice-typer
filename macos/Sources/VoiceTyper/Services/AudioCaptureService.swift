@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
 
 private final class AudioConverterInputState: @unchecked Sendable {
@@ -54,6 +55,9 @@ final class AudioCaptureService: @unchecked Sendable {
 
     let chunkSamples: Int
 
+    /// 本次录音实际使用的输入设备；`start` 成功后才有值，只在主线程读写。
+    private(set) var activeInputDevice: ActiveInputDevice?
+
     private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -91,7 +95,8 @@ final class AudioCaptureService: @unchecked Sendable {
         self.chunker = AudioChunker(chunkSamples: chunkSamples)
     }
 
-    func start() throws {
+    /// - Parameter inputPolicy: 输入设备策略。设备在录音开始前解析一次，录音中不切换。
+    func start(inputPolicy: AudioInputPolicy) throws {
         guard !isRunning else { return }
 
         lock.lock()
@@ -99,6 +104,8 @@ final class AudioCaptureService: @unchecked Sendable {
         lock.unlock()
 
         let inputNode = engine.inputNode
+        // 必须在读取 inputFormat / installTap 之前设置：换设备会改变输入格式。
+        activeInputDevice = applyInputDevice(inputPolicy, to: inputNode)
         let inputFormat = inputNode.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0 else {
             throw NSError(
@@ -156,6 +163,36 @@ final class AudioCaptureService: @unchecked Sendable {
                 self?.handleConfigurationChangeDuringRecording()
             }
         }
+    }
+
+    /// 按策略解析并设置输入设备，返回实际使用的设备。
+    ///
+    /// 引擎在多次录音间复用：某次把输入钉在内置麦克风后，下一次「跟随系统」也必须显式设回
+    /// 当前默认输入，否则会一直停留在上一次的设备——所以只要解析出设备就一律显式设置。
+    /// 设置失败只记 warning、沿用引擎当前设备，不中断录音。
+    /// 已知副作用：录音被钉在内置麦克风时，中途连上 / 断开其他设备仍可能触发
+    /// `AVAudioEngineConfigurationChange`，沿用现有"结束本次录音并照常识别"的处理。
+    private func applyInputDevice(_ policy: AudioInputPolicy, to inputNode: AVAudioInputNode) -> ActiveInputDevice? {
+        let resolved = AudioInputDevice.resolveCurrent(policy: policy)
+        guard var deviceID = resolved.deviceID, let audioUnit = inputNode.audioUnit else { return nil }
+
+        let status = AudioUnitSetProperty(
+            audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+            &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status != noErr {
+            AppLog.audio.warning("设置输入设备失败（OSStatus \(status, privacy: .public)），沿用引擎当前设备")
+        }
+
+        // 读回实际使用的设备：显示名称与耗时日志都以它为准，而不是以"想设置的"为准。
+        var actualID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioUnitGetProperty(
+            audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actualID, &size
+        ) == noErr, actualID != 0 else { return nil }
+        return AudioInputDevice.activeDevice(
+            id: actualID, switchedByAuto: resolved.switchedByAuto && actualID == resolved.deviceID
+        )
     }
 
     /// 保留已采到的音频交给当前会话完成识别（走与正常停止相同的尾音刷出路径），

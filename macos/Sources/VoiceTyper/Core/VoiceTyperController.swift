@@ -16,11 +16,13 @@ final class VoiceTyperController {
         let expectedFrontmostPID: pid_t?
         let startedAt: Date
         var phase: Phase = .recording
+        var metrics: DictationMetrics
 
-        init(session: LocalASRSession, expectedFrontmostPID: pid_t?, startedAt: Date) {
+        init(session: LocalASRSession, expectedFrontmostPID: pid_t?, startedAt: Date, metrics: DictationMetrics) {
             self.session = session
             self.expectedFrontmostPID = expectedFrontmostPID
             self.startedAt = startedAt
+            self.metrics = metrics
         }
     }
 
@@ -29,6 +31,8 @@ final class VoiceTyperController {
         case failed(String)
         case cancelled
         case discarded
+        /// 单独修饰键被用作组合快捷键：静默丢弃，不弹"已取消"。
+        case gestureDiscarded
         /// stop()：控制器整体停止，不发任何状态变化。
         case shutdown
     }
@@ -39,6 +43,7 @@ final class VoiceTyperController {
     private let hotkeyService: HotkeyListening
     private let audioCaptureService: AudioCapturing
     private let textInsertionService: TextInserting
+    private let now: MonotonicClock
 
     private var active: Utterance?
     private var isRunning = false
@@ -95,15 +100,26 @@ final class VoiceTyperController {
     var onCorrectionStarted: (() -> Void)?
     /// 录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。保证在主线程触发。
     var onAudioLevel: ((Float) -> Void)?
+    /// 每次听写收尾时恰好触发一次（`stop()` 除外），参数只含数字与枚举。
+    var onMetrics: ((DictationMetrics) -> Void)?
     var isStarted: Bool { isRunning }
+
+    /// 当前录音实际使用的输入设备名，供 HUD 显示；`start` 成功后才有值。
+    var recordingInputDeviceName: String? {
+        guard let name = audioCaptureService.activeInputDevice?.name.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return nil }
+        return name
+    }
 
     init(
         config: AppConfig,
         asrService: ASRService,
         hotkeyService: HotkeyListening = HotkeyService(),
         audioCaptureService: AudioCapturing = AudioCaptureService(),
-        textInsertionService: TextInserting = TextInsertionService()
+        textInsertionService: TextInserting = TextInsertionService(),
+        now: @escaping MonotonicClock = systemMonotonicClock
     ) {
+        self.now = now
         self.config = config
         self.asrService = asrService
         self.hotkeyService = hotkeyService
@@ -139,11 +155,21 @@ final class VoiceTyperController {
         hotkeyService.onCancel = { [weak self] in
             Task { @MainActor [weak self] in self?.cancelByUser() }
         }
+        hotkeyService.onGestureCancelled = { [weak self] in
+            Task { @MainActor [weak self] in self?.discardByGesture() }
+        }
         // 电平回调在音频线程触发，跳回主线程再转发给 UI。
         // 音频引擎仅在录音期间运行，故无需按会话单独装卸此回调。
+        let clock = now
         audioCaptureService.onLevel = { [weak self] level in
+            // 首帧时间必须在音频线程上取，跳到主线程之后再取会把调度延迟算进去。
+            let receivedAt = clock()
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if let utterance = self.active, utterance.metrics.firstBufferAt == nil,
+                   receivedAt >= utterance.metrics.pressedAt {
+                    utterance.metrics.firstBufferAt = receivedAt
+                }
                 self.recordingPeakLevel = max(self.recordingPeakLevel, level)
                 self.onAudioLevel?(level)
             }
@@ -201,43 +227,72 @@ final class VoiceTyperController {
     /// - `.hold`：按下开始，交给 `handleHotkeyRelease()` 结束（原有行为，默认）。
     /// - `.toggle`：按下开始，**再按一次**结束；松开事件被忽略。
     private func handleHotkeyPress() {
+        let pressedAt = now()
         guard isRunning else { return }
         if let blockedReason {
-            onBlockedAttempt?(blockedReason)
+            // 单独修饰键会在每次组合快捷键时"按下"，此时提示会变成骚扰；
+            // 改为在干净的单击（松开）时才说明原因，见 `handleHotkeyRelease`。
+            if !config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
             return
         }
         switch config.hotkey.mode {
         case .hold:
-            beginRecording()
+            beginRecording(pressedAt: pressedAt)
         case .toggle:
+            // 单独修饰键的 toggle：只有干净的单击才算，改在 `handleHotkeyRelease` 里切换，
+            // 这样按住右 ⌘ 再按 C 之类的组合快捷键不会误开录音。
+            if config.hotkey.isModifierOnly { return }
             if isRecording {
                 finishRecording()
             } else {
                 // 非录音态（含 active 已进入 .recognizing）统一走 beginRecording()：
                 // 它自带"上一段听写尚未完成"的拒绝分支，toggle 模式无需重复判断。
-                beginRecording()
+                beginRecording(pressedAt: pressedAt)
             }
         }
     }
 
     /// 热键松开。仅 `.hold` 模式有意义；`.toggle` 模式下松开不是结束信号。
     private func handleHotkeyRelease() {
-        guard isRunning, blockedReason == nil else { return }
-        guard config.hotkey.mode == .hold else { return }
-        finishRecording()
+        guard isRunning else { return }
+        if let blockedReason {
+            if config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
+            return
+        }
+        switch config.hotkey.mode {
+        case .hold:
+            finishRecording()
+        case .toggle:
+            // 普通热键的松开不是结束信号；单独修饰键的松开才是"一次干净的单击"。
+            guard config.hotkey.isModifierOnly else { return }
+            if isRecording {
+                finishRecording()
+            } else {
+                beginRecording(pressedAt: now())
+            }
+        }
     }
 
-    private func beginRecording() {
+    /// 单独修饰键（hold 模式）在按住期间被用作组合快捷键：静默丢弃本次录音，不弹任何提示。
+    /// 识别中阶段忽略——按住期间不可能进入识别中。
+    private func discardByGesture() {
+        guard config.hotkey.mode == .hold, let utterance = active, utterance.phase == .recording else { return }
+        audioCaptureService.stopWithoutResult()
+        finish(.gestureDiscarded)
+    }
+
+    private func beginRecording(pressedAt: UInt64) {
         guard isRunning else { return }
         guard active == nil else {
             onPreviewWarning?(L("上一段听写尚未完成"))
             return
         }
-        beginDictationSession()
+        beginDictationSession(pressedAt: pressedAt)
     }
 
     private func finishRecording() {
         guard let utterance = active, utterance.phase == .recording else { return }
+        utterance.metrics.releasedAt = now()
 
         // 短录音过滤：低于阈值的录音视为误触，立即取消。
         if Date().timeIntervalSince(utterance.startedAt) < Self.minimumRecordingDuration {
@@ -286,10 +341,18 @@ final class VoiceTyperController {
 
     // MARK: - 识别路径
 
-    private func beginDictationSession() {
-        let session = asrService.makeSession(llmCorrector: llmCorrector)
+    private func beginDictationSession(pressedAt: UInt64) {
+        let session = asrService.makeSession(llmCorrector: llmCorrector, now: now)
         let expectedFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let utterance = Utterance(session: session, expectedFrontmostPID: expectedFrontmostPID, startedAt: Date())
+        let metrics = DictationMetrics(
+            sessionID: UInt16.random(in: .min ... .max),
+            mode: config.hotkey.mode,
+            hotkey: config.hotkey.kind,
+            pressedAt: pressedAt
+        )
+        let utterance = Utterance(
+            session: session, expectedFrontmostPID: expectedFrontmostPID, startedAt: Date(), metrics: metrics
+        )
 
         // partial 是全量预览文本，直接替换：本地识别引擎对已累积音频整段/滑窗重跑，
         // 后一次结果会修正前一次的文字，增量语义无法表达这种回溯修改。
@@ -334,6 +397,10 @@ final class VoiceTyperController {
                     session?.sendAudio(samples)
                 }
                 self.active?.phase = .recognizing
+                // 设备变化 / 达到会话上限时没有"松手"，以尾音到达的时刻作为收音结束点。
+                let tailAt = self.now()
+                if self.active?.metrics.releasedAt == nil { self.active?.metrics.releasedAt = tailAt }
+                self.active?.metrics.finalizeCalledAt = tailAt
                 // 松手之后到结果上屏之前，Esc 仍可取消（HotkeyService 默认只在按住期间
                 // 受理 Esc）。收尾时由 finish(_:) 统一关闭这个窗口。
                 self.hotkeyService.acceptsCancelWhenInactive = true
@@ -344,17 +411,26 @@ final class VoiceTyperController {
         }
 
         do {
-            try audioCaptureService.start()
+            try audioCaptureService.start(inputPolicy: AudioInputPolicy(configValue: config.audio.inputDevice))
         } catch {
             AppLog.audio.error("开始录音失败: \(error.localizedDescription, privacy: .public)")
             session.close()
             asrService.sessionEnded()
             audioCaptureService.onChunk = nil
             audioCaptureService.onTailChunk = nil
+            var failed = utterance.metrics
+            failed.outcome = .startFailed
+            failed.doneAt = now()
+            onMetrics?(failed)
             onStateChange?(.error(L("开始录音失败")))
             return
         }
 
+        utterance.metrics.captureStartedAt = now()
+        if let device = audioCaptureService.activeInputDevice {
+            utterance.metrics.inputTransport = device.transport
+            utterance.metrics.inputSwitchedByAuto = device.switchedByAuto
+        }
         active = utterance
         previewText = ""
         recordingPeakLevel = 0
@@ -396,6 +472,9 @@ final class VoiceTyperController {
         active = nil
         cancelSilenceProbes()
         hotkeyService.acceptsCancelWhenInactive = false
+        // 必须在 close() 之前取：这是会话内分阶段打点的唯一读取点。
+        var metrics = utterance.metrics
+        metrics.timings = utterance.session.timings
         utterance.session.close()
         asrService.sessionEnded()
         audioCaptureService.onChunk = nil
@@ -403,27 +482,41 @@ final class VoiceTyperController {
         previewText = ""
         onPreviewUpdate?("")
 
+        let result: DictationMetrics.Outcome
         switch outcome {
         case .text(let text):
-            handleFinalText(text, expectedFrontmostPID: utterance.expectedFrontmostPID)
+            result = handleFinalText(text, expectedFrontmostPID: utterance.expectedFrontmostPID, metrics: &metrics)
         case .failed(let message):
             onStateChange?(.error(message))
+            result = .failed
         case .cancelled:
             if isRunning {
                 AppLog.audio.info("用户取消录音")
                 onCancelled?()
             }
-        case .discarded:
+            result = .cancelled
+        case .discarded, .gestureDiscarded:
             if isRunning {
                 onStateChange?(.idle)
             }
+            if case .gestureDiscarded = outcome {
+                result = .gestureCancelled
+            } else {
+                result = .discarded
+            }
         case .shutdown:
-            break
+            return // stop() 不是一次完整听写，不上报
         }
+
+        metrics.outcome = result
+        metrics.doneAt = now()
+        onMetrics?(metrics)
     }
 
-    /// 插入最终文本并更新状态。调用方（`finish(_:)`）负责在调用前完成会话拆解。
-    private func handleFinalText(_ text: String, expectedFrontmostPID: pid_t?) {
+    /// 插入最终文本并更新状态，返回本次听写的结局。调用方（`finish(_:)`）负责在调用前完成会话拆解。
+    private func handleFinalText(
+        _ text: String, expectedFrontmostPID: pid_t?, metrics: inout DictationMetrics
+    ) -> DictationMetrics.Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
@@ -432,26 +525,33 @@ final class VoiceTyperController {
             AppLog.asr.info("识别结果为空，未插入任何文本")
             onEmptyRecognition?()
             onStateChange?(.idle)
-            return
+            return .empty
         }
 
-        guard isRunning else { return }
+        guard isRunning else { return .discarded }
 
         onStateChange?(.inserting)
-        switch textInsertionService.insert(text: trimmed, expectedFrontmostPID: expectedFrontmostPID) {
-        case .inserted:
+        let insertStartedAt = now()
+        let insertResult = textInsertionService.insert(text: trimmed, expectedFrontmostPID: expectedFrontmostPID)
+        metrics.insertNanos = now() &- insertStartedAt
+        switch insertResult {
+        case .inserted(let path):
+            metrics.insertPath = path
             onRecognizedText?(trimmed)
             onStateChange?(.idle)
+            return .inserted
         case .focusChanged:
             // 录音开始到插入之间前台应用已切换：不写入用户未预期的窗口，只复制到剪贴板。
             textInsertionService.copyToClipboard(text: trimmed)
             AppLog.app.warning("目标窗口已变化，插入已取消，改为复制到剪贴板")
             onStateChange?(.error(L("目标窗口已变化，结果已复制到剪贴板")))
+            return .focusChanged
         case .failed:
             // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
             textInsertionService.copyToClipboard(text: trimmed)
             AppLog.app.error("文本插入失败，已复制到剪贴板")
             onStateChange?(.error(L("插入失败，已复制到剪贴板，可手动粘贴")))
+            return .insertFailed
         }
     }
 }

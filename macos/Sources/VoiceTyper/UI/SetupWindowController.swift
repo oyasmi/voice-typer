@@ -41,7 +41,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onStartModelDownload: (() -> Void)?
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
-    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<String, SimpleMessageError>)?
+    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
 
     private let viewModel = SettingsViewModel()
     private let tabController = NSTabViewController()

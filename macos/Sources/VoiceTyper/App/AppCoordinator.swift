@@ -46,6 +46,8 @@ final class AppCoordinator {
     /// HUD 早已在 2.5s 后自动隐藏该提示（`RecordingHUDController.showError`），但此前
     /// 菜单栏状态没有对应的回落，会一直停留在红色错误态直到下一次听写（R3-04）。
     private var dictationErrorRecoveryWorkItem: DispatchWorkItem?
+    /// 单独修饰键热键下延迟出现的录音浮窗；状态离开 `.recording` 时取消。
+    private var pendingRecordingHUDItem: DispatchWorkItem?
 
     /// 已经"强制弹窗"过的理由。每个理由在一次未就绪期内只抢一次焦点。
     ///
@@ -651,7 +653,7 @@ final class AppCoordinator {
 
     /// 返回 `.success` 时携带模型的真实校对结果，`.failure` 时携带真实错误描述
     /// （401 / 超时 / 网络不通…），而不是把"网络不通"与"模型认为无需修改"混为一谈（R3-13）。
-    private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Result<String, SimpleMessageError> {
+    private func testLLMCorrection(llmConfig: LLMConfig, apiKey: String) async -> Result<LLMCorrector.TestResult, SimpleMessageError> {
         guard let chatURL = LLMEndpoint.chatCompletionsURL(from: llmConfig.baseURL) else {
             return .failure(SimpleMessageError(message: L("Base URL 无法解析为合法请求地址")))
         }
@@ -665,8 +667,7 @@ final class AppCoordinator {
         ))
         let sample = "呃，这个功能和并之后应该可以用了吧"
         do {
-            let corrected = try await corrector.test(sample)
-            return .success(corrected)
+            return .success(try await corrector.test(sample))
         } catch {
             return .failure(SimpleMessageError(message: error.localizedDescription))
         }
@@ -734,15 +735,38 @@ final class AppCoordinator {
 
     // MARK: - 事件绑定
 
+    /// 单独修饰键（右 ⌘ 等）作为组合快捷键使用时也会短暂进入录音，浮窗若立即出现会闪烁，
+    /// 因此延迟 150ms 再显示；录音本身不延迟，不影响开头的字。其他热键立即显示。
+    private func showRecordingHUD() {
+        let deviceName = voiceTyperController?.recordingInputDeviceName
+        guard config.hotkey.isModifierOnly else {
+            recordingHUDController?.showHUD(inputDeviceName: deviceName)
+            return
+        }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.currentState == .recording else { return }
+            self.recordingHUDController?.showHUD(inputDeviceName: deviceName)
+        }
+        pendingRecordingHUDItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+    }
+
     private func bindControllerEvents() {
+        // 摘要只含数字与枚举（DictationMetrics 禁止承载用户文本），因此可以安全地标 .public，
+        // 否则 `log show` 里会显示成 <private>，失去排障价值。
+        voiceTyperController?.onMetrics = { metrics in
+            AppLog.metrics.notice("\(metrics.summaryLine(), privacy: .public)")
+        }
         voiceTyperController?.onStateChange = { [weak self] state in
             guard let self else { return }
             let previous = self.currentState
             self.currentState = state
+            self.pendingRecordingHUDItem?.cancel()
+            self.pendingRecordingHUDItem = nil
             switch state {
             case .recording:
                 self.dictationErrorRecoveryWorkItem?.cancel()
-                self.recordingHUDController?.showHUD()
+                self.showRecordingHUD()
                 self.forwardToOnboarding(.recordingStarted)
             case .recognizing:
                 self.recordingHUDController?.setRecognizing()

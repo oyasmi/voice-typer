@@ -35,6 +35,7 @@ final class ConfigStoreTests: XCTestCase {
         config.hotkey = HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
         config.ui.opacity = 0.7
         config.ui.hudPosition = .nearCursor
+        config.audio.inputDevice = "system"
 
         try store.save(config: config)
         let loaded = try store.loadOrCreate()
@@ -55,6 +56,30 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(loaded.hotkey.mode, .toggle)
         XCTAssertEqual(loaded.ui.opacity, 0.7, accuracy: 1e-9)
         XCTAssertEqual(loaded.ui.hudPosition, .nearCursor)
+        XCTAssertEqual(loaded.audio.inputDevice, "system")
+    }
+
+    func testAudioInputDeviceDefaultsToAutoWhenSectionOrValueIsMissing() throws {
+        XCTAssertEqual(AppConfig().audio.inputDevice, "auto")
+
+        let noAudioSection = try YAMLDecoder().decode(AppConfig.self, from: "hotkey:\n  key: fn\n")
+        XCTAssertEqual(noAudioSection.audio.inputDevice, "auto")
+
+        let empty = try YAMLDecoder().decode(AppConfig.self, from: "audio:\n  input_device: \"\"\n")
+        XCTAssertEqual(empty.audio.inputDevice, "auto", "空字符串按缺失处理")
+
+        let uid = try YAMLDecoder().decode(AppConfig.self, from: "audio:\n  input_device: \"BuiltInMicrophoneDevice\"\n")
+        XCTAssertEqual(uid.audio.inputDevice, "BuiltInMicrophoneDevice")
+    }
+
+    func testModifierOnlyHotkeyRoundTrips() throws {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: [], key: "right_command", mode: .toggle)
+        try store.save(config: config)
+        let loaded = try store.loadOrCreate()
+        XCTAssertEqual(loaded.hotkey.key, "right_command")
+        XCTAssertEqual(loaded.hotkey.modifiers, [])
+        XCTAssertTrue(loaded.hotkey.isModifierOnly)
     }
 
     func testCreatesDefaultFileOnFirstLoad() throws {

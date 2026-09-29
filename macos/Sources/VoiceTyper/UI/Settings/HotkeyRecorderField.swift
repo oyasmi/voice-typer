@@ -23,6 +23,13 @@ final class HotkeyRecorderView: NSView {
     private let forwardDeleteKeyCode: UInt16 = 117
     private let fnKeyCode: UInt16 = 63
 
+    /// 单独按下并抬起的"候选"修饰键：抬起前没有出现别的键，就把它录成单独修饰键热键。
+    private var candidate: ModifierHotkey?
+    /// 单独按下了一个不支持单独使用的修饰键（左 ⌘ / Shift / 左 ⌃），抬起时给出提示而不是静默忽略。
+    private var pendingUnsupportedKeyCode: UInt16?
+    /// 不支持单独使用的修饰键的设备位：左 ⌃ / 左 ⇧ / 右 ⇧ / 左 ⌘。
+    private static let unsupportedModifierMasks: [UInt16: UInt64] = [59: 0x1, 56: 0x2, 60: 0x4, 55: 0x8]
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setup()
@@ -74,6 +81,7 @@ final class HotkeyRecorderView: NSView {
         guard !isRecording else { return }
         guard onBeginRecording?() == true else { return }
         isRecording = true
+        resetModifierCandidates()
         updateAppearance()
         window?.makeFirstResponder(self)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
@@ -103,6 +111,8 @@ final class HotkeyRecorderView: NSView {
         switch event.type {
         case .keyDown:
             let code = event.keyCode
+            // 候选期间收到 keyDown：用户在按组合键，按现有逻辑处理。
+            resetModifierCandidates()
             if code == escKeyCode {
                 cancelRecording()
                 return
@@ -128,12 +138,61 @@ final class HotkeyRecorderView: NSView {
             // 仅在按下单独的 Fn🌐 键（无其他修饰）时捕获。
             let flags = event.modifierFlags
             let others: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-            if event.keyCode == fnKeyCode, flags.contains(.function), flags.isDisjoint(with: others) {
-                finish(HotkeyConfig(modifiers: [], key: "fn"))
+            if event.keyCode == fnKeyCode {
+                if flags.contains(.function), flags.isDisjoint(with: others) {
+                    finish(HotkeyConfig(modifiers: [], key: "fn"))
+                }
+                return
             }
+            handleModifierChange(event)
         default:
             break
         }
+    }
+
+    /// 单独修饰键的录制：按下受支持的修饰键（且无其他修饰）记为候选，抬起时才确认。
+    /// 左右侧靠 keyCode 与设备位判断，不能只看 `modifierFlags`（左右 ⌘ 的通用位相同）。
+    private func handleModifierChange(_ event: NSEvent) {
+        let raw = UInt64(event.modifierFlags.rawValue)
+        let code = event.keyCode
+
+        if let candidate {
+            if candidate.keyCode == Int64(code) {
+                guard raw & candidate.deviceMask == 0 else { return }
+                self.candidate = nil
+                finish(HotkeyConfig(modifiers: [], key: candidate.rawValue))
+            } else {
+                // 又按了别的修饰键：用户在按组合键，放弃候选，等待后续的主键。
+                resetModifierCandidates()
+                label.stringValue = L("按下快捷键…")
+            }
+            return
+        }
+
+        if let pending = pendingUnsupportedKeyCode {
+            if pending == code {
+                guard raw & (Self.unsupportedModifierMasks[code] ?? 0) == 0 else { return }
+                pendingUnsupportedKeyCode = nil
+                label.stringValue = L("不支持单独使用该键，推荐右 ⌘ 或右 ⌥。")
+            } else {
+                pendingUnsupportedKeyCode = nil
+            }
+            return
+        }
+
+        let othersDown = { (own: UInt64) in raw & ModifierHotkey.allDeviceMasks & ~own != 0 }
+        if let modifier = ModifierHotkey.from(keyCode: Int64(code)),
+           raw & modifier.deviceMask != 0, !othersDown(modifier.deviceMask) {
+            candidate = modifier
+            label.stringValue = LF("松开以使用 %@，或继续按下组合键…", modifier.displayName)
+        } else if let mask = Self.unsupportedModifierMasks[code], raw & mask != 0, !othersDown(mask) {
+            pendingUnsupportedKeyCode = code
+        }
+    }
+
+    private func resetModifierCandidates() {
+        candidate = nil
+        pendingUnsupportedKeyCode = nil
     }
 
     private func modifiers(from flags: NSEvent.ModifierFlags) -> [String] {
@@ -147,6 +206,7 @@ final class HotkeyRecorderView: NSView {
     }
 
     private func stopMonitor() {
+        resetModifierCandidates()
         if let monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil

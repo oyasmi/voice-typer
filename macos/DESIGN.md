@@ -326,14 +326,16 @@ macos/
 ├── Sources/VoiceTyper/
 │   ├── App/            VoiceTyperAppMain, AppDelegate, AppCoordinator
 │   ├── Core/           AppConfig, AppState, ConfigStore, ConfigMigrator,
-│   │                   PermissionCenter, VoiceTyperController, KeychainStore
+│   │                   PermissionCenter, VoiceTyperController, KeychainStore,
+│   │                   DictationMetrics
 │   ├── ASR/            ASRService, SenseVoiceEngine, FbankFrontend, LFRCMVN,
 │   │                   CTCDecoder, TextPostprocessor, ModelLocator,
 │   │                   ModelDownloader, RecognitionBuffer, LocalASRSession
-│   ├── LLM/            LLMCorrector
-│   ├── Services/       HotkeyService, AudioCaptureService, TextInsertionService
+│   ├── LLM/            LLMCorrector, LLMCapabilityStore
+│   ├── Services/       HotkeyService, ModifierTapRecognizer, AudioCaptureService,
+│   │                   AudioInputDevice, TextInsertionService
 │   ├── UI/             StatusBarController, StatusMenuHeaderView,
-│   │                   RecordingHUDController, SetupWindowController,
+│   │                   RecordingHUDController, HUDMotion, SetupWindowController,
 │   │                   Settings/{SettingsViewModel, PermissionsSettingsView,
 │   │                             RecognitionSettingsView, HotkeySettingsView,
 │   │                             GeneralSettingsView, HotkeyRecorderField}
@@ -476,6 +478,14 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 - `finish_reason == "length"` → **放弃修正、返回原文**
 - 防御性剥离模型回显的标签
 - 任何失败（网络/超时/鉴权/解析）→ 记日志 + `onWarning` + **使用 ASR 原文**，绝不丢文本
+
+**深度思考参数与能力缓存（R7-A1）**：请求默认带 `"thinking": {"type": "disabled"}`。该写法已对照
+火山方舟（豆包系列）与智谱（GLM-4.5 系列）的当前 chat completions 文档核对（2026-09，文档检索，未逐一实测请求）。
+服务以 HTTP 400/422 且响应体（只读前 4KB，仅用于判定、绝不写日志）含 `thinking` 拒绝时，去掉字段重发**一次**，
+重发超时取剩余预算 `max(1, timeout − 已耗时)`。结果按 `SHA-256(请求地址 + "\n" + 模型)` 前 16 位缓存在
+`UserDefaults`（`llm.thinkingParameterUnsupported`，最多 32 条，**不含 API Key**）；控制器每次保存配置都会重建
+`LLMCorrector`，缓存因此不放在实例里。「测试校对」忽略缓存重新探测并纠正缓存。其他厂商的等价开关
+（`enable_thinking`、`reasoning_effort`）本批次不做。
 
 新增能力（服务端没有的）：设置页「测试校对」按钮，用一段固定的含错样例做真实往返，
 把 base_url / key / model 三项配置的错误在**配置时**就暴露出来，而不是等到听写时。
@@ -805,11 +815,35 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 - **分段下载**是本批风险最高的一项：分段切分、`Content-Range` 解析、回落路径都有单测覆盖，
   但真实的 ModelScope 302 → OSS 跳转、并发 206、中断续传只能手工验收。验收时建议同时测
   "下到一半退出应用再重开"与"服务端不支持 Range"（可用本地代理强制返回 200）两种情况。
-- `AudioInputDevice.currentName()` 在切换蓝牙 / USB 麦克风后的返回值是否及时更新。
+- ~~`AudioInputDevice.currentName()` 在切换蓝牙 / USB 麦克风后的返回值是否及时更新~~：R7 起 HUD 显示的是录音时
+  实际使用的设备（`AudioCaptureService.activeInputDevice`），该函数已移除。
 - 浮窗四种位置在多屏、竖屏、Dock 位置不同的机器上的实际观感；跟随光标模式在屏幕下沿附近
   的夹逼行为。
 - 两行预览的换行与首部截断在中英混排下的实际效果。
 - 静音探针的 1.5s / 4.5s 是否会在正常"按下热键后想一下再说"的节奏里误报。
+
+---
+
+## 11.4 R7：耗时度量、LLM 提速、输入设备、热键、粘贴与浮窗动效
+
+六项都不触及两平台共享的识别契约（fbank / LFR-CMVN / CTC / 文本后处理 / 模型 I/O / `correction.md`），
+Windows 无需同步修改；A7 的度量思路对 Windows 同样适用，记为后续事项。
+
+| # | 改动 | 要点 |
+| --- | --- | --- |
+| R7-A7 | **会话级耗时日志**（`Core/DictationMetrics.swift`） | 每次听写（成功、为空、取消、丢弃、失败、启动失败）收尾时**恰好一行** `.notice` 日志，`stop()` 不上报。度量载体是值类型，时钟与出口（`onMetrics`）均可注入以便单测；结构体**禁止任何 String 存储属性**（有反射测试钉死），摘要因此可安全标 `.public`。会话内打点在 `LocalASRSession.timings`，控制器在 `close()` 之前读取 |
+| R7-A1 | **关闭深度思考 + 能力缓存** | 见 §5.4 |
+| R7-A4 | **粘贴按键盘布局取键码**（`PasteKeyResolver`） | 遍历键码找产生 `v` 的那个；`QWERTYCMD` 布局与名称以 ⌘ 结尾的布局直接用 ANSI_V；每次粘贴现查不缓存。已知不修：热键录制按物理键位记录，非 QWERTY 下键名与键帽可能不一致，但录制与匹配同键码，功能正确 |
+| R7-A2 | **蓝牙场景改用内置麦克风**（`AudioInputDevice.resolveInput`） | 配置 `audio.input_device`：`auto`（默认）/ `system` / 设备 UID（为后续手选预留）。auto 仅在「默认输出与默认输入都是蓝牙 + 有可用内置输入 + 未合盖」时偏离系统默认——输出不是蓝牙时蓝牙麦克风是用户有意的选择，一律尊重。设备在录音开始前解析一次、录音中不切换；引擎跨会话复用，所以**每次 `start` 都显式设置设备**（否则会停留在上次钉住的设备），并读回实际设备用于 HUD 与日志。设置失败只记 warning、不中断录音 |
+| R7-A3 | **单独修饰键热键**（`ModifierTapRecognizer`） | 右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃，左右靠 keyCode 与设备位区分。纯值类型状态机：干净按下 → `.began`；按住期间任意 keyDown / 鼠标按下 / 其他修饰键 → `.cancelled`（至多一次）；抬起且仍干净 → `.ended`。hold 模式**按下即开始采集、组合快捷键静默丢弃**，代价是作修饰键使用时麦克风短暂打开、菜单栏指示点闪一下，因此浮窗延迟 150ms 出现；toggle 模式只有干净的单击才切换、不打开麦克风。Esc 同样喂给识别器使手势作废，避免 toggle 下松开时被误当作一次单击。刻意不支持左 ⌘、Shift、左 ⌃。门禁态下只在干净单击时提示原因，避免组合快捷键时被骚扰 |
+| R7-B4 | **浮窗动效**（`UI/HUDMotion.swift`） | 录音→识别：波形 0.12s 收拢并由白变橙后再脉动，前景做一次 1→0.985→1 的「呼气」；圆点颜色 0.2s 过渡；结果态图标弹簧弹入、状态文字上移 2pt 淡入；「校对中…」灰阶流光（`layer.mask`）。**只对 `topRow` / `previewClipView` 做 presentation 层动画，绝不对 `NSVisualEffectView` 做 transform**（会破坏磨砂渲染），也不写 model 值（AppKit 管理 layer-backed 视图几何）。「减少动态效果」开启时无缩放 / 位移 / 弹簧 / 流光，仅保留 ≤0.15s 颜色与透明度过渡 |
+
+**验证口径**：全部单元测试通过（含新增的度量、LLM 能力缓存、粘贴键码、设备解析、修饰键状态机、控制器手势与
+HUD 动效参数测试）。以下**尚未在真机验证**，不得当作已验证：A7 五种 outcome 的实测日志；A1 对真实混合推理
+模型 / 会拒绝未知字段的服务的行为；A4 在 Dvorak / Colemak / Dvorak-QWERTY ⌘ / 拼音输入法下的粘贴；
+A2 的六个 AirPods 场景（含合盖、连续两次切换策略、识别准确率对比）；A3 的六个热键场景（含外接键盘、
+中文输入法下单击右 ⌘ 不切输入法）；B4 深浅色、四种位置、减少动态效果下的观感（`CASpringAnimation`
+作用于 `transform` 与 `CAGradientLayer.locations` 越界取值的实际渲染尤其需要肉眼确认）。
 
 ---
 
@@ -828,3 +862,5 @@ P1 是唯一有真实技术不确定性的阶段，建议**先做 P1 的金标�
 | D9 | 启动时是否预加载模型 | ✅ **默认是**（`asr.preload_on_launch = true`），可在设置里关闭 | 多数用户高频使用，启动即加载让首次听写零等待；关掉后按需加载与录音并行、代价接近于零，服务"当天可能一次都不用、且在意常驻 ~510MB"的场景（§11.3 R6-06） |
 | D10 | 浮窗的"不显示"语义 | ✅ **只隐藏过程，保留错误提示** | 全部静音会让插入失败、没采到声音这些在别处看不到的信息彻底消失，把一个偏好项变成静默失败的陷阱（§11.3 R6-05） |
 | D11 | 分段下载的失败处理 | ✅ **任何异常都永久回落单连接** | 分段是优化，单连接是经过多轮修复的可靠路径。首次安装是唯一必经之路，优化绝不能把它带崩（§11.3 R6-09） |
+| D12 | 输入设备默认策略 | ✅ **`auto`：仅蓝牙输出 + 蓝牙输入时改用内置麦克风** | 蓝牙耳机麦克风走通话模式，音质差且拖垮耳机里的音乐；输出不是蓝牙时蓝牙麦克风是有意的选择，合盖或无可用内置输入时也不切。可改为 `system` 严格跟随（§11.4 R7-A2） |
+| D13 | 单独修饰键热键的采集时机 | ✅ **hold 模式按下即开始采集，作为组合快捷键使用时静默丢弃** | 不丢开头的字；代价是麦克风指示点闪烁，用 150ms 延迟浮窗与 toggle 模式（只有干净单击才开始）缓解（§11.4 R7-A3） |

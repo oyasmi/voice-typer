@@ -479,4 +479,49 @@ final class LocalASRSessionTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(finalCalls, 0, "close() 之后即使 LLM 校对稍后完成，也不应再转发 onFinal")
     }
+
+    // MARK: - A7：分阶段打点
+
+    func testTimingsCountSkippedAndCompletedPreviews() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+
+        session.sendAudio(silence(count: 20_000))
+        XCTAssertEqual(session.timings.previewSkipped, 1)
+        XCTAssertEqual(session.timings.previewRuns, 0)
+        XCTAssertFalse(session.timings.coldAtStart)
+
+        session.sendAudio(speech(count: 20_000))
+        await poll { session.timings.previewRuns == 1 }
+        XCTAssertEqual(session.timings.previewRuns, 1)
+        XCTAssertGreaterThan(session.timings.previewMaxNanos, 0)
+        XCTAssertEqual(session.timings.receivedSamples, 40_000)
+    }
+
+    func testTimingsRecordColdStartAndEngineWait() async {
+        final class EngineBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var engine: (any SenseVoiceRecognizing)?
+            var current: (any SenseVoiceRecognizing)? { lock.lock(); defer { lock.unlock() }; return engine }
+            func set(_ value: any SenseVoiceRecognizing) { lock.lock(); engine = value; lock.unlock() }
+        }
+        let box = EngineBox()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { box.current }, llmCorrector: nil)
+        var final: String?
+        session.onFinal = { final = $0 }
+
+        session.sendAudio(speech(count: 8_000))
+        XCTAssertTrue(session.timings.coldAtStart, "首帧到达时引擎未就绪应记为冷启动")
+
+        session.finalize(timeout: 5)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        box.set(GatedFakeEngine())
+        await poll { final != nil }
+
+        XCTAssertNotNil(final)
+        XCTAssertGreaterThan(session.timings.engineWaitNanos, 0)
+        XCTAssertNotNil(session.timings.finalizeStartedAt)
+        XCTAssertNotNil(session.timings.asrCompletedAt)
+        XCTAssertEqual(session.timings.llmResult, .off)
+    }
 }

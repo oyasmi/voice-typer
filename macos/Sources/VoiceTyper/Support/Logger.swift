@@ -9,4 +9,5 @@ enum AppLog {
     static let asr = Logger(subsystem: subsystem, category: "asr")
     static let llm = Logger(subsystem: subsystem, category: "llm")
     static let model = Logger(subsystem: subsystem, category: "model")
+    static let metrics = Logger(subsystem: subsystem, category: "metrics")
 }

@@ -77,6 +77,43 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(validated.hotkey.key, "fn")
     }
 
+    // MARK: - A3：单独修饰键热键
+
+    func testValidatedAcceptsEachModifierOnlyHotkey() {
+        for hotkey in ModifierHotkey.allCases {
+            var config = AppConfig()
+            config.hotkey = HotkeyConfig(modifiers: [], key: hotkey.rawValue, mode: .toggle)
+            let validated = config.validated()
+            XCTAssertEqual(validated.hotkey.key, hotkey.rawValue)
+            XCTAssertTrue(validated.hotkey.isModifierOnly)
+            XCTAssertEqual(validated.hotkey.mode, .toggle)
+        }
+    }
+
+    func testValidatedClearsExtraModifiersOnModifierOnlyHotkey() {
+        var config = AppConfig()
+        config.hotkey = HotkeyConfig(modifiers: ["shift", "cmd"], key: "right_command")
+        let validated = config.validated()
+        XCTAssertEqual(validated.hotkey.key, "right_command")
+        XCTAssertEqual(validated.hotkey.modifiers, [])
+    }
+
+    /// 刻意不支持左 ⌘ / Shift / 左 ⌃：参与的快捷键太多，或与输入法切换冲突。
+    func testValidatedFallsBackToFnForUnsupportedModifierNames() {
+        for key in ["left_command", "shift", "left_control", "left_shift", "right_shift"] {
+            var config = AppConfig()
+            config.hotkey = HotkeyConfig(modifiers: [], key: key)
+            XCTAssertEqual(config.validated().hotkey.key, "fn", "\(key) 不应被接受")
+        }
+    }
+
+    func testHotkeyKindAndDisplayString() {
+        XCTAssertEqual(HotkeyConfig().kind, .fn)
+        XCTAssertEqual(HotkeyConfig(modifiers: ["ctrl"], key: "f2").kind, .combo)
+        XCTAssertEqual(HotkeyConfig(modifiers: [], key: "right_option").kind, .modifier)
+        XCTAssertEqual(HotkeyConfig(modifiers: [], key: "right_command").displayString, "右 ⌘")
+    }
+
     func testConfigDecodesNaNAndInfFromYAMLWithoutCrashing() throws {
         let yaml = """
         llm:

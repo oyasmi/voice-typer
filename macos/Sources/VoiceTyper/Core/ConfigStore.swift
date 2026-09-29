@@ -111,6 +111,8 @@ final class ConfigStore {
         \(hotkeyModifiersBlock)
           key: \(yamlString(config.hotkey.key))
           mode: \(yamlString(config.hotkey.mode.rawValue))
+        audio:
+          input_device: \(yamlString(config.audio.inputDevice))
         ui:
           opacity: \(yamlNumber(config.ui.opacity))
           hud_position: \(yamlString(config.ui.hudPosition.rawValue))

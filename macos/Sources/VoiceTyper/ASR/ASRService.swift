@@ -258,12 +258,12 @@ final class ASRService {
     /// 创建一次录音会话。若引擎当前未加载（首次使用、或刚从空闲卸载中恢复），
     /// 会异步触发重新加载并与录音并行——用户通常正在说第一句话，
     /// 加载耗时（约 0.85s）对感知延迟几乎不可见。
-    func makeSession(llmCorrector: LLMCorrector?) -> LocalASRSession {
+    func makeSession(llmCorrector: LLMCorrector?, now: @escaping MonotonicClock = systemMonotonicClock) -> LocalASRSession {
         if state != .ready && state != .loading {
             Task { await preload() }
         }
         idleScheduler.cancel() // 录音期间不应触发空闲卸载；结束后由 makeSession 之外的下一次调度重新安排
-        return LocalASRSession(asrQueue: asrQueue, engineAccessor: { [weak self] in self?.currentEngine() }, llmCorrector: llmCorrector)
+        return LocalASRSession(asrQueue: asrQueue, engineAccessor: { [weak self] in self?.currentEngine() }, llmCorrector: llmCorrector, now: now)
     }
 
     /// 录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。

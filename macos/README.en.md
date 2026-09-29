@@ -52,6 +52,14 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
 - Optional preloading at launch (on by default) and automatic release of engine memory after an idle
   period
 - The overlay shows the current input device while recording, and warns you if no sound is arriving
+- Besides Fn and key combinations, the hotkey can be a **single Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃**
+  (for external keyboards without Fn); holding it and pressing another key still works as a normal shortcut
+- With Bluetooth headphones the app records from the built-in microphone by default (the headset mic runs
+  in call mode: poor audio, and it degrades the music in your headphones); switch to strictly following
+  the system default input in Settings
+- LLM proofreading requests turn off “deep thinking” by default (much faster on hybrid-reasoning models
+  that accept a `thinking` parameter); services that reject it automatically get a plain request
+- Simulated paste looks up the key code for the current keyboard layout, so it is ⌘V on Dvorak / Colemak too
 - Overlay position: bottom center / bottom right / follow cursor / hidden, with adjustable opacity
 - Launch at login
 - The menu bar can pause dictation, reopen the setup guide, and check for updates manually (there is no
@@ -61,7 +69,14 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
 
 - **Apple Silicon only** (arm64); Intel Macs are not supported
 - Hotkey main keys are limited to letters, digits, `space`/`tab`/`enter`, `F1`–`F12`, and the standalone
-  `fn`
+  `fn`; single modifier keys are limited to Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃ (Left ⌘ takes part in too
+  many shortcuts, Shift clashes with input-source switching, Left ⌃ is used for Emacs-style editing)
+- With a single modifier key as the hotkey, every time you use it as a modifier (e.g. Right ⌘ + C) the
+  microphone is opened briefly and the menu-bar microphone indicator flickers; no recording result is
+  produced. If you use Right ⌘ shortcuts a lot, prefer Right ⌥ or the “press once to start, again to
+  stop” mode (there only a clean tap starts recording, so the microphone is not opened)
+- Hotkey recording stores the physical key: on non-QWERTY layouts such as Dvorak the name shown in the
+  recorder may differ from the keycap, but recording and matching use the same key code, so it works
 - The app is not signed or notarized; the first launch needs a manual approval in System Settings →
   Privacy & Security
 - SenseVoice-Small only — it cannot be switched to paraformer, and hotwords are removed in both forms
@@ -221,7 +236,7 @@ The settings window has three tabs, all fully graphical — no YAML editing requ
 | --- | --- |
 | **Permissions** | The three permission states, grant buttons, shortcuts into System Settings |
 | **Recognition** | Model status card (auto download / load / ready / failed, with retry and reload), idle-unload interval, preload at launch, recognition language, AI proofreading (toggle + base URL + API key + model + temperature + timeout + test) |
-| **General** | Hotkey (Fn or a combination, with key recording), trigger mode (hold / toggle), Fn conflict detection, launch at login, **interface language**, overlay position and background opacity |
+| **General** | Hotkey (Fn, a single Right ⌘ / Right ⌥, or a combination, with key recording), trigger mode (hold / toggle), Fn conflict detection, launch at login, **interface language**, **microphone** (automatic / follow system), overlay position and background opacity |
 
 ### Interface language
 
@@ -264,6 +279,9 @@ hotkey:
   modifiers: []
   key: "fn"
   mode: "hold"               # hold = hold to talk; toggle = press once to start, again to stop
+  # key may also be right_command / right_option / left_option / right_control (single modifier; modifiers must be empty)
+audio:
+  input_device: "auto"       # auto = built-in mic when Bluetooth headphones are connected; system = follow the system default input; or a device UID (no UI yet)
 ui:
   opacity: 0.85
   hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
@@ -433,7 +451,7 @@ benign cross-platform floating-point non-determinism, not a logic bug. See §8 o
 
 Logging goes through the unified logging system (`os.Logger`) rather than a separate `.log` file. The
 subsystem is `com.voicetyper.app`, with the categories `app` / `permissions` / `hotkey` / `audio` /
-`asr` / `llm` / `model`.
+`asr` / `llm` / `model` / `metrics`.
 
 **Command line** (`log` is a built-in tool):
 
@@ -444,7 +462,17 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "asr"'
 
 # Look at the last 10 minutes
 log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
+
+# One per-stage timing summary line for every dictation
+log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metrics"'
 ```
+
+`metrics` prints one line per dictation with numbers and enums only — never any recognized text. Useful
+fields: `outcome` (inserted / empty / cancelled / discarded / gesture_cancelled / failed …),
+`release_to_done` (release to text landing — the key figure), `asr` / `llm` (local recognition and
+proofreading time), `llm_retry` (whether the request was resent because the service rejected the
+`thinking` field), `input` (`builtin*` means the automatic policy switched from the system default input
+to the built-in microphone) and `cold` (whether the engine was cold-loaded).
 
 **GUI**: open Console (`/Applications/Utilities/`), select this Mac in the sidebar, and filter on
 `com.voicetyper.app`; you can narrow further by category (`llm`, `hotkey`, …).

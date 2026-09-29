@@ -36,6 +36,27 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                Picker(L("麦克风"), selection: Binding(
+                    get: { vm.audioInputPolicy },
+                    set: { vm.audioInputPolicy = $0; vm.commitAudioInputPolicy() }
+                )) {
+                    Text(L("自动（戴蓝牙耳机时使用内置麦克风）")).tag(AudioInputPolicy.automatic)
+                    Text(L("跟随系统默认输入")).tag(AudioInputPolicy.systemDefault)
+                    // 配置里是设备 UID（手改或未来的手选设备）时才出现，只用于如实展示当前状态。
+                    if case .device = vm.audioInputPolicy {
+                        Text(L("指定设备")).tag(vm.audioInputPolicy)
+                    }
+                }
+            } header: {
+                Text(L("麦克风"))
+            } footer: {
+                Text(L("戴蓝牙耳机时，耳机麦克风走通话模式，音质较差，还会让耳机里的音乐变差。自动模式会改用电脑自带的麦克风；如果电脑离你较远，请选择跟随系统。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 Picker(L("位置"), selection: Binding(
                     get: { vm.hudPosition },
                     set: { vm.hudPosition = $0; vm.commitHUDPosition() }

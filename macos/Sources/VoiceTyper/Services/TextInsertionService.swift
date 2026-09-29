@@ -1,6 +1,6 @@
 import AppKit
 import ApplicationServices
-import Carbon.HIToolbox
+import Carbon
 import CoreGraphics
 import Foundation
 
@@ -13,8 +13,14 @@ private struct PasteboardSnapshot {
     let items: [PasteboardItemSnapshot]
 }
 
-enum TextInsertionResult {
-    case inserted
+/// 文本实际走的插入路径，仅用于耗时度量。
+enum InsertionPath: String {
+    case accessibility = "ax"
+    case paste
+}
+
+enum TextInsertionResult: Equatable {
+    case inserted(InsertionPath)
     /// 录音开始到插入之间前台应用已切换：为避免写入用户未预期的窗口（最坏情况是
     /// 密码框），不再插入，只把结果复制到剪贴板（F-10）。
     case focusChanged
@@ -70,9 +76,9 @@ final class TextInsertionService {
             return .focusChanged
         }
         if insertUsingAccessibility(text: text) {
-            return .inserted
+            return .inserted(.accessibility)
         }
-        return insertUsingPasteboard(text: text) ? .inserted : .failed
+        return insertUsingPasteboard(text: text) ? .inserted(.paste) : .failed
     }
 
     /// 插入失败时的兜底：把识别结果写入剪贴板，避免长听写内容彻底丢失。
@@ -281,9 +287,12 @@ final class TextInsertionService {
     }
 
     private func simulatePaste() -> Bool {
+        // 键码是物理键位，目标应用按当前布局把它翻译成字符：Dvorak 下 ANSI_V 键位是 k，
+        // 固定发它会变成 ⌘K。每次现查（用户可能随时切换布局，开销可忽略）。
+        let keyCode = PasteKeyResolver.currentPasteKeyCode()
         guard let source = CGEventSource(stateID: .combinedSessionState),
-              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) else {
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else {
             return false
         }
 
@@ -292,5 +301,60 @@ final class TextInsertionService {
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
         return true
+    }
+}
+
+/// 找出"在当前键盘布局下产生字符 v"的键码，让模拟粘贴在 Dvorak、Colemak 等布局下仍是 ⌘V。
+enum PasteKeyResolver {
+    private static let qwertyV = CGKeyCode(kVK_ANSI_V)
+
+    /// - Parameters:
+    ///   - layoutID / layoutName: 当前键盘布局的 ID 与本地化名称。
+    ///   - translate: 该键码在无修饰键时产生的字符。
+    nonisolated static func pasteKeyCode(
+        layoutID: String?, layoutName: String?, translate: (CGKeyCode) -> String?
+    ) -> CGKeyCode {
+        // "按住 ⌘ 时切回 QWERTY"的布局（如 Dvorak - QWERTY ⌘）：⌘V 的键位仍是 QWERTY 的 V。
+        if layoutID?.contains("QWERTYCMD") == true || layoutName?.hasSuffix("⌘") == true {
+            return qwertyV
+        }
+        for code in CGKeyCode(0)...CGKeyCode(127) where translate(code)?.lowercased() == "v" {
+            return code
+        }
+        return qwertyV
+    }
+
+    /// 读取当前键盘布局（中文输入法下返回其底层键盘布局，通常是 ABC）。TIS 调用须在主线程。
+    @MainActor
+    static func currentPasteKeyCode() -> CGKeyCode {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue() else {
+            AppLog.app.warning("无法读取当前键盘布局，模拟粘贴回落到 QWERTY 的 V 键位")
+            return qwertyV
+        }
+        func property(_ key: CFString) -> AnyObject? {
+            guard let raw = TISGetInputSourceProperty(source, key) else { return nil }
+            return Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
+        }
+        let layoutID = property(kTISPropertyInputSourceID) as? String
+        let layoutName = property(kTISPropertyLocalizedName) as? String
+        guard let layoutData = property(kTISPropertyUnicodeKeyLayoutData) else {
+            AppLog.app.warning("当前键盘布局没有字符映射数据，模拟粘贴回落到 QWERTY 的 V 键位")
+            return qwertyV
+        }
+        let data = layoutData as! CFData
+        let layout = unsafeBitCast(CFDataGetBytePtr(data), to: UnsafePointer<UCKeyboardLayout>.self)
+        let keyboardType = UInt32(LMGetKbdType())
+
+        return pasteKeyCode(layoutID: layoutID, layoutName: layoutName) { code in
+            var deadKeyState: UInt32 = 0
+            var chars = [UniChar](repeating: 0, count: 4)
+            var length = 0
+            let status = UCKeyTranslate(
+                layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, keyboardType,
+                OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, chars.count, &length, &chars
+            )
+            guard status == noErr, length > 0 else { return nil }
+            return String(utf16CodeUnits: chars, count: length)
+        }
     }
 }

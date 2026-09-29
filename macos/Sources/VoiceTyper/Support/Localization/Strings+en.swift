@@ -180,8 +180,24 @@ extension L10n {
         "长段口述（写邮件、写文档）时不必一直按住热键，可以改成按一次开始、再按一次结束。":
             "For long dictation (emails, documents) you do not have to hold the hotkey down — switch to press once to start, press again to stop.",
         "热键": "Hotkey",
-        "点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；也可设为组合键，如 ⌃⌥Space。录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。":
-            "Click the field on the right and press the shortcut you want. Fn is recommended, but a combination such as ⌃⌥Space works too. The global hotkey is suspended while recording a shortcut. In either trigger mode you can press Esc to cancel during recording and recognition.",
+        "点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；外接键盘没有 Fn 时可单击右 ⌘ 或右 ⌥（按住它再按别的键仍是普通快捷键，但麦克风指示点会短暂闪一下）；也可设为组合键，如 ⌃⌥Space。录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。":
+            "Click the field on the right and press the shortcut you want. Fn is recommended. On an external keyboard without Fn you can tap Right ⌘ or Right ⌥ on its own (holding it and pressing another key still works as a normal shortcut, but the menu-bar microphone indicator flickers briefly). A combination such as ⌃⌥Space works too. The global hotkey is suspended while recording a shortcut. In either trigger mode you can press Esc to cancel during recording and recognition.",
+        "使用右 ⌘（外接键盘推荐）": "Use Right ⌘ (recommended for external keyboards)",
+        "松开以使用 %@，或继续按下组合键…": "Release to use %@, or keep going to press a combination…",
+        "不支持单独使用该键，推荐右 ⌘ 或右 ⌥。": "That key cannot be used on its own. Right ⌘ or Right ⌥ is recommended.",
+        "右 ⌘": "Right ⌘",
+        "右 ⌥": "Right ⌥",
+        "左 ⌥": "Left ⌥",
+        "右 ⌃": "Right ⌃",
+        "自动（戴蓝牙耳机时使用内置麦克风）": "Automatic (use the built-in microphone when Bluetooth headphones are connected)",
+        "跟随系统默认输入": "Follow system default input",
+        "指定设备": "Specific device",
+        "戴蓝牙耳机时，耳机麦克风走通话模式，音质较差，还会让耳机里的音乐变差。自动模式会改用电脑自带的麦克风；如果电脑离你较远，请选择跟随系统。":
+            "With Bluetooth headphones, the headset microphone runs in call mode: the audio is poor and the music in your headphones gets worse too. Automatic mode records from the computer's built-in microphone instead. If the computer is far from you, choose Follow system.",
+        "麦克风设置保存失败：%@": "Could not save the microphone setting: %@",
+        "已关闭深度思考。": "Deep thinking was turned off.",
+        "该服务不支持关闭深度思考的参数，已自动改用普通请求。":
+            "This service does not support the parameter that turns off deep thinking, so a plain request was used instead.",
         "打开键盘设置": "Open Keyboard Settings",
         "已改好，重新检测": "I changed it, check again",
         "不支持该键，请重试": "That key is not supported, try another",

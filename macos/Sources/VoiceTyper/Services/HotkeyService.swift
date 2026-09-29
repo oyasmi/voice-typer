@@ -56,6 +56,9 @@ final class HotkeyService: @unchecked Sendable {
     var onRelease: (() -> Void)?
     /// 录音进行中按下 Esc 的取消回调。保证在主线程触发。
     var onCancel: (() -> Void)?
+    /// 单独修饰键被按住期间又按了别的键 / 点了鼠标（用户其实是在用它做组合快捷键）。
+    /// 仅在热键为单独修饰键时触发；保证在主线程触发。
+    var onGestureCancelled: (() -> Void)?
 
     /// 松开热键之后（识别中）是否仍然接受 Esc 取消。
     ///
@@ -79,6 +82,8 @@ final class HotkeyService: @unchecked Sendable {
     private var workerThread: Thread?
     private var hotkey: HotkeyConfig?
     private var isActive = false
+    /// 热键为单独修饰键时的手势识别器；只在事件 tap 的 worker 线程上读写。
+    private var modifierRecognizer: ModifierTapRecognizer?
     private var isRunning = false
     /// 当前 worker 对应的生命周期句柄；`stop()` 会把它清空。
     private var workerLifecycle: WorkerLifecycle?
@@ -97,11 +102,12 @@ final class HotkeyService: @unchecked Sendable {
 
         stop()
 
-        if hotkey.key.lowercased() != "fn", Self.keyCode(for: hotkey.key) == nil {
+        guard Self.isSupportedKey(hotkey.key) else {
             throw HotkeyServiceError.unsupportedKey(hotkey.key)
         }
 
         self.hotkey = hotkey
+        self.modifierRecognizer = ModifierHotkey(rawValue: hotkey.key.lowercased()).map(ModifierTapRecognizer.init)
         let context = TapContext(self)
         let startupBox = StartupResultBox()
         let lifecycle = WorkerLifecycle()
@@ -157,6 +163,7 @@ final class HotkeyService: @unchecked Sendable {
         workerThread = nil
         workerLifecycle = nil
         hotkey = nil
+        modifierRecognizer = nil
         isActive = false
         isRunning = false
         // 防御性复位：正常路径由 VoiceTyperController 在收尾时关掉，但 stop() 也可能
@@ -168,7 +175,11 @@ final class HotkeyService: @unchecked Sendable {
         let mask =
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
-            (1 << CGEventType.flagsChanged.rawValue)
+            (1 << CGEventType.flagsChanged.rawValue) |
+            // 鼠标按下只用于让"单独修饰键 + 点击"（如 ⌘ + 点链接）作废本次手势；仍是 listenOnly，不吞事件。
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.rightMouseDown.rawValue) |
+            (1 << CGEventType.otherMouseDown.rawValue)
 
         // 使用 passRetained 确保 context 在事件 tap 存活期间不会被释放
         let contextPtr = Unmanaged.passRetained(context).toOpaque()
@@ -270,12 +281,22 @@ final class HotkeyService: @unchecked Sendable {
         // (b) 已松开但控制器打开了 `acceptsCancelWhenInactive`（识别中，结果尚未上屏）。
         // 放在热键分支之前，Fn 与组合键两种模式都能触发。tap 为 listenOnly，
         // 不吞事件，Esc 仍会照常传递给前台应用。
-        if isActive || acceptsCancelWhenInactive,
+        // 单独修饰键模式下"按住中"以识别器为准（含已作废但尚未抬起的阶段）。
+        let isHolding = modifierRecognizer?.isHolding ?? isActive
+        if isHolding || acceptsCancelWhenInactive,
            eventType == .keyDown,
            event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Escape) {
+            // 这个 Esc 同样要喂给识别器使手势作废，否则松开修饰键时会多发一个 `.ended`，
+            // toggle 模式下会被误当成一次"单击"而开始新录音。
+            _ = feedModifierRecognizer(.keyDown)
             DispatchQueue.main.async { [weak self] in
                 self?.onCancel?()
             }
+            return
+        }
+
+        if modifierRecognizer != nil {
+            handleModifier(eventType: eventType, event: event)
             return
         }
 
@@ -313,6 +334,37 @@ final class HotkeyService: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    /// 把事件转成识别器输入并派发结果：`.began → onPress`、`.ended → onRelease`、
+    /// `.cancelled → onGestureCancelled`。"toggle 模式只有干净单击才算"由控制器处理。
+    private func handleModifier(eventType: CGEventType, event: CGEvent) {
+        let input: ModifierTapRecognizer.Input
+        switch eventType {
+        case .flagsChanged:
+            input = .flagsChanged(
+                keyCode: event.getIntegerValueField(.keyboardEventKeycode),
+                flags: event.flags.rawValue
+            )
+        case .keyDown:
+            input = .keyDown
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            input = .mouseDown
+        default:
+            return
+        }
+        guard let output = feedModifierRecognizer(input) else { return }
+        DispatchQueue.main.async { [weak self] in
+            switch output {
+            case .began: self?.onPress?()
+            case .ended: self?.onRelease?()
+            case .cancelled: self?.onGestureCancelled?()
+            }
+        }
+    }
+
+    private func feedModifierRecognizer(_ input: ModifierTapRecognizer.Input) -> ModifierTapRecognizer.Output? {
+        modifierRecognizer?.handle(input)
     }
 
     private func handleFn(eventType: CGEventType, event: CGEvent) {
@@ -384,6 +436,6 @@ final class HotkeyService: @unchecked Sendable {
     /// "fn" 视为合法（独立处理路径）。
     static func isSupportedKey(_ key: String) -> Bool {
         let normalized = key.lowercased()
-        return normalized == "fn" || keyCodeMap[normalized] != nil
+        return normalized == "fn" || ModifierHotkey(rawValue: normalized) != nil || keyCodeMap[normalized] != nil
     }
 }

@@ -17,7 +17,10 @@ struct HotkeySettingsView: View {
                 )
                 .frame(width: 240, height: 30)
             }
-            Button(L("使用 Fn🌐（推荐）")) { vm.resetHotkeyToFn() }
+            HStack {
+                Button(L("使用 Fn🌐（推荐）")) { vm.resetHotkeyToFn() }
+                Button(L("使用右 ⌘（外接键盘推荐）")) { vm.resetHotkeyToRightCommand() }
+            }
 
             Picker(L("触发方式"), selection: Binding(
                 get: { vm.hotkeyConfig.mode },
@@ -31,7 +34,7 @@ struct HotkeySettingsView: View {
         } header: {
             Text(L("热键"))
         } footer: {
-            Text(L("点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；也可设为组合键，如 ⌃⌥Space。录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。"))
+            Text(L("点击右侧输入框后按下想要的快捷键即可捕获。推荐使用 Fn；外接键盘没有 Fn 时可单击右 ⌘ 或右 ⌥（按住它再按别的键仍是普通快捷键，但麦克风指示点会短暂闪一下）；也可设为组合键，如 ⌃⌥Space。录制期间全局热键会临时暂停。无论哪种触发方式，录音中和识别中都可以按 Esc 取消。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -81,6 +81,11 @@ final class RecordingHUDController: NSWindowController {
     /// `flashWarning` 的 statusLabel 恢复任务，phase 变化时作废。
     private var warningRestoreWorkItem: DispatchWorkItem?
     private var lastLevelUpdate: CFTimeInterval = 0
+    /// 正处于「校对中」：警告闪现结束后据此恢复流光。
+    private var isCorrecting = false
+    /// 只对前景（topRow / previewClipView）做「呼气」缩放；磨砂层是它们的兄弟视图，
+    /// 对 `NSVisualEffectView` 做 transform 会破坏磨砂渲染，所以绝不动它。
+    private let topRow = NSStackView()
 
     /// 浮窗落点。`.hidden` 时只保留错误类提示，见 `HUDPosition.hidden` 的说明。
     private var hudPosition: HUDPosition = .bottomCenter
@@ -125,19 +130,22 @@ final class RecordingHUDController: NSWindowController {
     /// 错误与"没有识别到内容"不受影响——那些信息在别处拿不到，一并静音就成了静默失败。
     private var suppressesProgressHUD: Bool { hudPosition == .hidden }
 
-    func showHUD() {
+    /// - Parameter inputDeviceName: 本次录音实际使用的输入设备名（由调用方传入，
+    ///   可能与系统默认输入不同——见 `AudioInputPolicy`）。
+    func showHUD(inputDeviceName: String?) {
         guard !suppressesProgressHUD else { return }
         ensureUIBuilt()
         cancelTransientHide()
         cancelCollapse()
         cancelWarningRestore()
+        endCorrectingShimmer()
 
         phase = .recording
         startDate = Date()
         isExpanded = false
         currentHudWidth = Self.defaultHudWidth
 
-        recordingStatusText = Self.recordingStatus(inputDeviceName: AudioInputDevice.currentName())
+        recordingStatusText = Self.recordingStatus(inputDeviceName: inputDeviceName)
         setStatus(recordingStatusText)
         timeLabel.stringValue = ""
         setPreviewLineCount(1, animated: false)
@@ -160,6 +168,7 @@ final class RecordingHUDController: NSWindowController {
         cancelCollapse()
         cancelTransientHide()
         cancelWarningRestore()
+        endCorrectingShimmer()
         phase = .hidden
         dotView.stopPulse()
         waveformView.stop()
@@ -190,6 +199,7 @@ final class RecordingHUDController: NSWindowController {
         guard !suppressesProgressHUD else { return }
         cancelTransientHide()
         cancelWarningRestore()
+        endCorrectingShimmer()
         // 松键后录音结束，冻结计时（保留最后时长）。
         timer?.invalidate()
         timer = nil
@@ -201,7 +211,13 @@ final class RecordingHUDController: NSWindowController {
         dotView.stopPulse()
         dotView.setStatic(color: .systemOrange)
         waveformView.isHidden = false
-        waveformView.setRecognizing()
+        waveformView.settleThenPulse()
+        // 录音结束的"呼气"：前景内容轻微收缩再回弹，给"收声"一个触感。
+        for view in [topRow, previewClipView] {
+            if let exhale = HUDMotion.exhaleAnimation(bounds: view.bounds) {
+                view.layer?.add(exhale, forKey: "hudExhale")
+            }
+        }
     }
 
     /// 本地识别已出结果，正在等 LLM 校对。
@@ -215,6 +231,8 @@ final class RecordingHUDController: NSWindowController {
         recognizingStatusText = L("校对中…")
         setStatus(recognizingStatusText)
         dotView.setStatic(color: .systemBlue)
+        isCorrecting = true
+        startShimmer()
     }
 
     /// 实时音量电平（0…1 量级），驱动波形。仅录音阶段生效，内部节流。
@@ -284,6 +302,8 @@ final class RecordingHUDController: NSWindowController {
     func flashWarning(_ message: String) {
         guard phase == .recording || phase == .recognizing else { return }
         cancelWarningRestore()
+        // 警示色文字不应被流光遮罩；isCorrecting 保持不变，恢复时按它重新启动。
+        stopShimmer()
         statusLabel.stringValue = message.isEmpty ? L("识别提示") : message
         statusLabel.textColor = .systemOrange
         let item = DispatchWorkItem { [weak self] in
@@ -308,9 +328,38 @@ final class RecordingHUDController: NSWindowController {
             setStatus(recordingStatusText)
         case .recognizing:
             setStatus(recognizingStatusText)
+            if isCorrecting { startShimmer() }
         case .hidden, .transient:
             statusLabel.textColor = Self.statusTextColor
         }
+    }
+
+    // MARK: - 「校对中」流光
+
+    private func startShimmer() {
+        stopShimmer()
+        guard let mask = HUDMotion.shimmerMask(for: statusLabel.bounds) else { return }
+        statusLabel.layer?.mask = mask
+    }
+
+    /// 必须把 mask 清空，否则文字会一直保持半透明。
+    private func stopShimmer() {
+        statusLabel.layer?.mask = nil
+    }
+
+    /// 离开「校对中」的所有路径都走这里。
+    private func endCorrectingShimmer() {
+        isCorrecting = false
+        stopShimmer()
+    }
+
+    /// 状态行尺寸随文案与布局变化时，同步 mask 的 frame（mask 小于文字会把文字裁掉）。
+    private func syncShimmerFrame() {
+        guard let mask = statusLabel.layer?.mask else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mask.frame = statusLabel.bounds
+        CATransaction.commit()
     }
 
     /// 应用已保存的 UI 配置。
@@ -510,6 +559,7 @@ final class RecordingHUDController: NSWindowController {
         cancelCollapse()
         cancelWarningRestore()
         cancelTransientHide()
+        endCorrectingShimmer()
         phase = .transient
 
         setStatus(status)
@@ -522,6 +572,12 @@ final class RecordingHUDController: NSWindowController {
         waveformView.stop()
         setGlyph(symbol: glyph, color: color)
         showGlyph(true)
+        // 结果出现的轻微弹性：图标弹入，状态文字从下方 2pt 处上移到位。
+        // 图标固定 16×16（见 buildUI 的 indicator 约束），首次显示时视图尚未布局，不能读 bounds。
+        glyphView.layer?.add(
+            HUDMotion.popInAnimation(bounds: CGRect(x: 0, y: 0, width: 16, height: 16)), forKey: "hudPopIn"
+        )
+        statusLabel.layer?.add(HUDMotion.textRiseAnimation(), forKey: "hudTextRise")
         if expanded {
             updateHudWidth(for: message, animated: window?.isVisible == true)
             // 错误文案可能不短（"目标窗口已变化，结果已复制到剪贴板"），走与预览同一套
@@ -804,6 +860,7 @@ final class RecordingHUDController: NSWindowController {
         dotView.translatesAutoresizingMaskIntoConstraints = false
         glyphView.translatesAutoresizingMaskIntoConstraints = false
         glyphView.imageScaling = .scaleProportionallyDown
+        glyphView.wantsLayer = true
         glyphView.isHidden = true
         indicator.addSubview(dotView)
         indicator.addSubview(glyphView)
@@ -816,6 +873,14 @@ final class RecordingHUDController: NSWindowController {
         // 状态行现在会带上输入设备名（"录音中 · MacBook Pro 麦克风"），长度不再可控。
         // 必须允许它被压缩并截尾——否则窄屏 / 长设备名时它会把右侧的计时挤出可视区。
         // 压缩阻力低于 timeLabel 的 `.required`，保证被牺牲的总是状态行而不是计时。
+        statusLabel.wantsLayer = true
+        statusLabel.postsFrameChangedNotifications = true
+        // 观察者随 statusLabel（由本控制器持有、同生命周期）一起消亡，无需单独移除。
+        NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: statusLabel, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncShimmerFrame() }
+        }
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.cell?.usesSingleLineMode = true
         statusLabel.cell?.wraps = false
@@ -833,7 +898,8 @@ final class RecordingHUDController: NSWindowController {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let topRow = NSStackView(views: [indicator, waveformView, statusLabel, spacer, timeLabel])
+        [indicator, waveformView, statusLabel, spacer, timeLabel].forEach { topRow.addArrangedSubview($0) }
+        topRow.wantsLayer = true
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.distribution = .fill
@@ -994,10 +1060,17 @@ private final class PulseDotView: NSView {
         circle.opacity = 1.0
     }
 
+    /// 换成静态颜色，并带一次颜色过渡（红 → 橙 → 蓝）。
     func setStatic(color: NSColor) {
+        let from = circle.presentation()?.backgroundColor ?? circle.backgroundColor
         circle.removeAllAnimations()
         circle.backgroundColor = color.cgColor
         circle.opacity = 1.0
+        let transition = CABasicAnimation(keyPath: "backgroundColor")
+        transition.fromValue = from
+        transition.toValue = color.cgColor
+        transition.duration = HUDMotion.colorTransitionDuration
+        circle.add(transition, forKey: "colorTransition")
     }
 }
 
@@ -1079,19 +1152,29 @@ private final class WaveformView: NSView {
         CATransaction.commit()
     }
 
-    /// 识别中：无电平输入，改用柔和的确定型顺序脉动（橙色）。
-    func setRecognizing() {
+    /// 识别中：先在 0.12s 内收拢到最低高度并由白变橙（"收声"），随后开始柔和的
+    /// 确定型顺序脉动。无电平输入，脉动的 `beginTime` 顺延收拢时长。
+    func settleThenPulse() {
         recognizing = true
         displayLevel = 0
-        let color = NSColor.systemOrange.cgColor
+        let settle = HUDMotion.reduceMotion
+            ? min(HUDMotion.barsSettleDuration, HUDMotion.reducedMotionDuration)
+            : HUDMotion.barsSettleDuration
+
+        // 条高与颜色的变化交给 CALayer 的隐式动画，放在同一个事务里统一时长。
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(settle)
+        layoutBars()
+        bars.forEach { $0.backgroundColor = NSColor.systemOrange.cgColor }
+        CATransaction.commit()
+
         for (index, bar) in bars.enumerated() {
-            bar.removeAllAnimations()
-            bar.backgroundColor = color
+            bar.removeAnimation(forKey: "recognizing")
             let anim = CABasicAnimation(keyPath: "transform.scale.y")
             anim.fromValue = 0.4
             anim.toValue = 1.0
             anim.duration = 0.6
-            anim.beginTime = CACurrentMediaTime() + Double(index) * 0.09
+            anim.beginTime = CACurrentMediaTime() + settle + Double(index) * 0.09
             anim.autoreverses = true
             anim.repeatCount = .infinity
             anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)

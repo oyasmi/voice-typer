@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import XCTest
 @testable import VoiceTyper
 
@@ -66,5 +67,50 @@ final class TextInsertionServiceTests: XCTestCase {
             pendingWrittenChangeCount: 7,
             pendingWrittenText: "上一段听写"
         ))
+    }
+
+    // MARK: - A4：按键盘布局取粘贴键码
+
+    private let qwertyV = CGKeyCode(kVK_ANSI_V)
+
+    func testQwertyLayoutUsesANSIV() {
+        let code = PasteKeyResolver.pasteKeyCode(layoutID: "com.apple.keylayout.US", layoutName: "U.S.") {
+            $0 == CGKeyCode(kVK_ANSI_V) ? "v" : nil
+        }
+        XCTAssertEqual(code, qwertyV)
+    }
+
+    /// Dvorak 下 ANSI_V 键位产生 k，固定发它会变成 ⌘K；v 在 Period 键位上。
+    func testDvorakLayoutUsesTheKeyThatProducesV() {
+        let table: [CGKeyCode: String] = [
+            CGKeyCode(kVK_ANSI_V): "k",
+            CGKeyCode(kVK_ANSI_Period): "v",
+        ]
+        let code = PasteKeyResolver.pasteKeyCode(layoutID: "com.apple.keylayout.Dvorak", layoutName: "Dvorak") { table[$0] }
+        XCTAssertEqual(code, CGKeyCode(kVK_ANSI_Period))
+    }
+
+    func testTranslationIsCaseInsensitive() {
+        let code = PasteKeyResolver.pasteKeyCode(layoutID: nil, layoutName: nil) {
+            $0 == CGKeyCode(kVK_ANSI_Period) ? "V" : nil
+        }
+        XCTAssertEqual(code, CGKeyCode(kVK_ANSI_Period))
+    }
+
+    /// "按住 ⌘ 时切回 QWERTY"的布局：⌘V 的键位仍是 QWERTY 的 V，不能看翻译表。
+    func testQwertyCommandLayoutsAlwaysUseANSIV() {
+        let table: [CGKeyCode: String] = [CGKeyCode(kVK_ANSI_Period): "v"]
+        let byID = PasteKeyResolver.pasteKeyCode(
+            layoutID: "com.apple.keylayout.DVORAK-QWERTYCMD", layoutName: "Dvorak - QWERTY ⌘"
+        ) { table[$0] }
+        XCTAssertEqual(byID, qwertyV)
+
+        let byName = PasteKeyResolver.pasteKeyCode(layoutID: "custom.layout", layoutName: "My Layout ⌘") { table[$0] }
+        XCTAssertEqual(byName, qwertyV)
+    }
+
+    func testFallsBackToANSIVWhenLayoutHasNoV() {
+        let code = PasteKeyResolver.pasteKeyCode(layoutID: "com.apple.keylayout.Arabic", layoutName: "Arabic") { _ in "ب" }
+        XCTAssertEqual(code, qwertyV)
     }
 }

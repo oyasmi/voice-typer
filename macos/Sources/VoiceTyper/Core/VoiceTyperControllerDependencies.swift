@@ -8,6 +8,7 @@ protocol HotkeyListening: AnyObject {
     var onPress: (() -> Void)? { get set }
     var onRelease: (() -> Void)? { get set }
     var onCancel: (() -> Void)? { get set }
+    var onGestureCancelled: (() -> Void)? { get set }
     /// 松开热键之后（识别中）是否仍接受 Esc 取消。见 `HotkeyService` 上的同名属性。
     var acceptsCancelWhenInactive: Bool { get set }
     func start(with hotkey: HotkeyConfig) throws
@@ -20,7 +21,9 @@ protocol AudioCapturing: AnyObject {
     var onTailChunk: (([Float]) -> Void)? { get set }
     var onLevel: ((Float) -> Void)? { get set }
     var onDeviceChanged: (() -> Void)? { get set }
-    func start() throws
+    /// 录音开始后实际使用的输入设备；未在录音或取不到时为 nil。
+    var activeInputDevice: ActiveInputDevice? { get }
+    func start(inputPolicy: AudioInputPolicy) throws
     func stop()
     func stopWithoutResult()
 }

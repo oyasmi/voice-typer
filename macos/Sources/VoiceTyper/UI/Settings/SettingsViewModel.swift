@@ -79,6 +79,7 @@ final class SettingsViewModel {
     var idleUnloadMinutes = 0
     var preloadOnLaunch = true
     var interfaceLanguage: AppLanguage = .zh
+    var audioInputPolicy: AudioInputPolicy = .automatic
     var generalMessage = ""
     var generalMessageKind: SettingsMessageKind = .info
 
@@ -95,7 +96,7 @@ final class SettingsViewModel {
     var onStartModelDownload: (() -> Void)?
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
-    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<String, SimpleMessageError>)?
+    var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
 
     /// 已落盘的基线配置。即时保存（热键/透明度）以它为基准，避免带上未保存的识别草稿。
     private(set) var loadedConfig = AppConfig()
@@ -116,6 +117,7 @@ final class SettingsViewModel {
         refreshFnConflictWarning()
         hudOpacity = config.ui.opacity
         hudPosition = config.ui.hudPosition
+        audioInputPolicy = AudioInputPolicy(configValue: config.audio.inputDevice)
         interfaceLanguage = config.ui.interfaceLanguage
         idleUnloadMinutes = config.asr.idleUnloadMinutes
         preloadOnLaunch = config.asr.preloadOnLaunch
@@ -164,11 +166,20 @@ final class SettingsViewModel {
             // 成功/失败严格以是否抛出异常为准，不再用"文本是否发生变化"猜测——网络不通
             // 与"模型认为无需修改"此前会被误判成同一个结果，用户拿不到真实原因（R3-13）。
             switch outcome {
-            case .success(let corrected):
-                self.recognitionMessage = LF(
+            case .success(let result):
+                var message = LF(
                     "校对测试成功：模型正常响应（耗时 %.2f 秒）。返回结果：%@",
-                    elapsed, corrected
+                    elapsed, result.text
                 )
+                switch result.thinkingParameter {
+                case .sent:
+                    message += " " + L("已关闭深度思考。")
+                case .rejectedThenOmitted:
+                    message += " " + L("该服务不支持关闭深度思考的参数，已自动改用普通请求。")
+                case .omittedByCache:
+                    break // 测试总是重新探测，不会出现
+                }
+                self.recognitionMessage = message
                 self.recognitionMessageKind = .success
             case .failure(let error):
                 self.recognitionMessage = LF(
@@ -270,7 +281,7 @@ final class SettingsViewModel {
         }
         // 非 fn 主键必须至少带一个修饰键：录制器（HotkeyRecorderView）已经拦过一次，
         // 这里是配置落盘前的第二道防线（例如未来其他入口直接调用 applyHotkey）（R3-05）。
-        guard key == "fn" || !config.modifiers.isEmpty else {
+        guard key == "fn" || ModifierHotkey(rawValue: key) != nil || !config.modifiers.isEmpty else {
             hotkeyMessage = SettingsValidationError.missingModifier(config.key).localizedDescription
             hotkeyMessageKind = .error
             return
@@ -321,6 +332,11 @@ final class SettingsViewModel {
 
     func resetHotkeyToFn() {
         applyHotkey(HotkeyConfig(modifiers: [], key: "fn", mode: hotkeyConfig.mode))
+    }
+
+    /// 外接键盘没有 Fn 时的推荐选择：单击右 ⌘。
+    func resetHotkeyToRightCommand() {
+        applyHotkey(HotkeyConfig(modifiers: [], key: ModifierHotkey.rightCommand.rawValue, mode: hotkeyConfig.mode))
     }
 
     /// 录制开始：挂起全局热键监听，避免录制时按 Fn 当场触发录音。
@@ -383,6 +399,25 @@ final class SettingsViewModel {
                 // 保存失败要把界面退回真实生效的值，否则 Picker 会显示一个没生效的设置。
                 self.hudPosition = previous
                 self.generalMessage = LF("浮窗位置保存失败：%@", error.localizedDescription)
+                self.generalMessageKind = .error
+            }
+        }
+    }
+
+    /// 麦克风选择即时保存；保存会重建控制器，下一次录音生效。
+    func commitAudioInputPolicy() {
+        var updated = loadedConfig
+        updated.audio.inputDevice = audioInputPolicy.configValue
+        let previous = AudioInputPolicy(configValue: loadedConfig.audio.inputDevice)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+                self.generalMessage = ""
+            } catch {
+                self.audioInputPolicy = previous
+                self.generalMessage = LF("麦克风设置保存失败：%@", error.localizedDescription)
                 self.generalMessageKind = .error
             }
         }

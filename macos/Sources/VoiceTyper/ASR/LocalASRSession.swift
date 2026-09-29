@@ -49,6 +49,13 @@ final class LocalASRSession {
     private let asrQueue: DispatchQueue
     private let engineAccessor: () -> (any SenseVoiceRecognizing)?
     private let llmCorrector: LLMCorrector?
+    /// 单调时钟；会在 asrQueue 上被调用，必须线程安全（默认实现满足）。
+    private let now: MonotonicClock
+
+    /// 分阶段打点，会话收尾前由控制器读取并入 `DictationMetrics`。
+    private(set) var timings = ASRSessionTimings()
+    private var hasReceivedAudio = false
+    private var engineWaitStartedAt: UInt64?
 
     private var buffer: RecognitionBuffer?
     /// 引擎尚未加载完成时，音频先攒在这里；引擎就绪后的第一次 sendAudio 会把它们一并灌入 buffer。
@@ -72,10 +79,16 @@ final class LocalASRSession {
     private var lastPreview = ""
     private var finalizeWatchdog: Task<Void, Never>?
 
-    init(asrQueue: DispatchQueue, engineAccessor: @escaping () -> (any SenseVoiceRecognizing)?, llmCorrector: LLMCorrector?) {
+    init(
+        asrQueue: DispatchQueue,
+        engineAccessor: @escaping () -> (any SenseVoiceRecognizing)?,
+        llmCorrector: LLMCorrector?,
+        now: @escaping MonotonicClock = systemMonotonicClock
+    ) {
         self.asrQueue = asrQueue
         self.engineAccessor = engineAccessor
         self.llmCorrector = llmCorrector
+        self.now = now
     }
 
     func sendAudio(_ samples: [Float]) {
@@ -83,16 +96,23 @@ final class LocalASRSession {
         guard !samples.isEmpty else { return }
 
         ensureBufferIfPossible()
+        if !hasReceivedAudio {
+            hasReceivedAudio = true
+            timings.coldAtStart = (buffer == nil)
+        }
         guard let buffer else {
             // 引擎仍在加载：先攒着，下次 sendAudio（或 finalize）时补上。
             // pendingAudio 同样严格不超过单段上限——引擎长时间不就绪时不能无限积累
             // （R3-03 同源）；单个超大 chunk 也只追加剩余容量内的部分。
-            pendingAudio.append(contentsOf: acceptWithinCap(samples, currentCount: pendingAudio.count))
+            let accepted = acceptWithinCap(samples, currentCount: pendingAudio.count)
+            pendingAudio.append(contentsOf: accepted)
+            timings.receivedSamples += accepted.count
             return
         }
 
         let accepted = acceptWithinCap(samples, currentCount: buffer.sampleCount)
         guard !accepted.isEmpty else { return }
+        timings.receivedSamples += accepted.count
 
         if Self.containsSpeech(accepted) {
             hasSpeechSinceLastPreview = true
@@ -126,6 +146,7 @@ final class LocalASRSession {
     func finalize(timeout: TimeInterval) {
         guard !closed, !isFinalizing else { return }
         isFinalizing = true
+        timings.finalizeStartedAt = now()
         finalizeWatchdog?.cancel()
 
         if timeout > 0 {
@@ -141,6 +162,7 @@ final class LocalASRSession {
         guard let buffer else {
             // 引擎仍未就绪（极短录音、模型刚好还没加载完）：等一小段时间重试，
             // 而不是立即报错——preload 已经在后台跑，多数情况下几百毫秒内就绪。
+            engineWaitStartedAt = now()
             waitForEngineThenFinalize()
             return
         }
@@ -185,15 +207,23 @@ final class LocalASRSession {
     private func schedulePreview() {
         guard !isFinalizing, !previewInFlight, let buffer else { return }
         // 这一轮没有新的语音：跳过整窗重跑，HUD 保持上一次的预览文本。
-        guard hasSpeechSinceLastPreview else { return }
+        guard hasSpeechSinceLastPreview else {
+            timings.previewSkipped += 1
+            return
+        }
         hasSpeechSinceLastPreview = false
         previewInFlight = true
+        let clock = now
         asrQueue.async { [weak self] in
             if self?.cancelFlag.isSet == true { return }
+            let startedAt = clock()
             let result = Result { try buffer.preview() }
+            let elapsed = clock() &- startedAt
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.previewInFlight = false
+                self.timings.previewRuns += 1
+                self.timings.previewMaxNanos = max(self.timings.previewMaxNanos, elapsed)
                 guard !self.closed, !self.isFinalizing else { return }
                 switch result {
                 case .success(let text):
@@ -224,6 +254,9 @@ final class LocalASRSession {
             guard let self, !self.closed else { return }
             self.ensureBufferIfPossible()
             if let buffer = self.buffer {
+                if let waitStart = self.engineWaitStartedAt {
+                    self.timings.engineWaitNanos = self.now() &- waitStart
+                }
                 self.runFinalize(on: buffer)
             } else {
                 self.waitForEngineThenFinalize(attempt: attempt + 1)
@@ -242,6 +275,7 @@ final class LocalASRSession {
 
                 switch result {
                 case .success(let text):
+                    self.timings.asrCompletedAt = self.now()
                     self.completeWithASRText(text)
                 case .failure(let error):
                     AppLog.asr.error("离线复识别失败: \(String(describing: error), privacy: .public)")
@@ -256,22 +290,29 @@ final class LocalASRSession {
     /// 这一步在跨进程架构下没有意义（要多一次网络往返），进程内是免费的。
     private func completeWithASRText(_ text: String) {
         guard let llmCorrector, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            timings.llmResult = .off
             onFinal?(text)
             return
         }
 
         onPartial?(text)
         onCorrectionStarted?()
+        timings.llmStartedAt = now()
         Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
-            let outcome = await llmCorrector.correct(text)
+            let report = await llmCorrector.correctWithReport(text)
             guard !self.closed else { return }
+            let outcome = report.outcome
+            self.timings.llmCompletedAt = self.now()
+            self.timings.llmRetriedWithoutThinking = (report.thinkingParameter == .rejectedThenOmitted)
             if case .fellBack = outcome {
+                self.timings.llmResult = .fellBack
                 // DESIGN.md 约定：校对失败回落原文时要给用户一个非致命提示。
                 // 这条 warning 可能在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，
                 // 不引入额外的 UI 调度。
                 self.onWarning?(L("智能校对未成功，已使用识别原文"))
             }
+            if case .corrected = outcome { self.timings.llmResult = .corrected }
             self.onFinal?(outcome.text)
         }
     }
