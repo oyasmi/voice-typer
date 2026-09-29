@@ -19,6 +19,14 @@ internal static class AppConstants
     public const int TargetSampleRate = 16_000;
     public const int ChunkSamples = 9_600; // 600ms @ 16kHz
 
+    /// <summary>低于此线性 RMS 视为"基本没有采到声音"（约 -48 dBFS）。两处共用同一个门限，语义才一致：
+    /// <c>LocalAsrSession</c> 用它跳过"这一轮全是静音"的预览（省 CPU）；控制器用它判断"录了一会儿
+    /// 还是一片死寂"，提示用户检查输入设备。判错的代价都只是提示措辞或多跑一次推理，不影响最终识别结果，
+    /// 因此用最简单的能量门限而不是真正的 VAD。</summary>
+    public const float SilenceRmsThreshold = 0.004f;
+
+    public const string RepositoryUrl = "https://github.com/oyasmi/voice-typer";
+
     public static string Version
     {
         get

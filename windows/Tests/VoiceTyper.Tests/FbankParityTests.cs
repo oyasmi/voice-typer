@@ -15,7 +15,7 @@ namespace VoiceTyper.Tests;
 /// 夹具分两类（R0-3）：<b>必需夹具</b>（<c>fbank_input/fbank_reference/fbank_parity_shapes</c>
 /// 等，已随 <c>macos/</c> 入库）缺失时直接 <see cref="Assert.Fail"/>，不允许静默跳过——
 /// 一个夹具路径配错的绿色 CI 不会告诉任何人；<b>需要真实模型</b>的用例（<c>am.mvn</c>）用
-/// xUnit 2.9 的 <c>Assert.Skip</c> 明确跳过并写清缺什么。
+/// Xunit.SkippableFact 的 <c>Skip.If</c> 明确跳过（xunit 2.x 没有内置的动态跳过）并写清缺什么。
 /// </summary>
 public class FbankParityTests
 {
@@ -82,7 +82,7 @@ public class FbankParityTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void LfrCmvn_MatchesPythonReference()
     {
         var inputPath = FixturePath("fbank_input.f32");
@@ -92,7 +92,7 @@ public class FbankParityTests
 
         // 需要本机已有 am.mvn（下载过模型，或跑过 client-server/server/ 留下 ModelScope 缓存）。
         var bundle = ModelLocator.Locate("");
-        Assert.SkipWhen(bundle is null, "缺少 am.mvn：未下载模型，无法比对 CMVN。运行 windows/scripts/fetch_model.ps1 后重试。");
+        Skip.If(bundle is null, "缺少 am.mvn：未下载模型，无法比对 CMVN。运行 windows/scripts/fetch_model.ps1 后重试。");
 
         var shapes = JsonSerializer.Deserialize<Shapes>(File.ReadAllText(shapesPath))!;
         var waveform = LoadFloats(inputPath);
@@ -101,7 +101,7 @@ public class FbankParityTests
         var frontend = new FbankFrontend();
         var feats = frontend.Compute(waveform);
         var lfr = LfrCmvn.ApplyLfr(feats, 7, 6);
-        var stats = CmvnStats.Parse(bundle.CmvnPath);
+        var stats = CmvnStats.Parse(bundle!.CmvnPath);
         var normalized = LfrCmvn.ApplyCmvn(lfr, stats);
 
         Assert.Equal(shapes.lfr_frames, normalized.Length);

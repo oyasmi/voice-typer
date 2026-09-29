@@ -17,6 +17,9 @@ internal sealed class AppConfig
     [YamlMember(Alias = "hotkey")]
     public HotkeyConfig Hotkey { get; set; } = new();
 
+    [YamlMember(Alias = "audio")]
+    public AudioConfig Audio { get; set; } = new();
+
     [YamlMember(Alias = "ui")]
     public UIConfig UI { get; set; } = new();
 
@@ -25,6 +28,7 @@ internal sealed class AppConfig
         Asr = Asr.Clone(),
         Llm = Llm.Clone(),
         Hotkey = Hotkey.Clone(),
+        Audio = Audio.Clone(),
         UI = UI.Clone(),
     };
 
@@ -46,6 +50,12 @@ internal sealed class AppConfig
         config.Llm.Timeout = ClampDouble(config.Llm.Timeout, 1, 120, "llm.timeout");
         config.UI.Opacity = ClampDouble(config.UI.Opacity, 0.1, 1.0, "ui.opacity");
         config.Hotkey = ValidatedHotkey(config.Hotkey);
+        config.Audio ??= new AudioConfig();
+        config.Audio.InputDevice = string.IsNullOrWhiteSpace(config.Audio.InputDevice)
+            ? AudioConfig.Auto
+            : config.Audio.InputDevice.Trim();
+        // 无法识别的 hud_position 回落默认，与 mode 的容错一致；不打 warning：手改成未知值不是错误。
+        config.UI.HudPositionValue = HudPlacementExtensions.Parse(config.UI.HudPosition);
         return config;
     }
 
@@ -59,18 +69,31 @@ internal sealed class AppConfig
     /// </summary>
     private static HotkeyConfig ValidatedHotkey(HotkeyConfig hotkey)
     {
+        // 回落只针对"按哪个键"这件事；mode（按住 / 切换）是独立且始终合法的用户选择，
+        // 不应被一个非法键名连坐重置（对齐 macOS validatedHotkey）。
+        var mode = HotkeyModeExtensions.Parse(hotkey.Mode);
         var key = (hotkey.Key ?? "").Trim().ToLowerInvariant();
         if (!HotkeyService.IsSupportedKey(key))
         {
             AppLog.Warn("config", $"配置字段 hotkey.key 不支持({hotkey.Key})，已回落为默认热键 Ctrl+F2");
-            return new HotkeyConfig();
+            return new HotkeyConfig { ModeValue = mode };
+        }
+        // 单独修饰键（右 Ctrl）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
+        // 对不上，忽略并记 warning。
+        if (ModifierHotkeys.IsModifierOnlyKey(key))
+        {
+            if (hotkey.Modifiers is { Count: > 0 })
+            {
+                AppLog.Warn("config", $"配置字段 hotkey.modifiers 与单独修饰键({key})同时出现，已忽略 modifiers");
+            }
+            return new HotkeyConfig { Modifiers = new List<string>(), Key = key, ModeValue = mode };
         }
         if (hotkey.Modifiers is null || hotkey.Modifiers.Count == 0)
         {
             AppLog.Warn("config", $"配置字段 hotkey 未搭配修饰键({hotkey.Key})，已回落为默认热键 Ctrl+F2");
-            return new HotkeyConfig();
+            return new HotkeyConfig { ModeValue = mode };
         }
-        return hotkey;
+        return new HotkeyConfig { Modifiers = new List<string>(hotkey.Modifiers), Key = key, ModeValue = mode };
     }
 
     private static int ClampInt(int value, int lower, int upper, string field)
@@ -172,12 +195,17 @@ internal sealed class AsrConfig
     [YamlMember(Alias = "preview_window")]
     public int PreviewWindowSeconds { get; set; } = 0;
 
-    /// <summary>0 = 常驻不卸载。默认值与 macOS 保持一致：Windows 启动后总是立即预加载模型
-    /// （没有 macOS 那样可关闭的 preload_on_launch 开关），因此与 macOS「预加载默认开启 +
-    /// 空闲默认从不卸载」的配套决策保持一致——按热键始终零等待（VW-06；此前的 W-30 把
-    /// Windows 从 5 分钟改成 10 分钟对齐 macOS，但 macOS 此后已把默认改成 0，这里跟进）。</summary>
+    /// <summary>0 = 常驻不卸载。默认值与 macOS「预加载默认开启 + 空闲默认从不卸载」的配套决策
+    /// 保持一致——按热键始终零等待。内存紧张的机器可改回定时卸载。</summary>
     [YamlMember(Alias = "idle_unload_minutes")]
     public int IdleUnloadMinutes { get; set; } = 0;
+
+    /// <summary>启动时就把模型载入内存（默认开启，对齐 macOS 3.3.1）：多数用户是"每天高频使用"，
+    /// 启动即加载让首次按热键零等待。关掉之后首次按热键才加载，且加载与录音并行
+    /// （<see cref="Asr.AsrService.MakeSession"/>），用户通常正在说第一句话，感知延迟也接近于零；
+    /// 适合"今天可能一次都不用听写、且在意常驻内存"的场景。</summary>
+    [YamlMember(Alias = "preload_on_launch")]
+    public bool PreloadOnLaunch { get; set; } = true;
 
     public AsrLanguage LanguageValue
     {
@@ -192,6 +220,7 @@ internal sealed class AsrConfig
         ModelDir = ModelDir,
         PreviewWindowSeconds = PreviewWindowSeconds,
         IdleUnloadMinutes = IdleUnloadMinutes,
+        PreloadOnLaunch = PreloadOnLaunch,
     };
 }
 
@@ -227,6 +256,26 @@ internal sealed class LlmConfig
     };
 }
 
+/// <summary>
+/// 热键的触发语义。默认 <see cref="Hold"/>（按住说话）；<see cref="Toggle"/> 为长听写准备：
+/// 按一次开始、再按一次结束。刻意不做"短按 toggle / 长按 hold"的自动判别——那会把被最短录音
+/// 时长当成误触丢弃的一次轻碰，变成用户毫无察觉就开始的持续录音（对齐 macOS HotkeyMode）。
+/// </summary>
+internal enum HotkeyMode { Hold, Toggle }
+
+internal static class HotkeyModeExtensions
+{
+    public static string ToYamlValue(this HotkeyMode mode) => mode == HotkeyMode.Toggle ? "toggle" : "hold";
+
+    /// <summary>无法识别的取值回落 Hold，而不是解析失败——与本文件其余字段的容错一致。</summary>
+    public static HotkeyMode Parse(string? value) =>
+        (value ?? "hold").Trim().ToLowerInvariant() == "toggle" ? HotkeyMode.Toggle : HotkeyMode.Hold;
+
+    public static string DisplayName(this HotkeyMode mode) => mode == HotkeyMode.Toggle
+        ? L10n.T("按一次开始，再按一次结束")
+        : L10n.T("按住说话");
+}
+
 internal sealed class HotkeyConfig
 {
     [YamlMember(Alias = "modifiers")]
@@ -235,16 +284,31 @@ internal sealed class HotkeyConfig
     [YamlMember(Alias = "key")]
     public string Key { get; set; } = "f2";
 
+    [YamlMember(Alias = "mode")]
+    public string Mode { get; set; } = "hold";
+
+    public HotkeyMode ModeValue
+    {
+        get => HotkeyModeExtensions.Parse(Mode);
+        set => Mode = value.ToYamlValue();
+    }
+
+    /// <summary>热键是单独的修饰键（右 Ctrl）：干净单击即触发，按住它再按别的键或点鼠标则
+    /// 作为普通快捷键使用（本次录音被静默丢弃）。</summary>
+    public bool IsModifierOnly => ModifierHotkeys.IsModifierOnlyKey(Key);
+
     public HotkeyConfig Clone() => new()
     {
         Modifiers = new List<string>(Modifiers),
         Key = Key,
+        Mode = Mode,
     };
 
     public string DisplayString
     {
         get
         {
+            if (ModifierHotkeys.DisplayName(Key) is { } modifierName) return modifierName;
             var parts = new List<string>();
             foreach (var m in Modifiers)
             {
@@ -265,10 +329,66 @@ internal sealed class HotkeyConfig
     };
 }
 
+/// <summary>录音输入设备。</summary>
+internal sealed class AudioConfig
+{
+    /// <summary>默认：跟随系统默认输入，仅在「蓝牙耳机通话模式」场景改用非蓝牙麦克风。</summary>
+    public const string Auto = "auto";
+    /// <summary>严格跟随系统默认输入。</summary>
+    public const string System = "system";
+
+    /// <summary><c>auto</c> / <c>system</c> / 音频端点 ID（设置页里手选的设备；ID 不存在时回落系统默认）。</summary>
+    [YamlMember(Alias = "input_device")]
+    public string InputDevice { get; set; } = Auto;
+
+    public AudioConfig Clone() => new() { InputDevice = InputDevice };
+}
+
+/// <summary>HUD 浮窗的落点。</summary>
+internal enum HudPlacement { BottomCenter, BottomRight, NearCursor, Hidden }
+
+internal static class HudPlacementExtensions
+{
+    public static string ToYamlValue(this HudPlacement position) => position switch
+    {
+        HudPlacement.BottomRight => "bottom_right",
+        HudPlacement.NearCursor => "near_cursor",
+        HudPlacement.Hidden => "hidden",
+        _ => "bottom_center",
+    };
+
+    public static HudPlacement Parse(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
+    {
+        "bottom_right" => HudPlacement.BottomRight,
+        "near_cursor" => HudPlacement.NearCursor,
+        "hidden" => HudPlacement.Hidden,
+        _ => HudPlacement.BottomCenter,
+    };
+
+    public static string DisplayName(this HudPlacement position) => position switch
+    {
+        HudPlacement.BottomRight => L10n.T("右下角"),
+        HudPlacement.NearCursor => L10n.T("跟随光标"),
+        HudPlacement.Hidden => L10n.T("不显示（仅出错时提示）"),
+        _ => L10n.T("底部居中"),
+    };
+}
+
 internal sealed class UIConfig
 {
     [YamlMember(Alias = "opacity")]
     public double Opacity { get; set; } = 0.85;
+
+    /// <summary>浮窗落点。"不显示"的语义是不显示<b>过程</b>，不是什么都不显示：错误与"没有识别到内容"
+    /// 这类提示仍会浮出来——那些信息在别处拿不到，一并静音会把可配置项变成静默失败的陷阱。</summary>
+    [YamlMember(Alias = "hud_position")]
+    public string HudPosition { get; set; } = "bottom_center";
+
+    public HudPlacement HudPositionValue
+    {
+        get => HudPlacementExtensions.Parse(HudPosition);
+        set => HudPosition = value.ToYamlValue();
+    }
 
     /// <summary>界面语言（zh / en）。默认中文；改动需要重启应用才全面生效（设置页已明示）。</summary>
     [YamlMember(Alias = "interface_language")]
@@ -283,6 +403,7 @@ internal sealed class UIConfig
     public UIConfig Clone() => new()
     {
         Opacity = Opacity,
+        HudPosition = HudPosition,
         InterfaceLanguage = InterfaceLanguage,
     };
 }

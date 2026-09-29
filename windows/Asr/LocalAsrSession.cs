@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
+using VoiceTyper.Core;
 using VoiceTyper.Llm;
 using VoiceTyper.Support;
 
@@ -24,18 +26,21 @@ namespace VoiceTyper.Asr;
 ///
 /// 所有公共方法必须在 UI 线程调用；所有回调都在 UI 线程触发。
 /// </summary>
-internal sealed class LocalAsrSession
+internal sealed class LocalAsrSession : IDictationSession
 {
-    public Action<string>? OnPartial;
-    public Action<string>? OnFinal;
-    public Action<string>? OnWarning;
-    public Action<string>? OnError;
+    public Action<string>? OnPartial { get; set; }
+    public Action<string>? OnFinal { get; set; }
+    public Action<string>? OnWarning { get; set; }
+    public Action<string>? OnError { get; set; }
     /// <summary>
     /// 达到单段录音上限时触发一次：只发 <see cref="OnWarning"/> 无法让用户知道后续说的话已经
     /// 不会被录入（HUD 的警告闪烁只持续 1.2s，随后恢复"录音中"）。调用方应据此立即结束本次
     /// 录音、把已录到的内容正常上屏，而不是任由用户继续说下去、内容却被静默丢弃（R3-03）。
     /// </summary>
-    public Action? OnSessionCapped;
+    public Action? OnSessionCapped { get; set; }
+    /// <summary>ASR 已出结果、开始等待 LLM 纠错时触发一次。没有这个信号时 HUD 会一直停在"识别中"，
+    /// 用户分不清自己在等本地推理还是在等网络（后者可能长达 <c>llm.timeout</c> 秒）。</summary>
+    public Action? OnCorrectionStarted { get; set; }
 
     /// <summary>
     /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
@@ -53,13 +58,22 @@ internal sealed class LocalAsrSession
     private readonly LlmCorrector? _llmCorrector;
     private readonly int _previewWindowSamples;
 
+    /// <summary>分阶段打点，会话收尾前由控制器读取并入 <see cref="DictationMetrics"/>。</summary>
+    public AsrSessionTimings Timings { get; } = new();
+    private bool _hasReceivedAudio;
+    private long? _engineWaitStartedAt;
+
+    /// <summary>
+    /// 自上一次预览以来，是否收到过能量高于静音阈值的音频。SenseVoice 非流式，预览靠"对已累积
+    /// 音频重跑"实现；如果这 600ms 全是静音，重跑一遍窗口只会得到和上次一样的结果，纯属浪费 CPU
+    /// （用户思考停顿在口述里占比并不低）。跳过它对结果没有任何影响：松手后的 finalize 永远对完整
+    /// 音频整段重跑（VW-10，对齐 macOS）。
+    /// </summary>
+    private bool _hasSpeechSinceLastPreview;
+
     private RecognitionBuffer? _buffer;
     /// <summary>引擎尚未加载完成时，音频先攒在这里；引擎就绪后的第一次 SendAudio 会把它们一并灌入 buffer。</summary>
     private readonly List<float> _pendingAudio = new();
-
-    /// <summary>本轮录音因过短被判定为丢弃（R3-1）：随会话保存，避免新一轮 BeginRecording
-    /// 把实例字段重置掉的竞态。由 VoiceTyperController.FinishRecording 写、OnTailChunk 读。</summary>
-    public bool ShortDiscard { get; set; }
 
     private bool _previewInFlight;
     private bool _isFinalizing;
@@ -100,18 +114,27 @@ internal sealed class LocalAsrSession
         Buffer.BlockCopy(data, 0, samples, 0, data.Length);
 
         EnsureBufferIfPossible();
+        if (!_hasReceivedAudio)
+        {
+            _hasReceivedAudio = true;
+            Timings.ColdAtStart = _buffer is null;
+        }
         if (_buffer is null)
         {
             // 引擎仍在加载：先攒着，下次 SendAudio（或 FinalizeStream）时补上。
             // _pendingAudio 同样严格不超过单段上限——引擎长时间不就绪时不能无限积累
             // （R3-03 同源）；单个超大 chunk 也只追加剩余容量内的部分。
-            _pendingAudio.AddRange(AcceptWithinCap(samples, _pendingAudio.Count));
+            var pending = AcceptWithinCap(samples, _pendingAudio.Count);
+            _pendingAudio.AddRange(pending);
+            Timings.ReceivedSamples += pending.Length;
             return;
         }
 
         var accepted = AcceptWithinCap(samples, _buffer.SampleCount);
         if (accepted.Length == 0) return;
+        Timings.ReceivedSamples += accepted.Length;
 
+        if (ContainsSpeech(accepted)) _hasSpeechSinceLastPreview = true;
         _buffer.Append(accepted);
         SchedulePreview();
     }
@@ -139,6 +162,19 @@ internal sealed class LocalAsrSession
         OnSessionCapped?.Invoke();
     }
 
+    /// <summary>
+    /// 这一段音频里是否有可能是语音（线性 RMS 超过静音阈值）。判断只用于"要不要跑这次预览"，
+    /// 判错的代价上限是多跑或少跑一次预览，最终文本不受影响——因此刻意用最简单的能量门限，
+    /// 不引入真正的 VAD 模型。
+    /// </summary>
+    internal static bool ContainsSpeech(ReadOnlySpan<float> samples)
+    {
+        if (samples.IsEmpty) return false;
+        double sumSquares = 0;
+        foreach (var sample in samples) sumSquares += sample * (double)sample;
+        return Math.Sqrt(sumSquares / samples.Length) >= AppConstants.SilenceRmsThreshold;
+    }
+
     /// <param name="timeout">
     /// 等待识别完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的看门狗。
     /// 传 <see cref="TimeSpan.Zero"/> 或负值表示不设超时。
@@ -147,6 +183,7 @@ internal sealed class LocalAsrSession
     {
         if (_closed || _isFinalizing) return;
         _isFinalizing = true;
+        Timings.FinalizeStartedAt = Stopwatch.GetTimestamp();
         _finalizeWatchdogCts?.Cancel();
 
         if (timeout > TimeSpan.Zero)
@@ -161,6 +198,7 @@ internal sealed class LocalAsrSession
         {
             // 引擎仍未就绪（极短录音、模型刚好还没加载完）：等一小段时间重试，而不是立即报错——
             // Preload 已经在后台跑，多数情况下几百毫秒内就绪。
+            _engineWaitStartedAt = Stopwatch.GetTimestamp();
             WaitForEngineThenFinalize();
             return;
         }
@@ -205,7 +243,7 @@ internal sealed class LocalAsrSession
         var engine = _engineAccessor();
         if (engine is null) return;
 
-        var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples);
+        var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: MaxSessionSamples);
         if (_pendingAudio.Count > 0)
         {
             newBuffer.Append(_pendingAudio.ToArray());
@@ -217,6 +255,13 @@ internal sealed class LocalAsrSession
     private void SchedulePreview()
     {
         if (_isFinalizing || _previewInFlight || _buffer is null) return;
+        // 这一轮没有新的语音：跳过整窗重跑，HUD 保持上一次的预览文本。
+        if (!_hasSpeechSinceLastPreview)
+        {
+            Timings.PreviewSkipped++;
+            return;
+        }
+        _hasSpeechSinceLastPreview = false;
         _previewInFlight = true;
         var buffer = _buffer;
 
@@ -225,12 +270,16 @@ internal sealed class LocalAsrSession
             if (_cancelled) return;
             string? text = null;
             Exception? error = null;
+            var startedAt = Stopwatch.GetTimestamp();
             try { text = buffer.Preview(); }
             catch (Exception ex) { error = ex; }
+            var elapsed = Stopwatch.GetTimestamp() - startedAt;
 
             UiDispatcher.Post(() =>
             {
                 _previewInFlight = false;
+                Timings.PreviewRuns++;
+                Timings.PreviewMaxTicks = Math.Max(Timings.PreviewMaxTicks, elapsed);
                 if (_closed || _isFinalizing) return;
 
                 if (error is not null)
@@ -280,6 +329,10 @@ internal sealed class LocalAsrSession
                 EnsureBufferIfPossible();
                 if (_buffer is not null)
                 {
+                    if (_engineWaitStartedAt is { } waitStart)
+                    {
+                        Timings.EngineWaitTicks = Stopwatch.GetTimestamp() - waitStart;
+                    }
                     RunFinalize(_buffer);
                 }
                 else
@@ -312,6 +365,7 @@ internal sealed class LocalAsrSession
                     OnError?.Invoke(error.Message);
                     return;
                 }
+                Timings.AsrCompletedAt = Stopwatch.GetTimestamp();
                 CompleteWithAsrText(text ?? "");
             });
         });
@@ -326,32 +380,42 @@ internal sealed class LocalAsrSession
     {
         if (_llmCorrector is null || string.IsNullOrWhiteSpace(text))
         {
+            Timings.LlmResult = AsrSessionTimings.LlmOutcome.Off;
             OnFinal?.Invoke(text);
             return;
         }
 
         OnPartial?.Invoke(text);
+        OnCorrectionStarted?.Invoke();
+        Timings.LlmStartedAt = Stopwatch.GetTimestamp();
         _ = CorrectAndFinishAsync(text);
     }
 
     private async Task CorrectAndFinishAsync(string text)
     {
-        LlmCorrector.CorrectionOutcome outcome;
+        LlmCorrector.CorrectionReport report;
         try
         {
-            outcome = await _llmCorrector!.CorrectAsync(text, _sessionCts.Token).ConfigureAwait(true);
+            report = await _llmCorrector!.CorrectWithReportAsync(text, _sessionCts.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
             return; // 会话已取消：丢弃迟到的纠错结果。
         }
         if (_closed) return;
-        if (outcome.DidFallBack)
+        Timings.LlmCompletedAt = Stopwatch.GetTimestamp();
+        Timings.LlmRetriedWithoutThinking = report.Thinking == LlmCorrector.ThinkingParameterUsage.RejectedThenOmitted;
+        if (report.Outcome.DidFallBack)
         {
+            Timings.LlmResult = AsrSessionTimings.LlmOutcome.FellBack;
             // DESIGN.md 约定：纠错失败回落原文时要给用户一个非致命提示。这条 warning 可能
             // 在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，不引入额外的 UI 调度。
             OnWarning?.Invoke(L10n.T("智能纠错未成功，已使用识别原文"));
         }
-        OnFinal?.Invoke(outcome.Text);
+        else
+        {
+            Timings.LlmResult = AsrSessionTimings.LlmOutcome.Corrected;
+        }
+        OnFinal?.Invoke(report.Outcome.Text);
     }
 }

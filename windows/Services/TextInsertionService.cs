@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using VoiceTyper.Core;
 using VoiceTyper.Support;
 using static VoiceTyper.Support.NativeMethods;
 
@@ -29,7 +30,7 @@ internal enum ForegroundElevation { NotElevated, Elevated, Unknown }
 /// 文本插入服务：剪贴板 + SendInput Ctrl+V。
 /// 必须在 UI 线程调用（剪贴板 API 是 STA-affined）。
 /// </summary>
-internal sealed class TextInsertionService
+internal sealed class TextInsertionService : ITextInserting
 {
     /// <summary>恢复原剪贴板内容前的等待时长；500ms 对部分慢应用偏短（对齐 macOS d572f86）。</summary>
     private static readonly TimeSpan RestoreDelay = TimeSpan.FromSeconds(1);
@@ -68,6 +69,18 @@ internal sealed class TextInsertionService
         /// <see cref="Clipboard.Clear"/>，优先保留识别结果、让用户自行复制（R3-2）。</summary>
         public bool ReadFailed { get; set; }
     }
+
+    public ForegroundTarget CaptureForegroundTarget()
+    {
+        var window = GetForegroundWindow();
+        GetWindowThreadProcessId(window, out var processId);
+        return new ForegroundTarget(window, processId);
+    }
+
+    public TextInsertionResult Insert(string text, ForegroundTarget expected) =>
+        Insert(text, expected.Window, expected.ProcessId);
+
+    ForegroundElevation ITextInserting.CheckForegroundElevation() => CheckForegroundWindowElevation();
 
     /// <param name="expectedForegroundWindow">录音开始时记录的前台窗口句柄；插入前若与当前
     /// 前台窗口不一致，说明用户已切换焦点，直接放弃插入（F-10）。</param>
@@ -378,7 +391,9 @@ internal sealed class TextInsertionService
             ki = new KEYBDINPUT
             {
                 wVk = vk,
-                wScan = 0,
+                // 同时带上扫描码（不加 KEYEVENTF_SCANCODE，仍按虚拟键解释）：个别应用（远程桌面、部分 Java / 游戏
+                // 类窗口）读的是扫描码，只给虚拟键会被当成没有按键。
+                wScan = (ushort)MapVirtualKeyW(vk, 0),
                 dwFlags = keyUp ? KEYEVENTF_KEYUP : 0,
                 time = 0,
                 dwExtraInfo = IntPtr.Zero,

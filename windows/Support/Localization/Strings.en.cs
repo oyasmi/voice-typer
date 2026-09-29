@@ -115,8 +115,6 @@ internal static partial class L10n
         ["修饰键："] = "Modifiers:",
         ["主键："] = "Main key:",
         ["预览："] = "Preview:",
-        ["支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→"] =
-            "Supported main keys include: a-z, 0-9, space, tab, enter, esc, f1-f12, insert, delete, home/end, pageup/pagedown, ↑↓←→",
         ["主键不能为空"] = "The main key cannot be empty",
         ["不支持的主键：{0}。可用：字母、数字、F1–F12、Space、Tab、方向键等。"] =
             "Unsupported main key: {0}. Allowed: letters, digits, F1–F12, Space, Tab, arrow keys and the like.",
@@ -155,10 +153,6 @@ internal static partial class L10n
         ["输入设备已变化，本次录音已结束"] = "The input device changed; this recording has ended",
         ["热键监听已失效，正在尝试自动恢复"] = "Hotkey listening stopped working; trying to recover automatically",
         ["上一段听写尚未完成，请稍候再试"] = "The previous dictation is not finished; try again shortly",
-        ["上一段听写已完成，结果已复制到剪贴板"] =
-            "The previous dictation finished; its result was copied to the clipboard",
-        ["上一段听写已完成，但复制到剪贴板失败"] =
-            "The previous dictation finished, but copying it to the clipboard failed",
         ["麦克风权限被拒绝，请在 Windows 设置中允许应用访问麦克风"] =
             "Microphone access was denied. Allow apps to use the microphone in Windows Settings.",
         ["开始录音失败"] = "Failed to start recording",
@@ -227,5 +221,135 @@ internal static partial class L10n
         ["启动录音失败: {0}"] = "Failed to start recording: {0}",
         ["不支持的热键主键: {0}"] = "Unsupported hotkey main key: {0}",
         ["安装键盘钩子失败 (Win32 error {0})"] = "Installing the keyboard hook failed (Win32 error {0})",
+        // ── 首启引导 ────────────────────────────────────────
+        ["欢迎使用 {0}"] = "Welcome to {0}",
+        ["上一步"] = "Back",
+        ["下一步"] = "Next",
+        ["先跳过"] = "Skip for now",
+        ["完成"] = "Done",
+        ["第 {0} 步，共 {1} 步"] = "Step {0} of {1}",
+        ["欢迎"] = "Welcome",
+        ["麦克风"] = "Microphone",
+        ["语音模型"] = "Speech Model",
+        ["试一试"] = "Try It",
+        ["按住 {0} 说话，松开后识别结果会出现在光标所在的位置。"] =
+            "Hold {0} and speak; when you let go, the recognized text appears at the cursor.",
+        ["按一次 {0} 开始说话，再按一次结束，识别结果会出现在光标所在的位置。"] =
+            "Press {0} once to start speaking and again to stop; the recognized text appears at the cursor.",
+        ["VoiceTyper 是一个离线语音输入工具：识别完全在这台电脑上完成，音频不会上传。"] =
+            "VoiceTyper is an offline voice input tool: recognition happens entirely on this computer and audio is never uploaded.",
+        ["接下来用两分钟确认麦克风、语音模型都准备好，并亲自试说一句话。"] =
+            "Next, take two minutes to confirm the microphone and speech model are ready, and try speaking a sentence yourself.",
+        ["引导之后也可以从托盘菜单的「使用引导...」再次打开。"] =
+            "You can reopen this guide later from \"Setup Guide...\" in the tray menu.",
+        ["麦克风已打开，但只收到静音"] = "The microphone opened, but only silence was received",
+        ["请确认 Windows 设置 → 隐私和安全性 → 麦克风中「让桌面应用访问你的麦克风」已打开，并且麦克风没有被静音（包括键盘 / 耳机上的静音键）。也可能只是当前环境太安静——可以直接进入下一步试说一句话。"] =
+            "Make sure \"Let desktop apps access your microphone\" is on under Windows Settings → Privacy & security → Microphone, and that the microphone is not muted (including mute keys on the keyboard or headset). It may also just be very quiet here — you can continue and try speaking.",
+        ["麦克风已打开但只收到静音：请确认「让桌面应用访问你的麦克风」已打开，且麦克风没有被静音。"] =
+            "The microphone opened but only silence was received. Make sure \"Let desktop apps access your microphone\" is on and that the microphone is not muted.",
+        ["正在检测麦克风..."] = "Checking the microphone...",
+        ["Windows 没有单独的授权弹窗；能打开麦克风就说明桌面应用被允许访问了。"] =
+            "Windows has no separate permission prompt; if the microphone opens, desktop apps are allowed to use it.",
+        ["请在 Windows 设置 → 隐私和安全性 → 麦克风中，打开「麦克风访问」和「让桌面应用访问你的麦克风」，然后点「重新检测」。"] =
+            "In Windows Settings → Privacy & security → Microphone, turn on \"Microphone access\" and \"Let desktop apps access your microphone\", then click \"Check Again\".",
+        ["请插入麦克风，或在 Windows 设置 → 系统 → 声音 → 输入中启用一个输入设备，然后点「重新检测」。"] =
+            "Plug in a microphone, or enable an input device in Windows Settings → System → Sound → Input, then click \"Check Again\".",
+        ["请关闭正在独占麦克风的应用（会议软件、录音软件等），然后点「重新检测」。"] =
+            "Close apps that are holding the microphone exclusively (conferencing or recording software), then click \"Check Again\".",
+        ["正在下载模型 {0}%"] = "Downloading model {0}%",
+        ["模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。"] =
+            "The model is about 230 MB and only needs to be downloaded once; afterwards everything works offline. You can click \"Next\" now and the download continues in the background.",
+        ["语音模型已就绪"] = "Speech model is ready",
+        ["可以到设置 → 识别中重新加载，或重新下载模型。"] = "Reload it in Settings → Recognition, or download the model again.",
+        ["重试下载"] = "Retry Download",
+        ["点一下下面的输入框，然后试说一句话："] = "Click the box below, then try speaking a sentence:",
+        ["麦克风还不可用，请回到上一步处理。"] = "The microphone is not available yet. Go back one step to fix it.",
+        ["语音模型还没准备好，请等待或回到上一步重试下载。"] = "The speech model is not ready yet. Wait, or go back one step and retry the download.",
+        ["采到了声音，但没有识别出文字。请靠近麦克风、放慢一点再试一次。"] =
+            "Sound was captured but no text was recognized. Move closer to the microphone, speak a little slower, and try again.",
+        ["正在录音…"] = "Recording…",
+        ["说一句话，然后{0}。"] = "Say a sentence, then {0}.",
+        ["松开热键"] = "release the hotkey",
+        ["再按一次热键"] = "press the hotkey again",
+        ["识别中…"] = "Recognizing…",
+        ["本地引擎正在处理这段音频。"] = "The local engine is processing this audio.",
+        ["全部跑通了"] = "The whole chain works",
+        ["已插入：{0}"] = "Inserted: {0}",
+        ["没有采到声音"] = "No audio captured",
+        ["热键与识别链路是通的，但这段录音几乎是静音。请检查麦克风是否被静音、「设置 → 系统 → 声音 → 输入」里选中的设备是否正确，然后再试一次。"] =
+            "The hotkey and recognition chain work, but this recording was almost silent. Check that the microphone is not muted and that the right device is selected under Settings → System → Sound → Input, then try again.",
+        ["按 Esc 可以随时取消，识别结果不会被插入。再试一次吧。"] =
+            "Press Esc at any time to cancel; the result will not be inserted. Give it another try.",
+        ["没有成功"] = "Did not work",
+        ["还不能开始"] = "Cannot start yet",
+
+        // ── 热键 / 通用设置新增项 ───────────────────────────
+        ["使用右 Ctrl"] = "Use Right Ctrl",
+        ["录制热键"] = "Record Hotkey",
+        ["停止录制"] = "Stop Recording",
+        ["正在听写，请等这一段结束后再录制热键。"] = "A dictation is in progress; wait for it to finish before recording a hotkey.",
+        ["请按下要使用的快捷键（Esc 取消）……"] = "Press the shortcut you want to use (Esc to cancel)...",
+        ["已取消录制。"] = "Recording canceled.",
+        ["这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"] = "That key can't be used as a hotkey. Try another (letters, digits, F1–F12, arrow keys, ...).",
+        ["已录制：{0}，点「保存并应用」生效。"] = "Recorded: {0}. Click \"Save and Apply\" to use it.",
+        ["右 Ctrl"] = "Right Ctrl",
+        ["触发方式："] = "Trigger:",
+        ["按住说话"] = "Hold to talk",
+        ["按一次开始，再按一次结束"] = "Press once to start, again to stop",
+        ["支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→。也可以点「使用右 Ctrl」，单独用右 Ctrl 键触发（按住它再按别的键或点鼠标时仍是普通快捷键）。"] =
+            "Supported main keys: a-z, 0-9, space, tab, enter, esc, f1-f12, insert, delete, home/end, pageup/pagedown, arrow keys. You can also click \"Use Right Ctrl\" to trigger with the Right Ctrl key alone (holding it while pressing another key or clicking the mouse still works as a normal shortcut).",
+        ["启动时预加载识别模型（首次按热键零等待，常驻约 500 MB 内存）"] =
+            "Preload the recognition model at launch (no wait on the first hotkey press; keeps about 500 MB in memory)",
+        ["浮窗位置："] = "Floating window:",
+        ["底部居中"] = "Bottom center",
+        ["右下角"] = "Bottom right",
+        ["跟随光标"] = "Follow cursor",
+        ["不显示（仅出错时提示）"] = "Hidden (errors only)",
+        ["自动（戴蓝牙耳机时改用内置麦克风）"] = "Automatic (use the built-in microphone when a Bluetooth headset is in use)",
+        ["跟随系统默认输入"] = "Follow the system default input",
+        ["（已保存的设备，当前未连接）"] = "(saved device, not connected)",
+
+        // ── 托盘菜单 / 更新检查 ─────────────────────────────
+        ["使用引导..."] = "Setup Guide...",
+        ["检查更新..."] = "Check for Updates...",
+        ["已是最新版本"] = "You are up to date",
+        ["当前版本 {0}。"] = "Current version {0}.",
+        ["有新版本可用"] = "A new version is available",
+        ["最新版本 {0}，当前版本 {1}。"] = "Latest version {0}; you have {1}.",
+        ["是否打开发布页？"] = "Open the releases page?",
+        ["无法比较版本号"] = "Could not compare version numbers",
+        ["已获取到最新的发布信息，但无法解析版本号。请自行到发布页确认。"] =
+            "Fetched the latest release info but could not parse its version number. Please check the releases page yourself.",
+        ["无法检查更新"] = "Could not check for updates",
+        ["{0}\n可以稍后重试，或直接到 GitHub 发布页查看。"] =
+            "{0}\nTry again later, or check the GitHub releases page directly.",
+        ["GitHub 返回 HTTP {0}"] = "GitHub returned HTTP {0}",
+        ["无法解析 GitHub 的响应"] = "Could not parse GitHub's response",
+
+        // ── HUD 新增状态 ────────────────────────────────────
+        ["纠错中…"] = "Correcting…",
+        ["没有识别到内容"] = "Nothing recognized",
+        ["没听到说话内容，请确认麦克风未静音、输入设备选择正确。"] =
+            "No speech was heard. Make sure the microphone is not muted and the right input device is selected.",
+        ["没有检测到声音，请检查麦克风与输入设备"] = "No sound detected — check the microphone and input device",
+        ["还不能听写"] = "Cannot dictate yet",
+
+        // ── 就绪门禁 / 下载重试 ─────────────────────────────
+        ["语音模型正在下载（{0}%），完成后即可开始听写。"] =
+            "The speech model is downloading ({0}%). You can dictate once it finishes.",
+        ["语音模型还没有下载，无法开始听写。"] = "The speech model has not been downloaded yet, so dictation is unavailable.",
+        ["语音模型加载失败：{0}"] = "Failed to load the speech model: {0}",
+        ["识别引擎正在加载，请稍候再试。"] = "The speech engine is loading; please try again in a moment.",
+        ["还有准备工作没有完成。"] = "Setup is not finished yet.",
+        ["{0} 将在 {1} 秒后自动重试（第 {2}/{3} 次）。"] = "{0} Retrying automatically in {1} s (attempt {2} of {3}).",
+        ["{0} 已自动重试 {1} 次仍未成功，请检查网络后手动重试。"] =
+            "{0} Still failing after {1} automatic retries; check the network and retry manually.",
+
+        ["下载 {0} 失败（连接提前结束）。"] = "Downloading {0} failed (the connection ended early).",
+
+        // ── LLM 探测 ────────────────────────────────────────
+        ["该服务不支持关闭深度思考的参数，已自动改为不带该参数请求。"] =
+            "This service does not accept the parameter that turns off deep thinking; requests now omit it automatically.",
+        ["已带上关闭深度思考的参数（服务接受）。"] = "The parameter that turns off deep thinking was sent (accepted by the service).",
     };
 }

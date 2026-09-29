@@ -17,17 +17,31 @@ internal sealed class HotkeyServiceException : Exception
 /// 全局热键监听。基于 <c>WH_KEYBOARD_LL</c> 低级钩子，进程范围内只允许一个实例。
 /// 必须在 UI 线程（即拥有消息泵的线程）上 Start，因为低级钩子的回调通过该线程的消息队列分发。
 /// </summary>
-internal sealed class HotkeyService : IDisposable
+internal sealed class HotkeyService : IHotkeyListening
 {
     /// <summary>热键按下（首次按下，去重过 auto-repeat）。在 UI 线程触发。</summary>
-    public Action? OnPress;
+    public Action? OnPress { get; set; }
     /// <summary>热键松开。在 UI 线程触发。</summary>
-    public Action? OnRelease;
+    public Action? OnRelease { get; set; }
     /// <summary>录音中按下 Esc 主动取消。在 UI 线程触发。</summary>
-    public Action? OnCancel;
+    public Action? OnCancel { get; set; }
+    /// <summary>单独修饰键被用作组合快捷键，本次录音应静默丢弃。在 UI 线程触发。</summary>
+    public Action? OnGestureCancelled { get; set; }
     /// <summary>钩子健康状态变化（R3-5）：false = 钩子已失效且自愈失败中（应向用户显示不可用），
     /// true = （重新）安装成功。在 UI 线程触发。</summary>
-    public Action<bool>? OnHealthChanged;
+    public Action<bool>? OnHealthChanged { get; set; }
+
+    private bool _acceptsCancelWhenInactive;
+    /// <inheritdoc/>
+    public bool AcceptsCancelWhenInactive
+    {
+        get => _acceptsCancelWhenInactive;
+        set
+        {
+            _acceptsCancelWhenInactive = value;
+            if (_stateMachine is not null) _stateMachine.AcceptsCancelWhenInactive = value;
+        }
+    }
 
     /// <summary>
     /// 钩子存活性自愈检查周期。<c>WH_KEYBOARD_LL</c> 的回调若超过
@@ -40,6 +54,9 @@ internal sealed class HotkeyService : IDisposable
 
     private IntPtr _hookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
+    /// <summary>仅单独修饰键热键才安装的鼠标钩子：按住修饰键期间点了鼠标 = 组合用法，作废本次手势。</summary>
+    private IntPtr _mouseHookHandle = IntPtr.Zero;
+    private LowLevelKeyboardProc? _mouseProc;
     private HotkeyConfig? _hotkey;
     /// <summary>按键判定逻辑抽到 <see cref="HotkeyStateMachine"/>（纯逻辑、可单测，R2-1）。
     /// 钩子回调只做注入过滤 + 委派 + 把动作异步投递到 UI 线程。</summary>
@@ -94,7 +111,17 @@ internal sealed class HotkeyService : IDisposable
             _hookHandle = IntPtr.Zero;
         }
 
-        _stateMachine = new HotkeyStateMachine(vk, BuildExpected(hotkey.Modifiers));
+        if (_mouseHookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHookHandle);
+            _mouseHookHandle = IntPtr.Zero;
+            _mouseProc = null;
+        }
+
+        _stateMachine = hotkey.IsModifierOnly
+            ? HotkeyStateMachine.ForModifierOnly(vk)
+            : new HotkeyStateMachine(vk, BuildExpected(hotkey.Modifiers));
+        _stateMachine.AcceptsCancelWhenInactive = _acceptsCancelWhenInactive;
         // 只在安装这一刻取一次 GetAsyncKeyState 快照播种物理修饰键（区别于"在事件里推断释放"）。
         SeedPhysicalModifierState();
 
@@ -108,6 +135,18 @@ internal sealed class HotkeyService : IDisposable
             throw new HotkeyServiceException(L10n.F("安装键盘钩子失败 (Win32 error {0})", err));
         }
         _lastHookActivityTick = Environment.TickCount;
+
+        if (hotkey.IsModifierOnly)
+        {
+            _mouseProc = MouseHookCallback;
+            _mouseHookHandle = SetWindowsHookExW(WH_MOUSE_LL, _mouseProc, GetModuleHandleW(null), 0);
+            if (_mouseHookHandle == IntPtr.Zero)
+            {
+                // 不致命：只是「按住右 Ctrl 再点鼠标」不会作废本次录音。
+                AppLog.Warn("hotkey", $"安装鼠标钩子失败 (Win32 error {Marshal.GetLastWin32Error()})，Ctrl+点击将不会作废录音");
+                _mouseProc = null;
+            }
+        }
     }
 
     private void ReportHealth(bool healthy)
@@ -130,6 +169,12 @@ internal sealed class HotkeyService : IDisposable
             _hookHandle = IntPtr.Zero;
         }
         _proc = null;
+        if (_mouseHookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHookHandle);
+            _mouseHookHandle = IntPtr.Zero;
+        }
+        _mouseProc = null;
         _hotkey = null;
         _stateMachine = null;
         _lastReportedHealthy = true;
@@ -247,11 +292,28 @@ internal sealed class HotkeyService : IDisposable
             case HotkeyAction.Cancel:
                 UiDispatcher.PostAsync(() => OnCancel?.Invoke());
                 break;
+            case HotkeyAction.GestureCancel:
+                UiDispatcher.PostAsync(() => OnGestureCancelled?.Invoke());
+                break;
         }
 
         // 被接管的主键 down/repeat/up 与生效的 Esc 一律消费掉，不再下发给前台应用；
         // 修饰键事件必须继续传递，否则会破坏其他应用看到的修饰键 down/up 配对（R2-1）。
         return consume ? (IntPtr)1 : CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+    }
+
+    private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            var msg = wParam.ToInt32();
+            if (msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_XBUTTONDOWN or WM_MOUSEWHEEL or WM_MOUSEHWHEEL
+                && _stateMachine?.OnMouseButton() == HotkeyAction.GestureCancel)
+            {
+                UiDispatcher.PostAsync(() => OnGestureCancelled?.Invoke());
+            }
+        }
+        return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
     private static HotkeyModifiers BuildExpected(List<string> modifiers)
@@ -301,10 +363,42 @@ internal sealed class HotkeyService : IDisposable
     /// <summary>供 <see cref="Core.AppConfig.Validated"/> 复用：主键是否在支持表内。</summary>
     public static bool IsSupportedKey(string key) => MapKeyToVk(key) != 0;
 
+    /// <summary>命名键的规范名 ↔ 虚拟键码。规范名是设置页录制时写进配置的名字；
+    /// <see cref="MapKeyToVk"/> 另外接受几个别名（return / escape / page_up 等）。</summary>
+    private static readonly (string Name, int Vk)[] NamedKeys =
+    {
+        ("space", 0x20), ("tab", 0x09), ("enter", 0x0D), ("esc", 0x1B), ("backspace", 0x08),
+        ("insert", 0x2D), ("delete", 0x2E), ("home", 0x24), ("end", 0x23), ("pageup", 0x21), ("pagedown", 0x22),
+        ("up", 0x26), ("down", 0x28), ("left", 0x25), ("right", 0x27),
+        ("f1", 0x70), ("f2", 0x71), ("f3", 0x72), ("f4", 0x73), ("f5", 0x74), ("f6", 0x75),
+        ("f7", 0x76), ("f8", 0x77), ("f9", 0x78), ("f10", 0x79), ("f11", 0x7A), ("f12", 0x7B),
+        ("capslock", 0x14),
+    };
+
+    private static readonly (string Alias, string Canonical)[] KeyAliases =
+    {
+        ("return", "enter"), ("escape", "esc"), ("page_up", "pageup"), ("page_down", "pagedown"), ("caps_lock", "capslock"),
+    };
+
+    /// <summary>虚拟键码 → 配置里的规范键名；不支持的键返回 null。设置页「录制热键」用它把按下的键翻译成配置值。</summary>
+    public static string? NameForVirtualKey(int vk)
+    {
+        if (vk is >= 'A' and <= 'Z') return ((char)vk).ToString().ToLowerInvariant();
+        if (vk is >= '0' and <= '9') return ((char)vk).ToString();
+        foreach (var (name, code) in NamedKeys)
+        {
+            if (code == vk) return name;
+        }
+        return null;
+    }
+
     private static int MapKeyToVk(string key)
     {
         if (string.IsNullOrEmpty(key)) return 0;
         var k = key.Trim().ToLowerInvariant();
+
+        // 单独修饰键
+        if (ModifierHotkeys.IsModifierOnlyKey(k)) return ModifierHotkeys.VirtualKey(k);
 
         // 单字符
         if (k.Length == 1)
@@ -313,38 +407,14 @@ internal sealed class HotkeyService : IDisposable
             if (ch is >= 'A' and <= 'Z' or >= '0' and <= '9') return ch;
         }
 
-        // 命名键
-        return k switch
+        foreach (var (alias, canonical) in KeyAliases)
         {
-            "space" => 0x20,
-            "tab" => 0x09,
-            "enter" or "return" => 0x0D,
-            "esc" or "escape" => 0x1B,
-            "backspace" => 0x08,
-            "insert" => 0x2D,
-            "delete" => 0x2E,
-            "home" => 0x24,
-            "end" => 0x23,
-            "pageup" or "page_up" => 0x21,
-            "pagedown" or "page_down" => 0x22,
-            "up" => 0x26,
-            "down" => 0x28,
-            "left" => 0x25,
-            "right" => 0x27,
-            "f1" => 0x70,
-            "f2" => 0x71,
-            "f3" => 0x72,
-            "f4" => 0x73,
-            "f5" => 0x74,
-            "f6" => 0x75,
-            "f7" => 0x76,
-            "f8" => 0x77,
-            "f9" => 0x78,
-            "f10" => 0x79,
-            "f11" => 0x7A,
-            "f12" => 0x7B,
-            "capslock" or "caps_lock" => 0x14,
-            _ => 0,
-        };
+            if (k == alias) { k = canonical; break; }
+        }
+        foreach (var (name, code) in NamedKeys)
+        {
+            if (name == k) return code;
+        }
+        return 0;
     }
 }

@@ -9,10 +9,17 @@ using VoiceTyper.Core;
 using VoiceTyper.Llm;
 using VoiceTyper.Services;
 using VoiceTyper.Support;
+using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.UI;
 
 internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General = 3 }
+
+/// <summary>麦克风下拉框的一项：<see cref="Value"/> 是写进 <c>audio.input_device</c> 的值。</summary>
+internal sealed record MicChoice(string Value, string Label)
+{
+    public override string ToString() => Label;
+}
 
 /// <summary>
 /// 设置窗口：识别 / 热键 / 权限 / 通用 四个 Tab（见 windows/DESIGN.md §5.6）。
@@ -36,6 +43,10 @@ internal sealed class SetupForm : Form
     public Action? OnRetryMicProbe;
     public Action<double>? OnPreviewHudOpacity;
     public Action? OnUserClosedWindow;
+    /// <summary>开始录制热键前暂停全局热键监听（否则按下当前热键会触发听写，而不是被录进来）。
+    /// 返回 false 表示拒绝（例如正在听写）。</summary>
+    public Func<bool>? OnBeginHotkeyRecording;
+    public Action? OnEndHotkeyRecording;
 
     private AppConfig _loadedConfig = new();
     private AsrState _lastAsrState = AsrState.Unloaded;
@@ -53,6 +64,7 @@ internal sealed class SetupForm : Form
     // ─ Tab 1：识别 ────────────────────────────────────────────
     private readonly Label _modelStatusLabel = new();
     private readonly Label _modelPathLabel = new();
+    private readonly Label _modelErrorLabel = new();
     private readonly ProgressBar _modelProgressBar = new();
     private readonly Button _modelActionButton = new();
     private readonly ComboBox _languageCombo = new();
@@ -76,6 +88,10 @@ internal sealed class SetupForm : Form
     private readonly CheckBox _modWin = new();
     private readonly TextBox _hotkeyKey = new();
     private readonly Label _hotkeyPreview = new();
+    private readonly ComboBox _hotkeyModeCombo = new();
+    private readonly Button _useRightCtrlButton = new();
+    private readonly Button _recordHotkeyButton = new();
+    private bool _isRecordingHotkey;
     private readonly Button _saveHotkeyButton = new();
     private readonly Label _hotkeyMessage = new();
 
@@ -90,6 +106,9 @@ internal sealed class SetupForm : Form
     private readonly NumericUpDown _opacityField = new();
     private readonly NumericUpDown _idleUnloadField = new();
     private readonly NumericUpDown _previewWindowField = new();
+    private readonly ComboBox _micDeviceCombo = new();
+    private readonly ComboBox _hudPositionCombo = new();
+    private readonly CheckBox _preloadCheck = new();
     private readonly Button _saveGeneralButton = new();
     private readonly Label _generalMessage = new();
 
@@ -114,8 +133,9 @@ internal sealed class SetupForm : Form
         Controls.Add(_bannerPanel);
         Controls.Add(_versionLabel);
 
-        _tabs.SelectedIndexChanged += (_, _) => RefreshPermissionPolling();
-        VisibleChanged += (_, _) => RefreshPermissionPolling();
+        _tabs.SelectedIndexChanged += (_, _) => { RefreshPermissionPolling(); StopHotkeyRecording(); };
+        VisibleChanged += (_, _) => { RefreshPermissionPolling(); if (!Visible) StopHotkeyRecording(); };
+        Deactivate += (_, _) => StopHotkeyRecording();
         _permissionPollTimer.Tick += (_, _) => OnRetryMicProbe?.Invoke();
     }
 
@@ -167,6 +187,7 @@ internal sealed class SetupForm : Form
         _modShift.Checked = mods.Contains("shift");
         _modWin.Checked = mods.Any(m => m is "win" or "win_l" or "win_r" or "super" or "command" or "cmd");
         _hotkeyKey.Text = config.Hotkey.Key;
+        _hotkeyModeCombo.SelectedItem = config.Hotkey.ModeValue;
         UpdateHotkeyPreview();
 
         _startupCheck.Checked = StartupRegistration.IsEnabled;
@@ -174,6 +195,9 @@ internal sealed class SetupForm : Form
         _opacityField.Value = (decimal)Math.Clamp(config.UI.Opacity, 0.4, 1.0);
         _idleUnloadField.Value = Math.Clamp(config.Asr.IdleUnloadMinutes, 0, 120);
         _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, 0, 30);
+        _preloadCheck.Checked = config.Asr.PreloadOnLaunch;
+        _hudPositionCombo.SelectedItem = config.UI.HudPositionValue;
+        RefreshMicChoices(config.Audio.InputDevice);
 
         if (apiKeyStatus == SecretReadStatus.Failed)
         {
@@ -193,7 +217,8 @@ internal sealed class SetupForm : Form
         string? asrFailureMessage,
         double? downloadProgress,
         string hotkeyDisplay,
-        string engineStatus)
+        string engineStatus,
+        string? downloadError = null)
     {
         // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
@@ -204,6 +229,7 @@ internal sealed class SetupForm : Form
             MicProbeResult.AccessDenied => L10n.T("麦克风权限可能被禁用：请在 Windows 设置 → 隐私和安全 → 麦克风中允许桌面应用访问。"),
             MicProbeResult.NoDevice => L10n.T("未检测到麦克风设备：请插入麦克风或在系统声音设置中启用输入设备。"),
             MicProbeResult.DeviceFailure => L10n.T("麦克风设备打开失败：可能被其他应用独占，或驱动异常。"),
+            MicProbeResult.Silent => L10n.T("麦克风已打开但只收到静音：请确认「让桌面应用访问你的麦克风」已打开，且麦克风没有被静音。"),
             _ => null,
         };
         if (micBanner is not null)
@@ -222,6 +248,8 @@ internal sealed class SetupForm : Form
         _lastIsDownloading = isDownloading;
         _modelStatusLabel.Text = ModelStatusText(asrState, isDownloading, asrFailureMessage);
         _modelPathLabel.Text = asrState == AsrState.Ready ? L10n.F("模型目录：{0}", ModelLocator.DownloadDestination) : "";
+        _modelErrorLabel.Text = downloadError ?? "";
+        _modelErrorLabel.Visible = !string.IsNullOrEmpty(downloadError);
 
         var progress = downloadProgress ?? 0;
         _modelProgressBar.Visible = isDownloading;
@@ -231,7 +259,7 @@ internal sealed class SetupForm : Form
             ? (L10n.T("取消下载"), true)
             : asrState switch
             {
-                AsrState.ModelMissing => (L10n.T("开始下载模型"), true),
+                AsrState.ModelMissing => (string.IsNullOrEmpty(downloadError) ? L10n.T("开始下载模型") : L10n.T("重试下载"), true),
                 AsrState.Loading => (L10n.T("加载中..."), false),
                 AsrState.Ready => (L10n.T("重新加载模型"), true),
                 AsrState.SuspendedForIdle => (L10n.T("重新加载模型"), true),
@@ -243,6 +271,7 @@ internal sealed class SetupForm : Form
         (_micStatusLabel.Text, _micStatusLabel.ForeColor) = micProbe switch
         {
             MicProbeResult.Available => (L10n.T("麦克风可用"), Color.SeaGreen),
+            MicProbeResult.Silent => (L10n.T("麦克风已打开，但只收到静音"), Color.DarkGoldenrod),
             MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), Color.Firebrick),
             MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), Color.Firebrick),
             MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), Color.Firebrick),
@@ -369,6 +398,11 @@ internal sealed class SetupForm : Form
         _modelActionButton.Click += (_, _) => HandleModelAction();
         modelBox.Controls.Add(_modelStatusLabel);
         modelBox.Controls.Add(_modelPathLabel);
+        _modelErrorLabel.AutoSize = false;
+        _modelErrorLabel.Size = new Size(400, 44);
+        _modelErrorLabel.ForeColor = Color.Firebrick;
+        _modelErrorLabel.Visible = false;
+        modelBox.Controls.Add(_modelErrorLabel);
         modelBox.Controls.Add(_modelProgressBar);
         modelBox.Controls.Add(_modelActionButton);
         layout.Controls.Add(modelBox, 1, 0);
@@ -481,32 +515,64 @@ internal sealed class SetupForm : Form
         _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
         layout.Controls.Add(_hotkeyKey, 1, 1);
 
+        _useRightCtrlButton.Text = L10n.T("使用右 Ctrl");
+        _useRightCtrlButton.AutoSize = true;
+        _useRightCtrlButton.Margin = new Padding(12, 0, 0, 0);
+        _useRightCtrlButton.Click += (_, _) =>
+        {
+            // 单独修饰键本身就是完整热键：清掉组合键的修饰键选择。
+            foreach (var c in new[] { _modCtrl, _modAlt, _modShift, _modWin }) c.Checked = false;
+            _hotkeyKey.Text = ModifierHotkeys.RightCtrl;
+            UpdateHotkeyPreview();
+        };
+        _recordHotkeyButton.Text = L10n.T("录制热键");
+        _recordHotkeyButton.AutoSize = true;
+        _recordHotkeyButton.Margin = new Padding(12, 0, 0, 0);
+        _recordHotkeyButton.Click += (_, _) => ToggleHotkeyRecording();
+        var keyRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
+        keyRow.Controls.Add(_hotkeyKey);
+        keyRow.Controls.Add(_recordHotkeyButton);
+        keyRow.Controls.Add(_useRightCtrlButton);
+        layout.Controls.Remove(_hotkeyKey);
+        layout.Controls.Add(keyRow, 1, 1);
+
         layout.Controls.Add(MakeFieldLabel(L10n.T("预览：")), 0, 2);
         _hotkeyPreview.AutoSize = true;
         _hotkeyPreview.Font = new Font("Consolas", 11f, FontStyle.Bold);
         _hotkeyPreview.ForeColor = Color.RoyalBlue;
         layout.Controls.Add(_hotkeyPreview, 1, 2);
 
+        layout.Controls.Add(MakeFieldLabel(L10n.T("触发方式：")), 0, 3);
+        _hotkeyModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _hotkeyModeCombo.FormattingEnabled = true;
+        _hotkeyModeCombo.Width = 240;
+        foreach (var mode in Enum.GetValues<HotkeyMode>()) _hotkeyModeCombo.Items.Add(mode);
+        _hotkeyModeCombo.Format += (_, e) =>
+        {
+            if (e.ListItem is HotkeyMode mode) e.Value = mode.DisplayName();
+        };
+        layout.Controls.Add(_hotkeyModeCombo, 1, 3);
+
         var hotkeyHint = new Label
         {
-            Text = L10n.T("支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→"),
+            Text = L10n.T("支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→。也可以点「使用右 Ctrl」，单独用右 Ctrl 键触发（按住它再按别的键或点鼠标时仍是普通快捷键）。"),
             ForeColor = Color.Gray,
             AutoSize = false,
             Width = 460,
-            Height = 36,
+            Height = 64,
         };
-        layout.Controls.Add(hotkeyHint, 1, 3);
+        layout.Controls.Add(hotkeyHint, 1, 4);
 
         _hotkeyMessage.AutoSize = false;
         _hotkeyMessage.Height = 22;
         _hotkeyMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_hotkeyMessage, 1, 4);
+        layout.Controls.Add(_hotkeyMessage, 1, 5);
 
         _saveHotkeyButton.Text = L10n.T("保存并应用");
         _saveHotkeyButton.AutoSize = true;
         _saveHotkeyButton.Padding = new Padding(10, 4, 10, 4);
         _saveHotkeyButton.Click += async (_, _) => await HandleSaveHotkey();
-        layout.Controls.Add(_saveHotkeyButton, 1, 5);
+        layout.Controls.Add(_saveHotkeyButton, 1, 6);
 
         page.Controls.Add(layout);
     }
@@ -567,6 +633,26 @@ internal sealed class SetupForm : Form
         _startupCheck.AutoSize = true;
         layout.Controls.Add(_startupCheck, 1, 0);
 
+        _preloadCheck.Text = L10n.T("启动时预加载识别模型（首次按热键零等待，常驻约 500 MB 内存）");
+        _preloadCheck.AutoSize = true;
+        layout.Controls.Add(_preloadCheck, 1, 7);
+
+        layout.Controls.Add(MakeFieldLabel(L10n.T("麦克风：")), 0, 8);
+        _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _micDeviceCombo.Width = 320;
+        layout.Controls.Add(_micDeviceCombo, 1, 8);
+
+        layout.Controls.Add(MakeFieldLabel(L10n.T("浮窗位置：")), 0, 9);
+        _hudPositionCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _hudPositionCombo.FormattingEnabled = true;
+        _hudPositionCombo.Width = 240;
+        foreach (var placement in Enum.GetValues<HudPlacement>()) _hudPositionCombo.Items.Add(placement);
+        _hudPositionCombo.Format += (_, e) =>
+        {
+            if (e.ListItem is HudPlacement placement) e.Value = placement.DisplayName();
+        };
+        layout.Controls.Add(_hudPositionCombo, 1, 9);
+
         layout.Controls.Add(MakeFieldLabel(L10n.T("HUD 不透明度：")), 0, 1);
         _opacityField.DecimalPlaces = 2;
         _opacityField.Increment = 0.05m;
@@ -617,13 +703,13 @@ internal sealed class SetupForm : Form
         _generalMessage.Height = 40;
         _generalMessage.Width = 420;
         _generalMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_generalMessage, 1, 5);
+        layout.Controls.Add(_generalMessage, 1, 10);
 
         _saveGeneralButton.Text = L10n.T("保存并应用");
         _saveGeneralButton.AutoSize = true;
         _saveGeneralButton.Padding = new Padding(10, 4, 10, 4);
         _saveGeneralButton.Click += async (_, _) => await HandleSaveGeneral();
-        layout.Controls.Add(_saveGeneralButton, 1, 6);
+        layout.Controls.Add(_saveGeneralButton, 1, 11);
 
         page.Controls.Add(layout);
     }
@@ -684,12 +770,21 @@ internal sealed class SetupForm : Form
 
     private void UpdateHotkeyPreview()
     {
+        var key = _hotkeyKey.Text.Trim();
+        // 单独修饰键本身就是完整热键：组合键的修饰键选择不再适用。
+        var modifierOnly = ModifierHotkeys.IsModifierOnlyKey(key);
+        foreach (var c in new[] { _modCtrl, _modAlt, _modShift, _modWin }) c.Enabled = !modifierOnly;
+        if (modifierOnly)
+        {
+            _hotkeyPreview.Text = ModifierHotkeys.DisplayName(key) ?? key;
+            return;
+        }
+
         var parts = new System.Collections.Generic.List<string>();
         if (_modCtrl.Checked) parts.Add("Ctrl");
         if (_modAlt.Checked) parts.Add("Alt");
         if (_modShift.Checked) parts.Add("Shift");
         if (_modWin.Checked) parts.Add("Win");
-        var key = _hotkeyKey.Text.Trim();
         if (!string.IsNullOrEmpty(key)) parts.Add(key.ToUpperInvariant());
         _hotkeyPreview.Text = parts.Count == 0 ? "—" : string.Join("+", parts);
     }
@@ -787,14 +882,20 @@ internal sealed class SetupForm : Form
         if (_modAlt.Checked) mods.Add("alt");
         if (_modShift.Checked) mods.Add("shift");
         if (_modWin.Checked) mods.Add("win");
-        if (mods.Count == 0)
+        if (ModifierHotkeys.IsModifierOnlyKey(key)) mods.Clear();
+        else if (mods.Count == 0)
         {
             SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), Color.Firebrick);
             return;
         }
 
         var draft = _loadedConfig.Clone();
-        draft.Hotkey = new HotkeyConfig { Modifiers = mods, Key = key };
+        draft.Hotkey = new HotkeyConfig
+        {
+            Modifiers = mods,
+            Key = key,
+            ModeValue = (HotkeyMode)(_hotkeyModeCombo.SelectedItem ?? HotkeyMode.Hold),
+        };
 
         _saveHotkeyButton.Enabled = false;
         SetMessage(_hotkeyMessage, L10n.T("保存中..."), Color.Gray);
@@ -823,6 +924,9 @@ internal sealed class SetupForm : Form
         draft.UI.InterfaceLanguageValue = (AppLanguage)(_interfaceLanguageCombo.SelectedItem ?? AppLanguage.Zh);
         draft.Asr.IdleUnloadMinutes = (int)_idleUnloadField.Value;
         draft.Asr.PreviewWindowSeconds = (int)_previewWindowField.Value;
+        draft.Asr.PreloadOnLaunch = _preloadCheck.Checked;
+        draft.UI.HudPositionValue = (HudPlacement)(_hudPositionCombo.SelectedItem ?? HudPlacement.BottomCenter);
+        draft.Audio.InputDevice = (_micDeviceCombo.SelectedItem as MicChoice)?.Value ?? AudioConfig.Auto;
         var languageChanged = draft.UI.InterfaceLanguageValue != _loadedConfig.UI.InterfaceLanguageValue;
 
         _saveGeneralButton.Enabled = false;
@@ -856,6 +960,95 @@ internal sealed class SetupForm : Form
         {
             _saveGeneralButton.Enabled = true;
         }
+    }
+
+    // ─── 录制热键 ─────────────────────────────────────────────
+
+    private void ToggleHotkeyRecording()
+    {
+        if (_isRecordingHotkey)
+        {
+            StopHotkeyRecording();
+            return;
+        }
+        if (OnBeginHotkeyRecording?.Invoke() == false)
+        {
+            SetMessage(_hotkeyMessage, L10n.T("正在听写，请等这一段结束后再录制热键。"), Color.Firebrick);
+            return;
+        }
+        _isRecordingHotkey = true;
+        _recordHotkeyButton.Text = L10n.T("停止录制");
+        SetMessage(_hotkeyMessage, L10n.T("请按下要使用的快捷键（Esc 取消）……"), Color.RoyalBlue);
+        ActiveControl = null; // 焦点离开输入框，按键才会走到 ProcessCmdKey
+    }
+
+    private void StopHotkeyRecording()
+    {
+        if (!_isRecordingHotkey) return;
+        _isRecordingHotkey = false;
+        _recordHotkeyButton.Text = L10n.T("录制热键");
+        OnEndHotkeyRecording?.Invoke();
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (!_isRecordingHotkey) return base.ProcessCmdKey(ref msg, keyData);
+
+        var code = (int)(keyData & Keys.KeyCode);
+        var modifiers = keyData & Keys.Modifiers;
+        var win = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        var result = HotkeyRecording.Interpret(code, modifiers.HasFlag(Keys.Control), modifiers.HasFlag(Keys.Alt), modifiers.HasFlag(Keys.Shift), win);
+        switch (result.Kind)
+        {
+            case HotkeyRecording.Kind.WaitForMore:
+                break;
+            case HotkeyRecording.Kind.Cancel:
+                SetMessage(_hotkeyMessage, L10n.T("已取消录制。"), Color.Gray);
+                StopHotkeyRecording();
+                break;
+            case HotkeyRecording.Kind.NeedModifier:
+                SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), Color.Firebrick);
+                break;
+            case HotkeyRecording.Kind.Unsupported:
+                SetMessage(_hotkeyMessage, L10n.T("这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"), Color.Firebrick);
+                break;
+            default:
+                _modCtrl.Checked = result.Modifiers!.Contains("ctrl");
+                _modAlt.Checked = result.Modifiers!.Contains("alt");
+                _modShift.Checked = result.Modifiers!.Contains("shift");
+                _modWin.Checked = result.Modifiers!.Contains("win");
+                _hotkeyKey.Text = result.Key!;
+                UpdateHotkeyPreview();
+                SetMessage(_hotkeyMessage, L10n.F("已录制：{0}，点「保存并应用」生效。", _hotkeyPreview.Text), Color.SeaGreen);
+                StopHotkeyRecording();
+                break;
+        }
+        return true; // 录制期间吞掉所有按键，不让它们落到窗口里的别的控件上
+    }
+
+    /// <summary>刷新麦克风下拉框：自动 / 跟随系统 / 当前所有输入设备。已保存的设备不在线时保留一项，
+    /// 免得保存别的设置时把它悄悄改回"自动"。</summary>
+    private void RefreshMicChoices(string selectedValue)
+    {
+        var choices = new System.Collections.Generic.List<MicChoice>
+        {
+            new(AudioConfig.Auto, L10n.T("自动（戴蓝牙耳机时改用内置麦克风）")),
+            new(AudioConfig.System, L10n.T("跟随系统默认输入")),
+        };
+        foreach (var device in AudioDeviceCatalog.ListCaptureDevices())
+        {
+            choices.Add(new MicChoice(device.Id, device.Name));
+        }
+        if (choices.All(c => c.Value != selectedValue))
+        {
+            choices.Add(new MicChoice(selectedValue, L10n.T("（已保存的设备，当前未连接）")));
+        }
+
+        _micDeviceCombo.BeginUpdate();
+        _micDeviceCombo.Items.Clear();
+        foreach (var choice in choices) _micDeviceCombo.Items.Add(choice);
+        _micDeviceCombo.SelectedItem = choices.First(c => c.Value == selectedValue);
+        _micDeviceCombo.EndUpdate();
     }
 
     private static void SetMessage(Label label, string text, Color color)

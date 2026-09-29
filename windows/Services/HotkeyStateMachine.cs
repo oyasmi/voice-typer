@@ -14,7 +14,17 @@ internal enum HotkeyModifiers
     Win = 8,
 }
 
-internal enum HotkeyAction { None, Press, Release, Cancel }
+internal enum HotkeyAction
+{
+    None,
+    Press,
+    Release,
+    /// <summary>用户按 Esc 主动取消。</summary>
+    Cancel,
+    /// <summary>仅单独修饰键：按住期间又按了别的键 / 点了鼠标，说明这是一次组合快捷键而不是
+    /// 听写手势，本次录音应静默丢弃（不提示"已取消"）。</summary>
+    GestureCancel,
+}
 
 /// <summary>
 /// 热键按键状态机（R2-1）。与 Win32 低级钩子解耦，纯逻辑、可脱离真机单测。
@@ -44,19 +54,42 @@ internal sealed class HotkeyStateMachine
     public static readonly int[] AllModifierVks =
         { VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN };
 
-    private enum S { Idle, Engaged, AwaitingFullRelease }
+    /// <summary>
+    /// Idle：未接管；Engaged：组合键命中；AwaitingFullRelease：取消 / 松修饰键后主键仍按住；
+    /// HoldingClean / Invalidated：仅单独修饰键模式——目标键按住且仍是"干净单击" / 已作废但尚未抬起。
+    /// </summary>
+    private enum S { Idle, Engaged, AwaitingFullRelease, HoldingClean, Invalidated }
 
     private readonly int _targetVk;
     private readonly HotkeyModifiers _expected;
+    private readonly bool _modifierOnly;
     private readonly HashSet<int> _pressedModifierKeys = new();
     private S _state = S.Idle;
     private bool _mainKeyDown;
+
+    /// <summary>
+    /// 无进行中的组合键时是否仍受理 Esc 取消。默认只在按住热键期间受理 Esc（否则会吞掉用户
+    /// 平时正常使用的 Esc）；控制器在有听写进行中（松键后的识别阶段、切换模式的录音阶段）
+    /// 把它打开，听写收尾时关闭。
+    /// </summary>
+    public bool AcceptsCancelWhenInactive { get; set; }
 
     public HotkeyStateMachine(int targetVk, HotkeyModifiers expected)
     {
         _targetVk = targetVk;
         _expected = expected;
     }
+
+    private HotkeyStateMachine(int modifierVk)
+    {
+        _targetVk = modifierVk;
+        _expected = HotkeyModifiers.None;
+        _modifierOnly = true;
+    }
+
+    /// <summary>单独修饰键模式（如右 Ctrl）：目标键干净按下即 Press，干净抬起即 Release；
+    /// 按住期间出现任何其他键 / 修饰键 / 鼠标按下则 GestureCancel。</summary>
+    public static HotkeyStateMachine ForModifierOnly(int modifierVk) => new(modifierVk);
 
     /// <summary>把任意（左/右/通用）修饰键 vkCode 归一化为一个 <see cref="HotkeyModifiers"/> 位；
     /// 非修饰键返回 <see cref="HotkeyModifiers.None"/>。</summary>
@@ -80,7 +113,7 @@ internal sealed class HotkeyStateMachine
 
     /// <summary>是否处于"已接管组合键"的任一状态（Engaged 或等待整组释放）——
     /// 自愈重装时据此决定是否要替正在进行的听写补一个收尾信号（R3-5）。</summary>
-    public bool IsEngaged => _state is S.Engaged or S.AwaitingFullRelease;
+    public bool IsEngaged => _state is S.Engaged or S.AwaitingFullRelease or S.HoldingClean or S.Invalidated;
 
     public HotkeyModifiers CurrentModifiers
     {
@@ -113,6 +146,8 @@ internal sealed class HotkeyStateMachine
             else _pressedModifierKeys.Remove(vk);
         }
 
+        if (_modifierOnly) return OnKeyModifierOnly(vk, isDown, isModifier);
+
         var mods = CurrentModifiers;
         // Esc 作为主键时不当取消键处理（否则其 auto-repeat 会把刚触发的录音立刻取消）。
         bool escCancels = vk == VK_ESCAPE && _targetVk != VK_ESCAPE;
@@ -125,6 +160,11 @@ internal sealed class HotkeyStateMachine
                     _state = S.Engaged;
                     _mainKeyDown = true;
                     return (HotkeyAction.Press, true);
+                }
+                // 有听写进行中（识别阶段 / 切换模式的录音阶段）：Esc 取消并吞掉，不再传给前台应用。
+                if (isDown && escCancels && AcceptsCancelWhenInactive)
+                {
+                    return (HotkeyAction.Cancel, true);
                 }
                 // 修饰键不匹配的主键、或纯修饰键：放行，保持用户正常输入。
                 return (HotkeyAction.None, false);
@@ -170,5 +210,72 @@ internal sealed class HotkeyStateMachine
             default:
                 return (HotkeyAction.None, false);
         }
+    }
+
+    /// <summary>
+    /// 单独修饰键的"干净单击"识别（对应 macOS <c>ModifierTapRecognizer</c>）：
+    /// 开始：目标键按下，且此刻没有任何其他修饰键被按住 → Press；
+    /// 作废：按住期间出现任意非修饰键按下 / 另一个修饰键按下 / 鼠标按下 → GestureCancel（每次手势最多一次）；
+    /// 结束：目标键抬起，仍干净则 Release，已作废则无输出。修饰键事件永不消费。
+    /// </summary>
+    private (HotkeyAction action, bool consume) OnKeyModifierOnly(int vk, bool isDown, bool isModifier)
+    {
+        bool isTarget = vk == _targetVk;
+        bool esc = vk == VK_ESCAPE;
+
+        switch (_state)
+        {
+            case S.HoldingClean:
+                if (isTarget)
+                {
+                    if (isDown) return (HotkeyAction.None, false); // 目标键的 auto-repeat
+                    _state = S.Idle;
+                    return (HotkeyAction.Release, false);
+                }
+                if (isDown && (!isModifier || OtherModifiersPressed()))
+                {
+                    _state = S.Invalidated;
+                    // Esc 是用户明确的取消意图，要给"已取消"反馈；其余键是组合快捷键，静默丢弃。
+                    return (esc ? HotkeyAction.Cancel : HotkeyAction.GestureCancel, esc);
+                }
+                return (HotkeyAction.None, false);
+
+            case S.Invalidated:
+                if (isTarget && !isDown) _state = S.Idle;
+                return (HotkeyAction.None, false);
+
+            default: // Idle
+                if (isTarget && isDown && !OtherModifiersPressed())
+                {
+                    _state = S.HoldingClean;
+                    return (HotkeyAction.Press, false);
+                }
+                if (isDown && esc && AcceptsCancelWhenInactive)
+                {
+                    return (HotkeyAction.Cancel, true);
+                }
+                return (HotkeyAction.None, false);
+        }
+    }
+
+    /// <summary>除目标键自身外是否还有修饰键（含另一侧的同名修饰键）被按住。</summary>
+    private bool OtherModifiersPressed()
+    {
+        foreach (var vk in _pressedModifierKeys)
+        {
+            if (vk != _targetVk) return true;
+        }
+        return false;
+    }
+
+    /// <summary>鼠标按下 / 滚轮（Ctrl+点击、Ctrl+滚轮缩放都是常见的组合用法）。只影响单独修饰键模式。</summary>
+    public HotkeyAction OnMouseButton()
+    {
+        if (_modifierOnly && _state == S.HoldingClean)
+        {
+            _state = S.Invalidated;
+            return HotkeyAction.GestureCancel;
+        }
+        return HotkeyAction.None;
     }
 }

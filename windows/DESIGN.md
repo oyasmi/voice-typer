@@ -8,6 +8,13 @@
 > [REPAIR_DELIVERY.md](REPAIR_DELIVERY.md)），**尚未在带 .NET SDK 的环境编译、未在 Windows 真机
 > 验证**。合入后第一步是 `dotnet build` / `dotnet test` 跑绿并处理清单外的编译错误。
 
+> **2026-09-29 状态更新（3.5.0）**：Windows 已对齐 macOS 3.5.0 的行为基线，并**首次在带 .NET SDK 的环境里被
+> 编译、跑测试、发布**（macOS 主机上的交叉编译；280 项测试通过，含端到端识别；x64 / arm64 发布成功）。
+> 详见 [CHANGELOG.md](CHANGELOG.md) 与本文 §15。**仍未在真实 Windows 设备上运行过**——凡涉及热键钩子、麦克风、
+> 剪贴板、浮窗观感、DPI、性能的结论都只是「代码审查通过」，真机验证清单见
+> [CHANGELOG.md](CHANGELOG.md#真机验证清单)。下文与此状态矛盾的旧表述（"从未编译""待跑 dotnet build"等）
+> 以本段为准；[Windows 审查与修复计划](REVIEW_AND_REPAIR_PLAN.md)与其后续文档保留为历史记录。
+
 > 目标产物：`windows/` 下一个**前后端一体**的 Windows 桌面应用，安装即用，不需要单独跑 Python 服务端。
 > 它以 `client-server/client_windows_native/` 为蓝本，把 `macos/` 已经验证过的 SenseVoice 推理链路从 Swift 直译为 C#。
 >
@@ -885,3 +892,81 @@ macOS 4c33be2 里的 `build_xcode.sh`（`ditto` 替代 `zip -r` 保 framework �
 - `Tests/VoiceTyper.Tests/LocalAsrSessionCapTests.cs`（新）：`_pendingAudio` 上限裁剪与一次性触发（引擎返回 `null` 的同步路径，无需真实模型）。
 - `Tests/VoiceTyper.Tests/TextInsertionServiceTests.cs`（新）：`ShouldInheritPendingSnapshot` 的继承/不继承判定。
 - 未在真机上跑过 `dotnet test`（见 §13.2 的既有说明）。
+
+
+---
+
+## 15. 与 macOS 3.5.0 的对齐（3.5.0）
+
+§13 / §14 把 Windows 拉到 macOS 3.2.1。此后 macOS 经历了 R5（首启引导、热键触发方式与就绪反馈、
+HUD 反馈与性能优化）、3.3.x 的默认值与加载期修复、3.4.0 的双语界面（已同步）以及 R7（耗时度量、LLM 提速、
+输入设备、修饰键热键、动效）。本节记录 Windows 侧的落地方式与**有意的差异**；逐项变更清单见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 15.1 控制器：一次听写 = 一个 `Utterance`
+
+`VoiceTyperController` 重写为与 macOS 同构的结构：
+
+- 同一时刻至多一个 `Utterance`（会话 + 前台窗口 + 起点时间 + 阶段 + 耗时度量），所有终止路径
+  （识别完成 / 出错 / Esc 取消 / 短录音丢弃 / 组合手势作废 / `Stop()`）只走 `Finish()`，
+  靠「先取走 `_active` 再处理」保证幂等。§13/§14 里为「旧会话在后台完成」写的
+  `ReferenceEquals` 分支和「复制到剪贴板」兜底因此被取代：不再允许听写重叠，新的一次按键在上一段未结束时被拒绝并提示。
+- 外部依赖经 `Core/DictationAbstractions.cs` 的接口注入（`IHotkeyListening` / `IAudioCapturing` /
+  `ITextInserting` / `IDictationSession(Factory)`），时钟与静音探测调度可注入，状态机可脱离真实钩子与麦克风单测。
+- **门禁**：`BlockedReason` 非空时热键照常监听，按下只提示不开始录音。门禁只拦「新开一段听写」——已有听写进行时
+  松键 / 切换模式的第二次按键必须放行（空闲卸载后首次按热键会触发模型加载，协调器随后置上门禁，这是真实会发生的时序）。
+- **触发方式**：`hotkey.mode = hold | toggle`。单独修饰键的 toggle 以「干净单击的松开」为切换点。
+- **Esc 窗口**：`IHotkeyListening.AcceptsCancelWhenInactive`。默认 Esc 只在按住热键期间受理（否则会吞掉用户正常使用的
+  Esc）；有听写进行时（识别阶段、切换模式的录音阶段）打开，收尾时关闭。窗口内的 Esc 被消费。
+
+### 15.2 热键：单独修饰键只支持右 Ctrl
+
+macOS 支持右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃。Windows 上低级钩子**不能吞掉修饰键事件**（吞掉会破坏其他应用看到的 down/up 配对），
+所以只有「单击本身没有系统副作用」的修饰键才能用：Alt 单击会激活菜单栏（随后的 `Ctrl+V` 粘贴落空）、Win 单击弹开始菜单、
+Shift 单击在中文输入法里切换中英文、左 Ctrl 是几乎所有快捷键的前缀。因此只保留**右 Ctrl**。
+
+`HotkeyStateMachine.ForModifierOnly` 实现「干净单击」：目标键按下且此刻没有别的修饰键 → `Press`；按住期间出现任何非修饰键、
+另一个修饰键或鼠标按下（`WH_MOUSE_LL`，仅此类热键才安装，覆盖 Ctrl+点击 / Ctrl+滚轮）→ `GestureCancel`，每次手势最多一次；
+干净抬起 → `Release`。Esc 是用户明确的取消意图，走 `Cancel` 而不是静默的 `GestureCancel`。
+
+### 15.3 输入设备
+
+macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于原实现取的是 `Role.Communications` 端点，蓝牙耳机连接时它几乎总是
+「免提通话」端点。改为 `Role.Console`，并加策略 `audio.input_device`（`auto` / `system` / 端点 ID）：`auto` 仅在默认输入与默认播放
+**都**是蓝牙、且存在「内置麦克风」（非蓝牙、非 USB、`PKEY_AudioEndpoint_FormFactor` 为麦克风）时改用它。
+
+⚠️ 端点分类依据 `PKEY_Device_EnumeratorName`（BTHENUM / USB / HDAUDIO …），读不到时退回名称关键字（`Hands-Free` / 蓝牙 / 免提 / USB）。
+**这套分类没有在真机上核对过**；纯函数部分（`AudioInputSelector`、`AudioDeviceCatalog.ClassifyTransport`）有单测，
+每次录音的耗时日志会记录分类结果供真机核对。
+
+### 15.4 模型下载
+
+`ModelDownloader` 两条路径：单连接（不变，处理了 `416`）与四段并行（≥ 32MB，即 230MB 的权重）。分段用
+`Range: bytes=0-0` 探测总长（该端点 `HEAD` 返回 404），各段写独立 `.segN` 文件（续传只看文件长度，不需要任何副文件），
+最后按序拼成 `.part`；**任何异常都永久停用分段并落回单连接**——分段只是优化，不能让它把首次安装唯一的必经之路带崩。
+最终以固定 sha256 为准。协调器负责失败后 5s / 20s / 60s 的自动退避重试。
+
+`HttpMessageHandler`、文件清单、落点与地址可注入，`ModelDownloaderTests` 用内存里的 Range 服务覆盖了成功 / 忽略 Range / 续传 /
+校验失败 / 取消，不联网。⚠️ 真实 ModelScope → OSS 的多段并行是否被接受仍需真机（真实网络）确认；不被接受时的回落路径已有测试。
+
+### 15.5 HUD
+
+`RecordingHud` 重写：电平波形（−50…0 dBFS 映射）、状态行含输入设备名（超 14 字截断）、两行尾部预览（`HudTextLayout.FitTail`，
+纯逻辑、测量函数注入）、「纠错中…」、识别为空 / 未就绪 / 错误的一次性提示、三种落点、按 `DeviceDpi` 缩放全部像素尺寸、
+系统关闭动画时不做呼吸与脉冲。宽度按档位（420 / 560 / 700 / 860px @96DPI，上限为屏幕宽度的一半）增长，避免一边识别一边窗口抖动。
+
+有意的差异：不做「收声」呼气与结果图标弹入动效；「校对中」用文字亮度呼吸代替图层遮罩流光；WinForms 分层窗口只能整体调透明度，
+所以文字与背景一起变淡（下限 40%）。
+
+### 15.6 已修复的既有缺陷
+
+- 原工程无法编译（`MemoryMarshal.Cast(byte[])` 在 C# 14 下的重载变化；xunit v3 才有的 `Assert.SkipWhen`）。
+- `interface_language` 没有被序列化：保存任意设置后，界面语言在重启时回到中文。
+- 热键保存路径用全新的 `HotkeyConfig` 覆盖整个热键配置，会丢掉触发方式。
+- 录音使用 `Role.Communications`（见 §15.3）。
+
+### 15.7 测试
+
+主机为 macOS 时的做法：`dotnet build -r win-x64 -p:EnableWindowsTargeting=true` 交叉编译；把测试产物运行时配置里的
+`Microsoft.WindowsDesktop.App` 框架依赖去掉即可在 macOS 上运行不触碰 WinForms 的用例（本地已有 SenseVoice 模型缓存时端到端识别用例
+也会真跑，使用 osx-arm64 的 ONNX Runtime）。**触碰 WinForms / Win32 的部分（钩子、剪贴板、SendInput、窗体绘制）无法在这样的环境里运行，
+它们的正确性只能靠真机验证。**

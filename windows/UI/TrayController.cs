@@ -24,6 +24,8 @@ internal sealed class TrayController : IDisposable
     public Action? OnQuit;
     /// <summary>用户点击"暂停听写"菜单项。由调用方决定实际是否切换（托盘只负责发出请求）。</summary>
     public Action? OnTogglePause;
+    public Action? OnOpenOnboarding;
+    public Action? OnCheckForUpdates;
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _menu;
@@ -69,6 +71,12 @@ internal sealed class TrayController : IDisposable
             }
         };
 
+        var onboardingItem = new ToolStripMenuItem(L10n.T("使用引导..."));
+        onboardingItem.Click += (_, _) => OnOpenOnboarding?.Invoke();
+
+        var updateItem = new ToolStripMenuItem(L10n.T("检查更新..."));
+        updateItem.Click += (_, _) => OnCheckForUpdates?.Invoke();
+
         var aboutItem = new ToolStripMenuItem(L10n.F("关于 {0}", "VoiceTyper"));
         aboutItem.Click += (_, _) => ShowAbout();
 
@@ -86,6 +94,8 @@ internal sealed class TrayController : IDisposable
             openConfigItem,
             new ToolStripSeparator(),
             _startupItem,
+            onboardingItem,
+            updateItem,
             aboutItem,
             new ToolStripSeparator(),
             quitItem,

@@ -24,8 +24,16 @@ internal sealed class ModelDownloadException : Exception
 /// 大文件走 302 → OSS，<c>Range</c> 请求返回 206，断点续传可用。<c>HEAD</c> 请求返回 404
 /// （已实测），因此绝不能用 HEAD 探测文件大小，只能从 GET 响应头读。
 ///
-/// 与 macOS 侧的 <c>ModelDownloader.swift</c> 相比更简单：不需要额外的 <c>.resume</c> 副文件，
-/// <c>.part</c> 文件本身的现有长度就是续传状态——下次直接发 <c>Range: bytes=&lt;len&gt;-</c>。
+/// 两条下载路径（对应 macOS <c>ModelDownloader.swift</c>）：
+/// <list type="bullet">
+/// <item><b>单连接</b>：<c>.part</c> 文件本身的现有长度就是续传状态——下次直接发
+///   <c>Range: bytes=&lt;len&gt;-</c>。经过实测的必经之路。</item>
+/// <item><b>分段并行</b>（≥ 32MB 的文件，即 230MB 的模型权重）：先用 <c>Range: bytes=0-0</c> 探测总长，
+///   均分四段并行下载到各自的 <c>.segN</c> 文件（续传同样只看文件长度），最后按序拼成 <c>.part</c>。
+///   分段只是优化，<b>绝不能让一个优化把首次安装唯一的必经之路带崩</b>：任何异常（服务不支持 Range、
+///   长度对不上、网络错误……）都会永久停用分段并落回单连接。</item>
+/// </list>
+/// 两条路径最终都以固定 sha256 校验为准。
 /// </summary>
 internal sealed class ModelDownloader : IDisposable
 {
@@ -44,10 +52,19 @@ internal sealed class ModelDownloader : IDisposable
 
     private const string EndpointBase = "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo";
 
+    /// <summary>达到此大小的文件才值得分段：小文件的额外请求开销大于并行收益。</summary>
+    internal const long SegmentedMinimumBytes = 32L * 1024 * 1024;
+    internal const int SegmentCount = 4;
+
     // 单请求整体超时不设上限——大文件 + Range 续传下"总时长"没有合理常数。
     // 改用响应头超时 + 正文滑动无进度超时来杀死真正卡死的连接（R3-4）。
-    private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly HttpClient _http;
     private readonly CancellationTokenSource _cts = new();
+    private readonly FileSpec[] _files;
+    private readonly string _destination;
+    private readonly Func<string, Uri> _urlFor;
+    private readonly long _segmentedMinimumBytes;
+    private bool _segmentedDisabled;
     private bool _disposed;
 
     // 响应头必须在此时限内到达：ModelScope 302 → OSS 重定向 + TLS 握手实测个位数秒级，
@@ -57,42 +74,56 @@ internal sealed class ModelDownloader : IDisposable
     // 交外层重试。取 30s 兼顾移动网络的短暂拥塞与"不让用户对着卡住的进度条干等几分钟"。
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
+    public ModelDownloader() : this(null, null, null, null, null) { }
+
+    /// <summary>测试入口：注入假的 HTTP 处理器、文件清单、落点与地址，脱离真实网络。</summary>
+    internal ModelDownloader(HttpMessageHandler? handler, FileSpec[]? files, string? destination,
+        Func<string, Uri>? urlFor, long? segmentedMinimumBytes)
+    {
+        _http = handler is null ? new HttpClient() : new HttpClient(handler);
+        _http.Timeout = Timeout.InfiniteTimeSpan;
+        _files = files ?? Files;
+        _destination = destination ?? ModelLocator.DownloadDestination;
+        _urlFor = urlFor ?? RemoteUrl;
+        _segmentedMinimumBytes = segmentedMinimumBytes ?? SegmentedMinimumBytes;
+    }
+
     /// <summary>
-    /// 下载全部 4 个文件到 <see cref="ModelLocator.DownloadDestination"/>；已存在且校验通过的文件跳过。
+    /// 下载全部文件到 <see cref="ModelLocator.DownloadDestination"/>；已存在且校验通过的文件跳过。
     /// </summary>
     /// <param name="onProgress">总体进度回调（0…1）。</param>
     public async Task DownloadAllAsync(Action<double> onProgress, CancellationToken ct = default)
     {
-        var dir = ModelLocator.DownloadDestination;
-        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(_destination);
 
         // 把调用方 token 与内部取消源关联：Cancel() 或调用方取消都会立刻中断阻塞中的
         // SendAsync / ReadAsync / WriteAsync（R3-4）。
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, ct);
         var token = linkedCts.Token;
 
+        long totalBytes = _files.Sum(f => f.SizeHint);
         long completedBytes = 0;
-        foreach (var spec in Files)
+        foreach (var spec in _files)
         {
             token.ThrowIfCancellationRequested();
 
-            var destPath = Path.Combine(dir, spec.Name);
+            var destPath = Path.Combine(_destination, spec.Name);
             if (File.Exists(destPath) && Sha256Matches(destPath, spec.Sha256))
             {
                 completedBytes += spec.SizeHint;
-                onProgress(Math.Min(1.0, (double)completedBytes / TotalBytes));
+                onProgress(Math.Min(1.0, (double)completedBytes / totalBytes));
                 continue;
             }
 
             var baseBytes = completedBytes;
-            await DownloadOneAsync(spec, dir, fileProgress =>
+            await DownloadOneAsync(spec, fileProgress =>
             {
                 var overall = baseBytes + spec.SizeHint * fileProgress;
-                onProgress(Math.Min(1.0, overall / TotalBytes));
+                onProgress(Math.Min(1.0, overall / totalBytes));
             }, token).ConfigureAwait(false);
 
             completedBytes += spec.SizeHint;
-            onProgress(Math.Min(1.0, (double)completedBytes / TotalBytes));
+            onProgress(Math.Min(1.0, (double)completedBytes / totalBytes));
         }
     }
 
@@ -101,16 +132,48 @@ internal sealed class ModelDownloader : IDisposable
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
-    private async Task DownloadOneAsync(FileSpec spec, string dir, Action<double> onProgress, CancellationToken ct)
+    private async Task DownloadOneAsync(FileSpec spec, Action<double> onProgress, CancellationToken ct)
     {
-        var destPath = Path.Combine(dir, spec.Name);
-        var partPath = Path.Combine(dir, spec.Name + ".part");
+        var destPath = Path.Combine(_destination, spec.Name);
+        var partPath = Path.Combine(_destination, spec.Name + ".part");
+
+        // 大文件先试分段并行。失败不抛出，而是停用分段并落回下面那条经过实测的单连接路径。
+        if (!_segmentedDisabled && spec.SizeHint >= _segmentedMinimumBytes)
+        {
+            try
+            {
+                await DownloadSegmentedAsync(spec, partPath, onProgress, ct).ConfigureAwait(false);
+                if (Sha256Matches(partPath, spec.Sha256))
+                {
+                    InstallPart(spec, partPath, destPath);
+                    return;
+                }
+                AppLog.Warn("model", $"分段下载 {spec.Name} 校验失败，改用单连接重下");
+                TryDelete(partPath);
+                RemoveSegmentFiles(spec);
+                _segmentedDisabled = true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("model", $"分段下载 {spec.Name} 失败，停用分段并改用单连接: {ex.Message}");
+                TryDelete(partPath);
+                _segmentedDisabled = true;
+            }
+        }
 
         Exception? lastError = null;
         for (int attempt = 0; attempt < 2; attempt++)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
+                // 第二次本地重试强制丢弃已有的 .part、从零开始：陈旧或与本次失败相关的残留
+                // 会让"重试"精确重放同一个失败，跨越一次 app 重启也不会自愈（R4-03）。
+                if (attempt > 0) TryDelete(partPath);
                 await PerformDownloadAsync(spec, partPath, onProgress, ct).ConfigureAwait(false);
                 if (!Sha256Matches(partPath, spec.Sha256))
                 {
@@ -118,8 +181,7 @@ internal sealed class ModelDownloader : IDisposable
                     lastError = new ModelDownloadException(L10n.F("文件 {0} 校验失败，可能是下载损坏，请重试。", spec.Name));
                     continue;
                 }
-                TryDelete(destPath);
-                File.Move(partPath, destPath);
+                InstallPart(spec, partPath, destPath);
                 return;
             }
             catch (OperationCanceledException)
@@ -138,31 +200,34 @@ internal sealed class ModelDownloader : IDisposable
         throw lastError ?? new ModelDownloadException(L10n.F("下载 {0} 失败。", spec.Name));
     }
 
+    private void InstallPart(FileSpec spec, string partPath, string destPath)
+    {
+        TryDelete(destPath);
+        File.Move(partPath, destPath);
+        RemoveSegmentFiles(spec); // 该文件的分段残留（若有）一并清掉
+    }
+
+    // ─── 单连接 ───────────────────────────────────────────────────
+
     private async Task PerformDownloadAsync(FileSpec spec, string partPath, Action<double> onProgress, CancellationToken ct)
     {
         long existingLength = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
         if (existingLength >= spec.SizeHint) existingLength = 0; // 陈旧的超大 .part：从头重下更安全
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, RemoteUrl(spec.Name));
+        using var request = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name));
         if (existingLength > 0)
         {
             request.Headers.Range = new RangeHeaderValue(existingLength, null);
         }
 
-        HttpResponseMessage responseMessage;
-        using (var headerCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        using var response = await SendWithHeaderTimeoutAsync(request, spec.Name, ct).ConfigureAwait(false);
+
+        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
         {
-            headerCts.CancelAfter(HeaderTimeout);
-            try
-            {
-                responseMessage = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                throw new ModelDownloadException(L10n.F("下载 {0} 连接超时（{1:F0}s 未响应），将重试。", spec.Name, HeaderTimeout.TotalSeconds));
-            }
+            // 服务端认为 .part 的长度已越界：残留数据不可信，丢掉让下一次从头开始。
+            TryDelete(partPath);
+            throw new ModelDownloadException(L10n.F("下载 {0} 失败（HTTP {1}）。", spec.Name, (int)response.StatusCode));
         }
-        using var response = responseMessage;
 
         bool resumed = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
         if (existingLength > 0 && !resumed)
@@ -179,8 +244,6 @@ internal sealed class ModelDownloader : IDisposable
             ?? response.Content.Headers.ContentLength
             ?? spec.SizeHint;
 
-        // 这个方法只从后台线程（AppCoordinator 的 Task.Run）调用，没有 UI 同步上下文需要保留，
-        // 所以这里不必用 ConfigureAwait(false)。
         await using var httpStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         await using var fileStream = new FileStream(
             partPath,
@@ -190,64 +253,275 @@ internal sealed class ModelDownloader : IDisposable
             bufferSize: 1 << 20,
             useAsync: true);
 
-        var buffer = new byte[1 << 16];
+        var reporter = new ProgressReporter(onProgress);
         long written = existingLength;
-        // 每读 64KB 就回调一次：241MB 的模型文件约 3800 次，每次都触发一次全量 UI 刷新
-        // （托盘 + 设置窗口）代价过高。节流到"变化 ≥0.5% 或距上次 ≥200ms"，首尾两次不节流
-        // （对齐 macOS b94b31e/R3-09）。
-        const double MinProgressDelta = 0.005;
-        const long MinReportIntervalMs = 200;
-        double lastReportedProgress = -1;
-        var reportStopwatch = Stopwatch.StartNew();
 
         // 滑动无进度超时：每次成功读到字节就把定时器往后推 StallTimeout（R3-4）。
         using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         stallCts.CancelAfter(StallTimeout);
+        var buffer = new byte[1 << 16];
 
         while (true)
         {
-            int read;
-            try
-            {
-                read = await httpStream.ReadAsync(buffer, stallCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                throw new ModelDownloadException(L10n.F("下载 {0} 停滞（{1:F0}s 无数据），将重试。", spec.Name, StallTimeout.TotalSeconds));
-            }
+            int read = await ReadWithStallTimeoutAsync(httpStream, buffer, stallCts, spec.Name, ct).ConfigureAwait(false);
             if (read <= 0) break;
             stallCts.CancelAfter(StallTimeout);
 
             await fileStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             written += read;
-            if (totalLength <= 0) continue;
+            if (totalLength > 0) reporter.Report(Math.Min(1.0, (double)written / totalLength), force: written >= totalLength);
+        }
+    }
 
-            var progress = Math.Min(1.0, (double)written / totalLength);
-            var isFirst = lastReportedProgress < 0;
-            var isLast = written >= totalLength;
-            if (isFirst || isLast
-                || progress - lastReportedProgress >= MinProgressDelta
-                || reportStopwatch.ElapsedMilliseconds >= MinReportIntervalMs)
+    // ─── 分段并行 ─────────────────────────────────────────────────
+
+    private sealed class SegmentedUnsupportedException : Exception
+    {
+        public SegmentedUnsupportedException(string message) : base(message) { }
+    }
+
+    private string SegmentPath(FileSpec spec, int index) => Path.Combine(_destination, $"{spec.Name}.seg{index}");
+
+    private void RemoveSegmentFiles(FileSpec spec)
+    {
+        for (int i = 0; i < SegmentCount; i++) TryDelete(SegmentPath(spec, i));
+    }
+
+    /// <summary>把 <c>[0, total)</c> 均分成 <paramref name="count"/> 段的闭区间；余数摊给最后一段，
+    /// 保证覆盖完整且互不重叠。</summary>
+    internal static (long Start, long End)[] SegmentRanges(long total, int count)
+    {
+        if (total <= 0 || count <= 0) return Array.Empty<(long, long)>();
+        if (total <= count) return new[] { (0L, total - 1) };
+        var chunk = total / count;
+        var ranges = new (long Start, long End)[count];
+        for (int i = 0; i < count; i++)
+        {
+            var start = i * chunk;
+            ranges[i] = (start, i == count - 1 ? total - 1 : start + chunk - 1);
+        }
+        return ranges;
+    }
+
+    private async Task DownloadSegmentedAsync(FileSpec spec, string partPath, Action<double> onProgress, CancellationToken ct)
+    {
+        // 探测总长：HEAD 在该端点上返回 404，所以用 "bytes=0-0" 的 GET 从 Content-Range 里读。
+        long total;
+        using (var probe = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name)))
+        {
+            probe.Headers.Range = new RangeHeaderValue(0, 0);
+            using var response = await SendWithHeaderTimeoutAsync(probe, spec.Name, ct).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.PartialContent)
             {
-                lastReportedProgress = progress;
-                reportStopwatch.Restart();
-                onProgress(progress);
+                throw new SegmentedUnsupportedException($"探测请求未返回 206（{(int)response.StatusCode}）");
+            }
+            total = response.Content.Headers.ContentRange?.Length ?? 0;
+        }
+        if (total <= 0) throw new SegmentedUnsupportedException("响应缺少总长度");
+        if (total != spec.SizeHint)
+        {
+            // 长度与清单不符：文件已变更，分段没有意义，交单连接路径按 sha256 裁决。
+            throw new SegmentedUnsupportedException($"总长度 {total} 与清单 {spec.SizeHint} 不符");
+        }
+
+        var ranges = SegmentRanges(total, SegmentCount);
+        var done = new long[ranges.Length];
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            var path = SegmentPath(spec, i);
+            var expected = ranges[i].End - ranges[i].Start + 1;
+            var size = File.Exists(path) ? new FileInfo(path).Length : 0;
+            // 磁盘上的分段比它应有的长度还大：说明是上一次用了不同切分留下的垃圾，丢掉重来。
+            if (size > expected) { TryDelete(path); size = 0; }
+            done[i] = size;
+        }
+
+        var reporter = new ProgressReporter(onProgress);
+        reporter.Report(done.Sum() / (double)total, force: true);
+
+        using var segmentsCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var tasks = ranges.Select((range, index) => Task.Run(async () =>
+        {
+            try
+            {
+                await DownloadSegmentAsync(spec, index, range, done, total, reporter, segmentsCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                segmentsCts.Cancel(); // 一段失败，其余没有继续的意义
+                throw;
+            }
+        }, CancellationToken.None)).ToArray();
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // 优先抛出「不支持分段」这类有信息量的错误，而不是被取消连累出的 OperationCanceledException。
+            var unsupported = tasks.Where(t => t.IsFaulted).SelectMany(t => t.Exception!.InnerExceptions)
+                .OfType<SegmentedUnsupportedException>().FirstOrDefault();
+            if (unsupported is not null) throw unsupported;
+            if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+            var real = tasks.Where(t => t.IsFaulted).SelectMany(t => t.Exception!.InnerExceptions).FirstOrDefault();
+            throw real ?? new ModelDownloadException(L10n.F("下载 {0} 失败。", spec.Name));
+        }
+
+        AssembleSegments(spec, ranges, partPath, total);
+        onProgress(1.0);
+    }
+
+    private async Task DownloadSegmentAsync(FileSpec spec, int index, (long Start, long End) range, long[] done, long total,
+        ProgressReporter reporter, CancellationToken ct)
+    {
+        var expected = range.End - range.Start + 1;
+        var resumed = Interlocked.Read(ref done[index]);
+        if (resumed >= expected) return; // 这段上次已经下完了
+
+        var offset = range.Start + resumed;
+        using var request = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name));
+        request.Headers.Range = new RangeHeaderValue(offset, range.End);
+
+        using var response = await SendWithHeaderTimeoutAsync(request, spec.Name, ct).ConfigureAwait(false);
+        if (response.StatusCode != HttpStatusCode.PartialContent)
+        {
+            throw new SegmentedUnsupportedException($"分段 {index} 未返回 206（{(int)response.StatusCode}）");
+        }
+        var contentRange = response.Content.Headers.ContentRange;
+        if (contentRange is not null && (contentRange.From != offset || contentRange.To != range.End))
+        {
+            throw new SegmentedUnsupportedException($"分段 {index} 的 Content-Range 与请求不符");
+        }
+
+        await using var httpStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        // bufferSize=1：不做 FileStream 内部缓冲，写入后长度即真实进度，续传只需看文件长度。
+        await using var fileStream = new FileStream(SegmentPath(spec, index),
+            resumed > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 1, useAsync: true);
+
+        using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stallCts.CancelAfter(StallTimeout);
+        var buffer = new byte[1 << 16];
+        long received = 0;
+        var remaining = expected - resumed;
+
+        while (received < remaining)
+        {
+            int read = await ReadWithStallTimeoutAsync(httpStream, buffer, stallCts, spec.Name, ct).ConfigureAwait(false);
+            if (read <= 0) break;
+            stallCts.CancelAfter(StallTimeout);
+
+            // 服务端多给的字节（不该发生）不写入，避免污染相邻分段。
+            var take = (int)Math.Min(read, remaining - received);
+            await fileStream.WriteAsync(buffer.AsMemory(0, take), ct).ConfigureAwait(false);
+            received += take;
+            var sum = 0L;
+            Interlocked.Add(ref done[index], take);
+            for (int i = 0; i < done.Length; i++) sum += Interlocked.Read(ref done[i]);
+            reporter.Report(Math.Min(1.0, sum / (double)total));
+        }
+
+        if (received < remaining)
+        {
+            throw new ModelDownloadException(L10n.F("下载 {0} 失败（连接提前结束）。", spec.Name));
+        }
+    }
+
+    private void AssembleSegments(FileSpec spec, (long Start, long End)[] ranges, string partPath, long total)
+    {
+        // 拼接前就把"长度对不上"拦下来：否则要等算完 241MB 的 sha256 才发现。
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            var expected = ranges[i].End - ranges[i].Start + 1;
+            var path = SegmentPath(spec, i);
+            if (!File.Exists(path) || new FileInfo(path).Length != expected)
+            {
+                throw new ModelDownloadException(L10n.F("文件 {0} 校验失败，可能是下载损坏，请重试。", spec.Name));
+            }
+        }
+
+        using (var output = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 1 << 20))
+        {
+            for (int i = 0; i < ranges.Length; i++)
+            {
+                using var input = new FileStream(SegmentPath(spec, i), FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1 << 20);
+                input.CopyTo(output);
+            }
+        }
+        if (new FileInfo(partPath).Length != total)
+        {
+            throw new ModelDownloadException(L10n.F("文件 {0} 校验失败，可能是下载损坏，请重试。", spec.Name));
+        }
+        RemoveSegmentFiles(spec);
+    }
+
+    // ─── 公共小工具 ───────────────────────────────────────────────
+
+    private async Task<HttpResponseMessage> SendWithHeaderTimeoutAsync(HttpRequestMessage request, string name, CancellationToken ct)
+    {
+        using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        headerCts.CancelAfter(HeaderTimeout);
+        try
+        {
+            return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ModelDownloadException(L10n.F("下载 {0} 连接超时（{1:F0}s 未响应），将重试。", name, HeaderTimeout.TotalSeconds));
+        }
+    }
+
+    private static async Task<int> ReadWithStallTimeoutAsync(Stream stream, byte[] buffer, CancellationTokenSource stallCts, string name, CancellationToken ct)
+    {
+        try
+        {
+            return await stream.ReadAsync(buffer, stallCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ModelDownloadException(L10n.F("下载 {0} 停滞（{1:F0}s 无数据），将重试。", name, StallTimeout.TotalSeconds));
+        }
+    }
+
+    /// <summary>
+    /// 进度回调节流：每读 64KB 就回调一次的话，241MB 的模型文件约 3800 次，每次都触发一次全量 UI 刷新
+    /// （托盘 + 设置窗口）代价过高。节流到"变化 ≥0.5% 或距上次 ≥200ms"，首尾不节流。多段并行时
+    /// 从多个线程调用，内部加锁。
+    /// </summary>
+    private sealed class ProgressReporter
+    {
+        private const double MinDelta = 0.005;
+        private const long MinIntervalMs = 200;
+
+        private readonly Action<double> _report;
+        private readonly object _lock = new();
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private double _last = -1;
+
+        public ProgressReporter(Action<double> report) => _report = report;
+
+        public void Report(double fraction, bool force = false)
+        {
+            lock (_lock)
+            {
+                if (!force && _last >= 0 && fraction - _last < MinDelta && _clock.ElapsedMilliseconds < MinIntervalMs) return;
+                _last = fraction;
+                _clock.Restart();
+                _report(fraction);
             }
         }
     }
 
-    private static string RemoteUrl(string fileName) =>
-        $"{EndpointBase}?Revision=master&FilePath={Uri.EscapeDataString(fileName)}";
+    private static Uri RemoteUrl(string fileName) =>
+        new($"{EndpointBase}?Revision=master&FilePath={Uri.EscapeDataString(fileName)}");
 
     public static bool Sha256Matches(string path, string expectedHex)
     {
         try
         {
             using var stream = File.OpenRead(path);
-            using var sha = SHA256.Create();
-            var hash = sha.ComputeHash(stream);
-            var hex = Convert.ToHexString(hash);
-            return string.Equals(hex, expectedHex, StringComparison.OrdinalIgnoreCase);
+            var hash = SHA256.HashData(stream);
+            return string.Equals(Convert.ToHexString(hash), expectedHex, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

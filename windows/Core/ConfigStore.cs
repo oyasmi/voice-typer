@@ -39,6 +39,7 @@ internal sealed class ConfigStore
             cfg.Asr ??= new AsrConfig();
             cfg.Llm ??= new LlmConfig();
             cfg.Hotkey ??= new HotkeyConfig();
+            cfg.Audio ??= new AudioConfig();
             cfg.UI ??= new UIConfig();
             return cfg.Validated();
         }
@@ -102,6 +103,7 @@ internal sealed class ConfigStore
             $"  model_dir: {YamlString(config.Asr.ModelDir)}",
             $"  preview_window: {config.Asr.PreviewWindowSeconds}",
             $"  idle_unload_minutes: {config.Asr.IdleUnloadMinutes}",
+            $"  preload_on_launch: {YamlBool(config.Asr.PreloadOnLaunch)}",
             "llm:",
             $"  enabled: {YamlBool(config.Llm.Enabled)}",
             $"  base_url: {YamlString(config.Llm.BaseUrl)}",
@@ -112,8 +114,13 @@ internal sealed class ConfigStore
             "hotkey:",
             modifiersBlock,
             $"  key: {YamlString(config.Hotkey.Key)}",
+            $"  mode: {YamlString(config.Hotkey.Mode)}",
+            "audio:",
+            $"  input_device: {YamlString(config.Audio.InputDevice)}",
             "ui:",
             $"  opacity: {YamlNumber(config.UI.Opacity)}",
+            $"  hud_position: {YamlString(config.UI.HudPosition)}",
+            $"  interface_language: {YamlString(config.UI.InterfaceLanguage)}",
             ""
         );
     }

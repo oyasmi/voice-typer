@@ -2,10 +2,10 @@
 
 **简体中文** | [English](README.en.md)
 
-[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [审查与修复计划](REVIEW_AND_REPAIR_PLAN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
+[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [变更记录](CHANGELOG.md) · [审查与修复计划](REVIEW_AND_REPAIR_PLAN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
 单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
-内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.2.1**，应用名 **VoiceTyper**。
+内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.5.0**（功能与 macOS 3.5.0 对等，见[变更记录](CHANGELOG.md)），应用名 **VoiceTyper**。
 
 **本文适合**：想在自己 Windows 电脑上直接用的用户，以及要自行编译或二次开发的人。深入的架构
 决策、实测数据（⚠️ 部分待真机复测）、逐项取舍见 [`DESIGN.md`](DESIGN.md)。
@@ -32,21 +32,31 @@
 **支持**
 
 - 单进程运行，识别引擎（SenseVoice-Small）直接跑在 App 内，不连接任何服务端
-- 首次启动引导下载一次模型（约 240MB），此后完全离线
-- 按住热键（默认 `Ctrl+F2`）录音，松开自动识别并插入文本
-- 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
+- **首启四步引导**（欢迎 → 麦克风 → 语音模型 → 试一试）：最后一步在引导窗口里真跑一次听写，
+  把「热键 → 麦克风 → 识别 → 文本插入」整条链验一遍，哪一环出问题当场指出
+- 首次启动下载一次模型（约 240MB，大文件四段并行、断点续传、失败自动退避重试），此后完全离线
+- 按住热键（默认 `Ctrl+F2`）录音，松开自动识别并插入文本；也可改为「按一次开始、再按一次结束」的
+  切换模式；还能单独用**右 Ctrl** 键作为热键（干净单击才触发，按住它再按别的键或点鼠标时仍是普通快捷键）
+- 未就绪（模型下载中 / 加载中 / 加载失败）时按热键不再毫无反应：HUD 会说明缺什么
+- 流式实时预览：录音时 HUD 浮窗持续显示识别文本（最多两行，只保留最新的尾部），且会自我修正；
+  HUD 带实时波形与输入设备名，录音 1.5 秒仍没采到声音会提示检查麦克风，识别为空会明确告知
+- 浮窗位置可选：底部居中 / 右下角 / 跟随光标 / 不显示（出错时仍会提示）；按当前屏幕 DPI 缩放
+- 蓝牙耳机友好：默认输入设备是蓝牙耳机、且播放也走蓝牙时，自动改用内置麦克风，避免耳机切到电话音质
+- 录音中或识别中按 `Esc` 都可以取消本次听写
 - 可选的 LLM 智能纠错，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
 - 识别语言可指定为自动 / 中文 / 英文 / 粤语 / 日语 / 韩语
 - 界面语言可选中文（默认）或英文；托盘菜单、设置窗口与 HUD 文案对等，切换后重启生效
 - 空闲一段时间后自动释放识别引擎内存，下次按热键与录音并行自动重新加载
-- 开机自启、HUD 不透明度可调
+- 开机自启、HUD 不透明度可调；托盘菜单「检查更新...」手动查询 GitHub 最新版本（不做后台联网）
+- 每次听写在日志里留一行只含数字与枚举的耗时摘要（不含任何识别文本），便于排查「为什么慢」
 - **同时支持 x64 与 arm64**（含 Snapdragon X 系列 Windows 笔记本）
 - 支持 **Windows 10 与 Windows 11**
 
 **不支持 / 已知限制**
 
-- 只能按住说话，没有「按一次开始、再按一次结束」的切换模式；录音中按 `Esc` 可取消本次听写
-- 热键主键限于字母、数字、`space`/`tab`/`enter`/`esc`、`F1`–`F12`、方向键等命名键
+- 热键主键限于字母、数字、`space`/`tab`/`enter`/`esc`、`F1`–`F12`、方向键等命名键（设置页可直接
+  「录制热键」）；单独修饰键热键只支持**右 Ctrl**——Alt 单击会激活窗口菜单栏、Win 单击弹出开始菜单、
+  Shift 单击在中文输入法里切换中英文，而低级键盘钩子无法吞掉修饰键事件
 - 官方 Release 未做代码签名，首次运行可能被 SmartScreen 拦截，需要点「更多信息 → 仍要运行」；
   自行构建时可选签名，见[「构建 → 签名」](#签名可选)
 - 只支持 SenseVoice-Small 模型，不支持更换为 paraformer；热词在两种形态里都已移除
@@ -121,13 +131,17 @@
 
 ## 使用
 
-1. 启动后系统托盘出现 VoiceTyper 图标。
+1. 启动后系统托盘出现 VoiceTyper 图标（Windows 11 默认把新图标收在任务栏右下角的「^」里，
+   可以把它拖到外面常驻）。首次启动会先弹出四步引导。
 2. **按住热键**（默认 `Ctrl+F2`）开始录音，HUD 浮窗出现在前台窗口所在的屏幕上。
-3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正；录音中按 `Esc` 可取消本次听写。
-4. **松开热键**，本地引擎做一次整段复识别，最终文本插入当前光标位置。
+   切换模式下改为按一次开始、再按一次结束。
+3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正；录音中或识别中按 `Esc` 可取消本次听写
+   （识别中取消不会中断已经在跑的那次推理，但结果会被丢弃、不会插入）。
+4. **松开热键**，本地引擎做一次整段复识别；启用智能纠错时 HUD 会显示「纠错中…」。最终文本插入当前光标位置。
 5. 单段录音上限 **120 秒**：达到上限会自动结束当前听写并正常上屏，不会静默丢弃后续内容。
 
-录音不足 **0.3 秒**视为误触，直接丢弃。插入前会校验前台窗口是否与录音开始时一致，若用户
+录音不足 **0.3 秒**视为误触，直接丢弃。上一段听写还没结束（识别中 / 纠错中）时再按热键，HUD 会提示「上一段听写尚未完成」，
+不会叠起新的会话。插入前会校验前台窗口是否与录音开始时一致，若用户
 在此期间切换了窗口，识别结果只会写入剪贴板，不会插入到意料之外的窗口。
 
 托盘图标状态：
@@ -142,7 +156,7 @@
 | 深红色点 | 出错 |
 
 右键托盘图标可打开菜单：设置、**暂停/恢复听写**（暂停后热键不再响应，直至从菜单恢复）、
-打开配置目录、开机自启开关、关于、退出。
+打开配置目录、开机自启开关、使用引导（重新打开首启引导）、检查更新、关于、退出。
 
 ---
 
@@ -153,9 +167,9 @@
 | Tab | 内容 |
 | --- | --- |
 | **识别** | 模型状态卡片（下载/加载/就绪/失败 + 重新加载）、识别语言、智能纠错（开关 + Base URL + API Key + 模型 + 温度 + 最大 Token + 超时 + 测试纠错） |
-| **热键** | 修饰键（Ctrl/Alt/Shift/Win）组合 + 主键，支持预览 |
+| **热键** | 修饰键（Ctrl/Alt/Shift/Win）组合 + 主键，可「录制热键」直接按下想用的组合，或点「使用右 Ctrl」；触发方式（按住说话 / 按一次开始再按一次结束） |
 | **权限** | 麦克风可用性检测、跳转 Windows 隐私设置、UIPI 限制说明 |
-| **通用** | 开机自启、HUD 背景不透明度、空闲多久后卸载模型、预览窗口（进阶，0=自动按本机性能校准）、**界面语言** |
+| **通用** | 开机自启、启动时预加载模型、麦克风（自动 / 跟随系统 / 手选设备）、浮窗位置、HUD 背景不透明度、空闲多久后卸载模型、预览窗口（进阶，0=自动按本机性能校准）、**界面语言** |
 
 ### 界面语言
 
@@ -177,6 +191,7 @@ asr:
   model_dir: ""              # 留空 = 自动定位（下载目录 / ModelScope 缓存）
   preview_window: 0          # 秒；0 = 首次加载后自动按本机性能校准
   idle_unload_minutes: 0     # 0 = 常驻不卸载（默认值，与 macOS 一致）
+  preload_on_launch: true    # 启动时就把模型载入内存；false = 首次按热键才加载（与录音并行）
 llm:
   enabled: false
   base_url: ""
@@ -187,9 +202,13 @@ llm:
   # api_key 不在这里，见下
 hotkey:
   modifiers: ["ctrl"]
-  key: "f2"
+  key: "f2"                  # 也可以是 "right_ctrl"（单独的右 Ctrl 键，此时 modifiers 留空）
+  mode: "hold"               # hold = 按住说话；toggle = 按一次开始、再按一次结束
+audio:
+  input_device: "auto"       # auto = 蓝牙耳机通话模式下改用内置麦克风；system = 严格跟随系统默认；或音频端点 ID
 ui:
   opacity: 0.85
+  hud_position: "bottom_center"  # bottom_center / bottom_right / near_cursor / hidden
   interface_language: "zh"   # zh / en；界面语言，重启后全面生效
 ```
 
@@ -206,7 +225,8 @@ LLM API Key 出于安全考虑不落配置文件，用 Windows DPAPI（`Protecte
 
 ```
 VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting，与分体式客户端同源）
-  ├── HotkeyService / AudioCaptureService / TextInsertionService（原样搬运）
+  ├── HotkeyService / AudioCaptureService / TextInsertionService（经 IHotkeyListening / IAudioCapturing /
+  │   ITextInserting 接口注入，控制器状态机因此可脱离真实钩子与麦克风单测）
   └── LocalAsrSession ── 接口与旧 StreamingASRClient（WebSocket）完全一致
          └── AsrService（AsrPump 专用串行线程）
                 └── SenseVoiceEngine
@@ -216,8 +236,9 @@ VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting，
                        └── CtcDecoder + TextPostprocessor
 ```
 
-核心设计原则是**不发明新的状态机**：`VoiceTyperController` 与分体式客户端共享同一套状态机，
-只是把网络客户端换成了接口相同的本地会话。识别管线（fbank → LFR/CMVN → CTC 解码）是
+核心设计原则是**不发明新的状态机**：`VoiceTyperController` 沿用同一条主流程，一次听写对应一个
+`Utterance`，所有终止路径（识别完成 / 出错 / Esc 取消 / 短录音丢弃 / 组合手势作废 / 停止）都只走一个幂等的
+`Finish()`。识别管线（fbank → LFR/CMVN → CTC 解码）是
 **从 [`macos/`](../macos/) 的 Swift 实现直译**而来（而不是从头对照 Python 移植）——两个平台的
 fbank 实现共用同一份 Python 金标准夹具，Windows 侧的 `Tests/VoiceTyper.Tests/` 直接链接
 `macos/Tests/VoiceTyperTests/Fixtures/` 下已入库的参考数据。
@@ -264,6 +285,28 @@ VoiceTyper-<版本>-win-arm64-portable.zip
 powershell -ExecutionPolicy Bypass -File scripts\fetch_model.ps1
 ```
 
+### 在 macOS / Linux 上开发（没有 Windows 机器时）
+
+.NET SDK 支持针对 Windows 交叉编译，不需要 Windows 环境就能验证「能不能编译」和大部分纯逻辑：
+
+```bash
+cd windows
+# 交叉编译（必须显式给 RID）
+dotnet build VoiceTyper.csproj -c Release -r win-x64 --self-contained false -p:EnableWindowsTargeting=true
+# 发布（自包含 + ReadyToRun，x64 / arm64 均可）
+dotnet publish VoiceTyper.csproj -c Release -r win-arm64 --self-contained true -p:EnableWindowsTargeting=true -o /tmp/pub
+
+# 在非 Windows 主机上跑测试：不带 RID 构建，并把运行时配置里的 WindowsDesktop 框架依赖去掉
+dotnet build Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj -c Debug -p:SelfContained=false -p:EnableWindowsTargeting=true -p:RuntimeIdentifier=
+#   编辑 Tests/VoiceTyper.Tests/bin/Debug/net10.0-windows/VoiceTyper.Tests.runtimeconfig.json，
+#   删除 frameworks 里的 Microsoft.WindowsDesktop.App
+dotnet test Tests/VoiceTyper.Tests/bin/Debug/net10.0-windows/VoiceTyper.Tests.dll
+```
+
+这样能跑：状态机、配置、下载器、LLM、引导流程、HUD 排版，以及（本机有 SenseVoice 模型缓存时）端到端识别。
+**不能跑、也不能据此下结论**：低级键盘钩子、`SendInput`、剪贴板、WASAPI 采集、窗体绘制与 DPI——这些只能在真机验证，
+清单见 [`CHANGELOG.md`](CHANGELOG.md#真机验证清单)。
+
 ### 改版本号
 
 `VoiceTyper.csproj` 里的 `<Version>` / `<AssemblyVersion>` / `<FileVersion>`。
@@ -301,12 +344,18 @@ dotnet test
 | `ConfigStoreTests` | 配置模型与 YAML 序列化往返（不接触真实 `%APPDATA%`） | 否 |
 | `AppConfigValidationTests` | 配置字段越界夹逼、非有限浮点重置、裸键热键回落默认值 | 否 |
 | `LocalizationTests` | 中英双语覆盖率：源码里每条 `L10n.T(...)` / `L10n.F(...)` 都有英文翻译、占位符一致、查不到时回落中文、Bootstrap 能读出 `interface_language` | 否 |
-| `LlmCorrectorTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文）、`tags-only` 响应不丢文本、`TestAsync` 抛出真实错误且不含响应正文 | 否 |
+| `LlmCorrectorTests` / `LlmThinkingTests` | 纠错客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文）、`tags-only` 响应不丢文本、`TestAsync` 抛出真实错误且不含响应正文；默认关闭深度思考、服务拒绝该字段时去掉重发一次并按「地址+模型」缓存 | 否 |
 | `LlmEndpointTests` | Base URL 结构化解析：scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重 | 否 |
 | `AudioChunkerTests` | 定长分帧、跨调用累积余量、`Drain` 尾音、空输入 | 否 |
+| `VoiceTyperControllerTests` | 控制器状态机：按住 / 切换 / 单独修饰键三种触发方式、未就绪门禁（含「进行中的听写不被门禁吞掉松键」）、Esc 取消（录音中与识别中）、组合手势静默丢弃、连按拒绝、空识别、插入失败与提权提示、录音启动失败、静音探测、收尾幂等 | 否 |
+| `ModifierOnlyHotkeyTests` / `HotkeyStateMachineTests` / `HotkeyRecordingTests` | 热键状态机（含右 Ctrl 干净单击识别、鼠标作废、Esc 受理窗口）与设置页录制热键的判定 | 否 |
+| `AudioInputDeviceTests` | 输入设备选择策略与蓝牙 / USB / 内置端点分类 | 否 |
+| `ModelDownloaderTests` | 单连接 / 四段并行 / 服务端忽略 Range 时回落 / 分段续传 / 校验失败 / 取消（内存里的 Range 服务，不联网） | 否 |
+| `OnboardingModelTests` / `UpdateCheckerTests` / `DictationMetricsTests` / `HudTextLayoutTests` / `ConfigParityTests` | 引导流程与试用状态、版本号解析、耗时摘要（禁止携带用户文本）、HUD 预览排版、新增配置项的往返与校验 | 否 |
+| `EndToEndRecognitionTests` | 完整识别链路（fbank → LFR/CMVN → 真实 ONNX → CTC → 后处理）对同一段真实语音的识别结果与 Python 参考的编辑距离 ≤ 2，以及分块预览流程收敛到同一最终文本 | 是（缺失自动跳过） |
 
-xUnit 2.x 没有 macOS `XCTSkip` 那样干净的运行期动态跳过 API；缺夹具/缺模型的测试用提前 `return`
-代替，效果上等价（不阻塞其余测试），但会显示为"通过"而非"已跳过"——属于已知的展示层面差异。
+xUnit 2.x 没有内置的运行期动态跳过 API，缺夹具 / 缺模型的测试用 `Xunit.SkippableFact`（`Skip.If`）
+明确显示为「已跳过」并写清原因，不会变成假通过。
 
 ---
 
@@ -320,6 +369,15 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 
 菜单「打开配置目录」可以快速定位到日志所在文件夹。
+
+每次听写收尾会输出一行 `[metrics]` 摘要（只含数字与枚举，不含识别文本、设备名或窗口标题），例如：
+
+```
+dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=42 first_buffer=71 audio=3.4s
+release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
+```
+
+`input=bluetooth*` 末尾的星号表示这次是「自动」策略从系统默认输入切换而来。
 
 ### 模型下载失败
 
@@ -345,7 +403,8 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 
 ### 录音中按 Esc 没反应 / 暂停后热键失灵
 
-- `Esc` 只在**正在录音**（红色点）阶段生效；松开热键进入"识别中"后 Esc 不再取消该次听写。
+- `Esc` 在录音中与识别中都会取消本次听写（识别中取消不会中断已经在跑的那次推理，只丢弃它的结果）。
+  没有听写在进行时，`Esc` 照常传给前台应用。
 - 托盘菜单「暂停听写」会整体停掉热键监听，需要再次点击「恢复听写」才会响应热键——这是有意
   行为，不是故障。
 

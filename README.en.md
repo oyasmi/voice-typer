@@ -60,21 +60,20 @@ Once that is done, everyday use is three actions:
 3. Release the hotkey; the final text is written into the current app.
 
 A press shorter than 0.3 seconds is treated as an accidental tap and discarded. `Esc` cancels the
-current dictation, so changing your mind leaves nothing behind (on macOS you can cancel during both
-recording and recognition; Windows currently allows it during recording). macOS can also switch the
-trigger to “press once to start, press again to stop”, so your finger does not have to stay down
-through a long passage; the overlay can be moved to the bottom-right corner, follow the cursor, or be
-hidden entirely.
+current dictation (during both recording and recognition), so changing your mind leaves nothing
+behind. On both platforms you can switch the trigger to “press once to start, press again to stop”, so
+your finger does not have to stay down through a long passage; the overlay can be moved to the
+bottom-right corner, follow the cursor, or be hidden entirely.
 
-While recording, the macOS overlay shows the name of the current input device and warns you if no
-sound is coming in — you do not have to finish talking to discover the result was empty.
+While recording, the overlay shows the name of the current input device and warns you if no sound is
+coming in — you do not have to finish talking to discover the result was empty.
 
 Default hotkeys:
 
 | Platform | Default hotkey | Status |
 | --- | --- | --- |
 | macOS | `Fn` / globe key | Available; Apple Silicon, macOS 14 or later |
-| Windows | `Ctrl + F2` | The unified version is implemented, but still needs verification on real Windows hardware before a formal release |
+| Windows | `Ctrl + F2` | The unified version has feature parity with macOS 3.5.0; it still needs verification on real Windows hardware before a formal release |
 | Linux | — | No unified version yet; use the [client–server version](client-server/client_linux/README.md) |
 
 ## Why local recognition
@@ -134,15 +133,22 @@ and answers to common questions, see the [full macOS guide](macos/README.en.md).
 
 ### Windows
 
-The unified Windows app supports Windows 10/11 on both x64 and arm64. The code and its automated tests
-are complete, but compilation, installation, performance and long-running behaviour have not yet been
-verified on real Windows hardware — so we do not describe it as a stable release.
+The unified Windows app (3.5.0) supports Windows 10/11 on both x64 and arm64 and has feature parity
+with macOS 3.5.0: a four-step first-run guide, hold and toggle triggers, a lone Right Ctrl key as the
+hotkey, explicit messages when not ready, a waveform and device name in the overlay, automatic use of
+the built-in microphone with Bluetooth headsets, segmented model download with automatic retry, and
+more (see the [changelog](windows/CHANGELOG.md), Chinese only).
+
+The code has been cross-compiled in an environment with the .NET SDK, all 280 automated tests pass
+(including an end-to-end recognition of the same real speech clip that matches the Python reference),
+and publishing for both x64 and arm64 works. But installation, hotkey, microphone, clipboard and overlay
+behaviour, performance and long-running behaviour have **not yet been verified on real Windows
+hardware** — so we do not describe it as a stable release.
 
 If you want to help verify it or build from source, read the
 [Windows usage and development guide](windows/README.en.md) and the
-[list of risks still to verify](windows/DESIGN.md#11-风险与对策). Known issues before hardware
-verification, their fix priority and the steps involved are in the
-[Windows review and repair plan](windows/REVIEW_AND_REPAIR_PLAN.md). This status will be updated once
+[list of risks still to verify](windows/DESIGN.md#11-风险与对策). The checklist to walk through on real
+hardware is in the [changelog](windows/CHANGELOG.md#真机验证清单). This status will be updated once
 hardware verification is done.
 
 ## FAQ

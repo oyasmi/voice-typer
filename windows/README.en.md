@@ -2,12 +2,12 @@
 
 [简体中文](README.md) | **English**
 
-[← Back to the project](../README.en.md) · [Design](DESIGN.md) · [Review and repair plan](REVIEW_AND_REPAIR_PLAN.md) · [Split client](../client-server/client_windows_native/README.md)
+[← Back to the project](../README.en.md) · [Design](DESIGN.md) · [Changelog](CHANGELOG.md) · [Review and repair plan](REVIEW_AND_REPAIR_PLAN.md) · [Split client](../client-server/client_windows_native/README.md)
 
 A single-process Windows desktop app: the SenseVoice recognition pipeline from
 [`client-server/server/`](../client-server/server/README.md) rewritten in C# and inlined into the
-client. Install and use it — **no** separate Python server to deploy. Current version **3.2.1**, app
-name **VoiceTyper**.
+client. Install and use it — **no** separate Python server to deploy. Current version **3.5.0** (feature parity with macOS 3.5.0,
+see the [changelog](CHANGELOG.md)), app name **VoiceTyper**.
 
 **Who this is for**: people who want to use it on their own Windows PC, and people who want to build it
 or hack on it. Deeper architectural decisions and measurements (⚠️ some still to be re-verified on real
@@ -36,26 +36,46 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 
 - Runs in one process; the recognition engine (SenseVoice-Small) runs inside the app and connects to
   no server
-- Guides you through a one-time model download on first launch (~240MB), then works fully offline
-- Hold the hotkey (`Ctrl+F2` by default) to record; release to recognize and insert the text
-- Live streaming preview: the HUD overlay keeps showing recognized text while you record, and corrects
-  itself
+- **Four-step first-run guide** (welcome → microphone → speech model → try it): the last step runs a
+  real dictation inside the guide window, verifying the whole chain "hotkey → microphone → recognition
+  → text insertion" and pointing at the exact link that fails
+- One-time model download on first launch (~240MB; the large file downloads in four parallel segments,
+  resumes, and retries automatically with backoff), then works fully offline
+- Hold the hotkey (`Ctrl+F2` by default) to record; release to recognize and insert the text. You can
+  also switch to "press once to start, again to stop", or use the **Right Ctrl** key alone as the hotkey
+  (only a clean tap triggers it; holding it while pressing another key or clicking the mouse remains a
+  normal shortcut)
+- When not ready (model downloading / loading / failed), pressing the hotkey is no longer silent: the
+  HUD says what is missing
+- Live streaming preview: the HUD overlay keeps showing recognized text while you record (up to two
+  lines, keeping the newest tail), and corrects itself; it shows a live waveform and the input device
+  name, warns to check the microphone if nothing is heard after 1.5 s, and says so explicitly when
+  nothing was recognized
+- HUD position: bottom center / bottom right / follow cursor / hidden (errors still surface); scaled to
+  the current screen's DPI
+- Bluetooth-headset friendly: when both the default input and the playback device are Bluetooth, the
+  built-in microphone is used instead, so the headset is not forced into phone-call quality
+- `Esc` cancels a dictation both while recording and while recognizing
 - Optional LLM correction, configured right in the settings panel (base URL / API key / model /
   temperature / timeout)
 - Recognition language can be set to auto / Chinese / English / Cantonese / Japanese / Korean
 - Interface language can be set to Chinese (default) or English; a restart applies it everywhere
 - Automatically releases engine memory after an idle period and reloads it in parallel with your next
   recording
-- Launch at login, adjustable HUD opacity
+- Launch at login, adjustable HUD opacity; "Check for Updates..." in the tray menu queries the latest
+  GitHub release on demand (no background network activity)
+- Every dictation leaves one log line of timings containing only numbers and enums (never any
+  recognized text) for diagnosing "why was that slow"
 - **Both x64 and arm64** (including Snapdragon X series laptops)
 - **Windows 10 and Windows 11**
 
 **Not supported / known limits**
 
-- Hold-to-talk only; there is no “press once to start, press again to stop” mode. `Esc` cancels while
-  recording
 - Hotkey main keys are limited to letters, digits, `space`/`tab`/`enter`/`esc`, `F1`–`F12`, arrow keys
-  and similar named keys
+  and similar named keys (the settings page can "Record Hotkey" for you). A lone modifier key is only
+  supported for **Right Ctrl**: tapping Alt activates the window's menu bar, tapping Win opens the Start
+  menu, tapping Shift toggles Chinese/English in Chinese IMEs, and a low-level keyboard hook cannot
+  swallow modifier events
 - Official releases are not code-signed, so SmartScreen may block the first run — click “More info →
   Run anyway”. Signing is available when you build it yourself, see
   [Building → Signing](#signing-optional)
@@ -139,20 +159,23 @@ profile follows the login, and stuffing a 240MB model into it would make domain 
 
 ## Usage
 
-1. The VoiceTyper icon appears in the system tray after launch.
+1. The VoiceTyper icon appears in the system tray after launch (Windows 11 tucks new icons under the “^”
+   overflow by default — drag it out to keep it visible). The first launch opens the four-step guide.
 2. **Hold the hotkey** (`Ctrl+F2` by default) to start recording; the HUD overlay appears on the screen
-   containing the foreground window.
+   containing the foreground window. In toggle mode, press once to start and again to stop.
 3. Speak. The HUD shows recognized text live and corrects itself as you continue; press `Esc` while
-   recording to cancel this dictation.
-4. **Release the hotkey**; the local engine re-recognizes the whole segment and the final text is
-   inserted at the cursor.
+   recording or recognizing to cancel this dictation (cancelling during recognition does not interrupt
+   the inference already running, but its result is discarded and never inserted).
+4. **Release the hotkey**; the local engine re-recognizes the whole segment (with AI correction enabled,
+   the HUD shows “Correcting…”) and the final text is inserted at the cursor.
 5. A single recording is capped at **120 seconds**: on reaching the cap, the dictation ends and the
    text is inserted normally rather than silently dropped.
 
 Recordings shorter than **0.3 seconds** are treated as accidental taps and discarded. Before inserting,
 the app checks that the foreground window is still the one recording started in; if you switched
 windows in the meantime, the result is only written to the clipboard and never inserted into an
-unexpected window.
+unexpected window. Pressing the hotkey again while the previous dictation is still recognizing or
+correcting shows “A dictation is still in progress” instead of stacking a new session.
 
 Tray icon states:
 
@@ -166,7 +189,8 @@ Tray icon states:
 | Dark red dot | Error |
 
 Right-click the tray icon for the menu: Settings, **Pause/Resume dictation** (while paused the hotkey
-does nothing until you resume from the menu), open the config folder, launch at login, About, Quit.
+does nothing until you resume from the menu), open the config folder, launch at login, Setup Guide
+(reopens the first-run guide), Check for Updates, About, Quit.
 
 ---
 
@@ -177,9 +201,9 @@ The settings window has four tabs, all fully graphical — no YAML editing requi
 | Tab | Contents |
 | --- | --- |
 | **Recognition** | Model status card (download / load / ready / failed, with reload), recognition language, AI correction (toggle + base URL + API key + model + temperature + max tokens + timeout + test) |
-| **Hotkey** | Modifier combination (Ctrl/Alt/Shift/Win) plus main key, with a preview |
+| **Hotkey** | Modifier combination (Ctrl/Alt/Shift/Win) plus main key, "Record Hotkey" to just press the combination you want, or "Use Right Ctrl"; trigger mode (hold to talk / press once to start, again to stop) |
 | **Permissions** | Microphone availability check, shortcut to the Windows privacy settings, explanation of the UIPI limit |
-| **General** | Launch at login, HUD background opacity, idle-unload interval, preview window (advanced, 0 = calibrated automatically from this machine's performance), **interface language** |
+| **General** | Launch at login, preload the model at launch, microphone (automatic / follow system / pick a device), floating window position, HUD background opacity, idle-unload interval, preview window (advanced, 0 = calibrated automatically from this machine's performance), **interface language** |
 
 ### Interface language
 
@@ -203,6 +227,7 @@ asr:
   model_dir: ""              # empty = locate automatically (download folder / ModelScope cache)
   preview_window: 0          # seconds; 0 = calibrated automatically after the first load
   idle_unload_minutes: 0     # 0 = stay resident (default, same as macOS)
+  preload_on_launch: true    # load the model into memory at launch; false = load on the first hotkey press (in parallel with recording)
 llm:
   enabled: false
   base_url: ""
@@ -213,9 +238,13 @@ llm:
   # api_key is not here — see below
 hotkey:
   modifiers: ["ctrl"]
-  key: "f2"
+  key: "f2"                  # may also be "right_ctrl" (the Right Ctrl key alone; leave modifiers empty)
+  mode: "hold"               # hold = hold to talk; toggle = press once to start, again to stop
+audio:
+  input_device: "auto"       # auto = use the built-in mic during Bluetooth call mode; system = strictly follow the system default; or an audio endpoint ID
 ui:
   opacity: 0.85
+  hud_position: "bottom_center"  # bottom_center / bottom_right / near_cursor / hidden
   interface_language: "zh"   # zh / en; interface language, applied fully after a restart
 ```
 
@@ -336,13 +365,18 @@ dotnet test
 | `ConfigStoreTests` | Config model and YAML round-trip (never touches the real `%APPDATA%`) | No |
 | `AppConfigValidationTests` | Clamping out-of-range fields, resetting non-finite floats, falling back for a bare hotkey | No |
 | `LocalizationTests` | Bilingual coverage: every `L10n.T(...)` / `L10n.F(...)` in the sources has an English translation, placeholders match, lookups fall back to Chinese, and bootstrap reads `interface_language` | No |
-| `LlmCorrectorTests` | Correction client fallbacks (network error / truncation / malformed response all return the original text), `tags-only` responses not losing text, `TestAsync` throwing the real error without the response body | No |
+| `LlmCorrectorTests` / `LlmThinkingTests` | Correction client fallbacks (network error / truncation / malformed response all return the original text), `tags-only` responses not losing text, `TestAsync` throwing the real error without the response body; deep thinking is turned off by default, and when a service rejects that field the request is resent once without it and the answer is cached per URL + model | No |
 | `LlmEndpointTests` | Structured base URL parsing: scheme/host allowlist, plain HTTP limited to loopback and private networks, `/chat/completions` suffix de-duplication | No |
 | `AudioChunkerTests` | Fixed-length framing, carry-over across calls, `Drain` tail, empty input | No |
+| `VoiceTyperControllerTests` | The controller state machine: hold / toggle / lone-modifier triggers, the not-ready gate (including "the gate must not swallow the release of a dictation already in progress"), Esc cancel (while recording and while recognizing), silent discard of combo gestures, rejecting overlapping presses, empty recognition, insertion failure and elevation hints, recording start failure, silence probes, idempotent finishing | No |
+| `ModifierOnlyHotkeyTests` / `HotkeyStateMachineTests` / `HotkeyRecordingTests` | The hotkey state machine (including Right Ctrl clean-tap detection, mouse invalidation, the Esc acceptance window) and the settings page's hotkey-recording rules | No |
+| `AudioInputDeviceTests` | Input device selection policy and Bluetooth / USB / built-in endpoint classification | No |
+| `ModelDownloaderTests` | Single connection / four parallel segments / falling back when the server ignores Range / segment resume / checksum failure / cancel (an in-memory Range server, no network) | No |
+| `OnboardingModelTests` / `UpdateCheckerTests` / `DictationMetricsTests` / `HudTextLayoutTests` / `ConfigParityTests` | Guide flow and trial state, version parsing, timing summary (must never carry user text), HUD preview layout, round-trip and validation of the new config fields | No |
+| `EndToEndRecognitionTests` | The whole pipeline (fbank → LFR/CMVN → real ONNX → CTC → post-processing) on the same real speech clip: edit distance ≤ 2 against the Python reference, and chunked preview flow converging to the same final text | Yes (skipped automatically when missing) |
 
-xUnit 2.x has no clean runtime skip API like macOS's `XCTSkip`; tests missing fixtures or a model
-return early instead. The effect is equivalent (they do not block the rest), but they show as “passed”
-rather than “skipped” — a known presentation-level difference.
+xUnit 2.x has no built-in runtime skip; tests missing fixtures or a model use `Xunit.SkippableFact`
+(`Skip.If`) so they show as “skipped” with the reason, rather than as a false pass.
 
 ---
 
@@ -356,6 +390,17 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 
 The “Open config folder” menu item takes you straight to the folder containing the logs.
+
+Each dictation ends with one `[metrics]` line containing only numbers and enums — never recognized text,
+device names or window titles — for example:
+
+```
+dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=42 first_buffer=71 audio=3.4s
+release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
+```
+
+A trailing `*` as in `input=bluetooth*` means the "automatic" policy switched away from the system
+default input.
 
 Note that log messages themselves stay in Chinese: they are a diagnostic channel for developers, not
 part of the user interface.
@@ -387,8 +432,9 @@ where it stopped. If it keeps failing, fetch the files manually with `scripts\fe
 
 ### Esc does nothing while recording / the hotkey stops working after pausing
 
-- `Esc` only applies while **recording** (red dot); once you release the hotkey and recognition starts,
-  it no longer cancels that dictation.
+- `Esc` cancels both while recording and while recognizing (cancelling during recognition does not
+  interrupt the inference already running; it only discards its result). With no dictation in progress,
+  `Esc` goes to the foreground app as usual.
 - “Pause dictation” in the tray menu stops hotkey listening entirely; you have to click “Resume
   dictation” for the hotkey to respond again. That is intentional, not a fault.
 

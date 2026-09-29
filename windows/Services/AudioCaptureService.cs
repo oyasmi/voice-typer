@@ -6,6 +6,7 @@ using System.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using VoiceTyper.Core;
 using VoiceTyper.Support;
 
 namespace VoiceTyper.Services;
@@ -45,16 +46,22 @@ internal sealed class AudioStartException : Exception
 /// 让投递动作本身（入队到 <see cref="_deliveryQueue"/>）也发生在同一把锁内，即可让"入队顺序"
 /// 严格遵循锁定义的临界区顺序，从根上同时解决两个问题。
 /// </summary>
-internal sealed class AudioCaptureService : IDisposable
+internal sealed class AudioCaptureService : IAudioCapturing
 {
-    public Action<byte[]>? OnChunk;
-    public Action<byte[]>? OnTailChunk;
+    public Action<byte[]>? OnChunk { get; set; }
+    public Action<byte[]>? OnTailChunk { get; set; }
     /// <summary>
     /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次。
     /// 已采到的音频仍会通过 <see cref="OnTailChunk"/>（本回调触发前已同步投递）正常交给当前会话
     /// 完成识别；这里只做"可见告知"，不做自动重建/自动恢复（F-15 / R2-03）。在 UI 线程触发。
     /// </summary>
-    public Action? OnDeviceChanged;
+    public Action? OnDeviceChanged { get; set; }
+
+    /// <summary>录音期间的实时线性 RMS 电平，约每 30ms 一次，在音频线程触发（调用方须自行回到 UI 线程）。</summary>
+    public Action<float>? OnLevel { get; set; }
+
+    /// <summary>本次录音实际使用的输入设备；Start 成功后才有值，Stop 后保留到下次 Start（供收尾日志读取）。</summary>
+    public ActiveInputDevice? ActiveDevice { get; private set; }
 
     public int ChunkSamples { get; } = AppConstants.ChunkSamples;
 
@@ -90,7 +97,7 @@ internal sealed class AudioCaptureService : IDisposable
         _deliveryThread.Start();
     }
 
-    public void Start()
+    public void Start(AudioInputPolicy policy)
     {
         lock (_lock)
         {
@@ -101,7 +108,7 @@ internal sealed class AudioCaptureService : IDisposable
                 // MMDeviceEnumerator 必须释放：GetDefaultAudioEndpoint 返回的 MMDevice 持有独立
                 // COM 引用，枚举器本身用完即弃（R1-3）。
                 using var enumerator = new MMDeviceEnumerator();
-                _device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                _device = OpenInputDevice(enumerator, policy);
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
@@ -151,6 +158,7 @@ internal sealed class AudioCaptureService : IDisposable
 
                 _chunker = new AudioChunker(ChunkSamples);
                 _droppedNotRunningCount = 0;
+                _lastLevelTicks = 0;
                 // running 必须在 StartRecording 之前、且在锁内置位：DataAvailable 理论上可能在
                 // StartRecording() 返回后的极窄窗口内几乎立即触发，若仍在锁外才置位，这段窗口里
                 // 到达的样本会被误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的
@@ -178,7 +186,52 @@ internal sealed class AudioCaptureService : IDisposable
             }
         }
 
-        AppLog.Info("audio", $"录音启动: device={_device?.FriendlyName}, format={_captureFormat}");
+        AppLog.Info("audio", $"录音启动: format={_captureFormat}, transport={ActiveDevice?.Transport.LogName() ?? "-"}{(ActiveDevice?.SwitchedByAuto == true ? "*" : "")}");
+    }
+
+    /// <summary>
+    /// 按策略打开输入设备。用 <see cref="Role.Console"/> 而不是 <see cref="Role.Communications"/>：
+    /// 后者在蓝牙耳机连接时几乎总是指向「免提通话」端点，一打开就把耳机切到电话级音质
+    /// （VW-16）。设置页手选的设备 ID 不存在（设备被拔了）时回落系统默认。
+    /// </summary>
+    private MMDevice OpenInputDevice(MMDeviceEnumerator enumerator, AudioInputPolicy policy)
+    {
+        MMDevice systemDefault = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console);
+        try
+        {
+            IReadOnlyList<AudioDeviceInfo> devices = Array.Empty<AudioDeviceInfo>();
+            var outputTransport = AudioTransport.Unknown;
+            if (policy is not AudioInputPolicy.SystemDefault)
+            {
+                devices = AudioDeviceCatalog.ListCaptureDevices();
+                if (policy is AudioInputPolicy.Automatic) outputTransport = AudioDeviceCatalog.DefaultRenderTransport(enumerator);
+            }
+
+            var (deviceId, switchedByAuto) = AudioInputSelector.Resolve(policy, devices, systemDefault.ID, outputTransport);
+            var chosen = systemDefault;
+            if (deviceId is not null && deviceId != systemDefault.ID)
+            {
+                try
+                {
+                    chosen = enumerator.GetDevice(deviceId);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warn("audio", $"打开指定输入设备失败，回落系统默认: {ex.Message}");
+                    switchedByAuto = false;
+                }
+            }
+
+            var info = AudioDeviceCatalog.Describe(chosen);
+            ActiveDevice = new ActiveInputDevice(info.Name, info.Transport, switchedByAuto);
+            if (!ReferenceEquals(chosen, systemDefault)) systemDefault.Dispose();
+            return chosen;
+        }
+        catch
+        {
+            systemDefault.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -355,8 +408,27 @@ internal sealed class AudioCaptureService : IDisposable
         OnDeviceChanged?.Invoke();
     }
 
+    private long _lastLevelTicks;
+
+    /// <summary>线性 RMS 电平回调，节流到约 30ms 一次——波形动画用不到更高频率，
+    /// 却会让 UI 线程的投递队列白白积压。</summary>
+    private void ReportLevel(float[] buffer, int count)
+    {
+        var callback = OnLevel;
+        if (callback is null || count <= 0) return;
+
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (System.Diagnostics.Stopwatch.GetElapsedTime(_lastLevelTicks, now).TotalMilliseconds < 30) return;
+        _lastLevelTicks = now;
+
+        double sum = 0;
+        for (int i = 0; i < count; i++) sum += buffer[i] * (double)buffer[i];
+        callback((float)Math.Sqrt(sum / count));
+    }
+
     private void AppendSamples(float[] buffer, int count)
     {
+        ReportLevel(buffer, count);
         lock (_lock)
         {
             if (!_running)

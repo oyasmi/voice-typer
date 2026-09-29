@@ -21,6 +21,15 @@ internal static class NativeMethods
 
     public const int VK_ESCAPE = 0x1B;
 
+    // ─── 全局鼠标钩子（仅单独修饰键热键用：Ctrl+点击 / Ctrl+滚轮是常见组合用法）──────
+    public const int WH_MOUSE_LL = 14;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_RBUTTONDOWN = 0x0204;
+    public const int WM_MBUTTONDOWN = 0x0207;
+    public const int WM_MOUSEWHEEL = 0x020A;
+    public const int WM_XBUTTONDOWN = 0x020B;
+    public const int WM_MOUSEHWHEEL = 0x020E;
+
     // ─── 钩子存活性自愈（W-25）────────────────────────────────────
     [StructLayout(LayoutKind.Sequential)]
     public struct LASTINPUTINFO
@@ -125,6 +134,10 @@ internal static class NativeMethods
         public ushort wParamL;
         public ushort wParamH;
     }
+
+    /// <summary>虚拟键码 → 扫描码（MAPVK_VK_TO_VSC = 0）。</summary>
+    [DllImport("user32.dll")]
+    public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);

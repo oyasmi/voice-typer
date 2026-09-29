@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -54,6 +55,7 @@ internal sealed class LlmCorrector : IDisposable
     private readonly string _systemPrompt;
     private readonly HttpClient _http;
     private readonly bool _ownsHttpClient;
+    private readonly ILlmCapabilityStore _capabilityStore;
 
     /// <summary>把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。</summary>
     private static string Wrap(string text) => $"<asr_text>\n{text}\n</asr_text>";
@@ -89,9 +91,13 @@ internal sealed class LlmCorrector : IDisposable
     };
 
     /// <param name="httpClient">仅供测试注入打桩的 HttpClient（配合 <c>HttpMessageHandler</c> mock）。</param>
-    public LlmCorrector(Config config, HttpClient? httpClient = null)
+    /// <param name="capabilityStore">记录接口是否拒绝 <c>thinking</c> 字段。生产环境传
+    /// <see cref="FileLlmCapabilityStore.Shared"/>（控制器每次保存配置都会重建校对器，缓存不能只放实例里）；
+    /// 缺省用内存实现，避免单测写用户目录。</param>
+    public LlmCorrector(Config config, HttpClient? httpClient = null, ILlmCapabilityStore? capabilityStore = null)
     {
         _config = config;
+        _capabilityStore = capabilityStore ?? new InMemoryLlmCapabilityStore();
         _systemPrompt = LoadSystemPrompt();
         if (httpClient is not null)
         {
@@ -140,15 +146,36 @@ internal sealed class LlmCorrector : IDisposable
         public static CorrectionOutcome FellBack(string text) => new() { DidFallBack = true, Text = text };
     }
 
+    /// <summary><c>thinking</c> 字段的使用情况，供耗时日志与「测试纠错」展示。</summary>
+    public enum ThinkingParameterUsage
+    {
+        /// <summary>带着字段发出，服务接受。</summary>
+        Sent,
+        /// <summary>缓存显示该接口不支持，本次没带字段。</summary>
+        OmittedByCache,
+        /// <summary>带着字段被拒绝，已去掉字段重发。</summary>
+        RejectedThenOmitted,
+    }
+
+    public readonly record struct CorrectionReport(CorrectionOutcome Outcome, ThinkingParameterUsage Thinking);
+
+    /// <summary>「测试纠错」的成功结果：模型返回的文本 + <c>thinking</c> 字段的使用情况。</summary>
+    public readonly record struct TestResult(string Text, ThinkingParameterUsage Thinking);
+
     /// <summary>
     /// 使用 LLM 修正识别文本中的显著错误；任何失败（网络/超时/鉴权/解析）都回落到输入原文，
     /// 并以 <see cref="CorrectionOutcome.DidFallBack"/> 告知调用方，绝不让纠错失败丢掉已识别文本。
     /// </summary>
-    public async Task<CorrectionOutcome> CorrectAsync(string text, CancellationToken cancellationToken = default)
+    public async Task<CorrectionOutcome> CorrectAsync(string text, CancellationToken cancellationToken = default) =>
+        (await CorrectWithReportAsync(text, cancellationToken).ConfigureAwait(false)).Outcome;
+
+    public async Task<CorrectionReport> CorrectWithReportAsync(string text, CancellationToken cancellationToken = default)
     {
+        var usage = ThinkingParameterUsage.Sent;
         try
         {
-            return await CorrectOrThrowAsync(text, cancellationToken).ConfigureAwait(false);
+            var outcome = await CorrectOrThrowAsync(text, probeFresh: false, cancellationToken, u => usage = u).ConfigureAwait(false);
+            return new CorrectionReport(outcome, usage);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -158,7 +185,7 @@ internal sealed class LlmCorrector : IDisposable
         catch (Exception ex)
         {
             AppLog.Warn("llm", $"LLM 纠错失败，使用原始文本: {ex.Message}");
-            return CorrectionOutcome.FellBack(text);
+            return new CorrectionReport(CorrectionOutcome.FellBack(text), usage);
         }
     }
 
@@ -166,8 +193,49 @@ internal sealed class LlmCorrector : IDisposable
     /// 供设置页「测试纠错」按钮使用：与 <see cref="CorrectAsync"/> 不同，失败时把具体错误
     /// 抛出而不是回落原文——用户需要看到"401 未授权 / 超时 / 网络不通"等真实原因，否则
     /// "网络不通"和"模型认为无需修改"会被显示成同一个结果（R3-13）。
+    /// 总是忽略缓存、先带 <c>thinking</c> 字段探测：用户换了服务或服务升级后，点一次测试就能纠正缓存。
     /// </summary>
-    public async Task<string> TestAsync(string text) => (await CorrectOrThrowAsync(text, CancellationToken.None).ConfigureAwait(false)).Text;
+    public async Task<TestResult> TestWithReportAsync(string text)
+    {
+        var usage = ThinkingParameterUsage.Sent;
+        var outcome = await CorrectOrThrowAsync(text, probeFresh: true, CancellationToken.None, u => usage = u).ConfigureAwait(false);
+        return new TestResult(outcome.Text, usage);
+    }
+
+    public async Task<string> TestAsync(string text) => (await TestWithReportAsync(text).ConfigureAwait(false)).Text;
+
+    /// <summary>
+    /// 请求体。<c>thinking: {"type": "disabled"}</c> 是火山方舟、智谱等服务的混合推理模型
+    /// 关闭深度思考的写法；不支持的服务会以 400/422 拒绝，由 <see cref="CorrectOrThrowAsync"/> 去掉字段重发。
+    /// </summary>
+    internal static Dictionary<string, object> BuildPayload(Config config, string systemPrompt, string text, bool includeThinking)
+    {
+        // 纠错输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
+        var dynamicMaxTokens = Math.Max(config.MaxTokens, text.Length * 2 + 128);
+
+        var messages = new List<object> { new { role = "system", content = systemPrompt } };
+        foreach (var (role, content) in FewShotMessages)
+        {
+            messages.Add(new { role, content });
+        }
+        messages.Add(new { role = "user", content = Wrap(text) });
+
+        var payload = new Dictionary<string, object>
+        {
+            ["model"] = config.Model,
+            ["messages"] = messages,
+            ["temperature"] = config.Temperature,
+            ["max_tokens"] = dynamicMaxTokens,
+        };
+        if (includeThinking)
+        {
+            payload["thinking"] = new Dictionary<string, string> { ["type"] = "disabled" };
+        }
+        return payload;
+    }
+
+    /// <summary>服务拒绝了 <c>thinking</c> 字段。仅用于触发重发，不会展示给用户。</summary>
+    private sealed class ThinkingParameterRejectedException : Exception { }
 
     /// <summary>
     /// 抛出：网络/超时/鉴权/HTTP/解析异常。返回：
@@ -175,31 +243,54 @@ internal sealed class LlmCorrector : IDisposable
     /// <see cref="CorrectionOutcome.FellBack"/> 语义回落原文（<c>finish_reason==length</c> 截断、
     /// 空 content、剥标签后为空）。
     /// </summary>
-    private async Task<CorrectionOutcome> CorrectOrThrowAsync(string text, CancellationToken cancellationToken)
+    private async Task<CorrectionOutcome> CorrectOrThrowAsync(
+        string text, bool probeFresh, CancellationToken cancellationToken, Action<ThinkingParameterUsage> reportUsage)
     {
-        // 纠错输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
-        var dynamicMaxTokens = Math.Max(_config.MaxTokens, text.Length * 2 + 128);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var messages = new List<object> { new { role = "system", content = _systemPrompt } };
-        foreach (var (role, content) in FewShotMessages)
+        var fingerprint = LlmCapabilityFingerprint.Make(_config.ChatCompletionsUrl, _config.Model);
+        var startedAt = Stopwatch.GetTimestamp();
+        var timeout = Math.Max(1, _config.Timeout);
+        string body;
+
+        if (!probeFresh && _capabilityStore.IsThinkingParameterUnsupported(fingerprint))
         {
-            messages.Add(new { role, content });
+            reportUsage(ThinkingParameterUsage.OmittedByCache);
+            body = await SendAsync(text, includeThinking: false, timeout, cancellationToken).ConfigureAwait(false);
         }
-        messages.Add(new { role = "user", content = Wrap(text) });
-
-        var payload = new
+        else
         {
-            model = _config.Model,
-            messages,
-            temperature = _config.Temperature,
-            max_tokens = dynamicMaxTokens,
-        };
+            reportUsage(ThinkingParameterUsage.Sent);
+            try
+            {
+                body = await SendAsync(text, includeThinking: true, timeout, cancellationToken).ConfigureAwait(false);
+                if (probeFresh) _capabilityStore.SetThinkingParameterUnsupported(false, fingerprint);
+            }
+            catch (ThinkingParameterRejectedException)
+            {
+                _capabilityStore.SetThinkingParameterUnsupported(true, fingerprint);
+                reportUsage(ThinkingParameterUsage.RejectedThenOmitted);
+                // 重发只吃"剩余预算"，保证整体不会比用户设置的超时多出太多。
+                var remaining = Math.Max(1, timeout - Stopwatch.GetElapsedTime(startedAt).TotalSeconds);
+                body = await SendAsync(text, includeThinking: false, remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return ParseOutcome(body, text);
+    }
+
+    /// <summary>
+    /// 发送一次请求并返回 2xx 响应体。400/422 且响应体提到 <c>thinking</c>（只在本次确实带了该字段时判定）
+    /// → <see cref="ThinkingParameterRejectedException"/>。响应体只用于判定，绝不写日志（W-02）。
+    /// </summary>
+    private async Task<string> SendAsync(string text, bool includeThinking, double timeoutSeconds, CancellationToken cancellationToken)
+    {
+        var payload = BuildPayload(_config, _systemPrompt, text, includeThinking);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _config.ChatCompletionsUrl);
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
 
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, _config.Timeout)));
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
         HttpResponseMessage response;
         try
@@ -221,59 +312,91 @@ internal sealed class LlmCorrector : IDisposable
 
         using (response)
         {
-            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                // 响应正文可能回显了送去的识别文本，绝不拼进异常消息（W-02）。
-                throw new LlmException(LlmErrorKind.HttpStatus, L10n.F("LLM API 错误 ({0})", (int)response.StatusCode));
-            }
-
-            JsonDocument doc;
+            string body;
             try
             {
-                doc = JsonDocument.Parse(body);
+                body = await response.Content.ReadAsStringAsync(linkedCts.Token).ConfigureAwait(false);
             }
-            catch (JsonException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                throw new LlmException(LlmErrorKind.RequestFailed, L10n.T("LLM 请求超时"));
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new LlmException(LlmErrorKind.RequestFailed, L10n.F("LLM 服务连接失败: {0}", ex.Message));
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var code = (int)response.StatusCode;
+                if (includeThinking && code is 400 or 422
+                    && body[..Math.Min(body.Length, 4096)].Contains("thinking", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ThinkingParameterRejectedException();
+                }
+                // 响应正文可能回显了送去的识别文本，绝不拼进异常消息（W-02）。
+                throw new LlmException(LlmErrorKind.HttpStatus, L10n.F("LLM API 错误 ({0})", code));
+            }
+            return body;
+        }
+    }
+
+    private static CorrectionOutcome ParseOutcome(string body, string text)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
+        }
+
+        using (doc)
+        {
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
+            {
+                throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
+            }
+            var first = choices[0];
+            if (first.ValueKind != JsonValueKind.Object
+                || !first.TryGetProperty("message", out var messageEl) || messageEl.ValueKind != JsonValueKind.Object
+                || !messageEl.TryGetProperty("content", out var contentEl) || contentEl.ValueKind != JsonValueKind.String
+                || contentEl.GetString() is not { } content)
             {
                 throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
             }
 
-            using (doc)
+            if (first.TryGetProperty("finish_reason", out var finishReasonEl)
+                && finishReasonEl.ValueKind == JsonValueKind.String
+                && finishReasonEl.GetString() == "length")
             {
-                if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
-                {
-                    throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
-                }
-                var first = choices[0];
-                if (!first.TryGetProperty("message", out var messageEl)
-                    || !messageEl.TryGetProperty("content", out var contentEl)
-                    || contentEl.GetString() is not { } content)
-                {
-                    throw new LlmException(LlmErrorKind.MalformedResponse, L10n.T("LLM 响应格式无法解析"));
-                }
-
-                if (first.TryGetProperty("finish_reason", out var finishReasonEl)
-                    && finishReasonEl.GetString() == "length")
-                {
-                    AppLog.Warn("llm", "LLM 输出被 max_tokens 截断，放弃修正并返回原文");
-                    return CorrectionOutcome.FellBack(text);
-                }
-
-                content = content.Trim();
-                // 防御：个别模型可能把输入包裹标签一并回显。
-                if (content.StartsWith("<asr_text>", StringComparison.Ordinal)
-                    && content.EndsWith("</asr_text>", StringComparison.Ordinal))
-                {
-                    content = content["<asr_text>".Length..^"</asr_text>".Length].Trim();
-                }
-                // 剥标签之后再判空：tags-only 响应（如 "<asr_text>\n</asr_text>"）剥离前非空、
-                // 剥离后才变空，若判空放在剥标签前会漏判这种情况，导致整段听写文本被吞（R2-08）。
-                if (string.IsNullOrEmpty(content))
-                {
-                    return CorrectionOutcome.FellBack(text);
-                }
-                return CorrectionOutcome.Corrected(content);
+                AppLog.Warn("llm", "LLM 输出被 max_tokens 截断，放弃修正并返回原文");
+                return CorrectionOutcome.FellBack(text);
             }
+
+            content = content.Trim();
+            // 防御：个别模型可能把输入包裹标签一并回显。
+            if (content.StartsWith("<asr_text>", StringComparison.Ordinal)
+                && content.EndsWith("</asr_text>", StringComparison.Ordinal)
+                && content.Length >= "<asr_text></asr_text>".Length)
+            {
+                content = content["<asr_text>".Length..^"</asr_text>".Length].Trim();
+            }
+            // 剥标签之后再判空：tags-only 响应（如 "<asr_text>\n</asr_text>"）剥离前非空、
+            // 剥离后才变空，若判空放在剥标签前会漏判这种情况，导致整段听写文本被吞（R2-08）。
+            if (string.IsNullOrEmpty(content))
+            {
+                return CorrectionOutcome.FellBack(text);
+            }
+            return CorrectionOutcome.Corrected(content);
         }
     }
 

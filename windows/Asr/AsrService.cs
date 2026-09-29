@@ -28,7 +28,7 @@ internal enum AsrState
 /// C# 直译自 <c>macos/Sources/VoiceTyper/ASR/ASRService.swift</c>。所有公共方法必须在 UI 线程调用；
 /// 耗时操作（模型加载、推理）都经由 <see cref="AsrPump"/> 串行执行。
 /// </summary>
-internal sealed class AsrService : IDisposable
+internal sealed class AsrService : IDictationSessionFactory, IDisposable
 {
     public AsrState State { get; private set; } = AsrState.Unloaded;
     public string? FailureMessage { get; private set; }
@@ -69,7 +69,10 @@ internal sealed class AsrService : IDisposable
         }
         if (reloadNeeded)
         {
-            _ = ReloadAsync();
+            // 「启动时不预加载」下引擎不在内存里时，改 model_dir / threads 只需要重新确认文件在不在，
+            // 不能借机把 ~500MB 的引擎拉进内存，否则等于绕过了用户的设置。
+            if (CurrentEngine() is null && !_config.PreloadOnLaunch) PrepareWithoutLoading();
+            else _ = ReloadAsync();
         }
         else
         {
@@ -87,6 +90,22 @@ internal sealed class AsrService : IDisposable
     {
         if (State is AsrState.Loading or AsrState.Ready) return Task.CompletedTask;
         return _inFlightLoad ?? StartLoad(unloadFirst: false);
+    }
+
+    /// <summary>
+    /// 只确认模型文件在不在，<b>不</b>构建 ORT session。用于「启动时不预加载」
+    /// （<see cref="AsrConfig.PreloadOnLaunch"/> 为 false）：文件就绪时进入
+    /// <see cref="AsrState.SuspendedForIdle"/>——这个状态的语义本来就是"就绪，但引擎不在内存里，
+    /// 下次 <see cref="MakeSession"/> 时按需加载"，正好是我们想要的启动态：热键监听照常工作、
+    /// 托盘显示就绪，却不为一次可能根本不会发生的听写常驻数百 MB 内存。
+    /// </summary>
+    public void PrepareWithoutLoading()
+    {
+        if (_inFlightLoad is not null) return;
+        // 引擎已经在内存里就别往回降级。
+        if (CurrentEngine() is not null) return;
+        var target = ModelLocator.Locate(_config.ModelDir) is null ? AsrState.ModelMissing : AsrState.SuspendedForIdle;
+        if (State != target) SetState(target);
     }
 
     /// <summary>真正的重新加载：配置版本变化或用户手动点击。加载在飞时记一次合并重载。</summary>
@@ -178,6 +197,8 @@ internal sealed class AsrService : IDisposable
                 _ => null,
             });
     }
+
+    IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector) => MakeSession(corrector);
 
     /// <summary>录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。</summary>
     public void SessionEnded() => ScheduleIdleUnloadIfNeeded();

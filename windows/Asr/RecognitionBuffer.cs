@@ -42,10 +42,15 @@ internal sealed class RecognitionBuffer
     /// 预览窗口（采样点，16kHz）。默认 15 秒，与服务端/macOS 一致；
     /// Windows 侧允许按本机实测 RTF 调小（见 windows/DESIGN.md §4.5 的自校准）。
     /// </param>
-    public RecognitionBuffer(ISenseVoiceRecognizing engine, int previewWindowSamples = 15 * 16000)
+    /// <param name="reservedSampleCapacity">
+    /// 预留容量（采样点）。会话有单段上限，按上限一次性预留，避免录音过程中扩容——扩容发生在
+    /// 追加音频的调用线程上，一次 memcpy 就是一次 UI 线程上的卡顿（对齐 macOS R5）。0 表示按需增长。
+    /// </param>
+    public RecognitionBuffer(ISenseVoiceRecognizing engine, int previewWindowSamples = 15 * 16000, int reservedSampleCapacity = 0)
     {
         _engine = engine;
         _previewWindowSamples = previewWindowSamples;
+        if (reservedSampleCapacity > 0) _buffer = new float[reservedSampleCapacity];
     }
 
     /// <summary>累计接收的样本数，供调用方做会话时长上限判断。可从任意线程调用。</summary>
