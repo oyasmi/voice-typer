@@ -20,7 +20,6 @@ namespace VoiceTyper.UI;
 internal sealed class TrayController : IDisposable
 {
     public Action? OnOpenSetup;
-    public Action? OnOpenConfigDirectory;
     public Action? OnQuit;
     /// <summary>用户点击"暂停听写"菜单项。由调用方决定实际是否切换（托盘只负责发出请求）。</summary>
     public Action? OnTogglePause;
@@ -57,9 +56,6 @@ internal sealed class TrayController : IDisposable
         _pauseItem = new ToolStripMenuItem(L10n.T("暂停听写")) { CheckOnClick = false };
         _pauseItem.Click += (_, _) => OnTogglePause?.Invoke();
 
-        var openConfigItem = new ToolStripMenuItem(L10n.T("打开配置目录"));
-        openConfigItem.Click += (_, _) => OnOpenConfigDirectory?.Invoke();
-
         _startupItem = new ToolStripMenuItem(L10n.T("开机自启")) { CheckOnClick = true };
         _startupItem.Checked = StartupRegistration.IsEnabled;
         _startupItem.Click += (_, _) =>
@@ -91,7 +87,6 @@ internal sealed class TrayController : IDisposable
             new ToolStripSeparator(),
             setupItem,
             _pauseItem,
-            openConfigItem,
             new ToolStripSeparator(),
             _startupItem,
             onboardingItem,
@@ -150,8 +145,7 @@ internal sealed class TrayController : IDisposable
     private void ShowAbout()
     {
         MessageBox.Show(
-            $"VoiceTyper {AppConstants.Version}\n\n" + L10n.T("离线语音输入工具，基于 SenseVoice-Small。")
-                + "\nPowered by SenseVoice-Small (FunAudioLLM)",
+            $"VoiceTyper {AppConstants.Version}\n\n" + L10n.T("离线、安全、快捷的语音输入工具。"),
             L10n.F("关于 {0}", "VoiceTyper"),
             MessageBoxButtons.OK,
             MessageBoxIcon.Information

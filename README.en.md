@@ -139,11 +139,16 @@ hotkey, explicit messages when not ready, a waveform and device name in the over
 the built-in microphone with Bluetooth headsets, segmented model download with automatic retry, and
 more (see the [changelog](windows/CHANGELOG.md), Chinese only).
 
-The code has been cross-compiled in an environment with the .NET SDK, all 280 automated tests pass
-(including an end-to-end recognition of the same real speech clip that matches the Python reference),
-and publishing for both x64 and arm64 works. But installation, hotkey, microphone, clipboard and overlay
-behaviour, performance and long-running behaviour have **not yet been verified on real Windows
-hardware** — so we do not describe it as a stable release.
+Windows packages use the computer's installed **.NET 10 Desktop Runtime, matching the app's
+architecture**, and no longer bundle .NET. If it is missing, install the Desktop Runtime from the
+[.NET 10 download page](https://dotnet.microsoft.com/download/dotnet/10.0) first; the regular .NET Runtime
+or .NET 8/9 is insufficient. See the [package size audit](windows/PACKAGE_SIZE_AUDIT.md) (Chinese).
+
+Cross-compilation, automated recognition checks, and publishing for x64 and arm64 have succeeded.
+On 2026-09-30, the user confirmed basic usability on Windows. A full model download and all four pinned
+SHA256 checks also passed on this Windows machine. Settings now use five sidebar pages with shared drafts,
+unified saving, and per-source download diagnostics. **Performance, long-running stability, arm64 hardware,
+and actual DPI transitions between monitors still require verification**; this is not yet a stable release.
 
 If you want to help verify it or build from source, read the
 [Windows usage and development guide](windows/README.en.md) and the

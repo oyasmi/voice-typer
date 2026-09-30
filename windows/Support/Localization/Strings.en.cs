@@ -16,6 +16,76 @@ internal static partial class L10n
 {
     private static readonly Dictionary<string, string> EnglishTable = new()
     {
+        // ── 设置窗口与下载诊断 ────────────────────────────────
+        ["API Key 已更新，但配置保存失败，请重试保存。"] = "The API key was updated, but saving the configuration failed. Please save again.",
+        ["配置保存失败，请检查配置目录的写入权限。"] = "Saving the configuration failed. Check write access to the configuration folder.",
+        ["启用智能纠错时必须填写模型名称。"] = "Enter a model name before enabling text correction.",
+        ["安全连接失败，请检查系统时间、代理和证书信任。"] = "Secure connection failed. Check the system clock, proxy, and certificate trust.",
+        ["按住说话，或按一次开始、再按一次结束。"] = "Hold to speak, or press once to start and again to finish.",
+        ["帮助与诊断"] = "Help and diagnostics",
+        ["保存后重启应用，使全部界面文本生效。"] = "Restart the app after saving to apply the language throughout the interface.",
+        ["不透明度"] = "Opacity",
+        ["查看下载详情"] = "Download details",
+        ["超时（秒）"] = "Timeout (seconds)",
+        ["超时后仍使用原识别文本。"] = "Use the original transcription if the request times out.",
+        ["撤销更改"] = "Discard changes",
+        ["触发方式"] = "Activation mode",
+        ["打开日志目录"] = "Open log folder",
+        ["代理连接失败，请检查系统代理设置。"] = "Proxy connection failed. Check the system proxy settings.",
+        ["调整浮窗显示和应用启动方式。"] = "Customize the dictation overlay and app startup.",
+        ["服务地址"] = "Service URL",
+        ["服务器返回了不匹配的下载范围，请重试。"] = "The server returned an unexpected download range. Please retry.",
+        ["浮窗位置"] = "Overlay position",
+        ["高级设置"] = "Advanced settings",
+        ["兼容 OpenAI 的 API 地址。"] = "An OpenAI-compatible API endpoint.",
+        ["检查麦克风访问状态，查看故障与使用说明。"] = "Check microphone access, troubleshoot problems, and find help.",
+        ["界面语言"] = "Interface language",
+        ["可选功能：仅发送识别后的文字，不发送音频。"] = "Optional: sends only recognized text, never audio.",
+        ["空闲卸载（分钟）"] = "Unload when idle (minutes)",
+        ["快捷键"] = "Shortcut",
+        ["麦克风访问"] = "Microphone access",
+        ["密钥由 Windows 加密保存。"] = "The key is encrypted by Windows before storage.",
+        ["模型保存在本机，准备完成后即可离线听写。"] = "The model is stored on this computer for offline dictation.",
+        ["模型名称"] = "Model name",
+        ["启动时预加载模型"] = "Preload the model on startup",
+        ["请处理上述问题后手动重试。"] = "Address the issues above, then retry manually.",
+        ["请录制有效快捷键；组合键至少需要一个修饰键。"] = "Record a valid shortcut; combinations require at least one modifier.",
+        ["如果无法向以管理员身份运行的应用输入文字，请让两个应用以相同权限运行。"] = "If text cannot be inserted into an app running as administrator, run both apps with the same privileges.",
+        ["设为 0 时保持模型常驻。"] = "Set to 0 to keep the model loaded.",
+        ["设为 0 时自动按本机性能校准。"] = "Set to 0 to calibrate automatically for this computer.",
+        ["设置"] = "Settings",
+        ["设置已保存，但开机自启更新失败，请重试。"] = "Settings were saved, but updating startup registration failed. Please retry.",
+        ["识别语言"] = "Recognition language",
+        ["手动编辑快捷键"] = "Edit shortcut manually",
+        ["数值越低，纠错结果越稳定。"] = "Lower values produce more consistent corrections.",
+        ["所有更改已保存"] = "All changes saved",
+        ["提前准备识别引擎，减少首次听写的等待。"] = "Prepare the engine ahead of time to reduce the wait for the first dictation.",
+        ["填写服务提供方支持的模型名称。"] = "Enter a model name supported by your provider.",
+        ["听写"] = "Dictation",
+        ["听写浮窗"] = "Dictation overlay",
+        ["通常使用自动识别，也可以指定语言。"] = "Auto detection works in most cases; you can also choose a language.",
+        ["外观与通用"] = "Appearance and general",
+        ["文字纠错"] = "Text correction",
+        ["无法解析下载服务器地址，请检查网络和 DNS。"] = "Cannot resolve the download server. Check the network and DNS.",
+        ["无法写入模型目录，请检查目录权限。"] = "Cannot write to the model folder. Check folder permissions.",
+        ["下载 {0} 失败，请查看各下载源的结果。"] = "Downloading {0} failed. Review the results for each source.",
+        ["下载连接中断，请检查网络后重试。"] = "The download connection was interrupted. Check the network and retry.",
+        ["下载诊断详情"] = "Download diagnostics",
+        ["限制纠错回复的长度。"] = "Limit the length of the correction response.",
+        ["修改时立即预览；撤销后恢复。"] = "Preview changes immediately; discard to restore the saved value.",
+        ["选择输入方式，按下快捷键即可开始说话。"] = "Choose your input preferences and press the shortcut to start speaking.",
+        ["选择听写反馈在屏幕上的位置。"] = "Choose where dictation feedback appears on screen.",
+        ["已下载 {0:F1} / {1:F1} MB · {2}%"] = "Downloaded {0:F1} / {1:F1} MB · {2}%",
+        ["应用"] = "Application",
+        ["有未保存的更改"] = "Unsaved changes",
+        ["语音输入"] = "Voice input",
+        ["预览窗口（秒）"] = "Preview window (seconds)",
+        ["运行方式"] = "Model lifecycle",
+        ["诊断与帮助"] = "Diagnostics and help",
+        ["智能纠错"] = "Text correction",
+        ["主键"] = "Primary key",
+        ["字母、数字、F1–F12 或右 Ctrl。"] = "Letters, digits, F1–F12, or Right Ctrl.",
+        ["自动模式优先避免蓝牙通话模式影响声音。"] = "Auto mode avoids Bluetooth call mode when possible.",
         // ── 托盘菜单 / 应用级 ────────────────────────────────
         ["启动中"] = "Starting up",
         ["热键：{0}"] = "Hotkey: {0}",
@@ -28,7 +98,7 @@ internal static partial class L10n
         ["开机自启"] = "Launch at Login",
         ["关于 {0}"] = "About {0}",
         ["退出"] = "Quit",
-        ["离线语音输入工具，基于 SenseVoice-Small。"] = "An offline voice input tool powered by SenseVoice-Small.",
+        ["离线、安全、快捷的语音输入工具。"] = "An offline, secure, and fast voice input tool.",
         ["VoiceTyper 已经在运行（请检查系统托盘）。"] = "VoiceTyper is already running (check the system tray).",
         ["VoiceTyper 启动失败：\n\n{0}"] = "VoiceTyper failed to start:\n\n{0}",
 
@@ -55,32 +125,16 @@ internal static partial class L10n
 
         // ── 设置窗口：通用 ──────────────────────────────────
         ["{0} 设置"] = "{0} Settings",
-        ["识别"] = "Recognition",
-        ["热键"] = "Hotkey",
-        ["权限"] = "Permissions",
-        ["通用"] = "General",
         ["版本 {0}"] = "Version {0}",
         ["保存并应用"] = "Save and Apply",
         ["保存中..."] = "Saving...",
         ["设置已保存并生效。"] = "Settings saved and applied.",
         ["保存失败：{0}"] = "Save failed: {0}",
         ["重新检测"] = "Check Again",
-        ["界面语言："] = "Interface language:",
-        ["切换后需重启 VoiceTyper 才会全面生效"] = "takes full effect after you restart VoiceTyper",
         ["界面语言已保存。请重启 VoiceTyper 使全部界面文本生效。"] =
             "Interface language saved. Restart VoiceTyper to apply it to all interface text.",
-        ["HUD 不透明度："] = "HUD opacity:",
-        ["空闲卸载模型："] = "Unload model when idle:",
-        ["分钟（0 = 常驻不卸载）"] = "minutes (0 = keep the engine resident)",
-        ["预览窗口（进阶）："] = "Preview window (advanced):",
-        ["秒（0 = 首次加载后自动按本机性能校准）"] =
-            "seconds (0 = calibrated automatically from this machine's performance after the first load)",
-        ["开机自启写入失败，其余设置未保存。"] =
-            "Could not write the launch-at-login setting; nothing else was saved either.",
 
         // ── 设置窗口：识别页 ────────────────────────────────
-        ["语音模型："] = "Speech model:",
-        ["识别语言："] = "Recognition language:",
         ["模型目录：{0}"] = "Model folder: {0}",
         ["取消下载"] = "Cancel Download",
         ["开始下载模型"] = "Download Model",
@@ -97,13 +151,8 @@ internal static partial class L10n
             "Engine not loaded (after an idle unload it reloads automatically on your next recording)",
         ["模型加载失败：{0}"] = "Model failed to load: {0}",
         ["启用智能纠错（LLM）"] = "Enable AI correction (LLM)",
-        ["Base URL："] = "Base URL:",
-        ["API Key："] = "API key:",
-        ["模型："] = "Model:",
         ["温度"] = "Temperature",
         ["最大 Token"] = "Max tokens",
-        ["超时(秒)"] = "Timeout (s)",
-        ["参数："] = "Parameters:",
         ["测试纠错"] = "Test Correction",
         ["正在测试纠错..."] = "Testing correction...",
         ["纠错测试失败：{0}"] = "Correction test failed: {0}",
@@ -112,18 +161,10 @@ internal static partial class L10n
             "Could not read the saved API key. Please enter it again and save.",
 
         // ── 设置窗口：热键页 ────────────────────────────────
-        ["修饰键："] = "Modifiers:",
-        ["主键："] = "Main key:",
-        ["预览："] = "Preview:",
-        ["主键不能为空"] = "The main key cannot be empty",
-        ["不支持的主键：{0}。可用：字母、数字、F1–F12、Space、Tab、方向键等。"] =
-            "Unsupported main key: {0}. Allowed: letters, digits, F1–F12, Space, Tab, arrow keys and the like.",
         ["至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"] =
             "Select at least one modifier (Ctrl/Alt/Shift/Win); otherwise the hotkey would swallow ordinary typing.",
-        ["热键已保存并生效。"] = "Hotkey saved and applied.",
 
         // ── 设置窗口：权限页 ────────────────────────────────
-        ["麦克风："] = "Microphone:",
         ["打开麦克风设置"] = "Open Microphone Settings",
         ["麦克风可用"] = "Microphone available",
         ["麦克风不可用：被系统隐私设置阻止"] = "Microphone unavailable: blocked by system privacy settings",
@@ -136,8 +177,6 @@ internal static partial class L10n
             "No microphone detected. Plug one in, or enable an input device in the system sound settings.",
         ["麦克风设备打开失败：可能被其他应用独占，或驱动异常。"] =
             "The microphone could not be opened: another app may have exclusive use of it, or the driver is failing.",
-        ["已知限制：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，这是 Windows UIPI 安全机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动粘贴。"] =
-            "Known limitation: windows running as administrator (Notepad, terminals, and so on) do not accept injected text. This is the Windows UIPI security mechanism, not a recognition failure. The result is still written to the clipboard so you can paste it manually.",
 
         // ── 识别语言 ────────────────────────────────────────
         ["自动"] = "Auto",
@@ -174,8 +213,6 @@ internal static partial class L10n
             "Insertion failed; the result is on the clipboard and can be pasted manually",
         ["正在录音/识别/输入，请等待当前听写完成后再保存此项设置"] =
             "Recording, recognition or insertion is in progress — wait for the current dictation to finish before saving this setting",
-        ["正在录音/识别/输入，请等待当前听写完成后再保存识别设置"] =
-            "Recording, recognition or insertion is in progress — wait for the current dictation to finish before saving the recognition settings",
         ["API Key 写入失败，请重试（配置尚未保存）"] =
             "Writing the API key failed; please retry (the configuration was not saved)",
         ["正在听写，请等待当前听写完成后再重新加载模型"] =
@@ -261,7 +298,7 @@ internal static partial class L10n
         ["模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。"] =
             "The model is about 230 MB and only needs to be downloaded once; afterwards everything works offline. You can click \"Next\" now and the download continues in the background.",
         ["语音模型已就绪"] = "Speech model is ready",
-        ["可以到设置 → 识别中重新加载，或重新下载模型。"] = "Reload it in Settings → Recognition, or download the model again.",
+        ["可以到设置 → 语音模型中重新加载，或重新下载模型。"] = "Reload it in Settings → Speech Model, or download the model again.",
         ["重试下载"] = "Retry Download",
         ["点一下下面的输入框，然后试说一句话："] = "Click the box below, then try speaking a sentence:",
         ["麦克风还不可用，请回到上一步处理。"] = "The microphone is not available yet. Go back one step to fix it.",
@@ -294,14 +331,8 @@ internal static partial class L10n
         ["这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"] = "That key can't be used as a hotkey. Try another (letters, digits, F1–F12, arrow keys, ...).",
         ["已录制：{0}，点「保存并应用」生效。"] = "Recorded: {0}. Click \"Save and Apply\" to use it.",
         ["右 Ctrl"] = "Right Ctrl",
-        ["触发方式："] = "Trigger:",
         ["按住说话"] = "Hold to talk",
         ["按一次开始，再按一次结束"] = "Press once to start, again to stop",
-        ["支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→。也可以点「使用右 Ctrl」，单独用右 Ctrl 键触发（按住它再按别的键或点鼠标时仍是普通快捷键）。"] =
-            "Supported main keys: a-z, 0-9, space, tab, enter, esc, f1-f12, insert, delete, home/end, pageup/pagedown, arrow keys. You can also click \"Use Right Ctrl\" to trigger with the Right Ctrl key alone (holding it while pressing another key or clicking the mouse still works as a normal shortcut).",
-        ["启动时预加载识别模型（首次按热键零等待，常驻约 500 MB 内存）"] =
-            "Preload the recognition model at launch (no wait on the first hotkey press; keeps about 500 MB in memory)",
-        ["浮窗位置："] = "Floating window:",
         ["底部居中"] = "Bottom center",
         ["右下角"] = "Bottom right",
         ["跟随光标"] = "Follow cursor",

@@ -28,6 +28,8 @@ public class ModelDownloaderTests : IDisposable
     {
         public byte[] Data { get; set; }
         public bool HonorRanges { get; set; } = true;
+        public bool RangeReturnsOk { get; set; }
+        public bool MissingContentRange { get; set; }
         public bool CorruptBody { get; set; }
         public int ForbiddenRequests { get; set; }
         public HttpStatusCode? ForcedStatus { get; set; }
@@ -62,8 +64,8 @@ public class ModelDownloaderTests : IDisposable
 
             var slice = body.AsSpan((int)from, (int)(to - from + 1)).ToArray();
             var content = new ByteArrayContent(slice);
-            content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, body.Length);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = content });
+            if (!MissingContentRange) content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, body.Length);
+            return Task.FromResult(new HttpResponseMessage(RangeReturnsOk ? HttpStatusCode.OK : HttpStatusCode.PartialContent) { Content = content });
         }
     }
 
@@ -225,7 +227,7 @@ public class ModelDownloaderTests : IDisposable
     public async Task ForbiddenEndpoint_FallsBackToNextEndpoint()
     {
         var data = MakeData(1_000);
-        var server = new RangeServer(data) { ForbiddenRequests = 2 };
+        var server = new RangeServer(data) { ForbiddenRequests = 1 };
         var urls = new[]
         {
             new Uri("https://blocked.example.invalid/model.bin"),
@@ -240,8 +242,8 @@ public class ModelDownloaderTests : IDisposable
 
         Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(_dir, "model.bin")));
         Assert.Equal(urls[0], server.RequestUris[0]);
-        Assert.Equal(urls[0], server.RequestUris[1]);
-        Assert.Equal(urls[1], server.RequestUris[2]);
+        Assert.Equal(urls[1], server.RequestUris[1]);
+        Assert.Equal(2, server.RequestUris.Count); // 403 不重复请求同一地址。
     }
 
     [Fact]
@@ -299,5 +301,92 @@ public class ModelDownloaderTests : IDisposable
         Assert.Equal(new[] { "config.yaml", "am.mvn", "tokens.json", "model_quant.onnx" }, ModelDownloader.Files.Select(f => f.Name));
         Assert.All(ModelDownloader.Files, f => Assert.Equal(64, f.Sha256.Length));
         Assert.True(ModelDownloader.Files[^1].SizeHint >= ModelDownloader.SegmentedMinimumBytes); // 权重会走分段
+    }
+
+    [Fact]
+    public async Task ModelScopeStyle200Range_IsAcceptedAndVerified()
+    {
+        var data = MakeData(400_000);
+        var server = new RangeServer(data) { RangeReturnsOk = true };
+        using var downloader = Make(server, data, 100_000);
+        await downloader.DownloadAllAsync(_ => { });
+        Assert.Equal(5, server.Requests.Count);
+        Assert.Equal(data, File.ReadAllBytes(Path.Combine(_dir, "model.bin")));
+    }
+
+    [Fact]
+    public async Task ModelScopeStyle200Range_ResumesSingleConnection()
+    {
+        var data = MakeData(50_000);
+        File.WriteAllBytes(Path.Combine(_dir, "model.bin.part"), data[..20_000]);
+        var server = new RangeServer(data) { RangeReturnsOk = true };
+        using var downloader = Make(server, data, 1_000_000);
+        await downloader.DownloadAllAsync(_ => { });
+        Assert.Single(server.Requests);
+        Assert.Equal(data, File.ReadAllBytes(Path.Combine(_dir, "model.bin")));
+    }
+
+    [Fact]
+    public async Task MissingRangeHeaders_FallsBackToFullDownload()
+    {
+        var data = MakeData(400_000);
+        var server = new RangeServer(data) { MissingContentRange = true };
+        using var downloader = Make(server, data, 100_000);
+        await downloader.DownloadAllAsync(_ => { });
+        Assert.Equal(2, server.Requests.Count);
+        Assert.Equal(data, File.ReadAllBytes(Path.Combine(_dir, "model.bin")));
+    }
+
+    private sealed class FailingSources : HttpMessageHandler
+    {
+        public int Requests;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            if (request.RequestUri!.Host == "blocked.example")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+            throw new HttpRequestException(HttpRequestError.SecureConnectionError,
+                "SSL failed at https://user:password@cdn.example/file?signature=secret", new System.Security.Authentication.AuthenticationException("certificate rejected"));
+        }
+    }
+
+    [Fact]
+    public async Task AllSourcesFail_ReportsEachCauseWithoutRepeatingPermanentErrors()
+    {
+        var server = new FailingSources();
+        using var downloader = new ModelDownloader(server,
+            new[] { new ModelDownloader.FileSpec("model.bin", Sha(new byte[1]), 1) }, _dir, null, 1_000_000,
+            _ => new[] { new Uri("https://blocked.example/file"), new Uri("https://tls.example/file") });
+        var error = await Assert.ThrowsAsync<ModelDownloadException>(() => downloader.DownloadAllAsync(_ => { }));
+        Assert.Equal(2, server.Requests);
+        Assert.Contains("403", error.Message);
+        Assert.Contains("tls.example", error.Message);
+        Assert.Contains("AuthenticationException", error.Diagnostics);
+        Assert.False(error.CanRetry);
+        Assert.DoesNotContain("password", error.Diagnostics);
+        Assert.DoesNotContain("signature=secret", error.Diagnostics);
+    }
+
+    [SkippableFact]
+    public async Task RealNetwork_AllPinnedFilesDownloadAndVerify()
+    {
+        // 手工验收入口：默认不联网，也不触碰用户模型目录。
+        Skip.If(Environment.GetEnvironmentVariable("VOICETYPER_VERIFY_DOWNLOAD") != "1", "显式设置 VOICETYPER_VERIFY_DOWNLOAD=1 才下载真实模型");
+        using var downloader = new ModelDownloader(null, null, _dir, null, null);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        await downloader.DownloadAllAsync(_ => { }, timeout.Token);
+        Assert.All(ModelDownloader.Files, file => Assert.True(ModelDownloader.Sha256Matches(Path.Combine(_dir, file.Name), file.Sha256)));
+        var bundle = ModelLocator.Locate(_dir);
+        Assert.NotNull(bundle);
+        Assert.Equal(_dir, bundle.ModelDir);
+        using var engine = new SenseVoiceEngine(bundle, Core.AsrLanguage.Auto, threads: 2);
+    }
+
+    [Fact]
+    public void TlsInnerException_IsClassifiedEvenWhenOuterCategoryIsUnknown()
+    {
+        var error = new HttpRequestException("SSL failed", new System.Security.Authentication.AuthenticationException("handshake rejected"));
+        Assert.False(DownloadFailure.CanRetry(error));
+        Assert.Contains("AuthenticationException", DownloadFailure.Diagnostics(error));
     }
 }

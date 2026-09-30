@@ -1,5 +1,10 @@
 # VoiceTyper Windows 一体化应用 · 设计方案
 
+> **2026-09-30 更新**：用户已确认 Windows 版本初步可用；本次在 Windows 本机完成真实下载器的
+> 四文件完整下载与固定 SHA256 校验（约 37 秒）。设置窗口改为五项侧栏导航、跨页草稿与统一保存，
+> 详情见本文 §16。下方「仍未在真实 Windows 设备上运行」属于历史状态，不再作为当前事实。
+> 性能、arm64 真机、实际系统 DPI 跨屏切换与长期稳定性仍需验证。
+
 > **2026-09-06 审查补充**：[Windows 审查与修复计划](REVIEW_AND_REPAIR_PLAN.md)记录了当前实现的
 > 构建、音频、输入注入和生命周期缺陷，并给出严重程度、修复难度、任务依赖与验收标准。
 > 修复工作以该清单核对当前代码；下文历史性的“已对齐”“代码审查通过”不代表这些缺陷已经修复。
@@ -403,7 +408,7 @@ windows/
 ├── Llm/            LlmCorrector
 ├── Services/       HotkeyService, AudioCaptureService, TextInsertionService
 ├── UI/             TrayController, RecordingHud,
-│                   SetupForm（单文件；按 Tab 拆 partial class 的规划见 §5.6，尚未实施）
+│                   SetupForm + SetupForm.Layout（侧栏布局与状态逻辑拆分，见 §16）
 ├── Support/        Constants, AppLog, NativeMethods, UiDispatcher, StartupRegistration
 └── Tests/VoiceTyper.Tests/            # xUnit（9 个文件，实际清单见 §8）
         FftTests, FbankParityTests, TextPostprocessorTests, RecognitionBufferTests,
@@ -609,7 +614,6 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 ┌ 就绪 · CTRL+F2 · 引擎已就绪         ← 三行只读 header
 ├──────────────────────
 │ 设置...
-│ 打开配置目录
 ├──────────────────────
 │ ✅ 开机自启                          ← 新增
 │ 关于 VoiceTyper                      ← 新增
@@ -620,7 +624,7 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 第三行从「服务：已连接 127.0.0.1:6008」改为「引擎：已就绪 / 模型加载中… / 下载模型 42%」。
 下载中时托盘图标叠加进度环（`TrayController` 已有 `Graphics` 绘图代码可复用）。
 
-**设置窗口**：Tab 从 2 个（连接/热键）变为 **4 个**
+**设置窗口（初版历史设计）**：Tab 从 2 个（连接/热键）变为 **4 个**；当前五项导航见 §16。
 
 | Tab | 内容 |
 | --- | --- |
@@ -629,9 +633,9 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 | 权限 | 麦克风可用性检测 +「打开 Windows 隐私设置」（`ms-settings:privacy-microphone`）+ UIPI 提权限制说明 |
 | 通用 | 开机自启、HUD 不透明度、空闲 N 分钟后卸载模型、预览窗口（进阶） |
 
-`SetupForm.cs` 规划时为 550 行，原计划拆成 `partial class` 按 Tab 分文件
-（`SetupForm.Recognition.cs` 等）。**该拆分尚未实施**：当前仍是单文件，已增长到约 820 行，
-接近可维护性上限，列入待办。
+2026-09-30 已拆为 `SetupForm.cs`（状态、热键录制、协调器接口）与
+`SetupForm.Layout.cs`（五项导航、布局组件、跨页草稿与统一保存）。上表保留初版结构的历史记录；
+当前页面分组见 [Windows README 的设置说明](README.md#设置)。
 
 **麦克风权限探测**（`MicPermissionProbe`）：Windows 对非打包桌面应用的麦克风管控在
 设置 → 隐私和安全性 → 麦克风 → "让桌面应用访问你的麦克风"。程序侧只能通过
@@ -667,12 +671,12 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 
 `windows/build.bat` 基于现有脚本改造，产物矩阵变化较大：
 
-| 产物 | 形态 | ⚠️ 体积估算 | 说明 |
+| 产物 | 形态 | 体积证据 | 说明 |
 | --- | --- | ---: | --- |
-| `VoiceTyper-<ver>-win-x64-setup.exe` | Inno Setup 安装包（**主推**） | ~35 MB | 装到 `%LOCALAPPDATA%\Programs\VoiceTyper`，**per-user，不弹 UAC**；开始菜单快捷方式；可选开机自启 |
-| `VoiceTyper-<ver>-win-x64-portable.zip` | 目录式自包含 | ~60 MB | 解压即用，不需要 .NET 运行时 |
-| `VoiceTyper-<ver>-win-arm64-setup.exe` | 同上，arm64 | ~35 MB | Snapdragon X 笔记本 |
-| `VoiceTyper-<ver>-win-arm64-portable.zip` | 同上，arm64 | ~60 MB | |
+| `VoiceTyper-<ver>-win-x64-setup.exe` | Inno Setup 安装包（**主推**） | 尚未实测安装器压缩体积 | 装到 `%LOCALAPPDATA%\Programs\VoiceTyper`；安装前检查目标架构的 .NET 10 Desktop Runtime |
+| `VoiceTyper-<ver>-win-x64-portable.zip` | 依赖框架的目录式发布 | 见 [体积实测](PACKAGE_SIZE_AUDIT.md) | 解压后使用系统安装的 .NET 10 Desktop Runtime |
+| `VoiceTyper-<ver>-win-arm64-setup.exe` | 同上，arm64 | 尚未实测安装器压缩体积 | Snapdragon X 笔记本；需要 arm64 桌面运行时 |
+| `VoiceTyper-<ver>-win-arm64-portable.zip` | 同上，arm64 | 见 [体积实测](PACKAGE_SIZE_AUDIT.md) | arm64 发布成功不代表 arm64 真机运行通过 |
 
 **关键决策：放弃 `PublishSingleFile` + `IncludeNativeLibrariesForSelfExtract`。**
 
@@ -683,8 +687,19 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 但文件老实躺在磁盘上，启动零解压、AV 友好、增量更新也更容易做。
 
 其余构建要点：
-- `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false`
-- **不开 `PublishTrimmed`**：WinForms 大量依赖反射，裁剪风险远大于省下的几十 MB
+- `dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false`
+- **不携带共享运行时**：2026-09-30 用户明确选择使用系统已有的 .NET 10 Desktop Runtime；
+  安装器按目标架构检查官方安装记录，便携版保留 .NET 启动器自带的缺失框架提示。
+  升级时根据 `installer/legacy-self-contained-files.iss` 中的已知历史文件名清理旧运行时；
+  不使用通配符删除用户额外文件。安装器编译与升级行为的验证状态见体积检查记录。
+- **不开 ReadyToRun**：此前仅推测登录后启动收益，未实测；当前优先缩小分发体积。
+  该设置不会改动 ONNX Runtime 的原生推理实现。
+- **不开 `PublishTrimmed`**：WinForms 依赖内建 COM 封送，当前 SDK 不支持裁剪该应用类型；
+  不绕过 SDK 限制手动删除框架 DLL（[微软说明](https://learn.microsoft.com/en-us/dotnet/core/deploying/trimming/incompatibilities)）。
+- NAudio 仅引用 `NAudio.Wasapi` 与传递依赖 `NAudio.Core`；DPAPI 使用共享框架提供的程序集，
+  不再显式引用编译器提示冗余的 ProtectedData NuGet 包。
+- 发布不含 PDB / 原生 `.lib`；调试符号保留在构建目录。`scripts/verify_publish.ps1` 由构建与 CI
+  共用，防止把共享运行时、模型、无用音频模块或测试文件再次打进包。
 - `Version` 从 csproj 单点读取，安装包版本号与之同步
 - **代码签名**：本轮不做。SmartScreen 会对未签名安装包显示"Windows 已保护你的电脑"，
   README 需给出"更多信息 → 仍要运行"的截图说明。与 macOS 不做公证是同一个取舍位。
@@ -792,7 +807,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | D6 | FFT 实现 | ✅ **自写 512 点 radix-2**，不引数学库 | 固定尺寸、算法确定、有金标准兜底；比 macOS 的 vDSP 打包方案更简单 |
 | D7 | 目录布局 | ✅ **配置 `%APPDATA%\VoiceTyper\`，模型 `%LOCALAPPDATA%\VoiceTyper\models\`** | 配置（KB 级）该漫游，模型（240MB）绝不能漫游。这是 Windows 特有的正确做法，不能照抄 macOS 单目录方案 |
 | D8 | 密钥存储 | ✅ **DPAPI 文件** | 40 行 vs 凭据管理器的 120 行互操作，底层同样是 DPAPI，安全性无差别 |
-| D9 | 分发形态 | ✅ **目录式 + Inno Setup**，放弃单文件自解压 | 常驻自启工具不应每次新版本首启解压 14MB 原生库；AV 也更友好 |
+| D9 | 分发形态 | ✅ **依赖系统 .NET 10 Desktop Runtime 的目录式 + Inno Setup**，放弃单文件自解压 | 不重复分发共享运行时；启动时不解压原生库；体积实测见 [PACKAGE_SIZE_AUDIT.md](PACKAGE_SIZE_AUDIT.md) |
 | D10 | 架构覆盖 | ✅ **x64 + arm64** | ORT 两个 RID 原生库齐备，没有 macOS 侧"放弃 Intel"那种被迫取舍 |
 | D11 | 文本插入 | ✅ **维持剪贴板 + SendInput** | Windows 没有 macOS AX 直写的可靠对等物（UIA `TextPattern` 只读、`ValuePattern` 整体替换语义错误） |
 | D12 | Windows 版本下限 | 待定，暂按 **Win10 1809+** | 若接受只支持 Win11 24H2+，Windows ML/NPU 路线才成立。取决于目标用户构成，P0 前定即可 |
@@ -970,3 +985,67 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
 `Microsoft.WindowsDesktop.App` 框架依赖去掉即可在 macOS 上运行不触碰 WinForms 的用例（本地已有 SenseVoice 模型缓存时端到端识别用例
 也会真跑，使用 osx-arm64 的 ONNX Runtime）。**触碰 WinForms / Win32 的部分（钩子、剪贴板、SendInput、窗体绘制）无法在这样的环境里运行，
 它们的正确性只能靠真机验证。**
+
+## 16. 2026-09-30 下载故障与设置窗口重做
+
+### 16.1 故障证据与处理
+
+本机旧日志记录：ModelScope 权重先返回 HTTP 403，两个备用源随后 SSL 握手失败。
+原实现只保留最后一个来源的外层 Message，无法还原当时的证书/代理/握手原因，不能将旧故障
+直接归因为 TLS 版本。本次在正常 Windows 网络环境探测到 ModelScope API 会以
+`200 + Content-Range` 返回指定范围；同机官方 resolve 路径仍返回 403。
+两个 Hugging Face 入口可能重定向至同一 CDN 主机，不是完全独立的故障域。
+
+下载器现兼容 200/206，但必须验证 bytes 单位、起止偏移、总长和可用的 Content-Length。
+不匹配时回退，固定 SHA256 保持不变。403/不可恢复 4xx、TLS/代理认证故障立即切源；
+超时、断流、429/5xx 允许有限重试。所有来源均为不可恢复故障时停止自动重试，可手动重试。
+断流保留 `.part`，校验失败/无效范围/越界时才丢弃。分段与跨源数据最终由固定哈希裁决。
+
+`DownloadFailure` 汇总全部来源，记录脱敏异常链、HRESULT、Win32 错误码与响应主机。
+证书回调记录 SslPolicyErrors 和证书链状态枚举，仍拒绝验证失败；系统 TLS 与默认代理策略不变。
+签名 URL、URL 内凭据及查询参数不进入日志。诊断窗口可选中文字复制，不自动覆盖剪贴板。
+本次未修改 macOS 或 fbank、LFR/CMVN、CTC、模型契约，ASR 金标准夹具继续共用。
+
+### 16.2 设置与保存语义
+
+五页分组见 [Windows README](README.md#设置)。`SetupForm.cs` 保留状态、录制热键和协调器接口，
+`SetupForm.Layout.cs` 提供侧栏、公共布局、折叠参数、跨页草稿与统一操作区。
+状态刷新与重复打开不能覆盖草稿；关闭保留草稿并恢复已保存透明度，重新打开继续预览；撤销恢复。
+模型就绪不会自动隐藏含未保存修改的窗口。
+
+统一保存先校验热键与启用的纠错地址/模型，在写密钥前拒绝活跃听写期间的破坏性修改。
+热键和输入设备变更也参与控制器重建判断；保存期间禁止继续编辑。配置保存成功后更新开机自启，
+自启失败明确提示部分成功并恢复实际注册表状态，不在拒绝保存时偷偷改变自启。
+密钥与 YAML 分开写入，若密钥已更新但 YAML 写入失败，明确提示部分成功并保留草稿重试。
+
+### 16.3 已完成验证
+
+- Windows x64 本机构建、Release 发布成功。原有 NU1510 包裁剪提示和 HudTextLayoutTests 的
+  xUnit2000 提示仍存在，本次无新增编译警告。
+- 全套 290 项：通过 289 项，唯一跳过为默认关闭的真实联网验收，包含真实语音金标准推理。
+- 单独启用联网验收：四文件完整下载、全部固定 SHA256、刚下载模型的 ONNX 会话加载通过。
+  首次下载/校验约 37 秒；后续含加载约 30 秒，为本机当次观测，不是性能基准。
+- STA 用例验证跨页草稿、后台载入不覆盖、保存失败保留、保存包含热键/设备/密钥与撤销恢复预览。
+  真实 WinForms 渲染覆盖中英文五页及窄窗口权限/长错误状态，断言保存按钮未裁切。
+- 可运行产物在 `windows/bin/preview-win-x64/`，预览在 `windows/obj/settings-preview/`，均不提交。
+  未重装现有应用、未替换用户模型。arm64、实际 DPI 跨屏、热键/权限/剪贴板和长期运行仍需手工验收。
+
+联网验收仅在显式设置 `VOICETYPER_VERIFY_DOWNLOAD=1` 后运行
+`dotnet test windows/Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj --filter FullyQualifiedName~RealNetwork_AllPinnedFilesDownloadAndVerify`。
+模型写临时测试目录，结束清理，不触碰用户模型。窗口预览显式设置 `VOICETYPER_SETTINGS_PREVIEW`
+为输出目录，并用 `--filter FullyQualifiedName~RenderSettingsPreviews`；使用虚构数据，不读取 SecretStore。
+平时 `dotnet test` 不联网、不写用户配置或密钥。
+
+### 16.4 手工验收
+
+1. 退出旧版后运行新 x64 产物。跨页编辑、关闭/重开，检查草稿保留；撤销恢复字段与浮窗透明度。
+   保存并重启确认持久化，分别修改热键/麦克风，确认真实听写采用新值。
+2. 在独立测试账户验证首次下载、下载中取消、断网/恢复、最终加载；不删除用户原模型。
+   取消不触发自动重试，断流可续传。使用不可用代理检查分类与详情，恢复代理后手动重试。
+3. 禁用/恢复系统麦克风权限，检查横幅、诊断与重新检测。录制热键时不触发听写，离页恢复监听；
+   听写中修改热键/设备并保存应被拒绝，录音不中断。
+4. 在记事本听写，确认文字插入与原剪贴板恢复；另测目标应用管理员权限造成的输入限制提示。
+5. 检查中文/英文、长设备名称、最小窗口、100%/125%/150%/200% 系统缩放与跨 DPI 显示器移动：
+   换行、滚动、Tab 焦点和保存按钮均可用，此项尚未宣称真机通过。
+6. 核对开机自启注册表与重新登录、界面语言重启；测试纠错地址/错误密钥/超时，确认失败保留
+   原识别文本且日志无密钥。

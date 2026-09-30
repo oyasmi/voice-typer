@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,7 +16,10 @@ namespace VoiceTyper.Asr;
 
 internal sealed class ModelDownloadException : Exception
 {
-    public ModelDownloadException(string message) : base(message) { }
+    public bool CanRetry { get; }
+    public string Diagnostics { get; }
+    public ModelDownloadException(string message, bool canRetry = true, string diagnostics = "", Exception? inner = null)
+        : base(message, inner) { CanRetry = canRetry; Diagnostics = diagnostics; }
 }
 
 /// <summary>
@@ -31,8 +35,8 @@ internal sealed class ModelDownloadException : Exception
 ///   <c>Range: bytes=&lt;len&gt;-</c>。经过实测的必经之路。</item>
 /// <item><b>分段并行</b>（≥ 32MB 的文件，即 230MB 的模型权重）：先用 <c>Range: bytes=0-0</c> 探测总长，
 ///   均分四段并行下载到各自的 <c>.segN</c> 文件（续传同样只看文件长度），最后按序拼成 <c>.part</c>。
-///   分段只是优化，<b>绝不能让一个优化把首次安装唯一的必经之路带崩</b>：任何异常（服务不支持 Range、
-///   长度对不上、网络错误……）都会永久停用分段并落回单连接。</item>
+///   分段只是优化：不支持 Range、长度不符或可恢复的网络异常会停用分段并落回单连接。
+///   TLS 或权限错误直接切换来源，避免无意义地重复相同请求。</item>
 /// </list>
 /// 两条路径最终都以固定 sha256 校验为准。
 /// </summary>
@@ -87,7 +91,7 @@ internal sealed class ModelDownloader : IDisposable
         Func<string, Uri>? urlFor, long? segmentedMinimumBytes,
         Func<string, IReadOnlyList<Uri>>? urlsFor = null)
     {
-        _http = handler is null ? new HttpClient() : new HttpClient(handler);
+        _http = new HttpClient(handler ?? CreateHandler());
         _http.Timeout = Timeout.InfiniteTimeSpan;
         _files = files ?? Files;
         _destination = destination ?? ModelLocator.DownloadDestination;
@@ -95,6 +99,7 @@ internal sealed class ModelDownloader : IDisposable
             ? RemoteUrls
             : name => new[] { urlFor(name) });
         _segmentedMinimumBytes = segmentedMinimumBytes ?? SegmentedMinimumBytes;
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd($"VoiceTyper/{AppConstants.Version}");
     }
 
     /// <summary>
@@ -149,7 +154,9 @@ internal sealed class ModelDownloader : IDisposable
             throw new ModelDownloadException(L10n.F("没有可用的模型下载地址：{0}", spec.Name));
         }
 
-        Exception? lastError = null;
+        var failures = new List<string>();
+        var details = new List<string>();
+        bool canRetry = false;
         for (var index = 0; index < urls.Length; index++)
         {
             try
@@ -163,15 +170,20 @@ internal sealed class ModelDownloader : IDisposable
             }
             catch (Exception ex)
             {
-                lastError = ex;
+                var summary = DownloadFailure.Summary(ex);
+                failures.Add($"{urls[index].Host}：{summary}");
+                details.Add($"{spec.Name} / {urls[index].Host}\n{DownloadFailure.Diagnostics(ex)}");
+                canRetry |= DownloadFailure.CanRetry(ex);
+                AppLog.Warn("model", details[^1]);
                 if (index + 1 < urls.Length)
                 {
-                    AppLog.Warn("model", $"下载 {spec.Name} 当前地址失败，切换备用地址 ({index + 2}/{urls.Length})：{ex.Message}");
+                    AppLog.Warn("model", $"下载 {spec.Name} 当前地址失败，切换备用地址 ({index + 2}/{urls.Length})");
                 }
             }
         }
 
-        throw lastError ?? new ModelDownloadException(L10n.F($"下载 {0} 失败。", spec.Name));
+        throw new ModelDownloadException(L10n.F("下载 {0} 失败，请查看各下载源的结果。", spec.Name)
+            + "\n" + string.Join("\n", failures), canRetry, string.Join("\n\n", details));
     }
 
     private async Task DownloadOneFromUrlAsync(FileSpec spec, Action<double> onProgress,
@@ -200,9 +212,13 @@ internal sealed class ModelDownloader : IDisposable
             {
                 throw;
             }
+            catch (Exception ex) when (!DownloadFailure.CanRetry(ex))
+            {
+                throw; // 同一下载源的权限/TLS 故障不能靠改成单连接解决，直接切源。
+            }
             catch (Exception ex)
             {
-                AppLog.Warn("model", $"分段下载 {spec.Name} 失败，停用分段并改用单连接: {ex.Message}");
+                AppLog.Warn("model", $"分段下载 {spec.Name} 失败，停用分段并改用单连接: {DownloadFailure.Diagnostics(ex)}");
                 TryDelete(partPath);
                 _segmentedDisabled = true;
             }
@@ -214,9 +230,7 @@ internal sealed class ModelDownloader : IDisposable
             ct.ThrowIfCancellationRequested();
             try
             {
-                // 第二次本地重试强制丢弃已有的 .part、从零开始：陈旧或与本次失败相关的残留
-                // 会让"重试"精确重放同一个失败，跨越一次 app 重启也不会自愈（R4-03）。
-                if (attempt > 0) TryDelete(partPath);
+                // 断流保留已下载数据；只有校验失败、范围无效才清除，避免大文件重试总从零开始。
                 await PerformDownloadAsync(spec, partPath, onProgress, ct, url).ConfigureAwait(false);
                 if (!Sha256Matches(partPath, spec.Sha256))
                 {
@@ -234,9 +248,10 @@ internal sealed class ModelDownloader : IDisposable
             catch (Exception ex)
             {
                 lastError = ex;
+                if (!DownloadFailure.CanRetry(ex)) break;
                 if (attempt == 0)
                 {
-                    AppLog.Warn("model", $"下载 {spec.Name} 第一次尝试失败，重试: {ex.Message}");
+                    AppLog.Warn("model", $"下载 {spec.Name} 第一次尝试失败，续传重试: {DownloadFailure.Diagnostics(ex)}");
                 }
             }
         }
@@ -270,10 +285,18 @@ internal sealed class ModelDownloader : IDisposable
         {
             // 服务端认为 .part 的长度已越界：残留数据不可信，丢掉让下一次从头开始。
             TryDelete(partPath);
-            throw new ModelDownloadException(L10n.F("下载 {0} 失败（HTTP {1}）。", spec.Name, (int)response.StatusCode));
+            throw HttpFailure(spec.Name, response);
         }
 
-        bool resumed = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
+        var contentRange = response.Content.Headers.ContentRange;
+        bool resumed = existingLength > 0 && IsRangeResponse(response, existingLength,
+            (contentRange?.Length ?? spec.SizeHint) - 1, contentRange?.Length ?? spec.SizeHint);
+        if (contentRange is not null && !IsRangeResponse(response, resumed ? existingLength : 0,
+                (contentRange.Length ?? spec.SizeHint) - 1, contentRange.Length ?? spec.SizeHint))
+        {
+            TryDelete(partPath);
+            throw new ModelDownloadException(L10n.T("服务器返回了不匹配的下载范围，请重试。"));
+        }
         if (existingLength > 0 && !resumed)
         {
             // 服务端未按 Range 响应（少见，但要兜底）：从头开始，避免把新内容错误地追加到旧数据后面。
@@ -281,7 +304,7 @@ internal sealed class ModelDownloader : IDisposable
         }
         if (!response.IsSuccessStatusCode)
         {
-            throw new ModelDownloadException(L10n.F("下载 {0} 失败（HTTP {1}）。", spec.Name, (int)response.StatusCode));
+            throw HttpFailure(spec.Name, response);
         }
 
         var totalLength = response.Content.Headers.ContentRange?.Length
@@ -356,11 +379,12 @@ internal sealed class ModelDownloader : IDisposable
         {
             probe.Headers.Range = new RangeHeaderValue(0, 0);
             using var response = await SendWithHeaderTimeoutAsync(probe, spec.Name, ct).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.PartialContent)
+            if (!response.IsSuccessStatusCode) throw HttpFailure(spec.Name, response);
+            total = response.Content.Headers.ContentRange?.Length ?? 0;
+            if (!IsRangeResponse(response, 0, 0, total))
             {
                 throw new SegmentedUnsupportedException($"探测请求未返回 206（{(int)response.StatusCode}）");
             }
-            total = response.Content.Headers.ContentRange?.Length ?? 0;
         }
         if (total <= 0) throw new SegmentedUnsupportedException("响应缺少总长度");
         if (total != spec.SizeHint)
@@ -429,14 +453,10 @@ internal sealed class ModelDownloader : IDisposable
         request.Headers.Range = new RangeHeaderValue(offset, range.End);
 
         using var response = await SendWithHeaderTimeoutAsync(request, spec.Name, ct).ConfigureAwait(false);
-        if (response.StatusCode != HttpStatusCode.PartialContent)
+        if (!response.IsSuccessStatusCode) throw HttpFailure(spec.Name, response);
+        if (!IsRangeResponse(response, offset, range.End, total))
         {
             throw new SegmentedUnsupportedException($"分段 {index} 未返回 206（{(int)response.StatusCode}）");
-        }
-        var contentRange = response.Content.Headers.ContentRange;
-        if (contentRange is not null && (contentRange.From != offset || contentRange.To != range.End))
-        {
-            throw new SegmentedUnsupportedException($"分段 {index} 的 Content-Range 与请求不符");
         }
 
         await using var httpStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -501,6 +521,35 @@ internal sealed class ModelDownloader : IDisposable
     }
 
     // ─── 公共小工具 ───────────────────────────────────────────────
+
+    // ModelScope 也会以 200 返回 Range；必须同时核对范围、总长和正文长度，不能只放宽状态码。
+    internal static bool IsRangeResponse(HttpResponseMessage response, long from, long to, long total)
+    {
+        var range = response.Content.Headers.ContentRange;
+        return response.StatusCode is HttpStatusCode.OK or HttpStatusCode.PartialContent
+            && total > 0 && range?.Unit == "bytes" && range.From == from && range.To == to
+            && range.Length == total && (response.Content.Headers.ContentLength is null
+                || response.Content.Headers.ContentLength == to - from + 1);
+    }
+
+    private static ModelDownloadException HttpFailure(string name, HttpResponseMessage response) =>
+        new(L10n.F("下载 {0} 失败（HTTP {1}）。", name, (int)response.StatusCode),
+            response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
+                or HttpStatusCode.RequestedRangeNotSatisfiable
+                || (int)response.StatusCode >= 500,
+            $"HTTP {(int)response.StatusCode}; host={response.RequestMessage?.RequestUri?.Host ?? "unknown"}");
+
+    private static HttpClientHandler CreateHandler() => new()
+    {
+        // 使用系统 TLS 与默认代理；验证回调只增加可诊断性，不接受任何不受信任的证书。
+        ServerCertificateCustomValidationCallback = (request, _, chain, errors) =>
+        {
+            if (errors != SslPolicyErrors.None)
+                AppLog.Warn("model", $"TLS host={request.RequestUri?.Host}; policy={errors}; chain="
+                    + string.Join(",", chain?.ChainStatus.Select(s => s.Status.ToString()) ?? Array.Empty<string>()));
+            return errors == SslPolicyErrors.None;
+        },
+    };
 
     private async Task<HttpResponseMessage> SendWithHeaderTimeoutAsync(HttpRequestMessage request, string name, CancellationToken ct)
     {

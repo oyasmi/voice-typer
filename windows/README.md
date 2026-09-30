@@ -75,8 +75,8 @@
 | --- | --- |
 | 系统 | Windows 10（1809+）或 Windows 11 |
 | 架构 | x64 或 arm64 |
-| 磁盘 | 约 300MB（App 本体 + 首次下载的模型） |
-| 运行时 | 无需单独安装 .NET——安装包为自包含（self-contained）发布 |
+| 磁盘 | 约 300MB（App 本体 + 首次下载的模型），另需已安装的 .NET 桌面运行时 |
+| 运行时 | .NET 10 桌面运行时（Desktop Runtime，架构与应用一致）；发布包不包含 .NET |
 | 网络 | 仅首次启动下载模型时需要；此后完全离线 |
 | .NET SDK | 仅自行构建时需要（10.0+） |
 
@@ -85,6 +85,11 @@
 ## 安装
 
 ### 从 Release 安装
+
+请先确认电脑已安装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)
+（选择 **Desktop Runtime** 与对应的 x64 / arm64 架构）。普通 .NET Runtime、ASP.NET Core Runtime、
+.NET 8/9 或其他架构的运行时不能代替；.NET 10 SDK 已包含桌面运行时，无需重复安装。
+安装程序会检查官方安装器登记的运行时；缺少时提示安装地址并停止，不捆绑或自动下载 .NET。
 
 1. 从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载对应架构的安装包：
    `VoiceTyper-<版本>-win-x64-setup.exe`（多数电脑）或 `VoiceTyper-<版本>-win-arm64-setup.exe`
@@ -95,8 +100,9 @@
    代码签名（EV 证书成本较高，本项目暂不购买），不影响功能。
 4. 安装完成后从开始菜单打开 VoiceTyper，或勾选"启动 VoiceTyper"直接运行。
 
-也提供免安装的便携版 `VoiceTyper-<版本>-win-x64-portable.zip`：解压后直接运行
+也提供免安装的便携版 `VoiceTyper-<版本>-win-x64-portable.zip`：安装上述运行时后，解压并运行
 `VoiceTyper.exe`，配置与模型仍然落在用户目录，行为与安装版一致。
+缺少运行时时，便携版由 .NET 启动器显示安装提示。
 
 ### 卸载
 
@@ -119,9 +125,14 @@
 
 - 若这台机器之前跑过 [`client-server/server/`](../client-server/server/README.md)（`%USERPROFILE%\.cache\modelscope\` 下已有
   模型缓存），App 会自动复用，**零下载**。
-- 否则设置窗口的「识别」页会显示模型卡片，点「开始下载模型」即可：显示进度条、已下载/总量，
+- 否则设置窗口的「语音模型」页会显示模型卡片，点「开始下载模型」即可：显示进度条、已下载/总量，
   支持取消。下载的四个文件（`config.yaml`、`am.mvn`、`tokens.json`、`model_quant.onnx`）来自
   ModelScope，逐个校验 sha256，支持断点续传（中途断网重新点击即可从中断处继续）。
+
+下载失败会自动切换 Hugging Face / HF Mirror 备用地址。超时、断流、HTTP 429/5xx 会重试；
+HTTP 403、TLS 握手或证书信任失败不会对同一来源无限重试。模型页汇总各来源的失败原因，
+「查看下载详情」提供内部异常与错误码，可选中文字复制；签名 URL 与 URL 内凭据不会进入诊断日志。
+TLS 使用系统协议与证书信任，代理沿用 .NET 默认代理；不会关闭证书校验。
 
 模型落在 `%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\`——刻意放在**非漫游**的
 `LocalAppData` 而不是 `AppData\Roaming`：域环境下 Roaming profile 会跟随登录漫游，塞进 240MB
@@ -156,25 +167,27 @@
 | 深红色点 | 出错 |
 
 右键托盘图标可打开菜单：设置、**暂停/恢复听写**（暂停后热键不再响应，直至从菜单恢复）、
-打开配置目录、开机自启开关、使用引导（重新打开首启引导）、检查更新、关于、退出。
+开机自启开关、使用引导（重新打开首启引导）、检查更新、关于、退出。
 
 ---
 
 ## 设置
 
-设置窗口分四个 Tab，全部 UI 化，不需要手工编辑 YAML：
+设置窗口使用五项侧栏导航，不需要手工编辑 YAML。跨页保留草稿，底部统一「保存并应用」或「撤销更改」。
+关闭窗口保留草稿，下次打开可继续编辑；浮窗透明度的临时预览在关闭或撤销时恢复。
 
-| Tab | 内容 |
+| 页面 | 内容 |
 | --- | --- |
-| **识别** | 模型状态卡片（下载/加载/就绪/失败 + 重新加载）、识别语言、智能纠错（开关 + Base URL + API Key + 模型 + 温度 + 最大 Token + 超时 + 测试纠错） |
-| **热键** | 修饰键（Ctrl/Alt/Shift/Win）组合 + 主键，可「录制热键」直接按下想用的组合，或点「使用右 Ctrl」；触发方式（按住说话 / 按一次开始再按一次结束） |
-| **权限** | 麦克风可用性检测、跳转 Windows 隐私设置、UIPI 限制说明 |
-| **通用** | 开机自启、启动时预加载模型、麦克风（自动 / 跟随系统 / 手选设备）、浮窗位置、HUD 背景不透明度、空闲多久后卸载模型、预览窗口（进阶，0=自动按本机性能校准）、**界面语言** |
+| **听写** | 热键录制、右 Ctrl、触发方式、麦克风、识别语言；手动编辑快捷键默认折叠 |
+| **语音模型** | 模型状态、下载/取消/重试/重新加载、下载诊断、预加载与空闲卸载；预览窗口参数默认折叠 |
+| **智能纠错** | 开关、服务地址、API Key、模型名称、测试；温度/最大 Token/超时默认折叠，关闭功能时隐藏配置 |
+| **外观与通用** | 浮窗位置、不透明度、开机自启、界面语言 |
+| **诊断与帮助** | 麦克风检测、系统隐私设置、UIPI 说明、日志与配置目录入口 |
 
 ### 界面语言
 
-默认中文。在「通用」页切换为英文并保存后设置会立即落盘，但托盘菜单、设置窗口与 HUD 都是**按启动时的
-语言构造**出来的，因此需要**重启 VoiceTyper** 才会全部改用新语言。界面语言与「识别」页的识别语言相互独立。
+默认中文。在「外观与通用」页切换为英文并保存后设置会立即落盘，但托盘菜单、设置窗口与 HUD 都是**按启动时的
+语言构造**出来的，因此需要**重启 VoiceTyper** 才会全部改用新语言。界面语言与「听写」页的识别语言相互独立。
 
 配置文件：
 
@@ -279,6 +292,11 @@ VoiceTyper-<版本>-win-arm64-portable.zip
 
 未安装 Inno Setup 时脚本会跳过安装包步骤，只产出便携版 zip。
 
+两种架构均为依赖系统框架的目录式发布（`--self-contained false`），不开 ReadyToRun 或 IL 裁剪，
+只引用 WASAPI 音频模块；调试符号与原生链接用 `.lib` 不随包分发。
+构建与 CI 使用 `scripts/verify_publish.ps1` 检查必需文件，并拒绝包含 .NET 运行时、模型或测试程序集的产物。
+实测体积与手工验收步骤见 [分发体积检查](PACKAGE_SIZE_AUDIT.md)。
+
 模型不随构建产物打包，首次启动时应用会引导下载。如需离线预置模型用于测试或跳过下载引导：
 
 ```bat
@@ -293,8 +311,8 @@ powershell -ExecutionPolicy Bypass -File scripts\fetch_model.ps1
 cd windows
 # 交叉编译（必须显式给 RID）
 dotnet build VoiceTyper.csproj -c Release -r win-x64 --self-contained false -p:EnableWindowsTargeting=true
-# 发布（自包含 + ReadyToRun，x64 / arm64 均可）
-dotnet publish VoiceTyper.csproj -c Release -r win-arm64 --self-contained true -p:EnableWindowsTargeting=true -o /tmp/pub
+# 发布（依赖目标电脑的 .NET 10 Desktop Runtime，x64 / arm64 均可）
+dotnet publish VoiceTyper.csproj -c Release -r win-arm64 --self-contained false -p:EnableWindowsTargeting=true -o /tmp/pub
 
 # 在非 Windows 主机上跑测试：不带 RID 构建，并把运行时配置里的 WindowsDesktop 框架依赖去掉
 dotnet build Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj -c Debug -p:SelfContained=false -p:EnableWindowsTargeting=true -p:RuntimeIdentifier=
@@ -368,7 +386,7 @@ xUnit 2.x 没有内置的运行期动态跳过 API，缺夹具 / 缺模型的测
 Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 
-菜单「打开配置目录」可以快速定位到日志所在文件夹。
+设置窗口「诊断与帮助」页可以快速打开日志目录或配置目录。
 
 每次听写收尾会输出一行 `[metrics]` 摘要（只含数字与枚举，不含识别文本、设备名或窗口标题），例如：
 
@@ -381,9 +399,10 @@ release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- ins
 
 ### 模型下载失败
 
-检查网络能否访问 ModelScope；下载支持断点续传，重新点击「开始下载模型」即可从中断处继续。
-若反复失败，可用 `scripts\fetch_model.ps1` 手动下载，或在设置页把「识别 → 模型目录」（需手动
-编辑 `config.yaml` 的 `asr.model_dir`）指向已有的模型文件夹。
+到「语音模型 → 查看下载详情」检查各来源的失败原因。HTTP 403 表示该来源拒绝请求；TLS 错误应检查
+系统时间、系统/环境代理与证书信任。下载支持断点续传，处理原因后点「重试下载」。
+若反复失败，可用 `scripts\fetch_model.ps1` 手动下载，或编辑 `config.yaml` 的 `asr.model_dir`
+指向已有的模型文件夹；模型目录没有图形化编辑入口。
 
 ### 热键完全没反应
 

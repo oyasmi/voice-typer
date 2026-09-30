@@ -1,6 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 chcp 65001 >nul
+cd /d "%~dp0"
 
 echo ========================================
 echo VoiceTyper (unified) build script
@@ -30,8 +31,7 @@ echo.
 
 REM ===== Clean previous build =====
 if exist dist rd /s /q dist
-if exist bin rd /s /q bin
-if exist obj rd /s /q obj
+REM 不删除整个 bin：开发者可能正在运行其中的预览版本。
 mkdir dist 2>nul
 
 REM ===== Restore =====
@@ -45,18 +45,31 @@ if errorlevel 1 (
 echo       OK
 echo.
 
-REM ===== Publish x64 + arm64 (directory-style, NOT single-file) =====
+REM ===== 发布 x64 + arm64：目录式，依赖系统 .NET 10 桌面运行时 =====
 REM 见 windows/DESIGN.md §7 D9：常驻自启工具不该用 PublishSingleFile 自解压，
 REM 目录式部署 + Inno Setup 安装包才是最终产物。
 for %%R in (win-x64 win-arm64) do (
-    echo [2/4] Publishing %%R self-contained...
+    echo [2/4] Publishing %%R framework-dependent...
+    REM 清理目标 RID 的旧输出，避免切换 ReadyToRun 后误用上次预编译的依赖 DLL。
+    dotnet clean VoiceTyper.csproj -c Release -r %%R --nologo -v q
+    if errorlevel 1 (
+        echo [ERROR] Clean %%R failed.
+        pause
+        exit /b 1
+    )
     dotnet publish VoiceTyper.csproj -c Release -r %%R ^
-        --self-contained true ^
+        --self-contained false ^
         -p:PublishSingleFile=false ^
         -o dist\%%R ^
         --nologo -v q
     if errorlevel 1 (
         echo [ERROR] Publish %%R failed.
+        pause
+        exit /b 1
+    )
+    powershell -NoProfile -File scripts\verify_publish.ps1 -PublishDirectory dist\%%R
+    if errorlevel 1 (
+        echo [ERROR] Publish output verification failed for %%R.
         pause
         exit /b 1
     )

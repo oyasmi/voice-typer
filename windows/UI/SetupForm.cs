@@ -13,7 +13,7 @@ using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.UI;
 
-internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General = 3 }
+internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General = 3, Correction = 4 }
 
 /// <summary>麦克风下拉框的一项：<see cref="Value"/> 是写进 <c>audio.input_device</c> 的值。</summary>
 internal sealed record MicChoice(string Value, string Label)
@@ -22,15 +22,12 @@ internal sealed record MicChoice(string Value, string Label)
 }
 
 /// <summary>
-/// 设置窗口：识别 / 热键 / 权限 / 通用 四个 Tab（见 windows/DESIGN.md §5.6）。
-/// 与 <c>client-server/client_windows_native/UI/SetupForm.cs</c> 相比："连接"Tab 被"识别"顶替（模型卡片 +
-/// 语言 + LLM 纠错），新增"通用"（开机自启 / HUD 透明度 / 空闲卸载）。
+/// 设置窗口：侧栏导航、跨页草稿和统一保存。
 /// 所有方法必须在 UI 线程调用。
 /// </summary>
-internal sealed class SetupForm : Form
+internal sealed partial class SetupForm : Form
 {
-    public Func<AppConfig, Task>? OnSaveConfig;
-    /// <summary>识别页保存：draft + 新 API Key（null = 密钥未改动）。由协调器作为单一事务处理
+    /// <summary>统一保存：draft + 新 API Key（null = 密钥未改动）。由协调器作为单一事务处理
     /// —— 先校验、先判断是否允许应用，通过之后再依次写密钥与配置，任一步失败给出分状态提示，
     /// 不出现"密钥已落盘但提示保存失败"（R2-4）。</summary>
     public Func<AppConfig, string?, Task>? OnSaveRecognition;
@@ -92,7 +89,7 @@ internal sealed class SetupForm : Form
     private readonly Button _useRightCtrlButton = new();
     private readonly Button _recordHotkeyButton = new();
     private bool _isRecordingHotkey;
-    private readonly Button _saveHotkeyButton = new();
+
     private readonly Label _hotkeyMessage = new();
 
     // ─ Tab 3：权限 ────────────────────────────────────────────
@@ -109,36 +106,38 @@ internal sealed class SetupForm : Form
     private readonly ComboBox _micDeviceCombo = new();
     private readonly ComboBox _hudPositionCombo = new();
     private readonly CheckBox _preloadCheck = new();
-    private readonly Button _saveGeneralButton = new();
+
     private readonly Label _generalMessage = new();
 
-    private readonly TabControl _tabs = new();
+    private SetupTab _selectedTab = SetupTab.Hotkey;
     private readonly Label _versionLabel = new();
+    private readonly TableLayoutPanel _windowLayout = new();
 
     public SetupForm()
     {
         Text = L10n.F("{0} 设置", "VoiceTyper");
-        Size = new Size(760, 640);
-        MinimumSize = new Size(680, 560);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+        ClientSize = new Size(1080, 800);
+        MinimumSize = new Size(860, 640);
         StartPosition = FormStartPosition.CenterScreen;
-        ShowInTaskbar = true;
         Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
-        BackColor = SystemColors.Control;
-
-        BuildBanner();
-        BuildTabs();
-        BuildFooter();
-
-        Controls.Add(_tabs);
-        Controls.Add(_bannerPanel);
-        Controls.Add(_versionLabel);
-
-        _tabs.SelectedIndexChanged += (_, _) => { RefreshPermissionPolling(); StopHotkeyRecording(); };
-        VisibleChanged += (_, _) => { RefreshPermissionPolling(); if (!Visible) StopHotkeyRecording(); };
+        BackColor = Color.FromArgb(247, 248, 250);
+        BuildSettingsLayout();
+        WireDraftEvents(this);
+        VisibleChanged += (_, _) =>
+        {
+            RefreshPermissionPolling();
+            if (!Visible)
+            {
+                StopHotkeyRecording();
+                OnPreviewHudOpacity?.Invoke(_loadedConfig.UI.Opacity);
+            }
+            else if (_dirty) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value);
+        };
         Deactivate += (_, _) => StopHotkeyRecording();
         _permissionPollTimer.Tick += (_, _) => OnRetryMicProbe?.Invoke();
     }
-
     /// <summary>
     /// 权限页可见且权限未齐时启动 2–5s 轮询（对齐 macOS bb25282 权限页轮询、5ac5aab R4-14
     /// 的抢焦点修复）；离开权限页/窗口隐藏/权限已齐时停掉。真开一次 WASAPI 采集才能探测
@@ -148,7 +147,7 @@ internal sealed class SetupForm : Form
     private void RefreshPermissionPolling()
     {
         var shouldPoll = Visible
-            && _tabs.SelectedIndex == (int)SetupTab.Permissions
+            && _selectedTab == SetupTab.Permissions
             && _lastMicProbe is MicProbeResult.AccessDenied or MicProbeResult.NoDevice or MicProbeResult.DeviceFailure;
 
         if (shouldPoll && !_permissionPollTimer.Enabled)
@@ -165,8 +164,10 @@ internal sealed class SetupForm : Form
     // 公共接口
     // ─────────────────────────────────────────────────────────
 
-    public void LoadEditableContent(AppConfig config)
+    public void LoadEditableContent(AppConfig config, bool refreshDevices = true)
     {
+        if (_dirty && !_saving) return; // 后台状态刷新或重复打开不能覆盖用户的草稿。
+        _loading = true;
         _loadedConfig = config.Clone();
 
         _languageCombo.SelectedItem = config.Asr.LanguageValue;
@@ -197,7 +198,13 @@ internal sealed class SetupForm : Form
         _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, 0, 30);
         _preloadCheck.Checked = config.Asr.PreloadOnLaunch;
         _hudPositionCombo.SelectedItem = config.UI.HudPositionValue;
-        RefreshMicChoices(config.Audio.InputDevice);
+        if (refreshDevices) RefreshMicChoices(config.Audio.InputDevice);
+        else
+        {
+            _micDeviceCombo.Items.Clear();
+            _micDeviceCombo.Items.Add(new MicChoice(config.Audio.InputDevice, config.Audio.InputDevice));
+            _micDeviceCombo.SelectedIndex = 0;
+        }
 
         if (apiKeyStatus == SecretReadStatus.Failed)
         {
@@ -208,7 +215,11 @@ internal sealed class SetupForm : Form
             _recognitionMessage.Text = "";
         }
         _hotkeyMessage.Text = "";
+        _hotkeyMessage.Visible = false;
         _generalMessage.Text = "";
+        _loadedStartup = _startupCheck.Checked;
+        _loading = false;
+        RefreshDirtyState();
     }
 
     public void UpdateStatus(
@@ -218,7 +229,7 @@ internal sealed class SetupForm : Form
         double? downloadProgress,
         string hotkeyDisplay,
         string engineStatus,
-        string? downloadError = null)
+        string? downloadError = null, string? downloadDetails = null)
     {
         // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
@@ -249,11 +260,17 @@ internal sealed class SetupForm : Form
         _modelStatusLabel.Text = ModelStatusText(asrState, isDownloading, asrFailureMessage);
         _modelPathLabel.Text = asrState == AsrState.Ready ? L10n.F("模型目录：{0}", ModelLocator.DownloadDestination) : "";
         _modelErrorLabel.Text = downloadError ?? "";
+        _downloadDetails = downloadDetails ?? "";
+        _modelDetailsButton.Visible = !string.IsNullOrEmpty(_downloadDetails);
+        _modelStatusLabel.ForeColor = asrState == AsrState.Ready ? Color.SeaGreen : ForeColor;
         _modelErrorLabel.Visible = !string.IsNullOrEmpty(downloadError);
 
         var progress = downloadProgress ?? 0;
         _modelProgressBar.Visible = isDownloading;
         _modelProgressBar.Value = Math.Clamp((int)(progress * 100), 0, 100);
+        _modelProgressText.Visible = isDownloading;
+        _modelProgressText.Text = L10n.F("已下载 {0:F1} / {1:F1} MB · {2}%", progress * ModelDownloader.TotalBytes / 1_000_000d,
+            ModelDownloader.TotalBytes / 1_000_000d, (int)(progress * 100));
 
         (_modelActionButton.Text, _modelActionButton.Enabled) = isDownloading
             ? (L10n.T("取消下载"), true)
@@ -284,12 +301,8 @@ internal sealed class SetupForm : Form
 
     public void SelectTab(SetupTab tab)
     {
-        if ((int)tab >= 0 && (int)tab < _tabs.TabPages.Count)
-        {
-            _tabs.SelectedIndex = (int)tab;
-        }
+        ShowSettingsPage(tab);
     }
-
     public void Present()
     {
         if (!Visible) Show();
@@ -318,424 +331,6 @@ internal sealed class SetupForm : Form
     // UI 构建
     // ─────────────────────────────────────────────────────────
 
-    private void BuildBanner()
-    {
-        _bannerPanel.Dock = DockStyle.Top;
-        _bannerPanel.Height = 46;
-        _bannerPanel.Padding = new Padding(14, 6, 14, 6);
-        _bannerPanel.Visible = false;
-
-        _bannerLabel.AutoSize = false;
-        _bannerLabel.Dock = DockStyle.Fill;
-        _bannerLabel.TextAlign = ContentAlignment.MiddleLeft;
-
-        _bannerOpenMicSettings.Text = L10n.T("打开麦克风设置");
-        _bannerOpenMicSettings.AutoSize = true;
-        _bannerOpenMicSettings.Dock = DockStyle.Right;
-        _bannerOpenMicSettings.Click += (_, _) => OpenMicrophonePrivacySettings();
-
-        _bannerPanel.Controls.Add(_bannerLabel);
-        _bannerPanel.Controls.Add(_bannerOpenMicSettings);
-    }
-
-    private void BuildTabs()
-    {
-        _tabs.Dock = DockStyle.Fill;
-        _tabs.Padding = new Point(14, 6);
-
-        var recognitionPage = new TabPage(L10n.T("识别")) { BackColor = SystemColors.Control };
-        var hotkeyPage = new TabPage(L10n.T("热键")) { BackColor = SystemColors.Control };
-        var permissionsPage = new TabPage(L10n.T("权限")) { BackColor = SystemColors.Control };
-        var generalPage = new TabPage(L10n.T("通用")) { BackColor = SystemColors.Control };
-
-        BuildRecognitionPage(recognitionPage);
-        BuildHotkeyPage(hotkeyPage);
-        BuildPermissionsPage(permissionsPage);
-        BuildGeneralPage(generalPage);
-
-        _tabs.TabPages.Add(recognitionPage);
-        _tabs.TabPages.Add(hotkeyPage);
-        _tabs.TabPages.Add(permissionsPage);
-        _tabs.TabPages.Add(generalPage);
-    }
-
-    private void BuildFooter()
-    {
-        _versionLabel.Text = L10n.F("版本 {0}", AppConstants.Version) + " · Powered by SenseVoice-Small (FunAudioLLM)";
-        _versionLabel.Dock = DockStyle.Bottom;
-        _versionLabel.Height = 24;
-        _versionLabel.Padding = new Padding(16, 4, 16, 4);
-        _versionLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _versionLabel.ForeColor = Color.Gray;
-        _versionLabel.Font = new Font(Font.FontFamily, 8f);
-    }
-
-    private void BuildRecognitionPage(TabPage page)
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 16, 20, 16),
-            ColumnCount = 2,
-            AutoScroll = true,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        // 模型卡片
-        layout.Controls.Add(MakeFieldLabel(L10n.T("语音模型：")), 0, 0);
-        var modelBox = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
-        _modelStatusLabel.AutoSize = true;
-        _modelPathLabel.AutoSize = true;
-        _modelPathLabel.ForeColor = Color.Gray;
-        _modelPathLabel.Font = new Font(Font.FontFamily, 8f);
-        _modelProgressBar.Width = 380;
-        _modelProgressBar.Visible = false;
-        _modelActionButton.Text = L10n.T("开始下载模型");
-        _modelActionButton.AutoSize = true;
-        _modelActionButton.Padding = new Padding(10, 4, 10, 4);
-        _modelActionButton.Margin = new Padding(0, 6, 0, 0);
-        _modelActionButton.Click += (_, _) => HandleModelAction();
-        modelBox.Controls.Add(_modelStatusLabel);
-        modelBox.Controls.Add(_modelPathLabel);
-        _modelErrorLabel.AutoSize = false;
-        _modelErrorLabel.Size = new Size(400, 44);
-        _modelErrorLabel.ForeColor = Color.Firebrick;
-        _modelErrorLabel.Visible = false;
-        modelBox.Controls.Add(_modelErrorLabel);
-        modelBox.Controls.Add(_modelProgressBar);
-        modelBox.Controls.Add(_modelActionButton);
-        layout.Controls.Add(modelBox, 1, 0);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("识别语言：")), 0, 1);
-        _languageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _languageCombo.FormattingEnabled = true;
-        _languageCombo.Width = 160;
-        foreach (var lang in Enum.GetValues<AsrLanguage>())
-        {
-            _languageCombo.Items.Add(lang);
-        }
-        _languageCombo.Format += (_, e) =>
-        {
-            if (e.ListItem is AsrLanguage lang) e.Value = lang.DisplayName();
-        };
-        layout.Controls.Add(_languageCombo, 1, 1);
-
-        // LLM 纠错分组
-        _llmEnabledCheck.Text = L10n.T("启用智能纠错（LLM）");
-        _llmEnabledCheck.AutoSize = true;
-        layout.Controls.Add(new Panel { Height = 8, Width = 1 }, 0, 2);
-        layout.Controls.Add(_llmEnabledCheck, 1, 3);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("Base URL：")), 0, 4);
-        _llmBaseUrlField.Width = 380;
-        _llmBaseUrlField.PlaceholderText = "https://api.openai.com/v1";
-        layout.Controls.Add(_llmBaseUrlField, 1, 4);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("API Key：")), 0, 5);
-        _llmApiKeyField.Width = 380;
-        _llmApiKeyField.UseSystemPasswordChar = true;
-        layout.Controls.Add(_llmApiKeyField, 1, 5);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("模型：")), 0, 6);
-        _llmModelField.Width = 200;
-        layout.Controls.Add(_llmModelField, 1, 6);
-
-        var llmParamsRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        _llmTemperatureField.DecimalPlaces = 1;
-        _llmTemperatureField.Increment = 0.1m;
-        _llmTemperatureField.Minimum = 0;
-        _llmTemperatureField.Maximum = 2;
-        _llmTemperatureField.Width = 70;
-        _llmMaxTokensField.Minimum = 64;
-        _llmMaxTokensField.Maximum = 8000;
-        _llmMaxTokensField.Increment = 50;
-        _llmMaxTokensField.Width = 80;
-        _llmTimeoutField.Minimum = 1;
-        _llmTimeoutField.Maximum = 60;
-        _llmTimeoutField.Width = 70;
-        llmParamsRow.Controls.Add(MakeInlineLabel(L10n.T("温度")));
-        llmParamsRow.Controls.Add(_llmTemperatureField);
-        llmParamsRow.Controls.Add(MakeInlineLabel("  " + L10n.T("最大 Token")));
-        llmParamsRow.Controls.Add(_llmMaxTokensField);
-        llmParamsRow.Controls.Add(MakeInlineLabel("  " + L10n.T("超时(秒)")));
-        llmParamsRow.Controls.Add(_llmTimeoutField);
-        layout.Controls.Add(MakeFieldLabel(L10n.T("参数：")), 0, 7);
-        layout.Controls.Add(llmParamsRow, 1, 7);
-
-        _llmTestButton.Text = L10n.T("测试纠错");
-        _llmTestButton.AutoSize = true;
-        _llmTestButton.Padding = new Padding(10, 4, 10, 4);
-        _llmTestButton.Click += async (_, _) => await HandleTestLlmCorrection();
-        layout.Controls.Add(_llmTestButton, 1, 8);
-
-        _recognitionMessage.AutoSize = false;
-        _recognitionMessage.Height = 40;
-        _recognitionMessage.Width = 400;
-        _recognitionMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_recognitionMessage, 1, 9);
-
-        _saveRecognitionButton.Text = L10n.T("保存并应用");
-        _saveRecognitionButton.AutoSize = true;
-        _saveRecognitionButton.Padding = new Padding(10, 4, 10, 4);
-        _saveRecognitionButton.Click += async (_, _) => await HandleSaveRecognition();
-        layout.Controls.Add(_saveRecognitionButton, 1, 10);
-
-        page.Controls.Add(layout);
-    }
-
-    private void BuildHotkeyPage(TabPage page)
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 20, 20, 16),
-            ColumnCount = 2,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("修饰键：")), 0, 0);
-        var modsRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
-        _modCtrl.Text = "Ctrl";
-        _modAlt.Text = "Alt";
-        _modShift.Text = "Shift";
-        _modWin.Text = "Win";
-        foreach (var c in new[] { _modCtrl, _modAlt, _modShift, _modWin })
-        {
-            c.AutoSize = true;
-            c.Margin = new Padding(0, 4, 16, 4);
-            c.CheckedChanged += (_, _) => UpdateHotkeyPreview();
-            modsRow.Controls.Add(c);
-        }
-        layout.Controls.Add(modsRow, 1, 0);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("主键：")), 0, 1);
-        _hotkeyKey.Width = 160;
-        _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
-        layout.Controls.Add(_hotkeyKey, 1, 1);
-
-        _useRightCtrlButton.Text = L10n.T("使用右 Ctrl");
-        _useRightCtrlButton.AutoSize = true;
-        _useRightCtrlButton.Margin = new Padding(12, 0, 0, 0);
-        _useRightCtrlButton.Click += (_, _) =>
-        {
-            // 单独修饰键本身就是完整热键：清掉组合键的修饰键选择。
-            foreach (var c in new[] { _modCtrl, _modAlt, _modShift, _modWin }) c.Checked = false;
-            _hotkeyKey.Text = ModifierHotkeys.RightCtrl;
-            UpdateHotkeyPreview();
-        };
-        _recordHotkeyButton.Text = L10n.T("录制热键");
-        _recordHotkeyButton.AutoSize = true;
-        _recordHotkeyButton.Margin = new Padding(12, 0, 0, 0);
-        _recordHotkeyButton.Click += (_, _) => ToggleHotkeyRecording();
-        var keyRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
-        keyRow.Controls.Add(_hotkeyKey);
-        keyRow.Controls.Add(_recordHotkeyButton);
-        keyRow.Controls.Add(_useRightCtrlButton);
-        layout.Controls.Remove(_hotkeyKey);
-        layout.Controls.Add(keyRow, 1, 1);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("预览：")), 0, 2);
-        _hotkeyPreview.AutoSize = true;
-        _hotkeyPreview.Font = new Font("Consolas", 11f, FontStyle.Bold);
-        _hotkeyPreview.ForeColor = Color.RoyalBlue;
-        layout.Controls.Add(_hotkeyPreview, 1, 2);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("触发方式：")), 0, 3);
-        _hotkeyModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _hotkeyModeCombo.FormattingEnabled = true;
-        _hotkeyModeCombo.Width = 240;
-        foreach (var mode in Enum.GetValues<HotkeyMode>()) _hotkeyModeCombo.Items.Add(mode);
-        _hotkeyModeCombo.Format += (_, e) =>
-        {
-            if (e.ListItem is HotkeyMode mode) e.Value = mode.DisplayName();
-        };
-        layout.Controls.Add(_hotkeyModeCombo, 1, 3);
-
-        var hotkeyHint = new Label
-        {
-            Text = L10n.T("支持的主键示例：a-z、0-9、space、tab、enter、esc、f1-f12、insert、delete、home/end、pageup/pagedown、↑↓←→。也可以点「使用右 Ctrl」，单独用右 Ctrl 键触发（按住它再按别的键或点鼠标时仍是普通快捷键）。"),
-            ForeColor = Color.Gray,
-            AutoSize = false,
-            Width = 460,
-            Height = 64,
-        };
-        layout.Controls.Add(hotkeyHint, 1, 4);
-
-        _hotkeyMessage.AutoSize = false;
-        _hotkeyMessage.Height = 22;
-        _hotkeyMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_hotkeyMessage, 1, 5);
-
-        _saveHotkeyButton.Text = L10n.T("保存并应用");
-        _saveHotkeyButton.AutoSize = true;
-        _saveHotkeyButton.Padding = new Padding(10, 4, 10, 4);
-        _saveHotkeyButton.Click += async (_, _) => await HandleSaveHotkey();
-        layout.Controls.Add(_saveHotkeyButton, 1, 6);
-
-        page.Controls.Add(layout);
-    }
-
-    private void BuildPermissionsPage(TabPage page)
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 20, 20, 16),
-            ColumnCount = 2,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("麦克风：")), 0, 0);
-        var micRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        _micStatusLabel.AutoSize = true;
-        _micRetryButton.Text = L10n.T("重新检测");
-        _micRetryButton.AutoSize = true;
-        _micRetryButton.Margin = new Padding(12, 0, 0, 0);
-        _micRetryButton.Click += (_, _) => OnRetryMicProbe?.Invoke();
-        _micOpenSettingsButton.Text = L10n.T("打开麦克风设置");
-        _micOpenSettingsButton.AutoSize = true;
-        _micOpenSettingsButton.Margin = new Padding(12, 0, 0, 0);
-        _micOpenSettingsButton.Click += (_, _) => OpenMicrophonePrivacySettings();
-        micRow.Controls.Add(_micStatusLabel);
-        micRow.Controls.Add(_micRetryButton);
-        micRow.Controls.Add(_micOpenSettingsButton);
-        layout.Controls.Add(micRow, 1, 0);
-
-        var uipiNote = new Label
-        {
-            Text = L10n.T("已知限制：以管理员身份运行的窗口（记事本、终端等）不会响应文本插入，这是 Windows UIPI 安全机制的限制，不是识别故障。识别结果仍会写入剪贴板，可手动粘贴。"),
-            ForeColor = Color.Gray,
-            AutoSize = false,
-            Width = 480,
-            Height = 60,
-        };
-        layout.Controls.Add(new Panel { Height = 16, Width = 1 }, 0, 1);
-        layout.Controls.Add(uipiNote, 1, 2);
-
-        page.Controls.Add(layout);
-    }
-
-    private void BuildGeneralPage(TabPage page)
-    {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 20, 20, 16),
-            ColumnCount = 2,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        _startupCheck.Text = L10n.T("开机自启");
-        _startupCheck.AutoSize = true;
-        layout.Controls.Add(_startupCheck, 1, 0);
-
-        _preloadCheck.Text = L10n.T("启动时预加载识别模型（首次按热键零等待，常驻约 500 MB 内存）");
-        _preloadCheck.AutoSize = true;
-        layout.Controls.Add(_preloadCheck, 1, 7);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("麦克风：")), 0, 8);
-        _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _micDeviceCombo.Width = 320;
-        layout.Controls.Add(_micDeviceCombo, 1, 8);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("浮窗位置：")), 0, 9);
-        _hudPositionCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _hudPositionCombo.FormattingEnabled = true;
-        _hudPositionCombo.Width = 240;
-        foreach (var placement in Enum.GetValues<HudPlacement>()) _hudPositionCombo.Items.Add(placement);
-        _hudPositionCombo.Format += (_, e) =>
-        {
-            if (e.ListItem is HudPlacement placement) e.Value = placement.DisplayName();
-        };
-        layout.Controls.Add(_hudPositionCombo, 1, 9);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("HUD 不透明度：")), 0, 1);
-        _opacityField.DecimalPlaces = 2;
-        _opacityField.Increment = 0.05m;
-        _opacityField.Minimum = 0.4m;
-        _opacityField.Maximum = 1.0m;
-        _opacityField.Width = 80;
-        _opacityField.ValueChanged += (_, _) => OnPreviewHudOpacity?.Invoke((double)_opacityField.Value);
-        layout.Controls.Add(_opacityField, 1, 1);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("空闲卸载模型：")), 0, 2);
-        var idleRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        _idleUnloadField.Minimum = 0;
-        _idleUnloadField.Maximum = 120;
-        _idleUnloadField.Width = 70;
-        idleRow.Controls.Add(_idleUnloadField);
-        idleRow.Controls.Add(MakeInlineLabel(" " + L10n.T("分钟（0 = 常驻不卸载）")));
-        layout.Controls.Add(idleRow, 1, 2);
-
-        layout.Controls.Add(MakeFieldLabel(L10n.T("预览窗口（进阶）：")), 0, 3);
-        var previewRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        _previewWindowField.Minimum = 0;
-        _previewWindowField.Maximum = 30;
-        _previewWindowField.Width = 70;
-        previewRow.Controls.Add(_previewWindowField);
-        previewRow.Controls.Add(MakeInlineLabel(" " + L10n.T("秒（0 = 首次加载后自动按本机性能校准）")));
-        layout.Controls.Add(previewRow, 1, 3);
-
-        // 界面语言只能在重启后全面生效：托盘菜单、HUD、本窗口都是带着文案构造出来的。
-        // 与其做半套实时刷新，不如把"需要重启"明确写在旁边。
-        layout.Controls.Add(MakeFieldLabel(L10n.T("界面语言：")), 0, 4);
-        var languageRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        _interfaceLanguageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _interfaceLanguageCombo.FormattingEnabled = true;
-        _interfaceLanguageCombo.Width = 140;
-        foreach (var language in Enum.GetValues<AppLanguage>())
-        {
-            _interfaceLanguageCombo.Items.Add(language);
-        }
-        _interfaceLanguageCombo.Format += (_, e) =>
-        {
-            if (e.ListItem is AppLanguage language) e.Value = language.DisplayName();
-        };
-        languageRow.Controls.Add(_interfaceLanguageCombo);
-        languageRow.Controls.Add(MakeInlineLabel("  " + L10n.T("切换后需重启 VoiceTyper 才会全面生效")));
-        layout.Controls.Add(languageRow, 1, 4);
-
-        _generalMessage.AutoSize = false;
-        _generalMessage.Height = 40;
-        _generalMessage.Width = 420;
-        _generalMessage.ForeColor = Color.Gray;
-        layout.Controls.Add(_generalMessage, 1, 10);
-
-        _saveGeneralButton.Text = L10n.T("保存并应用");
-        _saveGeneralButton.AutoSize = true;
-        _saveGeneralButton.Padding = new Padding(10, 4, 10, 4);
-        _saveGeneralButton.Click += async (_, _) => await HandleSaveGeneral();
-        layout.Controls.Add(_saveGeneralButton, 1, 11);
-
-        page.Controls.Add(layout);
-    }
-
-    private static Label MakeFieldLabel(string text) => new()
-    {
-        Text = text,
-        AutoSize = false,
-        Width = 120,
-        TextAlign = ContentAlignment.MiddleRight,
-        Anchor = AnchorStyles.Top | AnchorStyles.Right,
-        Padding = new Padding(0, 4, 8, 0),
-    };
-
-    private static Label MakeInlineLabel(string text) => new()
-    {
-        Text = text,
-        AutoSize = true,
-        TextAlign = ContentAlignment.MiddleLeft,
-        Padding = new Padding(0, 6, 0, 0),
-    };
-
-    // ─────────────────────────────────────────────────────────
-    // 行为
-    // ─────────────────────────────────────────────────────────
-
     private static void OpenMicrophonePrivacySettings()
     {
         try
@@ -759,7 +354,7 @@ internal sealed class SetupForm : Form
         switch (_lastAsrState)
         {
             case AsrState.ModelMissing:
-            case AsrState.Failed:
+
                 OnStartModelDownload?.Invoke();
                 break;
             default:
@@ -787,46 +382,6 @@ internal sealed class SetupForm : Form
         if (_modWin.Checked) parts.Add("Win");
         if (!string.IsNullOrEmpty(key)) parts.Add(key.ToUpperInvariant());
         _hotkeyPreview.Text = parts.Count == 0 ? "—" : string.Join("+", parts);
-    }
-
-    private async Task HandleSaveRecognition()
-    {
-        if (OnSaveRecognition is null) return;
-
-        var draft = _loadedConfig.Clone();
-        draft.Asr.LanguageValue = (AsrLanguage)(_languageCombo.SelectedItem ?? AsrLanguage.Auto);
-        draft.Llm = new LlmConfig
-        {
-            Enabled = _llmEnabledCheck.Checked,
-            BaseUrl = _llmBaseUrlField.Text.Trim(),
-            Model = string.IsNullOrWhiteSpace(_llmModelField.Text) ? "gpt-4o-mini" : _llmModelField.Text.Trim(),
-            Temperature = (double)_llmTemperatureField.Value,
-            MaxTokens = (int)_llmMaxTokensField.Value,
-            Timeout = (double)_llmTimeoutField.Value,
-        };
-
-        var currentKey = _llmApiKeyField.Text;
-        string? newKey = currentKey == _loadedApiKey ? null : currentKey;
-
-        _saveRecognitionButton.Enabled = false;
-        SetMessage(_recognitionMessage, L10n.T("保存中..."), Color.Gray);
-        try
-        {
-            await OnSaveRecognition(draft, newKey).ConfigureAwait(true);
-            _loadedConfig = draft;
-            _loadedApiKey = currentKey;
-            SetMessage(_recognitionMessage, L10n.T("设置已保存并生效。"), Color.SeaGreen);
-        }
-        catch (Exception ex)
-        {
-            // 协调器在写任何东西之前做的拒绝（活跃听写 / 校验不通过）会走到这里，
-            // 此时密钥与配置都未落盘；密钥写失败 / 配置写失败也各自带明确消息。
-            SetMessage(_recognitionMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
-        }
-        finally
-        {
-            _saveRecognitionButton.Enabled = true;
-        }
     }
 
     private async Task HandleTestLlmCorrection()
@@ -857,108 +412,6 @@ internal sealed class SetupForm : Form
         finally
         {
             _llmTestButton.Enabled = true;
-        }
-    }
-
-    private async Task HandleSaveHotkey()
-    {
-        if (OnSaveConfig is null) return;
-
-        var key = _hotkeyKey.Text.Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(key))
-        {
-            SetMessage(_hotkeyMessage, L10n.T("主键不能为空"), Color.Firebrick);
-            return;
-        }
-        // 保存前即时校验，避免保存流程先提示"已保存并生效"、HotkeyService.Start 再抛异常回退默认（R2-1）。
-        if (!HotkeyService.IsSupportedKey(key))
-        {
-            SetMessage(_hotkeyMessage, L10n.F("不支持的主键：{0}。可用：字母、数字、F1–F12、Space、Tab、方向键等。", key), Color.Firebrick);
-            return;
-        }
-
-        var mods = new System.Collections.Generic.List<string>();
-        if (_modCtrl.Checked) mods.Add("ctrl");
-        if (_modAlt.Checked) mods.Add("alt");
-        if (_modShift.Checked) mods.Add("shift");
-        if (_modWin.Checked) mods.Add("win");
-        if (ModifierHotkeys.IsModifierOnlyKey(key)) mods.Clear();
-        else if (mods.Count == 0)
-        {
-            SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), Color.Firebrick);
-            return;
-        }
-
-        var draft = _loadedConfig.Clone();
-        draft.Hotkey = new HotkeyConfig
-        {
-            Modifiers = mods,
-            Key = key,
-            ModeValue = (HotkeyMode)(_hotkeyModeCombo.SelectedItem ?? HotkeyMode.Hold),
-        };
-
-        _saveHotkeyButton.Enabled = false;
-        SetMessage(_hotkeyMessage, L10n.T("保存中..."), Color.Gray);
-        try
-        {
-            await OnSaveConfig(draft).ConfigureAwait(true);
-            _loadedConfig = draft;
-            SetMessage(_hotkeyMessage, L10n.T("热键已保存并生效。"), Color.SeaGreen);
-        }
-        catch (Exception ex)
-        {
-            SetMessage(_hotkeyMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
-        }
-        finally
-        {
-            _saveHotkeyButton.Enabled = true;
-        }
-    }
-
-    private async Task HandleSaveGeneral()
-    {
-        if (OnSaveConfig is null) return;
-
-        var draft = _loadedConfig.Clone();
-        draft.UI.Opacity = (double)_opacityField.Value;
-        draft.UI.InterfaceLanguageValue = (AppLanguage)(_interfaceLanguageCombo.SelectedItem ?? AppLanguage.Zh);
-        draft.Asr.IdleUnloadMinutes = (int)_idleUnloadField.Value;
-        draft.Asr.PreviewWindowSeconds = (int)_previewWindowField.Value;
-        draft.Asr.PreloadOnLaunch = _preloadCheck.Checked;
-        draft.UI.HudPositionValue = (HudPlacement)(_hudPositionCombo.SelectedItem ?? HudPlacement.BottomCenter);
-        draft.Audio.InputDevice = (_micDeviceCombo.SelectedItem as MicChoice)?.Value ?? AudioConfig.Auto;
-        var languageChanged = draft.UI.InterfaceLanguageValue != _loadedConfig.UI.InterfaceLanguageValue;
-
-        _saveGeneralButton.Enabled = false;
-        SetMessage(_generalMessage, L10n.T("保存中..."), Color.Gray);
-        try
-        {
-            if (!StartupRegistration.SetEnabled(_startupCheck.Checked))
-            {
-                _startupCheck.Checked = StartupRegistration.IsEnabled; // 恢复到注册表真实状态（R4-2）
-                SetMessage(_generalMessage, L10n.T("开机自启写入失败，其余设置未保存。"), Color.Firebrick);
-                return;
-            }
-            await OnSaveConfig(draft).ConfigureAwait(true);
-            _loadedConfig = draft;
-            if (languageChanged)
-            {
-                // 新构造的界面立刻用新语言，但已经建好的托盘菜单与本窗口要重启才会改写。
-                L10n.Apply(draft.UI.InterfaceLanguageValue);
-                SetMessage(_generalMessage, L10n.T("界面语言已保存。请重启 VoiceTyper 使全部界面文本生效。"), Color.SeaGreen);
-            }
-            else
-            {
-                SetMessage(_generalMessage, L10n.T("设置已保存并生效。"), Color.SeaGreen);
-            }
-        }
-        catch (Exception ex)
-        {
-            SetMessage(_generalMessage, L10n.F("保存失败：{0}", ex.Message), Color.Firebrick);
-        }
-        finally
-        {
-            _saveGeneralButton.Enabled = true;
         }
     }
 
@@ -1054,12 +507,13 @@ internal sealed class SetupForm : Form
     private static void SetMessage(Label label, string text, Color color)
     {
         label.Text = text;
+        label.Visible = !string.IsNullOrEmpty(text);
         label.ForeColor = color;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        // 关闭按钮 → 隐藏到托盘
+        // 关闭按钮保留草稿并隐藏到托盘；取消浮窗的临时预览。
         if (e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;

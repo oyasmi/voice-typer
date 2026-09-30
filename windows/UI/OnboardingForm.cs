@@ -267,7 +267,7 @@ internal sealed class OnboardingForm : Form
                 case AsrState.Failed:
                     status = L10n.T("模型加载失败");
                     color = Color.Firebrick;
-                    detail = L10n.T("可以到设置 → 识别中重新加载，或重新下载模型。");
+                    detail = L10n.T("可以到设置 → 语音模型中重新加载，或重新下载模型。");
                     break;
                 default:
                     status = L10n.T("需要下载语音模型（约 230 MB）");

@@ -59,5 +59,54 @@ Filename: "{app}\VoiceTyper.exe"; Description: "启动 VoiceTyper"; Flags: nowai
 ; 注：uninsdeletevalue 对运行期创建的值的清理效果需在真机卸载时确认。
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "VoiceTyper"; Flags: uninsdeletevalue
 
+[InstallDelete]
+; 升级旧自包含版本时清理曾随应用分发的运行时，避免轻量版目录仍保留 100 多 MiB 旧文件。
+#include "legacy-self-contained-files.iss"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[CustomMessages]
+chinesesimplified.DesktopRuntimeRequired=VoiceTyper 需要已安装的 .NET 10 桌面运行时（{#TargetArch}）。%n%n请先安装 Microsoft .NET Desktop Runtime 10.0，再重新运行安装程序。普通 .NET Runtime、.NET 8/9 或其他架构的运行时不能代替。%n%n下载地址：https://dotnet.microsoft.com/download/dotnet/10.0%n%n此安装包不包含或自动下载 .NET 运行时。
+english.DesktopRuntimeRequired=VoiceTyper requires an installed .NET 10 Desktop Runtime ({#TargetArch}).%n%nInstall Microsoft .NET Desktop Runtime 10.0, then run this installer again. The regular .NET Runtime, .NET 8/9, or a runtime for another architecture is insufficient.%n%nDownload: https://dotnet.microsoft.com/download/dotnet/10.0%n%nThis installer does not bundle or download .NET.
+
+[Code]
+function HasNet10FrameworkInView(RootKey: HKEY; Framework: String): Boolean;
+var
+  Versions: TArrayOfString;
+  Index: Integer;
+begin
+  Result := False;
+  { 官方安装器在注册表记录每个架构的共享框架版本；同时兼容两种注册表视图。 }
+  if not RegGetValueNames(RootKey,
+    'SOFTWARE\dotnet\Setup\InstalledVersions\{#TargetArch}\sharedfx\' + Framework,
+    Versions) then
+    Exit;
+  for Index := 0 to GetArrayLength(Versions) - 1 do
+  begin
+    { 仅接受稳定的 10.0.x；预览版本和其他主版本不满足默认框架解析策略。 }
+    if (Copy(Versions[Index], 1, 5) = '10.0.') and
+      (StrToIntDef(Copy(Versions[Index], 6, Length(Versions[Index])), -1) >= 0) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function HasNet10Framework(Framework: String): Boolean;
+begin
+  Result := HasNet10FrameworkInView(HKLM32, Framework) or
+    HasNet10FrameworkInView(HKLM64, Framework);
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := HasNet10Framework('Microsoft.NETCore.App') and
+    HasNet10Framework('Microsoft.WindowsDesktop.App');
+  if not Result then
+  begin
+    Log('缺少目标架构的 .NET 10 Desktop Runtime，停止安装。');
+    SuppressibleMsgBox(CustomMessage('DesktopRuntimeRequired'), mbError, MB_OK, IDOK);
+  end;
+end;

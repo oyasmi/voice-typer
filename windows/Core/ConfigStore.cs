@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -54,22 +53,6 @@ internal sealed class ConfigStore
     {
         Directory.CreateDirectory(ConfigDirectory);
         WriteAtomically(ConfigPath, SerializeYaml(config.Validated()));
-    }
-
-    public void OpenConfigDirectory()
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = ConfigDirectory,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("config", $"打开配置目录失败: {ex.Message}");
-        }
     }
 
     private static void WriteAtomically(string path, string content)

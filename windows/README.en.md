@@ -97,8 +97,8 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 | --- | --- |
 | OS | Windows 10 (1809+) or Windows 11 |
 | Architecture | x64 or arm64 |
-| Disk | About 300MB (the app plus the model downloaded on first launch) |
-| Runtime | No separate .NET install — the package is self-contained |
+| Disk | About 300MB (app and downloaded model), plus the installed .NET Desktop Runtime |
+| Runtime | .NET 10 Desktop Runtime matching the app's architecture; .NET is not bundled |
 | Network | Only for the first model download; fully offline afterwards |
 | .NET SDK | Only needed if you build it yourself (10.0+) |
 
@@ -107,6 +107,12 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 ## Installation
 
 ### From a release
+
+Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) for x64 or
+arm64, matching the app. The regular .NET Runtime, ASP.NET Core Runtime, .NET 8/9, or a runtime for
+another architecture is insufficient. The .NET 10 SDK already includes the Desktop Runtime.
+The installer checks the runtime registered by Microsoft's installer and stops with download
+instructions if it is missing; it does not bundle or download .NET.
 
 1. Download the installer for your architecture from
    [Releases](https://github.com/oyasmi/voice-typer/releases):
@@ -120,9 +126,11 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 4. Open VoiceTyper from the Start menu after installation, or tick “Launch VoiceTyper” to run it right
    away.
 
-A portable build is also provided: `VoiceTyper-<version>-win-x64-portable.zip`. Extract it and run
+A portable build is also provided: `VoiceTyper-<version>-win-x64-portable.zip`. Install the Desktop
+Runtime described above, then extract the archive and run
 `VoiceTyper.exe`; configuration and the model still live in the user directory, so it behaves exactly
 like the installed version.
+If the runtime is missing, the .NET app host displays installation instructions.
 
 ### Uninstalling
 
@@ -146,10 +154,15 @@ On first launch the app checks whether a SenseVoice-Small model is already prese
 
 - If this machine has run [`client-server/server/`](../client-server/server/README.md) before (so
   `%USERPROFILE%\.cache\modelscope\` already holds the model), the app reuses it — **zero download**.
-- Otherwise the Recognition tab of the settings window shows the model card; click “Download Model” to
+- Otherwise the Speech Model page of the settings window shows the model card; click “Download Model” to
   start. You get a progress bar, downloaded/total figures, and the ability to cancel. The four files
   (`config.yaml`, `am.mvn`, `tokens.json`, `model_quant.onnx`) come from ModelScope, each verified by
   sha256 and resumable (if the connection drops, clicking again continues where it stopped).
+
+Failed downloads switch to Hugging Face / HF Mirror fallback addresses. Timeouts, interrupted transfers,
+and HTTP 429/5xx responses are retried; HTTP 403 and TLS failures move to the next source without
+repeating the same request. “Download details” provides redacted exception chains and error codes.
+System TLS, certificate trust, and the default .NET proxy configuration remain in use.
 
 The model lands in `%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\` — deliberately in the
 **non-roaming** `LocalAppData` rather than `AppData\Roaming`: in a domain environment the roaming
@@ -189,28 +202,30 @@ Tray icon states:
 | Dark red dot | Error |
 
 Right-click the tray icon for the menu: Settings, **Pause/Resume dictation** (while paused the hotkey
-does nothing until you resume from the menu), open the config folder, launch at login, Setup Guide
-(reopens the first-run guide), Check for Updates, About, Quit.
+does nothing until you resume from the menu), launch at login, Setup Guide (reopens the first-run guide),
+Check for Updates, About, Quit.
 
 ---
 
 ## Settings
 
-The settings window has four tabs, all fully graphical — no YAML editing required:
+The settings window has five sidebar pages. Edits remain in a shared draft until you choose
+“Save and Apply” or “Discard changes”. Closing preserves the draft and restores the saved overlay opacity.
 
-| Tab | Contents |
+| Page | Contents |
 | --- | --- |
-| **Recognition** | Model status card (download / load / ready / failed, with reload), recognition language, AI correction (toggle + base URL + API key + model + temperature + max tokens + timeout + test) |
-| **Hotkey** | Modifier combination (Ctrl/Alt/Shift/Win) plus main key, "Record Hotkey" to just press the combination you want, or "Use Right Ctrl"; trigger mode (hold to talk / press once to start, again to stop) |
-| **Permissions** | Microphone availability check, shortcut to the Windows privacy settings, explanation of the UIPI limit |
-| **General** | Launch at login, preload the model at launch, microphone (automatic / follow system / pick a device), floating window position, HUD background opacity, idle-unload interval, preview window (advanced, 0 = calibrated automatically from this machine's performance), **interface language** |
+| **Dictation** | Record a shortcut, Right Ctrl, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
+| **Speech Model** | Download, retry, cancel, reload, per-source diagnostics, preload and idle unload; preview tuning is collapsed |
+| **Text correction** | Enable, service URL, encrypted API key, model name and test; advanced parameters are collapsed |
+| **Appearance and general** | Overlay position and opacity, startup registration and interface language |
+| **Diagnostics and help** | Microphone probe, Windows privacy settings, UIPI guidance, log and configuration folders |
 
 ### Interface language
 
-Chinese is the default. Switching to English on the General tab and saving writes the value
+Chinese is the default. Switching to English on the Appearance and general page and saving writes the value
 immediately, but the tray menu, the settings window and the overlay are all built with the wording
 chosen at launch — so **restart VoiceTyper** to have every piece of text use the new language. The
-interface language is independent of the recognition language on the Recognition tab.
+interface language is independent of the recognition language on the Dictation page.
 
 Configuration file:
 
@@ -320,6 +335,12 @@ VoiceTyper-<version>-win-arm64-portable.zip
 
 Without Inno Setup installed the script skips the installer step and produces only the portable zips.
 
+Both architectures publish framework-dependent directories (`--self-contained false`), with
+ReadyToRun and IL trimming disabled. Only the WASAPI audio modules are included; debug symbols
+and native import libraries are excluded. Builds and CI run `scripts/verify_publish.ps1` to ensure
+required files are present and reject bundled .NET runtimes, models, and test assemblies.
+See the [package size audit](PACKAGE_SIZE_AUDIT.md) (Chinese) for measured sizes and manual checks.
+
 The model is not bundled with the build; the app guides you through downloading it on first launch. To
 stage it offline for testing or to skip the download guide:
 
@@ -389,7 +410,7 @@ Logs are written to `%APPDATA%\VoiceTyper\logs\app.log` and roll over above 2MB 
 Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 
-The “Open config folder” menu item takes you straight to the folder containing the logs.
+The “Diagnostics and help” page in Settings provides buttons for the log and config folders.
 
 Each dictation ends with one `[metrics]` line containing only numbers and enums — never recognized text,
 device names or window titles — for example:

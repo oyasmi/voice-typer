@@ -25,12 +25,16 @@
          这既拖慢启动又是 AV 误报高发路径。build.bat 用普通 dotnet publish 产出目录，
          Inno Setup 负责打成单文件安装包。 -->
     <PublishSingleFile>false</PublishSingleFile>
-    <!-- WinForms 大量依赖反射；裁剪风险远大于省下的体积，本项目不做 IL 裁剪。 -->
+    <!-- WinForms 依赖内建 COM 封送，SDK 当前不支持对此应用类型做 IL 裁剪。 -->
     <PublishTrimmed>false</PublishTrimmed>
-    <SelfContained>true</SelfContained>
-    <!-- 预编译（ReadyToRun）：常驻自启的托盘工具，冷启动全靠 JIT 会拖慢登录后的可用时间（VW-20）。
-         只影响 publish（需要指定 RID），普通 build / test 不受影响。 -->
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- 使用目标架构的 .NET 10 Desktop Runtime，不把共享运行时重复装进应用目录。 -->
+    <SelfContained>false</SelfContained>
+    <!-- 优先缩小分发体积；ReadyToRun 的启动收益尚未实测，不默认携带额外的预编译代码。 -->
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <!-- 英文资源为框架的默认资源；应用仅提供中文和英文界面。 -->
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <!-- 调试符号保留在构建目录，不随面向用户的发布包分发。 -->
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     <!-- WFO0003 建议把 DPI 声明挪出 app.manifest。这里刻意保留 manifest 声明：它在任何代码运行之前就生效，
          比 Application.SetHighDpiMode 更可靠（后者必须赶在第一个窗口之前调用）；Program.cs 里的调用只是双保险。 -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
@@ -40,9 +44,9 @@
     <!-- 与 macos/ 钉的版本一致，消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量。
          升级 ORT 应作为一次独立的、带金标准复测的变更。 -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- 仅用 WASAPI 采集及其传递依赖 NAudio.Core，不引入 ASIO、MIDI、WinMM 与音频 UI。 -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup>
@@ -60,4 +64,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!-- 原生导入库只用于链接原生代码，C# 应用运行只需要对应 DLL。 -->
+  <Target Name="ExcludeNativeImportLibrariesFromPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.Extension)' == '.lib'" />
+    </ItemGroup>
+  </Target>
 </Project>

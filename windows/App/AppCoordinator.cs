@@ -58,6 +58,7 @@ internal sealed class AppCoordinator : IDisposable
     private double _downloadProgress;
     /// <summary>最近一次下载失败的说明（含自动重试进度），成功或重新开始时清空。展示在设置页与引导页。</summary>
     private string? _modelDownloadError;
+    private string? _modelDownloadDetails;
     /// <summary>
     /// 模型下载失败后的自动重试退避序列（秒）。网络抖动时用户什么都不用做；重试的成本只是续上而不是
     /// 从头再来（<see cref="ModelDownloader"/> 保留 .part 数据）。也不能无限重试：真的没网时那会变成一个
@@ -82,7 +83,6 @@ internal sealed class AppCoordinator : IDisposable
     public AppCoordinator()
     {
         _tray.OnOpenSetup = () => OpenSetup();
-        _tray.OnOpenConfigDirectory = () => _configStore.OpenConfigDirectory();
         _tray.OnQuit = () => Application.Exit();
         _tray.OnTogglePause = TogglePause;
         _tray.OnOpenOnboarding = PresentOnboarding;
@@ -159,50 +159,28 @@ internal sealed class AppCoordinator : IDisposable
     }
 
     /// <summary>
-    /// 会破坏性重建控制器/热键监听的保存（非 UI-only）在听写进行中会丢已录制内容，
-    /// 拒绝而不是静默销毁；HUD 透明度等 UI-only 改动不受影响，可随时保存（R2-04 / F-13）。
-    /// </summary>
-    private async Task ApplyConfigAsync(AppConfig draft)
-    {
-        var onlyUiChanged = AsrConfigEquals(_config.Asr, draft.Asr)
-            && LlmConfigEquals(_config.Llm, draft.Llm)
-            && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey)
-            && AudioConfigEquals(_config.Audio, draft.Audio);
-
-        if (!onlyUiChanged && _currentState.State.IsActiveDictation())
-        {
-            throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存此项设置"));
-        }
-
-        _configStore.Save(draft);
-        if (onlyUiChanged)
-        {
-            // 只有 ui 段变化：不销毁/重建控制器，只更新内存配置与 HUD/设置窗口显示。
-            _config = draft.Validated();
-            _hud?.ApplyConfig(_config.UI);
-            _setupForm?.LoadEditableContent(_config);
-        }
-        else
-        {
-            await ReloadAndReevaluateAsync().ConfigureAwait(true);
-        }
-    }
-
-    /// <summary>
-    /// 识别页保存的单一事务（R2-4）：先做全部校验、先判断当前是否允许应用，<b>通过之后</b>再
+    /// 设置窗口统一保存的单一事务（R2-4）：先做全部校验、先判断当前是否允许应用，<b>通过之后</b>再
     /// 依次写密钥和配置。任一步失败给出准确的分状态提示（密钥写失败 / 配置写失败 / 活跃听写拒绝），
     /// 不出现"密钥已落盘但提示保存失败"，也不出现"只改密钥后实际听写仍用旧密钥"
     /// （密钥变化被当作显式更新信号，走控制器重建路径，让新密钥立即在下次听写生效）。
     /// </summary>
     private async Task SaveRecognitionAsync(AppConfig draft, string? newApiKey)
     {
+        if (draft.Llm.Enabled)
+        {
+            var endpoint = LlmEndpoint.Resolve(draft.Llm.BaseUrl);
+            if (endpoint.Url is null) throw new InvalidOperationException(endpoint.ErrorMessage);
+            if (string.IsNullOrWhiteSpace(draft.Llm.Model))
+                throw new InvalidOperationException(L10n.T("启用智能纠错时必须填写模型名称。"));
+        }
         bool keyChanged = newApiKey is not null;
-        bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm));
+        bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm)
+            && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey) && AudioConfigEquals(_config.Audio, draft.Audio));
 
         if ((keyChanged || sectionsChanged) && _currentState.State.IsActiveDictation())
         {
             // 尚未写任何东西就拒绝。
-            throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存识别设置"));
+            throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存此项设置"));
         }
 
         if (keyChanged && !SecretStore.SaveLlmApiKey(newApiKey!))
@@ -210,7 +188,18 @@ internal sealed class AppCoordinator : IDisposable
             throw new InvalidOperationException(L10n.T("API Key 写入失败，请重试（配置尚未保存）"));
         }
 
-        _configStore.Save(draft); // 失败会抛，SetupForm 显示"配置写失败"
+        try
+        {
+            _configStore.Save(draft);
+        }
+        catch (Exception error)
+        {
+            // 密钥与 YAML 分开存放：明确告知部分成功，不能声称两者都未写入。
+            AppLog.Error("config", "设置文件写入失败", error);
+            throw new InvalidOperationException(keyChanged
+                ? L10n.T("API Key 已更新，但配置保存失败，请重试保存。")
+                : L10n.T("配置保存失败，请检查配置目录的写入权限。"), error);
+        }
 
         if (keyChanged || sectionsChanged)
         {
@@ -617,6 +606,7 @@ internal sealed class AppCoordinator : IDisposable
         _isDownloadingModel = true;
         _downloadProgress = 0;
         _modelDownloadError = null;
+        _modelDownloadDetails = null;
         if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(0);
         GateHotkeyListeningIfRunning();
         UpdateTray();
@@ -655,7 +645,7 @@ internal sealed class AppCoordinator : IDisposable
             }
             catch (Exception ex)
             {
-                AppLog.Error("model", "模型下载失败", ex);
+                AppLog.Error("model", "模型下载失败: " + DownloadFailure.Diagnostics(ex));
                 UiDispatcher.Post(() =>
                 {
                     ReleaseDownloader(downloader);
@@ -675,8 +665,9 @@ internal sealed class AppCoordinator : IDisposable
 
     private void HandleModelDownloadFailure(Exception error)
     {
-        var reason = error.Message;
-        if (_downloadRetryAttempt < DownloadRetryDelaysSeconds.Length)
+        var reason = DownloadFailure.Summary(error);
+        _modelDownloadDetails = DownloadFailure.Diagnostics(error);
+        if (DownloadFailure.CanRetry(error) && _downloadRetryAttempt < DownloadRetryDelaysSeconds.Length)
         {
             var delay = DownloadRetryDelaysSeconds[_downloadRetryAttempt];
             _downloadRetryAttempt++;
@@ -686,14 +677,15 @@ internal sealed class AppCoordinator : IDisposable
         }
         else
         {
-            _modelDownloadError = L10n.F("{0} 已自动重试 {1} 次仍未成功，请检查网络后手动重试。",
-                reason, DownloadRetryDelaysSeconds.Length);
+            _modelDownloadError = DownloadFailure.CanRetry(error)
+                ? L10n.F("{0} 已自动重试 {1} 次仍未成功，请检查网络后手动重试。", reason, DownloadRetryDelaysSeconds.Length)
+                : reason + "\n" + L10n.T("请处理上述问题后手动重试。");
         }
 
         if (!_isPaused) _currentState = AppStateInfo.ErrorWith(L10n.F("模型下载失败: {0}", reason));
         UpdateTray();
         SyncSetupWindow();
-        // 下载失败是用户必须知道的事：把设置窗口（识别页，带失败说明与重试按钮）摆出来——但同一段
+        // 下载失败是用户必须知道的事：把设置窗口（语音模型页，带失败说明与重试按钮）摆出来——但同一段
         // 未就绪期内只做一次，自动重试的每次失败都抢一次焦点就成了骚扰。引导窗口打开时由它自己呈现。
         PresentBlockingGuidance(ForcedPresentation.Model, SetupTab.Recognition);
         GateHotkeyListeningIfRunning();
@@ -734,6 +726,7 @@ internal sealed class AppCoordinator : IDisposable
         {
             ReleaseDownloader(downloader);
             _modelDownloadError = null;
+        _modelDownloadDetails = null;
             _downloadRetryAttempt = 0;
             // 「启动时预加载」关闭时，下载完成只需确认文件就绪；引擎留到第一次听写再加载。
             if (_config.Asr.PreloadOnLaunch) await _asrService.ReloadAsync().ConfigureAwait(true);
@@ -867,7 +860,6 @@ internal sealed class AppCoordinator : IDisposable
         if (_setupForm is not null && !_setupForm.IsDisposed) return;
 
         var form = new SetupForm();
-        form.OnSaveConfig = draft => ApplyConfigAsync(draft);
         form.OnSaveRecognition = (draft, apiKey) => SaveRecognitionAsync(draft, apiKey);
         form.OnLoadLlmApiKey = () => SecretStore.LoadLlmApiKeyResult();
         form.OnStartModelDownload = StartModelDownload;
@@ -908,6 +900,7 @@ internal sealed class AppCoordinator : IDisposable
     private void HideSetupWindowIfVisible()
     {
         if (_userOpenedSetup) return;
+        if (_setupForm?.HasUnsavedChanges == true) return;
         if (_setupForm is { Visible: true } form) form.Hide();
     }
 
@@ -920,7 +913,8 @@ internal sealed class AppCoordinator : IDisposable
             downloadProgress: _isDownloadingModel ? _downloadProgress : null,
             hotkeyDisplay: _config.Hotkey.DisplayString,
             engineStatus: EngineStatusText(),
-            downloadError: _modelDownloadError
+            downloadError: _modelDownloadError,
+            downloadDetails: _modelDownloadDetails
         );
         SyncOnboarding();
     }
