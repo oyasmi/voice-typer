@@ -37,6 +37,7 @@ internal sealed class OnboardingForm : Form
     private readonly Button _actionButton = new();
     private readonly Button _secondaryButton = new();
     private readonly TextBox _trialBox = new();
+    private float _layoutScale = 1f;
 
     public OnboardingForm(OnboardingModel model)
     {
@@ -54,9 +55,13 @@ internal sealed class OnboardingForm : Form
         AutoScaleDimensions = new SizeF(96f, 96f);
 
         _stepLabel.SetBounds(28, 20, 544, 20);
+        _stepLabel.AutoSize = false;
+        _stepLabel.TextAlign = ContentAlignment.MiddleLeft;
         _stepLabel.ForeColor = Color.Gray;
 
         _titleLabel.SetBounds(28, 42, 544, 36);
+        _titleLabel.AutoSize = false;
+        _titleLabel.TextAlign = ContentAlignment.MiddleLeft;
         _titleLabel.Font = new Font(Font.FontFamily, 16f, FontStyle.Bold);
 
         _content.SetBounds(28, 90, 544, 270);
@@ -69,9 +74,15 @@ internal sealed class OnboardingForm : Form
         _primaryButton.Click += (_, _) => _model.GoForward();
 
         _bodyLabel.SetBounds(0, 0, 544, 150);
+        _bodyLabel.AutoSize = false;
+        _bodyLabel.TextAlign = ContentAlignment.TopLeft;
         _statusLabel.SetBounds(0, 0, 544, 26);
+        _statusLabel.AutoSize = false;
+        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _statusLabel.Font = new Font(Font.FontFamily, 11f, FontStyle.Bold);
         _detailLabel.SetBounds(0, 0, 544, 90);
+        _detailLabel.AutoSize = false;
+        _detailLabel.TextAlign = ContentAlignment.TopLeft;
         _detailLabel.ForeColor = Color.DimGray;
         _progress.SetBounds(0, 0, 400, 18);
         _actionButton.AutoSize = true;
@@ -90,6 +101,50 @@ internal sealed class OnboardingForm : Form
         // 引导本身可被随时关掉（右上角 ×）：不算"完成"，下次启动还会出现。
         _model.OnStepChanged = RefreshFromModel;
         RefreshFromModel();
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        ApplyDpiLayout(DeviceDpi);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyDpiLayout(e.DeviceDpiNew);
+    }
+
+    private int S(int value) => (int)Math.Round(value * _layoutScale);
+
+    private void ApplyDpiLayout(int dpi)
+    {
+        _layoutScale = Math.Max(1f, dpi / 96f);
+        SuspendLayout();
+        try
+        {
+            ClientSize = new Size(S(600), S(440));
+
+            _stepLabel.SetBounds(S(28), S(20), S(544), S(24));
+            _titleLabel.SetBounds(S(28), S(42), S(544), S(36));
+            _content.SetBounds(S(28), S(90), S(544), S(270));
+            _backButton.SetBounds(S(28), S(384), S(96), S(32));
+            _primaryButton.SetBounds(S(444), S(384), S(128), S(32));
+
+            _bodyLabel.SetBounds(0, 0, S(544), S(150));
+            _statusLabel.SetBounds(0, 0, S(544), S(26));
+            _detailLabel.SetBounds(0, 0, S(544), S(90));
+            _progress.SetBounds(0, 0, S(400), S(18));
+            _trialBox.SetBounds(0, 0, S(544), S(90));
+            _actionButton.Padding = new Padding(S(10), S(3), S(10), S(3));
+            _secondaryButton.Padding = new Padding(S(10), S(3), S(10), S(3));
+
+            RefreshFromModel();
+        }
+        finally
+        {
+            ResumeLayout(performLayout: true);
+        }
     }
 
     public void Present()
@@ -131,7 +186,7 @@ internal sealed class OnboardingForm : Form
 
     private void Place(Control control, int y)
     {
-        control.Location = new Point(0, y);
+        control.Location = new Point(0, S(y));
         control.Visible = true;
     }
 
@@ -176,7 +231,7 @@ internal sealed class OnboardingForm : Form
         Place(_statusLabel, 0);
         Place(_detailLabel, 34);
         Place(_actionButton, 130);
-        _secondaryButton.Location = new Point(_actionButton.Right + 12, 130);
+        _secondaryButton.Location = new Point(_actionButton.Right + S(12), S(130));
         _secondaryButton.Visible = true;
     }
 
@@ -245,7 +300,7 @@ internal sealed class OnboardingForm : Form
         _bodyLabel.Text = _model.CanRunTrial
             ? L10n.T("点一下下面的输入框，然后试说一句话：") + "\n" + HotkeyInstruction()
             : (_model.TrialBlockingHint ?? "");
-        _bodyLabel.Height = 56;
+        _bodyLabel.Height = S(56);
         Place(_bodyLabel, 0);
 
         _trialBox.Enabled = _model.CanRunTrial;
@@ -263,7 +318,7 @@ internal sealed class OnboardingForm : Form
                 _ => Color.DimGray,
             };
             _detailLabel.Text = summary.Detail;
-            _detailLabel.Height = 70;
+            _detailLabel.Height = S(70);
             Place(_statusLabel, 162);
             Place(_detailLabel, 190);
         }

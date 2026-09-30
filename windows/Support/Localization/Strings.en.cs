@@ -193,7 +193,8 @@ internal static partial class L10n
         ["识别模型缺失，请在设置中下载模型"] = "The speech model is missing; download it in Settings",
         ["文件 {0} 校验失败，可能是下载损坏，请重试。"] =
             "Checksum verification failed for {0}. The download may be corrupted; please retry.",
-        ["下载 {0} 失败。"] = "Downloading {0} failed.",
+            ["下载 {0} 失败。"] = "Downloading {0} failed.",
+            ["没有可用的模型下载地址：{0}"] = "No model download address is available for {0}.",
         ["下载 {0} 连接超时（{1:F0}s 未响应），将重试。"] =
             "Downloading {0} timed out while connecting (no response for {1:F0}s); retrying.",
         ["下载 {0} 失败（HTTP {1}）。"] = "Downloading {0} failed (HTTP {1}).",

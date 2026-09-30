@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -50,7 +51,12 @@ internal sealed class ModelDownloader : IDisposable
 
     public static long TotalBytes => Files.Sum(f => f.SizeHint);
 
-    private const string EndpointBase = "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo";
+    private const string ModelScopeEndpoint = "https://www.modelscope.cn/api/v1/models/iic/SenseVoiceSmall-onnx/repo";
+    private static readonly string[] HuggingFaceMirrors =
+    {
+        "https://huggingface.co/DennisHuang648/SenseVoiceSmall-onnx/resolve/main",
+        "https://hf-mirror.com/DennisHuang648/SenseVoiceSmall-onnx/resolve/main",
+    };
 
     /// <summary>达到此大小的文件才值得分段：小文件的额外请求开销大于并行收益。</summary>
     internal const long SegmentedMinimumBytes = 32L * 1024 * 1024;
@@ -62,7 +68,7 @@ internal sealed class ModelDownloader : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly FileSpec[] _files;
     private readonly string _destination;
-    private readonly Func<string, Uri> _urlFor;
+    private readonly Func<string, IReadOnlyList<Uri>> _urlsFor;
     private readonly long _segmentedMinimumBytes;
     private bool _segmentedDisabled;
     private bool _disposed;
@@ -78,13 +84,16 @@ internal sealed class ModelDownloader : IDisposable
 
     /// <summary>测试入口：注入假的 HTTP 处理器、文件清单、落点与地址，脱离真实网络。</summary>
     internal ModelDownloader(HttpMessageHandler? handler, FileSpec[]? files, string? destination,
-        Func<string, Uri>? urlFor, long? segmentedMinimumBytes)
+        Func<string, Uri>? urlFor, long? segmentedMinimumBytes,
+        Func<string, IReadOnlyList<Uri>>? urlsFor = null)
     {
         _http = handler is null ? new HttpClient() : new HttpClient(handler);
         _http.Timeout = Timeout.InfiniteTimeSpan;
         _files = files ?? Files;
         _destination = destination ?? ModelLocator.DownloadDestination;
-        _urlFor = urlFor ?? RemoteUrl;
+        _urlsFor = urlsFor ?? (urlFor is null
+            ? RemoteUrls
+            : name => new[] { urlFor(name) });
         _segmentedMinimumBytes = segmentedMinimumBytes ?? SegmentedMinimumBytes;
     }
 
@@ -134,6 +143,40 @@ internal sealed class ModelDownloader : IDisposable
 
     private async Task DownloadOneAsync(FileSpec spec, Action<double> onProgress, CancellationToken ct)
     {
+        var urls = _urlsFor(spec.Name).Distinct().ToArray();
+        if (urls.Length == 0)
+        {
+            throw new ModelDownloadException(L10n.F("没有可用的模型下载地址：{0}", spec.Name));
+        }
+
+        Exception? lastError = null;
+        for (var index = 0; index < urls.Length; index++)
+        {
+            try
+            {
+                await DownloadOneFromUrlAsync(spec, onProgress, ct, urls[index]).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                if (index + 1 < urls.Length)
+                {
+                    AppLog.Warn("model", $"下载 {spec.Name} 当前地址失败，切换备用地址 ({index + 2}/{urls.Length})：{ex.Message}");
+                }
+            }
+        }
+
+        throw lastError ?? new ModelDownloadException(L10n.F($"下载 {0} 失败。", spec.Name));
+    }
+
+    private async Task DownloadOneFromUrlAsync(FileSpec spec, Action<double> onProgress,
+        CancellationToken ct, Uri url)
+    {
         var destPath = Path.Combine(_destination, spec.Name);
         var partPath = Path.Combine(_destination, spec.Name + ".part");
 
@@ -142,7 +185,7 @@ internal sealed class ModelDownloader : IDisposable
         {
             try
             {
-                await DownloadSegmentedAsync(spec, partPath, onProgress, ct).ConfigureAwait(false);
+                await DownloadSegmentedAsync(spec, partPath, onProgress, ct, url).ConfigureAwait(false);
                 if (Sha256Matches(partPath, spec.Sha256))
                 {
                     InstallPart(spec, partPath, destPath);
@@ -174,7 +217,7 @@ internal sealed class ModelDownloader : IDisposable
                 // 第二次本地重试强制丢弃已有的 .part、从零开始：陈旧或与本次失败相关的残留
                 // 会让"重试"精确重放同一个失败，跨越一次 app 重启也不会自愈（R4-03）。
                 if (attempt > 0) TryDelete(partPath);
-                await PerformDownloadAsync(spec, partPath, onProgress, ct).ConfigureAwait(false);
+                await PerformDownloadAsync(spec, partPath, onProgress, ct, url).ConfigureAwait(false);
                 if (!Sha256Matches(partPath, spec.Sha256))
                 {
                     TryDelete(partPath);
@@ -209,12 +252,13 @@ internal sealed class ModelDownloader : IDisposable
 
     // ─── 单连接 ───────────────────────────────────────────────────
 
-    private async Task PerformDownloadAsync(FileSpec spec, string partPath, Action<double> onProgress, CancellationToken ct)
+    private async Task PerformDownloadAsync(FileSpec spec, string partPath, Action<double> onProgress,
+        CancellationToken ct, Uri url)
     {
         long existingLength = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
         if (existingLength >= spec.SizeHint) existingLength = 0; // 陈旧的超大 .part：从头重下更安全
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name));
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (existingLength > 0)
         {
             request.Headers.Range = new RangeHeaderValue(existingLength, null);
@@ -303,11 +347,12 @@ internal sealed class ModelDownloader : IDisposable
         return ranges;
     }
 
-    private async Task DownloadSegmentedAsync(FileSpec spec, string partPath, Action<double> onProgress, CancellationToken ct)
+    private async Task DownloadSegmentedAsync(FileSpec spec, string partPath, Action<double> onProgress,
+        CancellationToken ct, Uri url)
     {
         // 探测总长：HEAD 在该端点上返回 404，所以用 "bytes=0-0" 的 GET 从 Content-Range 里读。
         long total;
-        using (var probe = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name)))
+        using (var probe = new HttpRequestMessage(HttpMethod.Get, url))
         {
             probe.Headers.Range = new RangeHeaderValue(0, 0);
             using var response = await SendWithHeaderTimeoutAsync(probe, spec.Name, ct).ConfigureAwait(false);
@@ -344,7 +389,7 @@ internal sealed class ModelDownloader : IDisposable
         {
             try
             {
-                await DownloadSegmentAsync(spec, index, range, done, total, reporter, segmentsCts.Token).ConfigureAwait(false);
+                await DownloadSegmentAsync(spec, index, range, done, total, reporter, segmentsCts.Token, url).ConfigureAwait(false);
             }
             catch
             {
@@ -373,14 +418,14 @@ internal sealed class ModelDownloader : IDisposable
     }
 
     private async Task DownloadSegmentAsync(FileSpec spec, int index, (long Start, long End) range, long[] done, long total,
-        ProgressReporter reporter, CancellationToken ct)
+        ProgressReporter reporter, CancellationToken ct, Uri url)
     {
         var expected = range.End - range.Start + 1;
         var resumed = Interlocked.Read(ref done[index]);
         if (resumed >= expected) return; // 这段上次已经下完了
 
         var offset = range.Start + resumed;
-        using var request = new HttpRequestMessage(HttpMethod.Get, _urlFor(spec.Name));
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Range = new RangeHeaderValue(offset, range.End);
 
         using var response = await SendWithHeaderTimeoutAsync(request, spec.Name, ct).ConfigureAwait(false);
@@ -512,8 +557,20 @@ internal sealed class ModelDownloader : IDisposable
         }
     }
 
-    private static Uri RemoteUrl(string fileName) =>
-        new($"{EndpointBase}?Revision=master&FilePath={Uri.EscapeDataString(fileName)}");
+    private static IReadOnlyList<Uri> RemoteUrls(string fileName)
+    {
+        var urls = new List<Uri>
+        {
+            new($"{ModelScopeEndpoint}?Revision=master&FilePath={Uri.EscapeDataString(fileName)}"),
+        };
+
+        foreach (var mirror in HuggingFaceMirrors)
+        {
+            urls.Add(new Uri($"{mirror}/{Uri.EscapeDataString(fileName)}?download=true"));
+        }
+
+        return urls;
+    }
 
     public static bool Sha256Matches(string path, string expectedHex)
     {

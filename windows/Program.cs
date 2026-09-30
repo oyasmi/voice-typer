@@ -48,6 +48,10 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // 必须在安装 WindowsFormsSynchronizationContext（可能创建内部控件）之前设置，
+        // 否则 WinForms 会因控件已经创建而抛出 InvalidOperationException。
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
         WindowsFormsSynchronizationContext.AutoInstall = true;
         if (SynchronizationContext.Current is null)
         {
@@ -55,7 +59,6 @@ internal static class Program
         }
         UiDispatcher.Install();
 
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) =>
         {
             AppLog.Error("app", "未处理的 UI 线程异常", e.Exception);

@@ -29,8 +29,10 @@ public class ModelDownloaderTests : IDisposable
         public byte[] Data { get; set; }
         public bool HonorRanges { get; set; } = true;
         public bool CorruptBody { get; set; }
+        public int ForbiddenRequests { get; set; }
         public HttpStatusCode? ForcedStatus { get; set; }
         public readonly List<(long? From, long? To)> Requests = new();
+        public readonly List<Uri?> RequestUris = new();
 
         public RangeServer(byte[] data) => Data = data;
 
@@ -39,8 +41,14 @@ public class ModelDownloaderTests : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var range = request.Headers.Range?.Ranges.FirstOrDefault();
             lock (Requests) Requests.Add((range?.From, range?.To));
+            lock (RequestUris) RequestUris.Add(request.RequestUri);
 
             if (ForcedStatus is { } forced) return Task.FromResult(new HttpResponseMessage(forced));
+            if (ForbiddenRequests > 0)
+            {
+                ForbiddenRequests--;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+            }
 
             var body = CorruptBody ? Data.Select((b, i) => i == 5 ? (byte)(b ^ 0xFF) : b).ToArray() : Data;
             if (range is null || !HonorRanges)
@@ -211,6 +219,29 @@ public class ModelDownloaderTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<ModelDownloadException>(() => downloader.DownloadAllAsync(_ => { }));
         Assert.Contains("503", ex.Message);
+    }
+
+    [Fact]
+    public async Task ForbiddenEndpoint_FallsBackToNextEndpoint()
+    {
+        var data = MakeData(1_000);
+        var server = new RangeServer(data) { ForbiddenRequests = 2 };
+        var urls = new[]
+        {
+            new Uri("https://blocked.example.invalid/model.bin"),
+            new Uri("https://mirror.example.invalid/model.bin"),
+        };
+        var files = new[] { new ModelDownloader.FileSpec("model.bin", Sha(data), data.Length) };
+        using var downloader = new ModelDownloader(
+            server, files, _dir, urlFor: null, segmentedMinimumBytes: 1_000_000,
+            urlsFor: _ => urls);
+
+        await downloader.DownloadAllAsync(_ => { });
+
+        Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(_dir, "model.bin")));
+        Assert.Equal(urls[0], server.RequestUris[0]);
+        Assert.Equal(urls[0], server.RequestUris[1]);
+        Assert.Equal(urls[1], server.RequestUris[2]);
     }
 
     [Fact]
