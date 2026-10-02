@@ -314,6 +314,10 @@ dotnet build VoiceTyper.csproj -c Release -r win-x64 --self-contained false -p:E
 # 发布（依赖目标电脑的 .NET 10 Desktop Runtime，x64 / arm64 均可）
 dotnet publish VoiceTyper.csproj -c Release -r win-arm64 --self-contained false -p:EnableWindowsTargeting=true -o /tmp/pub
 
+# 或使用封装好的 Makefile 目标（产物在 windows/dist-cross/，只验证"能编译、产物结构对"，不能运行）：
+make cross-check
+make cross-publish
+
 # 在非 Windows 主机上跑测试：不带 RID 构建，并把运行时配置里的 WindowsDesktop 框架依赖去掉
 dotnet build Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj -c Debug -p:SelfContained=false -p:EnableWindowsTargeting=true -p:RuntimeIdentifier=
 #   编辑 Tests/VoiceTyper.Tests/bin/Debug/net10.0-windows/VoiceTyper.Tests.runtimeconfig.json，

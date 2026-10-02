@@ -25,6 +25,7 @@ htmlcov/
 # Python 构建产物
 build/
 dist/
+dist-cross/
 
 # .NET / Visual Studio
 [Bb]in/
