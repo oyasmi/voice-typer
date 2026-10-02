@@ -9,7 +9,7 @@ help:
 	@echo "VoiceTyper Windows 版 Makefile（在 Linux/macOS 上交叉编译，不能运行）"
 	@echo ""
 	@echo "  make cross-check          - 交叉编译检查（dotnet build，不产出发布目录）"
-	@echo "  make cross-publish        - 交叉发布 win-x64 与 win-arm64 到 dist-cross/"
+	@echo "  make cross-publish        - 交叉发布 win-x64 与 win-arm64 到 dist-cross/（含便携版 zip）"
 	@echo "  make cross-publish-x64    - 仅交叉发布 win-x64"
 	@echo "  make cross-publish-arm64  - 仅交叉发布 win-arm64"
 	@echo "  make clean-cross          - 删除 dist-cross/"
