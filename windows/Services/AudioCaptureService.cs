@@ -543,8 +543,8 @@ internal sealed class AudioCaptureService : IAudioCapturing
         {
             if (!_deliveryQueue.TryAdd(action)) AppLog.Debug("audio", "投递队列已关闭，丢弃任务");
         }
-        catch (InvalidOperationException) { AppLog.Debug("audio", "投递队列已关闭，丢弃任务"); }
-        catch (ObjectDisposedException) { AppLog.Debug("audio", "投递队列已释放，丢弃任务"); }
+        // ObjectDisposedException 派生自 InvalidOperationException，一并覆盖（已关闭或已释放）。
+        catch (InvalidOperationException) { AppLog.Debug("audio", "投递队列已关闭或已释放，丢弃任务"); }
     }
 
     public void Dispose()

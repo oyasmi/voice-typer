@@ -41,8 +41,8 @@ internal sealed class AsrPump : IDisposable
     private bool TryEnqueue(Action action)
     {
         try { return _queue.TryAdd(action); }
+        // ObjectDisposedException 派生自 InvalidOperationException，一并覆盖。
         catch (InvalidOperationException) { return false; }
-        catch (ObjectDisposedException) { return false; }
     }
 
     /// <summary>投递并返回一个在动作执行完成后完成的 Task。</summary>
