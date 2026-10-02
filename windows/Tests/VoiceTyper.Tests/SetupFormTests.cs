@@ -80,6 +80,37 @@ public class SetupFormTests
         Assert.False(form.HasUnsavedChanges);
     });
 
+    /// <summary>配置允许的边界值必须能被控件无损载入：不被夹逼、不被误判为"已修改"，BuildDraft 原值不变。</summary>
+    [Fact]
+    public void BoundaryConfigValues_LoadWithoutClampingOrDirtyState() => OnUiThread(() =>
+    {
+        using var form = new SetupForm();
+        var config = new AppConfig();
+        config.Asr.IdleUnloadMinutes = ConfigLimits.IdleUnloadMinutesMax;
+        config.Llm.Timeout = ConfigLimits.TimeoutSecondsMax;
+        config.Llm.MaxTokens = ConfigLimits.MaxTokensMax;
+        config.UI.Opacity = ConfigLimits.OpacityMin;
+        config.Llm.Temperature = 0.75;
+        form.LoadEditableContent(config, refreshDevices: false);
+
+        Assert.False(form.HasUnsavedChanges);
+        var draft = form.BuildDraft();
+        Assert.Equal(1440, draft.Asr.IdleUnloadMinutes);
+        Assert.Equal(120, draft.Llm.Timeout);
+        Assert.Equal(8192, draft.Llm.MaxTokens);
+        Assert.Equal(0.1, draft.UI.Opacity);
+        Assert.Equal(0.75, draft.Llm.Temperature);
+    });
+
+    [Fact]
+    public void ReloadRejection_IsShownOnModelCard() => OnUiThread(() =>
+    {
+        using var form = new SetupForm();
+        form.LoadEditableContent(new AppConfig(), refreshDevices: false);
+        form.ShowModelActionMessage("正在听写");
+        Assert.Equal("正在听写", Field<Label>(form, "_modelStatusLabel").Text);
+    });
+
     [SkippableFact]
     public void RenderSettingsPreviews() => OnUiThread(() =>
     {

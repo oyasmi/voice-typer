@@ -30,12 +30,19 @@ internal sealed class AppCoordinator : IDisposable
     private readonly ConfigStore _configStore = new();
     private readonly TrayController _tray = new();
     private readonly AsrService _asrService = new();
+    /// <summary>应用级唯一的剪贴板插入服务：控制器重建时只是借用它，剪贴板恢复状态不随控制器丢失。</summary>
+    private readonly TextInsertionService _textInsertion = new();
 
     private RecordingHud? _hud;
     private SetupForm? _setupForm;
     private OnboardingForm? _onboardingForm;
     private OnboardingModel? _onboarding;
     private VoiceTyperController? _controller;
+    /// <summary>是否有一次听写正在进行。破坏性操作的门禁依据：显示状态（<see cref="_currentState"/>）
+    /// 会被错误提示等覆盖，不能当作事实源。</summary>
+    private bool IsDictating => _controller?.HasActiveDictation == true;
+    /// <summary>本次听写成功插入时附带的 HUD 副标题（纠错回落说明）；在 Idle 分支消费一次。</summary>
+    private string? _pendingSuccessNote;
 
     private AppConfig _config = new();
     private AppStateInfo _currentState = AppStateInfo.Booting;
@@ -130,6 +137,7 @@ internal sealed class AppCoordinator : IDisposable
         _hudShowTimer?.Dispose();
         _modelDownloader?.Dispose();
         _controller?.Dispose();
+        _textInsertion.FlushPendingRestore();
         _hud?.Dispose();
         _setupForm?.Dispose();
         _onboardingForm?.Dispose();
@@ -177,7 +185,7 @@ internal sealed class AppCoordinator : IDisposable
         bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm)
             && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey) && AudioConfigEquals(_config.Audio, draft.Audio));
 
-        if ((keyChanged || sectionsChanged) && _currentState.State.IsActiveDictation())
+        if ((keyChanged || sectionsChanged) && IsDictating)
         {
             // 尚未写任何东西就拒绝。
             throw new InvalidOperationException(L10n.T("正在录音/识别/输入，请等待当前听写完成后再保存此项设置"));
@@ -243,12 +251,44 @@ internal sealed class AppCoordinator : IDisposable
 
     // ─── 麦克风探测 ────────────────────────────────────────────
 
-    private void ProbeMicrophone(bool isFirstProbe)
+    /// <summary>当前是否有探测在飞；UI 线程读写。</summary>
+    private bool _probeInFlight;
+    /// <summary>探测期间又收到请求：当前探测结束后补跑一次（多次请求合并成一次）。</summary>
+    private bool _probeRequestedAgain;
+    private bool _probeAgainIsFirst;
+
+    /// <param name="isFirstProbe">启动后的首次探测：被拒绝时会弹出权限引导。</param>
+    /// <param name="automatic">设置页轮询触发的自动探测：听写中跳过，避免再开一个采集器。人工点击照常执行。</param>
+    private void ProbeMicrophone(bool isFirstProbe, bool automatic = false)
     {
+        if (automatic && IsDictating) return;
+        // 单个在飞：探测要真开一次 WASAPI 采集，重叠执行既浪费又会让结果按完成顺序乱序覆盖。
+        if (_probeInFlight)
+        {
+            _probeRequestedAgain = true;
+            _probeAgainIsFirst |= isFirstProbe;
+            return;
+        }
+        _probeInFlight = true;
+
         _ = Task.Run(MicPermissionProbe.Probe).ContinueWith(t =>
         {
             UiDispatcher.Post(() =>
             {
+                _probeInFlight = false;
+                var rerun = _probeRequestedAgain;
+                var rerunIsFirst = _probeAgainIsFirst;
+                _probeRequestedAgain = false;
+                _probeAgainIsFirst = false;
+
+                if (t.IsFaulted) AppLog.Warn("coordinator", $"麦克风探测异常: {t.Exception?.GetBaseException().Message}");
+                // 已排了补跑：这次结果即将过期，直接丢弃，只展示补跑的最新结果。
+                if (rerun)
+                {
+                    ProbeMicrophone(rerunIsFirst || isFirstProbe); // 被丢弃的首次探测的"弹引导"职责并入补跑
+                    return;
+                }
+
                 _micProbe = t.IsCompletedSuccessfully ? t.Result : MicProbeResult.Unknown;
                 if (isFirstProbe && _micProbe == MicProbeResult.AccessDenied)
                 {
@@ -445,7 +485,7 @@ internal sealed class AppCoordinator : IDisposable
     private void EnsureController()
     {
         if (_controller is not null) return;
-        var controller = new VoiceTyperController(_config, _asrService);
+        var controller = new VoiceTyperController(_config, _asrService, _textInsertion);
         BindControllerEvents(controller);
         _controller = controller;
     }
@@ -477,7 +517,9 @@ internal sealed class AppCoordinator : IDisposable
                     break;
                 case AppState.Idle:
                     CancelDictationErrorRecovery();
-                    if (previous.State == AppState.Inserting) _hud?.ShowSuccess();
+                    var successNote = _pendingSuccessNote;
+                    _pendingSuccessNote = null;
+                    if (previous.State == AppState.Inserting) _hud?.ShowSuccess(successNote);
                     else _hud?.HideHud();
                     break;
                 default:
@@ -507,6 +549,8 @@ internal sealed class AppCoordinator : IDisposable
             _hud?.ShowNoSpeech();
             ForwardToOnboarding(new OnboardingDictationEvent.EmptyResult());
         };
+        controller.InsertedWithCorrectionFallback = () =>
+            _pendingSuccessNote = L10n.T("已使用识别原文（纠错未成功）");
         controller.BlockedAttempt = _ => HandleBlockedAttempt();
         // 识别文本本身不落日志，只记字数——AGENTS.md 明确禁止日志包含不必要的用户文本。
         controller.RecognizedText = text =>
@@ -749,21 +793,23 @@ internal sealed class AppCoordinator : IDisposable
         _modelDownloader?.Cancel();
     }
 
-    private void ReloadModel() => _ = ReloadModelAsync();
+    /// <summary>设置页"重新加载模型"：返回非 null 表示被拒绝，内容是给用户看的原因。</summary>
+    private string? ReloadModel()
+    {
+        // 录音/识别/纠错期间重载会把正在使用的引擎 Dispose 掉（R2-3）。拒绝时不改显示状态：
+        // 改成 Error 会让依赖显示状态的门禁在 2.5 秒后失效，而会话其实还在。
+        if (IsDictating)
+        {
+            var reason = L10n.T("正在听写，请等待当前听写完成后再重新加载模型");
+            _hud?.FlashWarning(reason);
+            return reason;
+        }
+        _ = ReloadModelAsync();
+        return null;
+    }
 
     private async Task ReloadModelAsync()
     {
-        // 录音/识别/纠错期间点"重新加载模型"会把正在使用的引擎 Dispose 掉。
-        // 与 ApplyConfigAsync 相同的拒绝逻辑（R2-3）。
-        if (_currentState.State.IsActiveDictation())
-        {
-            _currentState = AppStateInfo.ErrorWith(L10n.T("正在听写，请等待当前听写完成后再重新加载模型"));
-            UpdateTray();
-            SyncSetupWindow();
-            ScheduleDictationErrorRecovery();
-            return;
-        }
-
         try
         {
             await _asrService.ReloadAsync().ConfigureAwait(true);
@@ -867,6 +913,7 @@ internal sealed class AppCoordinator : IDisposable
         form.OnReloadModel = ReloadModel;
         form.OnTestLlmCorrection = (llmConfig, apiKey) => TestLlmCorrectionAsync(llmConfig, apiKey);
         form.OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false);
+        form.OnPollMicProbe = () => ProbeMicrophone(isFirstProbe: false, automatic: true);
         form.OnPreviewHudOpacity = opacity => _hud?.ApplyOpacity(opacity);
         form.OnUserClosedWindow = () => _userOpenedSetup = false;
         form.OnBeginHotkeyRecording = BeginHotkeyRecording;
@@ -878,7 +925,7 @@ internal sealed class AppCoordinator : IDisposable
     /// 正在听写时拒绝，避免销毁用户正在说的内容。</summary>
     private bool BeginHotkeyRecording()
     {
-        if (_currentState.State.IsActiveDictation()) return false;
+        if (IsDictating) return false;
         _controller?.SuspendHotkeyListening();
         return true;
     }

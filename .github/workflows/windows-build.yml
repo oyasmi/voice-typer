@@ -11,10 +11,14 @@ on:
     branches: [master]
     paths:
       - "windows/**"
+      # macOS 与 Windows 共用这些金标准夹具（见根 AGENTS.md），改动必须触发 Windows 对照测试。
+      - "macos/Tests/VoiceTyperTests/Fixtures/**"
       - ".github/workflows/windows-build.yml"
   pull_request:
     paths:
       - "windows/**"
+      # macOS 与 Windows 共用这些金标准夹具（见根 AGENTS.md），改动必须触发 Windows 对照测试。
+      - "macos/Tests/VoiceTyperTests/Fixtures/**"
       - ".github/workflows/windows-build.yml"
   workflow_dispatch:
 

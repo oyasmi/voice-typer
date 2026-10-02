@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -44,7 +45,8 @@ internal sealed class RecordingHud : Form
     private readonly Font _previewFont;
 
     private Phase _phase = Phase.Hidden;
-    private DateTime _startedAt = DateTime.UtcNow;
+    /// <summary>录音开始的 <see cref="Stopwatch"/> 时间戳；单调时钟，不受系统时间调整影响。</summary>
+    private long _startedTimestamp = Stopwatch.GetTimestamp();
     private double _pulsePhase;
     private string _statusText = "";
     private string _recordingStatusText = L10n.T("录音中");
@@ -58,7 +60,7 @@ internal sealed class RecordingHud : Form
     private bool _isCorrecting;
     private bool _useDwmRoundCorners;
     private readonly float[] _bars = new float[BarCount];
-    private DateTime _lastLevelAt = DateTime.MinValue;
+    private long _lastLevelTimestamp; // 0 = 尚未收到过电平
 
     private HudPlacement _placement = HudPlacement.BottomCenter;
     /// <summary>底部落点时，展开 / 收起保持底边不动、向上生长；跟随光标时保持左上角不动。</summary>
@@ -141,7 +143,7 @@ internal sealed class RecordingHud : Form
 
         _phase = Phase.Recording;
         _isCorrecting = false;
-        _startedAt = DateTime.UtcNow;
+        _startedTimestamp = Stopwatch.GetTimestamp();
         _glyph = Glyph.None;
         _accent = Color.FromArgb(235, 70, 60);
         _recordingStatusText = string.IsNullOrWhiteSpace(inputDeviceName)
@@ -166,7 +168,7 @@ internal sealed class RecordingHud : Form
         _accent = Color.FromArgb(250, 190, 40);
         _glyph = Glyph.None;
         // 松键后冻结计时（保留最后时长）；动画继续，用于"处理中"的呼吸。
-        _frozenElapsedSeconds = (DateTime.UtcNow - _startedAt).TotalSeconds;
+        _frozenElapsedSeconds = ElapsedRecordingSeconds();
         if (!_animationTimer.Enabled) _animationTimer.Start();
         Invalidate();
     }
@@ -229,9 +231,9 @@ internal sealed class RecordingHud : Form
     public void UpdateLevel(float level)
     {
         if (_phase != Phase.Recording) return;
-        var now = DateTime.UtcNow;
-        if ((now - _lastLevelAt).TotalMilliseconds < 30) return;
-        _lastLevelAt = now;
+        var now = Stopwatch.GetTimestamp();
+        if (_lastLevelTimestamp != 0 && Stopwatch.GetElapsedTime(_lastLevelTimestamp, now).TotalMilliseconds < 30) return;
+        _lastLevelTimestamp = now;
 
         // 条形向左滚动，新电平进右侧：波形呈现"最近一小段时间的音量轮廓"。
         Array.Copy(_bars, 1, _bars, 0, _bars.Length - 1);
@@ -239,10 +241,12 @@ internal sealed class RecordingHud : Form
     }
 
     /// <summary>final 文本插入成功后的一次性反馈，约 0.7s 后自动隐藏。</summary>
-    public void ShowSuccess()
+    /// <param name="note">可选副标题；非空时展示时间延长到约 1.8s，保证用户来得及读完。</param>
+    public void ShowSuccess(string? note = null)
     {
         if (SuppressesProgress) return;
-        ShowTransient(L10n.T("已输入"), "", Glyph.Check, Color.FromArgb(60, 190, 90), TimeSpan.FromSeconds(0.7));
+        ShowTransient(L10n.T("已输入"), note ?? "", Glyph.Check, Color.FromArgb(60, 190, 90),
+            TimeSpan.FromSeconds(string.IsNullOrEmpty(note) ? 0.7 : 1.8));
     }
 
     /// <summary>一次性错误提示，约 2.5s 后自动隐藏——托盘的错误态回落时长与此对齐（R3-04）。</summary>
@@ -433,7 +437,7 @@ internal sealed class RecordingHud : Form
 
         using (var g = CreateGraphics())
         {
-            var format = MeasureFormat();
+            var format = _previewFormat;
             float Measure(string s) => g.MeasureString(s, _previewFont, PointF.Empty, format).Width;
 
             // 先定宽再排文：能容纳多少字取决于最终宽度，顺序反了会按旧宽度截出错误的片段。
@@ -482,11 +486,27 @@ internal sealed class RecordingHud : Form
 
     private int PreviewLineHeight() => (int)Math.Ceiling(_previewFont.GetHeight(DeviceDpi) * 1.15);
 
-    /// <summary>测量与绘制共用同一份格式，宽度才一致；不加 NoWrap 会让 MeasureString 自行折行。</summary>
-    private static StringFormat MeasureFormat()
+    /// <summary>预览文字的测量与绘制共用同一份格式，宽度才一致；不加 NoWrap 会让 MeasureString 自行折行。
+    /// 所有权：窗体持有，构造时创建一次、<see cref="Dispose(bool)"/> 时释放；使用方不得 Dispose 它，
+    /// 也不得修改（只在 UI 线程使用）。</summary>
+    private readonly StringFormat _previewFormat = CreatePreviewFormat();
+
+    /// <summary>状态文字的绘制格式；所有权与用法同 <see cref="_previewFormat"/>。</summary>
+    private readonly StringFormat _statusFormat = CreateStatusFormat();
+
+    private static StringFormat CreatePreviewFormat()
     {
         var format = (StringFormat)StringFormat.GenericTypographic.Clone();
         format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
+        return format;
+    }
+
+    private static StringFormat CreateStatusFormat()
+    {
+        var format = (StringFormat)StringFormat.GenericDefault.Clone();
+        format.Trimming = StringTrimming.EllipsisCharacter;
+        format.FormatFlags |= StringFormatFlags.NoWrap;
+        format.LineAlignment = StringAlignment.Center;
         return format;
     }
 
@@ -560,7 +580,7 @@ internal sealed class RecordingHud : Form
         float rightEdge = Width - inset;
         if (_phase is Phase.Recording or Phase.Recognizing)
         {
-            var elapsed = (int)(_phase == Phase.Recording ? (DateTime.UtcNow - _startedAt).TotalSeconds : _frozenElapsedSeconds);
+            var elapsed = (int)(_phase == Phase.Recording ? ElapsedRecordingSeconds() : _frozenElapsedSeconds);
             if (elapsed > 0)
             {
                 var timerText = $"{elapsed}s";
@@ -578,12 +598,8 @@ internal sealed class RecordingHud : Form
         var statusColor = _statusWarning ? Color.FromArgb(255, 250, 190, 40) : Color.FromArgb(statusAlpha, 255, 255, 255);
         using (var statusBrush = new SolidBrush(statusColor))
         {
-            var statusFormat = (StringFormat)StringFormat.GenericDefault.Clone();
-            statusFormat.Trimming = StringTrimming.EllipsisCharacter;
-            statusFormat.FormatFlags |= StringFormatFlags.NoWrap;
-            statusFormat.LineAlignment = StringAlignment.Center;
             var statusRect = new RectangleF(x, 0, Math.Max(0, rightEdge - x), S(CompactHeight));
-            g.DrawString(_statusText, _statusFont, statusBrush, statusRect, statusFormat);
+            g.DrawString(_statusText, _statusFont, statusBrush, statusRect, _statusFormat);
         }
 
         // 预览 / 提示正文
@@ -592,7 +608,7 @@ internal sealed class RecordingHud : Form
             using var previewBrush = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
             var lineHeight = PreviewLineHeight();
             var y = (float)(S(CompactHeight) + S(PreviewPadTop));
-            var format = MeasureFormat();
+            var format = _previewFormat;
             foreach (var line in _previewLines)
             {
                 g.DrawString(line, _previewFont, previewBrush, inset, y, format);
@@ -602,6 +618,8 @@ internal sealed class RecordingHud : Form
     }
 
     private double _frozenElapsedSeconds;
+
+    private double ElapsedRecordingSeconds() => Stopwatch.GetElapsedTime(_startedTimestamp).TotalSeconds;
 
     private void DrawIndicator(Graphics g, RectangleF rect)
     {
@@ -695,6 +713,8 @@ internal sealed class RecordingHud : Form
             _statusFont.Dispose();
             _timerFont.Dispose();
             _previewFont.Dispose();
+            _previewFormat.Dispose();
+            _statusFormat.Dispose();
         }
         base.Dispose(disposing);
     }

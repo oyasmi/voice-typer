@@ -45,6 +45,75 @@ public class LocalAsrSessionBehaviorTests
         finally { pump.Dispose(); }
     }
 
+    /// <summary>
+    /// 冷恢复：引擎未就绪时缓存的有声音频，在引擎就绪、回灌 buffer 后必须恢复"有语音"标记。
+    /// 否则用户恰好停顿（之后只有静音）时，预览会一直被跳过直到松键。
+    /// </summary>
+    [Fact]
+    public void ReplayingCachedSpeech_RestoresSpeechFlag_SoPreviewRuns()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.ReplayPump");
+        try
+        {
+            IAsrEngine? engine = null;
+            var session = new LocalAsrSession(pump, () => engine, null, 15 * AppConstants.TargetSampleRate);
+
+            session.SendAudio(ToBytes(Constant(9600, 0.1f))); // 引擎未就绪：有声音频被缓存
+            var fake = new FakeAsrEngine();
+            engine = fake;
+            session.SendAudio(ToBytes(new float[9600])); // 引擎就绪后只送静音
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (fake.RecognizeCalls == 0 && DateTime.UtcNow < deadline) Thread.Sleep(10);
+            Assert.True(fake.RecognizeCalls >= 1, "回灌缓存音频后应至少触发一次预览");
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
+    [Fact]
+    public void ReplayingCachedSilence_DoesNotTriggerPreview()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.ReplaySilencePump");
+        try
+        {
+            IAsrEngine? engine = null;
+            var session = new LocalAsrSession(pump, () => engine, null, 15 * AppConstants.TargetSampleRate);
+
+            session.SendAudio(ToBytes(new float[9600]));
+            var fake = new FakeAsrEngine();
+            engine = fake;
+            session.SendAudio(ToBytes(new float[9600]));
+
+            Thread.Sleep(200);
+            Assert.Equal(0, fake.RecognizeCalls);
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
+    [Fact]
+    public void Close_ReleasesLeaseExactlyOnce()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.LeasePump");
+        try
+        {
+            var released = 0;
+            var session = new LocalAsrSession(pump, () => null, null, 16_000, onClosed: () => released++);
+            session.Close();
+            session.Close();
+            Assert.Equal(1, released);
+        }
+        finally { pump.Dispose(); }
+    }
+
+    private static byte[] ToBytes(float[] samples)
+    {
+        var bytes = new byte[samples.Length * 4];
+        Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
     private static float[] Constant(int count, float value)
     {
         var data = new float[count];

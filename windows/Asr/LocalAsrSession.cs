@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
@@ -10,11 +11,9 @@ using VoiceTyper.Support;
 namespace VoiceTyper.Asr;
 
 /// <summary>
-/// 单次录音会话的本地识别接缝层。C# 直译自
-/// <c>macos/Sources/VoiceTyper/ASR/LocalASRSession.swift</c>。接口**刻意与旧的
-/// <c>StreamingASRClient</c>（WebSocket 客户端）逐字一致**，使
-/// <see cref="Core.VoiceTyperController"/> 的四个回调可以原样搬运，只需把
-/// <c>client.ConnectAsync(...)</c> 换成 <c>asrService.MakeSession(...)</c>。
+/// 单次录音会话的本地识别接缝层，实现 <see cref="IDictationSession"/> 契约：
+/// <see cref="Core.VoiceTyperController"/> 送入音频、请求收尾，并通过回调接收预览、最终文本与错误。
+/// C# 直译自 <c>macos/Sources/VoiceTyper/ASR/LocalASRSession.swift</c>。
 ///
 /// 职责映射（对照服务端 <c>app.StreamRecognizeHandler</c>）：
 /// - 有预览在跑就跳过（<c>_previewInFlight</c>），跳过的音频在下次预览一并处理
@@ -50,13 +49,17 @@ internal sealed class LocalAsrSession : IDictationSession
     private const int MaxSessionSamples = 120 * AppConstants.TargetSampleRate;
 
     private readonly AsrPump _pump;
-    private readonly Func<SenseVoiceEngine?> _engineAccessor;
+    private readonly Func<IAsrEngine?> _engineAccessor;
     /// <summary>引擎加载已确定失败时返回原因文本（State==Failed/ModelMissing），否则 null。
     /// 让"等引擎"的轮询在加载失败时立刻带真实原因收尾，而不是空转到超时再报无信息的
     /// "识别引擎尚未就绪"（R2-2）。</summary>
     private readonly Func<string?>? _engineLoadError;
     private readonly LlmCorrector? _llmCorrector;
     private readonly int _previewWindowSamples;
+    /// <summary>会话关闭时调用一次，归还 <see cref="AsrService"/> 的会话租约。</summary>
+    private readonly Action? _onClosed;
+
+    internal int PreviewWindowSamples => _previewWindowSamples;
 
     /// <summary>分阶段打点，会话收尾前由控制器读取并入 <see cref="DictationMetrics"/>。</summary>
     public AsrSessionTimings Timings { get; } = new();
@@ -90,9 +93,10 @@ internal sealed class LocalAsrSession : IDictationSession
     /// <summary>会话级取消源：Close 时取消，传给 LLM 纠错请求，取消后的迟到结果被静默丢弃（R2-4）。</summary>
     private readonly CancellationTokenSource _sessionCts = new();
 
-    public LocalAsrSession(AsrPump pump, Func<SenseVoiceEngine?> engineAccessor, LlmCorrector? llmCorrector,
-        int previewWindowSamples, Func<string?>? engineLoadError = null)
+    public LocalAsrSession(AsrPump pump, Func<IAsrEngine?> engineAccessor, LlmCorrector? llmCorrector,
+        int previewWindowSamples, Func<string?>? engineLoadError = null, Action? onClosed = null)
     {
+        _onClosed = onClosed;
         _pump = pump;
         _engineAccessor = engineAccessor;
         _llmCorrector = llmCorrector;
@@ -175,6 +179,17 @@ internal sealed class LocalAsrSession : IDictationSession
         return Math.Sqrt(sumSquares / samples.Length) >= AppConstants.SilenceRmsThreshold;
     }
 
+    /// <summary>按 100ms 窗口逐段判断：缓存音频可能很长，整体 RMS 会把一小段语音稀释到阈值以下。</summary>
+    private static bool ContainsSpeechInWindows(ReadOnlySpan<float> samples)
+    {
+        const int window = AppConstants.TargetSampleRate / 10;
+        for (int offset = 0; offset < samples.Length; offset += window)
+        {
+            if (ContainsSpeech(samples.Slice(offset, Math.Min(window, samples.Length - offset)))) return true;
+        }
+        return false;
+    }
+
     /// <param name="timeout">
     /// 等待识别完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的看门狗。
     /// 传 <see cref="TimeSpan.Zero"/> 或负值表示不设超时。
@@ -214,6 +229,7 @@ internal sealed class LocalAsrSession : IDictationSession
         _finalizeWatchdogCts = null;
         try { _sessionCts.Cancel(); } catch (ObjectDisposedException) { }
         _buffer = null;
+        _onClosed?.Invoke(); // 上方 _closed 守卫保证只释放一次
     }
 
     // ─── 私有实现 ──────────────────────────────────────────────
@@ -246,8 +262,16 @@ internal sealed class LocalAsrSession : IDictationSession
         var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: MaxSessionSamples);
         if (_pendingAudio.Count > 0)
         {
-            newBuffer.Append(_pendingAudio.ToArray());
+            // 缓存期间收到的音频没有走过 SendAudio 的语音判定；补上，否则引擎就绪后用户恰好停顿时
+            // 预览会一直被跳过，直到松键。
+            var cached = CollectionsMarshal.AsSpan(_pendingAudio);
+            if (ContainsSpeechInWindows(cached)) _hasSpeechSinceLastPreview = true;
+            newBuffer.Append(cached.ToArray());
             _pendingAudio.Clear();
+            _pendingAudio.TrimExcess();
+            _buffer = newBuffer;
+            SchedulePreview();
+            return;
         }
         _buffer = newBuffer;
     }

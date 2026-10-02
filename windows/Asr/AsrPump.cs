@@ -32,13 +32,24 @@ internal sealed class AsrPump : IDisposable
     }
 
     /// <summary>非阻塞投递，不等待结果。</summary>
-    public void Post(Action action) => _queue.Add(action);
+    public void Post(Action action)
+    {
+        if (!TryEnqueue(action)) AppLog.Debug("asr", "AsrPump 已关闭，丢弃投递的任务");
+    }
+
+    /// <summary>关闭后（<see cref="BlockingCollection{T}.CompleteAdding"/>）或队列已释放时返回 false，不抛异常。</summary>
+    private bool TryEnqueue(Action action)
+    {
+        try { return _queue.TryAdd(action); }
+        catch (InvalidOperationException) { return false; }
+        catch (ObjectDisposedException) { return false; }
+    }
 
     /// <summary>投递并返回一个在动作执行完成后完成的 Task。</summary>
     public Task PostAsync(Action action)
     {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _queue.Add(() =>
+        var queued = TryEnqueue(() =>
         {
             try
             {
@@ -50,6 +61,7 @@ internal sealed class AsrPump : IDisposable
                 tcs.SetException(ex);
             }
         });
+        if (!queued) tcs.SetCanceled();
         return tcs.Task;
     }
 
@@ -57,7 +69,7 @@ internal sealed class AsrPump : IDisposable
     public Task<T> PostAsync<T>(Func<T> func)
     {
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _queue.Add(() =>
+        var queued = TryEnqueue(() =>
         {
             try
             {
@@ -68,6 +80,7 @@ internal sealed class AsrPump : IDisposable
                 tcs.SetException(ex);
             }
         });
+        if (!queued) tcs.SetCanceled();
         return tcs.Task;
     }
 
@@ -91,7 +104,9 @@ internal sealed class AsrPump : IDisposable
         if (_disposed) return;
         _disposed = true;
         _queue.CompleteAdding();
-        _thread.Join(TimeSpan.FromSeconds(2));
-        _queue.Dispose();
+        // 线程仍在跑（如模型加载或长音频 final 未结束）时不能释放队列：工作线程随后会在
+        // GetConsumingEnumerable 上访问已释放的集合。交给进程退出回收即可。
+        if (_thread.Join(TimeSpan.FromSeconds(2))) _queue.Dispose();
+        else AppLog.Warn("asr", "AsrPump 线程 2 秒内未退出，保留队列由进程退出回收");
     }
 }

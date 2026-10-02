@@ -75,6 +75,9 @@ internal sealed class VoiceTyperController : IDisposable
     public Action<string>? BlockedAttempt;
     /// <summary>ASR 已出结果、开始等待 LLM 纠错。UI 据此把"识别中"改成"纠错中"。</summary>
     public Action? CorrectionStarted;
+    /// <summary>文本已成功插入，但智能纠错失败、插入的是识别原文。在回到 Idle 之前触发，
+    /// 让 UI 的成功提示能带上这条说明（否则回落警告会被"已输入"覆盖，用户无从得知）。</summary>
+    public Action? InsertedWithCorrectionFallback;
     /// <summary>录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。</summary>
     public Action<float>? AudioLevel;
     /// <summary>每次听写收尾时恰好触发一次（<see cref="Stop"/> 除外），内容只含数字与枚举。</summary>
@@ -115,6 +118,10 @@ internal sealed class VoiceTyperController : IDisposable
 
     public bool IsRunning => _isRunning;
 
+    /// <summary>是否有一次听写正在进行（录音 / 识别 / 纠错 / 插入）。这是破坏性操作（重载模型、
+    /// 重建控制器、暂停热键）的门禁依据——比协调器的显示状态可靠：显示状态会被错误提示等覆盖。</summary>
+    public bool HasActiveDictation => _active is not null;
+
     /// <summary>派生自 <see cref="_active"/>，不是独立事实源。</summary>
     private bool IsRecording => _active?.Phase == Phase.Recording;
 
@@ -128,9 +135,10 @@ internal sealed class VoiceTyperController : IDisposable
         }
     }
 
-    /// <summary>生产环境入口：装配真实的钩子 / 麦克风 / 剪贴板服务。</summary>
-    public VoiceTyperController(AppConfig config, AsrService asrService)
-        : this(config, asrService, new HotkeyService(), new AudioCaptureService(), new TextInsertionService(),
+    /// <summary>生产环境入口：装配真实的钩子 / 麦克风服务。剪贴板服务由调用方（协调器）持有并借给
+    /// 控制器：重建控制器不能丢掉尚未完成的剪贴板恢复状态，控制器 Dispose 时也不释放它。</summary>
+    public VoiceTyperController(AppConfig config, AsrService asrService, TextInsertionService textInsertion)
+        : this(config, asrService, new HotkeyService(), new AudioCaptureService(), textInsertion,
             CreateLlmCorrector(config))
     {
     }
@@ -241,7 +249,10 @@ internal sealed class VoiceTyperController : IDisposable
         if (!healthy)
         {
             AppLog.Error("controller", "热键监听已失效，自愈重试中");
-            StateChanged?.Invoke(AppStateInfo.ErrorWith(L10n.T("热键监听已失效，正在尝试自动恢复")));
+            // 听写进行中不能改状态：显示状态被改成 Error 会让协调器的门禁误以为没有听写，
+            // 而且 HUD 会被错误提示打断。只给一条非致命提示，会话继续。
+            if (_active is not null) PreviewWarning?.Invoke(L10n.T("热键监听已失效，正在尝试自动恢复"));
+            else StateChanged?.Invoke(AppStateInfo.ErrorWith(L10n.T("热键监听已失效，正在尝试自动恢复")));
         }
         else if (_active is null && _blockedReason is null)
         {
@@ -654,6 +665,7 @@ internal sealed class VoiceTyperController : IDisposable
         {
             case TextInsertionResult.Inserted:
                 RecognizedText?.Invoke(trimmed);
+                if (metrics.Timings.LlmResult == AsrSessionTimings.LlmOutcome.FellBack) InsertedWithCorrectionFallback?.Invoke();
                 StateChanged?.Invoke(AppStateInfo.Idle);
                 return DictationOutcome.Inserted;
 

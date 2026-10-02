@@ -187,10 +187,10 @@ internal sealed partial class SetupForm
         _preloadCheck.AutoSize = true;
         Add(performance, _preloadCheck);
         Add(performance, TextLabel(L10n.T("提前准备识别引擎，减少首次听写的等待。"), 9, false, Muted));
-        ConfigureNumber(_idleUnloadField, 0, 120, 0, 1);
+        ConfigureNumber(_idleUnloadField, ConfigLimits.IdleUnloadMinutesMin, ConfigLimits.IdleUnloadMinutesMax, 0, 1);
         AddField(performance, L10n.T("空闲卸载（分钟）"), L10n.T("设为 0 时保持模型常驻。"), _idleUnloadField);
         var advanced = Stack();
-        ConfigureNumber(_previewWindowField, 0, 30, 0, 1);
+        ConfigureNumber(_previewWindowField, ConfigLimits.PreviewWindowSecondsMin, ConfigLimits.PreviewWindowSecondsMax, 0, 1);
         AddField(advanced, L10n.T("预览窗口（秒）"), L10n.T("设为 0 时自动按本机性能校准。"), _previewWindowField);
         AddDisclosure(performance, L10n.T("高级设置"), advanced);
     }
@@ -209,9 +209,9 @@ internal sealed partial class SetupForm
         AddField(fields, "API Key", L10n.T("密钥由 Windows 加密保存。"), _llmApiKeyField);
         AddField(fields, L10n.T("模型名称"), L10n.T("填写服务提供方支持的模型名称。"), _llmModelField);
         var advanced = Stack();
-        ConfigureNumber(_llmTemperatureField, 0, 2, 1, 0.1m);
-        ConfigureNumber(_llmMaxTokensField, 64, 8000, 0, 50);
-        ConfigureNumber(_llmTimeoutField, 1, 60, 0, 1);
+        ConfigureNumber(_llmTemperatureField, (decimal)ConfigLimits.TemperatureMin, (decimal)ConfigLimits.TemperatureMax, 2, 0.05m);
+        ConfigureNumber(_llmMaxTokensField, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax, 0, 64);
+        ConfigureNumber(_llmTimeoutField, (decimal)ConfigLimits.TimeoutSecondsMin, (decimal)ConfigLimits.TimeoutSecondsMax, 0, 1);
         AddField(advanced, L10n.T("温度"), L10n.T("数值越低，纠错结果越稳定。"), _llmTemperatureField);
         AddField(advanced, L10n.T("最大 Token"), L10n.T("限制纠错回复的长度。"), _llmMaxTokensField);
         AddField(advanced, L10n.T("超时（秒）"), L10n.T("超时后仍使用原识别文本。"), _llmTimeoutField);
@@ -232,7 +232,7 @@ internal sealed partial class SetupForm
         var appearance = Card(page, L10n.T("听写浮窗"));
         ConfigureCombo(_hudPositionCombo, Enum.GetValues<HudPlacement>(), value => ((HudPlacement)value).DisplayName());
         AddField(appearance, L10n.T("浮窗位置"), L10n.T("选择听写反馈在屏幕上的位置。"), _hudPositionCombo);
-        ConfigureNumber(_opacityField, 0.4m, 1m, 2, 0.05m);
+        ConfigureNumber(_opacityField, (decimal)ConfigLimits.OpacityMin, (decimal)ConfigLimits.OpacityMax, 2, 0.05m);
         AddField(appearance, L10n.T("不透明度"), L10n.T("修改时立即预览；撤销后恢复。"), _opacityField);
         _opacityField.ValueChanged += (_, _) => { if (!_loading) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value); };
         var general = Card(page, L10n.T("应用"));

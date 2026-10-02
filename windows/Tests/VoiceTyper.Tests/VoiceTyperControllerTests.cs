@@ -683,4 +683,112 @@ public class VoiceTyperControllerTests
         foreach (var probe in h.Probes) probe.Action();
         Assert.Empty(h.Warnings);
     }
+
+    // ─── HasActiveDictation（破坏性操作的门禁依据）──────────────
+
+    [Fact]
+    public void HasActiveDictation_TracksSessionAcrossNormalFlow()
+    {
+        var h = Started();
+        Assert.False(h.Controller.HasActiveDictation);
+
+        h.Hotkey.OnPress!();
+        Assert.True(h.Controller.HasActiveDictation);
+        h.Advance(800);
+        h.Hotkey.OnRelease!();
+        Assert.True(h.Controller.HasActiveDictation); // 识别中仍算进行中
+
+        h.Session.OnFinal!("好");
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void HasActiveDictation_IsFalseAfterEveryFinishPath()
+    {
+        // 取消
+        var cancel = Started();
+        cancel.Hotkey.OnPress!();
+        cancel.Hotkey.OnCancel!();
+        Assert.False(cancel.Controller.HasActiveDictation);
+
+        // 过短丢弃
+        var discard = Started();
+        discard.HoldFor(100);
+        Assert.False(discard.Controller.HasActiveDictation);
+
+        // 手势取消
+        var gesture = Started(UseModifierOnly);
+        gesture.Hotkey.OnPress!();
+        gesture.Hotkey.OnGestureCancelled!();
+        Assert.False(gesture.Controller.HasActiveDictation);
+
+        // 识别失败
+        var failed = Started();
+        failed.HoldFor(600);
+        failed.Session.OnError!("boom");
+        Assert.False(failed.Controller.HasActiveDictation);
+
+        // Stop()
+        var stopped = Started();
+        stopped.Hotkey.OnPress!();
+        stopped.Controller.Stop();
+        Assert.False(stopped.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void HotkeyHealthFailure_DuringDictation_WarnsWithoutChangingState()
+    {
+        var h = Started();
+        h.Hotkey.OnPress!();
+        var statesBefore = h.States.Count;
+
+        h.Hotkey.OnHealthChanged!(false);
+
+        Assert.Equal(statesBefore, h.States.Count); // 不发 Error 状态
+        Assert.Contains(h.Warnings, w => w.Contains("热键监听已失效"));
+        Assert.True(h.Controller.HasActiveDictation);
+
+        // 会话继续，松键后照常出字。
+        h.Advance(800);
+        h.Hotkey.OnRelease!();
+        h.Session.OnFinal!("照常");
+        Assert.Equal(new[] { "照常" }, h.Text.Inserted);
+    }
+
+    [Fact]
+    public void HotkeyHealthFailure_WhenIdle_StillReportsError()
+    {
+        var h = Started();
+        h.Hotkey.OnHealthChanged!(false);
+        Assert.Equal(AppState.Error, h.States.Last().State);
+    }
+
+    // ─── 纠错回落提示 ──────────────────────────────────────────
+
+    [Fact]
+    public void InsertedWithCorrectionFallback_FiresBeforeIdle_OnlyWhenCorrectionFellBack()
+    {
+        var h = Started();
+        var order = new List<string>();
+        h.Controller.InsertedWithCorrectionFallback = () => order.Add("fallback");
+        h.Controller.StateChanged = s => order.Add(s.State.ToString());
+
+        h.Hotkey.OnPress!();
+        h.Advance(800);
+        h.Hotkey.OnRelease!();
+        h.Session.Timings.LlmResult = AsrSessionTimings.LlmOutcome.FellBack;
+        h.Session.OnFinal!("原文");
+
+        Assert.Equal(new[] { "fallback", "Idle" }, order.SkipWhile(x => x != "fallback").ToArray());
+
+        var corrected = Started();
+        var fired = 0;
+        corrected.Controller.InsertedWithCorrectionFallback = () => fired++;
+        corrected.Hotkey.OnPress!();
+        corrected.Advance(800);
+        corrected.Hotkey.OnRelease!();
+        corrected.Session.Timings.LlmResult = AsrSessionTimings.LlmOutcome.Corrected;
+        corrected.Session.OnFinal!("纠错后");
+        Assert.Equal(0, fired);
+    }
 }

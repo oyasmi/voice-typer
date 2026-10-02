@@ -57,6 +57,23 @@ internal sealed class TextInsertionService : ITextInserting
         uint pendingWrittenSequence, string pendingWrittenText)
         => currentSequence == pendingWrittenSequence && currentText == pendingWrittenText;
 
+    /// <summary>纯函数：到点的剪贴板恢复是否仍应执行——未被取消，且 pending 仍是它自己登记的那一份。</summary>
+    internal static bool ShouldApplyScheduledRestore(bool cancellationRequested, object? currentPending, object scheduledPending)
+        => !cancellationRequested && ReferenceEquals(currentPending, scheduledPending);
+
+    /// <summary>
+    /// 立即完成尚在等待中的剪贴板恢复（应用退出前调用）：避免刚听写完就退出，
+    /// 用户剪贴板里留着识别文本。只在剪贴板仍是我们写入的内容时才恢复。必须在 UI 线程调用。
+    /// </summary>
+    public void FlushPendingRestore()
+    {
+        if (_pendingRestore is not { } pending) return;
+        _pendingRestoreCts?.Cancel();
+        _pendingRestoreCts = null;
+        _pendingRestore = null;
+        RestoreClipboardSnapshotIfUnchanged(pending.Snapshot, pending.WrittenText, pending.WrittenSequence);
+    }
+
     /// <summary>
     /// 一份剪贴板内容的真实快照：备份时立即遍历原剪贴板的每个格式并取走数据，
     /// 而不是持有对原剪贴板所有者的 COM 引用——原所有者进程若在恢复前退出，
@@ -126,7 +143,8 @@ internal sealed class TextInsertionService : ITextInserting
             return TextInsertionResult.Failed;
         }
 
-        _pendingRestore = new PendingRestore(backup, text, expectedSequence);
+        var pending = new PendingRestore(backup, text, expectedSequence);
+        _pendingRestore = pending;
         var cts = new CancellationTokenSource();
         _pendingRestoreCts = cts;
         _ = Task.Run(async () =>
@@ -139,8 +157,12 @@ internal sealed class TextInsertionService : ITextInserting
 
             UiDispatcher.Post(() =>
             {
-                RestoreClipboardSnapshotIfUnchanged(backup, text, expectedSequence);
+                // 回到 UI 线程时，这次恢复可能已被后一次插入/兜底接管：只处理仍属于自己的 pending，
+                // 否则会清掉后一次的 pending，导致再下一次把识别文本当成"用户原剪贴板"。
+                if (!ShouldApplyScheduledRestore(cts.IsCancellationRequested, _pendingRestore, pending)) return;
+                RestoreClipboardSnapshotIfUnchanged(pending.Snapshot, pending.WrittenText, pending.WrittenSequence);
                 _pendingRestore = null;
+                _pendingRestoreCts = null;
             });
         });
 

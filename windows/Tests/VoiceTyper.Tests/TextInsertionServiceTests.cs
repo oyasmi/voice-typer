@@ -46,4 +46,29 @@ public class TextInsertionServiceTests
             currentSequence: 7, currentText: null,
             pendingWrittenSequence: 7, pendingWrittenText: "上一段听写"));
     }
+
+    /// <summary>A 的恢复晚于 B 的插入到点：pending 已被 B 替换，A 的恢复必须放弃，
+    /// 且不得清掉 B 的 pending。</summary>
+    [Fact]
+    public void ScheduledRestore_IsSkipped_WhenPendingWasReplacedByLaterInsert()
+    {
+        var pendingA = new object();
+        var pendingB = new object();
+        Assert.False(TextInsertionService.ShouldApplyScheduledRestore(false, pendingB, pendingA));
+    }
+
+    [Fact]
+    public void ScheduledRestore_Applies_WhenStillOwnPending()
+    {
+        var pending = new object();
+        Assert.True(TextInsertionService.ShouldApplyScheduledRestore(false, pending, pending));
+    }
+
+    [Fact]
+    public void ScheduledRestore_IsSkipped_WhenCancelledOrPendingCleared()
+    {
+        var pending = new object();
+        Assert.False(TextInsertionService.ShouldApplyScheduledRestore(true, pending, pending));
+        Assert.False(TextInsertionService.ShouldApplyScheduledRestore(false, null, pending));
+    }
 }

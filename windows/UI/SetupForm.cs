@@ -35,9 +35,13 @@ internal sealed partial class SetupForm : Form
     public Func<(SecretReadStatus Status, string ApiKey)>? OnLoadLlmApiKey;
     public Action? OnStartModelDownload;
     public Action? OnCancelModelDownload;
-    public Action? OnReloadModel;
+    /// <summary>请求重新加载模型；返回非 null 表示被拒绝（如正在听写），内容是展示给用户的原因。</summary>
+    public Func<string?>? OnReloadModel;
     public Func<LlmConfig, string, Task<LlmTestResult>>? OnTestLlmCorrection;
+    /// <summary>用户手动点击"重新检测"。</summary>
     public Action? OnRetryMicProbe;
+    /// <summary>权限页轮询触发的自动探测；与手动检测分开，协调器可在听写中跳过它。</summary>
+    public Action? OnPollMicProbe;
     public Action<double>? OnPreviewHudOpacity;
     public Action? OnUserClosedWindow;
     /// <summary>开始录制热键前暂停全局热键监听（否则按下当前热键会触发听写，而不是被录进来）。
@@ -136,7 +140,7 @@ internal sealed partial class SetupForm : Form
             else if (_dirty) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value);
         };
         Deactivate += (_, _) => StopHotkeyRecording();
-        _permissionPollTimer.Tick += (_, _) => OnRetryMicProbe?.Invoke();
+        _permissionPollTimer.Tick += (_, _) => OnPollMicProbe?.Invoke();
     }
     /// <summary>
     /// 权限页可见且权限未齐时启动 2–5s 轮询（对齐 macOS bb25282 权限页轮询、5ac5aab R4-14
@@ -178,9 +182,9 @@ internal sealed partial class SetupForm : Form
         _llmApiKeyField.Text = apiKey;
         _loadedApiKey = apiKey;
         _llmModelField.Text = config.Llm.Model;
-        _llmTemperatureField.Value = (decimal)Math.Clamp(config.Llm.Temperature, 0, 2);
-        _llmMaxTokensField.Value = Math.Clamp(config.Llm.MaxTokens, 64, 8000);
-        _llmTimeoutField.Value = (decimal)Math.Clamp(config.Llm.Timeout, 1, 60);
+        _llmTemperatureField.Value = (decimal)Math.Clamp(config.Llm.Temperature, ConfigLimits.TemperatureMin, ConfigLimits.TemperatureMax);
+        _llmMaxTokensField.Value = Math.Clamp(config.Llm.MaxTokens, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax);
+        _llmTimeoutField.Value = (decimal)Math.Clamp(config.Llm.Timeout, ConfigLimits.TimeoutSecondsMin, ConfigLimits.TimeoutSecondsMax);
 
         var mods = config.Hotkey.Modifiers.Select(m => m.ToLowerInvariant()).ToHashSet();
         _modCtrl.Checked = mods.Contains("ctrl") || mods.Contains("control");
@@ -193,9 +197,9 @@ internal sealed partial class SetupForm : Form
 
         _startupCheck.Checked = StartupRegistration.IsEnabled;
         _interfaceLanguageCombo.SelectedItem = config.UI.InterfaceLanguageValue;
-        _opacityField.Value = (decimal)Math.Clamp(config.UI.Opacity, 0.4, 1.0);
-        _idleUnloadField.Value = Math.Clamp(config.Asr.IdleUnloadMinutes, 0, 120);
-        _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, 0, 30);
+        _opacityField.Value = (decimal)Math.Clamp(config.UI.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        _idleUnloadField.Value = Math.Clamp(config.Asr.IdleUnloadMinutes, ConfigLimits.IdleUnloadMinutesMin, ConfigLimits.IdleUnloadMinutesMax);
+        _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, ConfigLimits.PreviewWindowSecondsMin, ConfigLimits.PreviewWindowSecondsMax);
         _preloadCheck.Checked = config.Asr.PreloadOnLaunch;
         _hudPositionCombo.SelectedItem = config.UI.HudPositionValue;
         if (refreshDevices) RefreshMicChoices(config.Audio.InputDevice);
@@ -358,9 +362,16 @@ internal sealed partial class SetupForm : Form
                 OnStartModelDownload?.Invoke();
                 break;
             default:
-                OnReloadModel?.Invoke();
+                if (OnReloadModel?.Invoke() is { } rejection) ShowModelActionMessage(rejection);
                 break;
         }
+    }
+
+    /// <summary>在模型卡片的状态行显示一条操作被拒绝的说明；下一次状态刷新会恢复正常文案。</summary>
+    internal void ShowModelActionMessage(string message)
+    {
+        _modelStatusLabel.Text = message;
+        _modelStatusLabel.ForeColor = Color.FromArgb(180, 100, 0);
     }
 
     private void UpdateHotkeyPreview()

@@ -18,6 +18,16 @@ internal interface ISenseVoiceRecognizing
 }
 
 /// <summary>
+/// <see cref="AsrService"/> 持有的引擎抽象：识别 + 语言热更新 + 释放。生产实现是
+/// <see cref="SenseVoiceEngine"/>；生命周期测试用假实现替身，避免加载真实 ONNX 模型。
+/// 所有成员只应在 <see cref="AsrPump"/> 线程上调用。
+/// </summary>
+internal interface IAsrEngine : ISenseVoiceRecognizing, IDisposable
+{
+    void SetLanguage(AsrLanguage language);
+}
+
+/// <summary>
 /// SenseVoice-Small ONNX 推理封装：fbank → LFR/CMVN → ORT session → CTC 贪心解码。
 /// 对外只有一个方法 <see cref="Recognize"/>，非线程安全——只应在 <see cref="AsrPump"/> 的
 /// 专用线程上使用（与服务端单 worker executor 的约束一致：ONNX session 与前端状态都有可变缓冲）。
@@ -32,7 +42,7 @@ internal interface ISenseVoiceRecognizing
 /// OUT  encoder_out_lens int32    [1]
 /// </code>
 /// </summary>
-internal sealed class SenseVoiceEngine : ISenseVoiceRecognizing, IDisposable
+internal sealed class SenseVoiceEngine : IAsrEngine
 {
     /// <summary>withitn：SenseVoice 自带 ITN（"六十四兆"→"64兆"），本项目不暴露 woitn 选项。</summary>
     private const int TextNormWithItn = 14;
@@ -83,7 +93,25 @@ internal sealed class SenseVoiceEngine : ISenseVoiceRecognizing, IDisposable
                 + $"但采集链路固定 {AppConstants.TargetSampleRate}");
         }
 
-        var options = new SessionOptions
+        // 先解析小文件并完成维度/词表校验：这些步骤失败时还没有任何原生资源需要释放。
+        var parsedCmvn = CmvnStats.Parse(bundle.CmvnPath);
+        var parsedTokens = ModelLocator.LoadTokens(bundle.TokensPath);
+
+        var expectedDim = bundle.LfrM * fbankOptions.NumMelBins;
+        if (parsedCmvn.Means.Length != expectedDim || parsedCmvn.Vars.Length != expectedDim)
+        {
+            throw new ModelContractException(
+                $"lfr_m({bundle.LfrM}) × n_mels({fbankOptions.NumMelBins}) = {expectedDim}，"
+                + $"但 am.mvn 维度为 means={parsedCmvn.Means.Length} vars={parsedCmvn.Vars.Length}");
+        }
+        if (parsedTokens.Count <= 1)
+        {
+            throw new ModelContractException("tokens.json 词表为空或只有 1 个 token");
+        }
+        var frontend = new FbankFrontend(fbankOptions);
+
+        // SessionOptions 在 InferenceSession 构造完成后不再被引用，用 using 确定释放。
+        using var options = new SessionOptions
         {
             IntraOpNumThreads = threads > 0 ? threads : Math.Min(4, Environment.ProcessorCount),
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
@@ -93,37 +121,31 @@ internal sealed class SenseVoiceEngine : ISenseVoiceRecognizing, IDisposable
         // 详见 windows/DESIGN.md §4.2。Windows 上的实际数字需 P0 阶段用真机复测。
         options.AddSessionConfigEntry("session.disable_prepacking", "1");
 
-        _session = new InferenceSession(bundle.OnnxFilePath, options);
-
-        var actualInputNames = _session.InputMetadata.Keys.ToHashSet();
-        var actualOutputNames = _session.OutputMetadata.Keys.ToHashSet();
-        if (!ExpectedInputNames.All(actualInputNames.Contains) || !ExpectedOutputNames.All(actualOutputNames.Contains))
+        // session 所有权：构造成功并通过契约校验后才转交给字段；任何异常路径由 finally 释放。
+        InferenceSession? session = null;
+        try
         {
-            _session.Dispose();
-            throw new ModelContractException(
-                $"模型 I/O 与 SenseVoice-Small 契约不符：期望输入 [{string.Join(", ", ExpectedInputNames)}] "
-                + $"输出 [{string.Join(", ", ExpectedOutputNames)}]，实际输入 [{string.Join(", ", actualInputNames)}] "
-                + $"输出 [{string.Join(", ", actualOutputNames)}]");
+            session = new InferenceSession(bundle.OnnxFilePath, options);
+
+            var actualInputNames = session.InputMetadata.Keys.ToHashSet();
+            var actualOutputNames = session.OutputMetadata.Keys.ToHashSet();
+            if (!ExpectedInputNames.All(actualInputNames.Contains) || !ExpectedOutputNames.All(actualOutputNames.Contains))
+            {
+                throw new ModelContractException(
+                    $"模型 I/O 与 SenseVoice-Small 契约不符：期望输入 [{string.Join(", ", ExpectedInputNames)}] "
+                    + $"输出 [{string.Join(", ", ExpectedOutputNames)}]，实际输入 [{string.Join(", ", actualInputNames)}] "
+                    + $"输出 [{string.Join(", ", actualOutputNames)}]");
+            }
+
+            _session = session;
+            session = null;
+        }
+        finally
+        {
+            session?.Dispose();
         }
 
-        _frontend = new FbankFrontend(fbankOptions);
-        var parsedCmvn = CmvnStats.Parse(bundle.CmvnPath);
-        var parsedTokens = ModelLocator.LoadTokens(bundle.TokensPath);
-
-        var expectedDim = bundle.LfrM * fbankOptions.NumMelBins;
-        if (parsedCmvn.Means.Length != expectedDim || parsedCmvn.Vars.Length != expectedDim)
-        {
-            _session.Dispose();
-            throw new ModelContractException(
-                $"lfr_m({bundle.LfrM}) × n_mels({fbankOptions.NumMelBins}) = {expectedDim}，"
-                + $"但 am.mvn 维度为 means={parsedCmvn.Means.Length} vars={parsedCmvn.Vars.Length}");
-        }
-        if (parsedTokens.Count <= 1)
-        {
-            _session.Dispose();
-            throw new ModelContractException("tokens.json 词表为空或只有 1 个 token");
-        }
-
+        _frontend = frontend;
         _cmvn = parsedCmvn;
         _tokens = parsedTokens;
         _lfrM = bundle.LfrM;

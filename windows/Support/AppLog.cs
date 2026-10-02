@@ -8,42 +8,41 @@ internal enum LogLevel { Debug, Info, Warn, Error }
 
 /// <summary>
 /// 极简文件日志，单 writer + 同步刷盘。
-/// 启动时若日志超过 maxBytes 则做一次按序号重命名的滚动（最多保留 3 个备份）。
+/// 启动时与运行中写入后文件达到 2MB 时，按序号重命名滚动（最多保留
+/// <see cref="BackupCount"/> 个备份），总容量上限为 8MB（2MB × (BackupCount + 1)）。
 /// </summary>
 internal static class AppLog
 {
-    private const long MaxBytes = 2 * 1024 * 1024; // 2 MB
+    private const long DefaultMaxBytes = 2 * 1024 * 1024; // 2 MB
     private const int BackupCount = 3;
 
     private static readonly object _lock = new();
     private static StreamWriter? _writer;
     private static bool _initialized;
+    private static string _path = AppConstants.LogFilePath;
+    private static long _maxBytes = DefaultMaxBytes;
 
-    public static void Initialize()
+    public static void Initialize() => Initialize(AppConstants.LogFilePath, DefaultMaxBytes);
+
+    /// <summary>测试入口：指定日志文件路径与滚动阈值。重复调用会先关闭现有 writer 再重新初始化。</summary>
+    internal static void Initialize(string path, long maxBytes)
     {
         lock (_lock)
         {
             if (_initialized) return;
+            _path = path;
+            _maxBytes = maxBytes;
 
             try
             {
-                Directory.CreateDirectory(AppConstants.LogDirectory);
-                RotateIfNeeded(AppConstants.LogFilePath);
-
-                var fs = new FileStream(
-                    AppConstants.LogFilePath,
-                    FileMode.Append,
-                    FileAccess.Write,
-                    FileShare.Read
-                );
-                _writer = new StreamWriter(fs, new UTF8Encoding(false))
-                {
-                    AutoFlush = true,
-                };
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                RotateIfNeeded(path);
+                _writer = OpenWriter(path);
             }
-            catch
+            catch (Exception ex)
             {
-                // 日志初始化失败时静默；后续 Write 会跳过。
+                // 日志自身故障不能递归写日志，只留一条调试输出；后续 Write 会跳过。
+                System.Diagnostics.Debug.WriteLine($"[AppLog] 初始化失败: {ex.Message}");
                 _writer = null;
             }
 
@@ -51,6 +50,23 @@ internal static class AppLog
         }
 
         Info("app", $"=== VoiceTyper {AppConstants.Version} 启动 ===");
+    }
+
+    /// <summary>测试用：关闭 writer 并回到未初始化状态。</summary>
+    internal static void ResetForTests()
+    {
+        lock (_lock)
+        {
+            _writer?.Dispose();
+            _writer = null;
+            _initialized = false;
+        }
+    }
+
+    private static StreamWriter OpenWriter(string path)
+    {
+        var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        return new StreamWriter(fs, new UTF8Encoding(false)) { AutoFlush = true };
     }
 
     public static void Debug(string category, string message) => Write(LogLevel.Debug, category, message);
@@ -77,22 +93,37 @@ internal static class AppLog
         {
             try
             {
-                _writer?.WriteLine(line);
+                if (_writer is null) return;
+                _writer.WriteLine(line);
+                // 追加模式下 Position 即文件长度，不产生额外系统调用。
+                if (_writer.BaseStream.Position >= _maxBytes) RollWriterLocked();
             }
-            catch
+            catch (Exception ex)
             {
-                // 写入失败静默处理；避免日志故障传染到调用方。
+                // 日志故障不能传染到调用方，也不能递归写日志：关闭写入并留一条调试输出。
+                System.Diagnostics.Debug.WriteLine($"[AppLog] 写入失败，停止写日志: {ex.Message}");
+                try { _writer?.Dispose(); } catch { /* 已在失败路径，只求关闭 */ }
+                _writer = null;
             }
         }
     }
 
-    private static void RotateIfNeeded(string path)
+    /// <summary>必须在持有 <see cref="_lock"/> 时调用：关闭当前文件、滚动备份、重新打开。</summary>
+    private static void RollWriterLocked()
+    {
+        _writer?.Dispose();
+        _writer = null;
+        RotateIfNeeded(_path, force: true);
+        _writer = OpenWriter(_path);
+    }
+
+    private static void RotateIfNeeded(string path, bool force = false)
     {
         try
         {
             if (!File.Exists(path)) return;
             var info = new FileInfo(path);
-            if (info.Length < MaxBytes) return;
+            if (!force && info.Length < _maxBytes) return;
 
             for (int i = BackupCount - 1; i >= 1; i--)
             {
@@ -109,9 +140,10 @@ internal static class AppLog
             if (File.Exists(firstBackup)) File.Delete(firstBackup);
             File.Move(path, firstBackup);
         }
-        catch
+        catch (Exception ex)
         {
-            // 滚动失败不影响主流程
+            // 滚动失败不影响主流程；不能递归写日志，只留调试输出。
+            System.Diagnostics.Debug.WriteLine($"[AppLog] 日志滚动失败: {ex.Message}");
         }
     }
 }

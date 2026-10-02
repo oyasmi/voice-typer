@@ -66,10 +66,9 @@ internal sealed class AudioCaptureService : IAudioCapturing
     public int ChunkSamples { get; } = AppConstants.ChunkSamples;
 
     private readonly object _lock = new();
-    private WasapiCapture? _capture;
-    private MMDevice? _device;
-    private BufferedWaveProvider? _inputBuffer;
-    private ISampleProvider? _resampledProvider;
+    /// <summary>当前这次录音的采集上下文；<see cref="_lock"/> 保护。已停止、但还在等
+    /// <c>RecordingStopped</c> 的旧上下文不再被它引用，由各自的回调释放。</summary>
+    private CaptureContext? _current;
     private WaveFormat? _captureFormat;
     private AudioChunker _chunker;
     private bool _running;
@@ -84,6 +83,43 @@ internal sealed class AudioCaptureService : IAudioCapturing
     private readonly BlockingCollection<Action> _deliveryQueue = new();
     private readonly Thread _deliveryThread;
     private bool _disposed;
+
+    /// <summary>
+    /// 单次采集的资源与事件订阅，所有权属于它自己：NAudio 会把 <c>RecordingStopped</c> 异步投递到
+    /// 创建时的同步上下文，快速 Stop→Start 时旧回调可能晚于新 Start 到达。回调只操作自己捕获的
+    /// 上下文，不读取 <see cref="_current"/> 的资源，旧采集的事件就不会污染新一次录音。
+    /// </summary>
+    private sealed class CaptureContext
+    {
+        public WasapiCapture Capture { get; }
+        public MMDevice Device { get; }
+        /// <summary>在订阅事件之前赋值，之后只读。</summary>
+        public BufferedWaveProvider? Input { get; set; }
+        public ISampleProvider? Resampled { get; set; }
+        public EventHandler<WaveInEventArgs>? DataHandler { get; set; }
+        public EventHandler<StoppedEventArgs>? StoppedHandler { get; set; }
+        private int _released;
+
+        public CaptureContext(WasapiCapture capture, MMDevice device)
+        {
+            Capture = capture;
+            Device = device;
+        }
+
+        public bool IsReleased => Volatile.Read(ref _released) != 0;
+
+        /// <summary>退订并释放采集器与设备；幂等，可从任意线程调用。</summary>
+        public void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            if (DataHandler is not null) Capture.DataAvailable -= DataHandler;
+            if (StoppedHandler is not null) Capture.RecordingStopped -= StoppedHandler;
+            try { Capture.Dispose(); }
+            catch (Exception ex) { AppLog.Warn("audio", $"释放采集器异常: {ex.Message}"); }
+            try { Device.Dispose(); }
+            catch (Exception ex) { AppLog.Warn("audio", $"释放设备异常: {ex.Message}"); }
+        }
+    }
 
     public bool IsRunning
     {
@@ -103,12 +139,13 @@ internal sealed class AudioCaptureService : IAudioCapturing
         {
             if (_running) return;
 
+            MMDevice device;
             try
             {
                 // MMDeviceEnumerator 必须释放：GetDefaultAudioEndpoint 返回的 MMDevice 持有独立
                 // COM 引用，枚举器本身用完即弃（R1-3）。
                 using var enumerator = new MMDeviceEnumerator();
-                _device = OpenInputDevice(enumerator, policy);
+                device = OpenInputDevice(enumerator, policy);
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
@@ -119,12 +156,16 @@ internal sealed class AudioCaptureService : IAudioCapturing
                 throw new AudioStartException(L10n.T("未找到可用麦克风设备"), AudioStartFailureKind.NoDevice, ex);
             }
 
+            // 上下文一经创建就拥有 capture 与 device；失败路径统一经 FailStart 释放。
+            CaptureContext? created = null;
             try
             {
-                _capture = new WasapiCapture(_device, useEventSync: true);
-                _captureFormat = _capture.WaveFormat;
+                var capture = new WasapiCapture(device, useEventSync: true);
+                var ctx = new CaptureContext(capture, device);
+                created = ctx;
+                _captureFormat = capture.WaveFormat;
 
-                _inputBuffer = new BufferedWaveProvider(_captureFormat)
+                ctx.Input = new BufferedWaveProvider(_captureFormat)
                 {
                     BufferDuration = TimeSpan.FromSeconds(2),
                     DiscardOnBufferOverflow = true,
@@ -134,59 +175,51 @@ internal sealed class AudioCaptureService : IAudioCapturing
                     ReadFully = false,
                 };
 
-                // 重采样到 16kHz / mono / float32（IEEE float）。
-                // 选 WDL 而非 MediaFoundationResampler：纯托管、不依赖 MF DLL，且对语音 16kHz 重采样质量足够。
-                // 声道处理显式分三种（R1-3）：ToMono() 内部是 StereoToMonoSampleProvider，
-                // 源声道数 != 2 会抛 ArgumentException，被外层吞成笼统的"启动录音失败"。
-                var sampleProvider = _inputBuffer.ToSampleProvider();
-                switch (_captureFormat.Channels)
-                {
-                    case 1:
-                        break;
-                    case 2:
-                        sampleProvider = sampleProvider.ToMono();
-                        break;
-                    default:
-                        throw new AudioStartException(
-                            L10n.F("暂不支持 {0} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风", _captureFormat.Channels),
-                            AudioStartFailureKind.DeviceFailure);
-                }
-                _resampledProvider = new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
+                ctx.Resampled = BuildResamplingChain(ctx.Input, _captureFormat.Channels);
 
-                _capture.DataAvailable += OnCaptureDataAvailable;
-                _capture.RecordingStopped += OnCaptureStopped;
+                ctx.DataHandler = (_, e) => OnCaptureDataAvailable(ctx, e);
+                ctx.StoppedHandler = (_, e) => OnCaptureStopped(ctx, e);
+                capture.DataAvailable += ctx.DataHandler;
+                capture.RecordingStopped += ctx.StoppedHandler;
 
                 _chunker = new AudioChunker(ChunkSamples);
                 _droppedNotRunningCount = 0;
                 _lastLevelTicks = 0;
+                _current = ctx;
                 // running 必须在 StartRecording 之前、且在锁内置位：DataAvailable 理论上可能在
                 // StartRecording() 返回后的极窄窗口内几乎立即触发，若仍在锁外才置位，这段窗口里
                 // 到达的样本会被误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的
                 // 跨线程写（对齐 macOS R4-07 的教训）。
                 _running = true;
-                _capture.StartRecording();
+                capture.StartRecording();
             }
             catch (AudioStartException)
             {
-                _running = false;
-                Cleanup();
+                FailStart(created, device);
                 throw;
             }
             catch (COMException ex) when ((uint)ex.HResult == 0x80070005u)
             {
-                _running = false;
-                Cleanup();
+                FailStart(created, device);
                 throw new AudioStartException(L10n.T("麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风"), AudioStartFailureKind.AccessDenied, ex);
             }
             catch (Exception ex)
             {
-                _running = false;
-                Cleanup();
+                FailStart(created, device);
                 throw new AudioStartException(L10n.F("启动录音失败: {0}", ex.Message), AudioStartFailureKind.DeviceFailure, ex);
             }
         }
 
         AppLog.Info("audio", $"录音启动: format={_captureFormat}, transport={ActiveDevice?.Transport.LogName() ?? "-"}{(ActiveDevice?.SwitchedByAuto == true ? "*" : "")}");
+    }
+
+    /// <summary>必须在持有 <see cref="_lock"/> 时调用：撤销本次 Start 的所有状态并释放资源。</summary>
+    private void FailStart(CaptureContext? created, MMDevice device)
+    {
+        _running = false;
+        _current = null;
+        if (created is not null) created.Release();
+        else device.Dispose(); // WasapiCapture 构造失败：上下文尚未接管设备
     }
 
     /// <summary>
@@ -246,7 +279,7 @@ internal sealed class AudioCaptureService : IAudioCapturing
         lock (_lock)
         {
             wasRunning = _running;
-            capture = _capture;
+            capture = _current?.Capture;
             if (_running)
             {
                 _running = false;
@@ -273,7 +306,7 @@ internal sealed class AudioCaptureService : IAudioCapturing
         lock (_lock)
         {
             if (!_running) return;
-            capture = _capture;
+            capture = _current?.Capture;
             _running = false;
             _chunker.Drain();
         }
@@ -287,54 +320,80 @@ internal sealed class AudioCaptureService : IAudioCapturing
     {
         var tail = _chunker.Drain();
         var handler = OnTailChunk;
-        _deliveryQueue.Add(() => handler?.Invoke(tail));
+        EnqueueDelivery(() => handler?.Invoke(tail));
         return tail.Length;
     }
 
-    private void OnCaptureDataAvailable(object? sender, WaveInEventArgs e)
+    /// <summary>
+    /// 重采样到 16kHz / mono / float32（IEEE float）。
+    /// 选 WDL 而非 MediaFoundationResampler：纯托管、不依赖 MF DLL，且对语音 16kHz 重采样质量足够。
+    /// 声道处理显式分三种（R1-3）：ToMono() 内部是 StereoToMonoSampleProvider，
+    /// 源声道数 != 2 会抛 ArgumentException，被外层吞成笼统的"启动录音失败"。
+    /// 单独成方法是为了让重采样质量测试与生产共用同一条链。
+    /// </summary>
+    internal static ISampleProvider BuildResamplingChain(BufferedWaveProvider input, int channels)
     {
-        if (e.BytesRecorded <= 0) return;
-
-        BufferedWaveProvider? input;
-        ISampleProvider? resampled;
-        lock (_lock)
+        var sampleProvider = input.ToSampleProvider();
+        switch (channels)
         {
-            input = _inputBuffer;
-            resampled = _resampledProvider;
+            case 1:
+                break;
+            case 2:
+                sampleProvider = sampleProvider.ToMono();
+                break;
+            default:
+                throw new AudioStartException(
+                    L10n.F("暂不支持 {0} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风", channels),
+                    AudioStartFailureKind.DeviceFailure);
         }
+        return new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
+    }
+
+    /// <summary>
+    /// 把重采样器当前可读的样本全部拉出来交给 <paramref name="sink"/>（缓冲区与长度，只在回调内有效）。
+    /// 转换本身与 running 无关，running 判定只在真正写入 chunker 时做（见 <see cref="AppendSamples"/>）。
+    /// </summary>
+    internal static void DrainResampled(ISampleProvider resampled, Action<float[], int> sink)
+    {
+        var pool = ArrayPool<float>.Shared;
+        var tmp = pool.Rent(4096);
+        try
+        {
+            // 迭代上限保险（R1-1）：单次回调最多消费约 3s @ 16kHz 的重采样输出。
+            // 正常路径远达不到；一旦触顶说明补零行为又回来了，记一次 warn 并退出，
+            // 但这不能替代 ReadFully=false。
+            int maxIterations = (AppConstants.TargetSampleRate * 3) / tmp.Length + 1;
+            int read;
+            int iterations = 0;
+            while ((read = resampled.Read(tmp, 0, tmp.Length)) > 0)
+            {
+                sink(tmp, read);
+                if (read < tmp.Length) break;
+                if (++iterations >= maxIterations)
+                {
+                    AppLog.Warn("audio", "重采样单次回调迭代触顶，提前退出（疑似补零回退）");
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            pool.Return(tmp);
+        }
+    }
+
+    private void OnCaptureDataAvailable(CaptureContext ctx, WaveInEventArgs e)
+    {
+        if (e.BytesRecorded <= 0 || ctx.IsReleased) return;
+        var input = ctx.Input;
+        var resampled = ctx.Resampled;
         if (input is null || resampled is null) return;
 
         try
         {
             input.AddSamples(e.Buffer, 0, e.BytesRecorded);
 
-            // 重采样输出：把所有可读样本拉出来。转换本身与 running 无关，
-            // running 判定只在真正写入 chunker 时做（见 AppendSamples）。
-            var pool = ArrayPool<float>.Shared;
-            var tmp = pool.Rent(4096);
-            try
-            {
-                // 迭代上限保险（R1-1）：单次回调最多消费约 3s @ 16kHz 的重采样输出。
-                // 正常路径远达不到；一旦触顶说明补零行为又回来了，记一次 warn 并退出，
-                // 但这不能替代 ReadFully=false。
-                int maxIterations = (AppConstants.TargetSampleRate * 3) / tmp.Length + 1;
-                int read;
-                int iterations = 0;
-                while ((read = resampled.Read(tmp, 0, tmp.Length)) > 0)
-                {
-                    AppendSamples(tmp, read);
-                    if (read < tmp.Length) break;
-                    if (++iterations >= maxIterations)
-                    {
-                        AppLog.Warn("audio", "重采样单次回调迭代触顶，提前退出（疑似补零回退）");
-                        break;
-                    }
-                }
-            }
-            finally
-            {
-                pool.Return(tmp);
-            }
+            DrainResampled(resampled, (buffer, count) => AppendSamples(ctx, buffer, count));
         }
         catch (Exception ex)
         {
@@ -342,59 +401,41 @@ internal sealed class AudioCaptureService : IAudioCapturing
         }
     }
 
-    private void OnCaptureStopped(object? sender, StoppedEventArgs e)
+    private void OnCaptureStopped(CaptureContext ctx, StoppedEventArgs e)
     {
         if (e.Exception is not null)
         {
             AppLog.Warn("audio", $"音频设备意外停止（可能是设备被拔出/切换）: {e.Exception.Message}");
-            UiDispatcher.Post(HandleDeviceChangedDuringRecording);
+            // 只有仍是当前录音的采集器才需要收尾；旧采集器的异常停止不得影响新的一次录音。
+            if (IsCurrent(ctx)) UiDispatcher.Post(() => HandleDeviceChangedDuringRecording(ctx));
         }
 
         // NAudio 的 StopRecording 是异步的：真正的资源释放要等到 RecordingStopped 到达才做，
-        // 否则正常 Stop() 路径从不释放 _capture/_device，每次听写泄漏一组 COM 对象与采集线程（R1-3）。
-        TeardownStoppedCapture(sender as WasapiCapture);
-    }
-
-    /// <summary>退订并释放已停止的采集器；若它仍是当前实例，一并释放设备并清空字段。
-    /// 快速连按热键时新的 Start() 可能已经把 <see cref="_capture"/> 换成新实例——此时只释放旧的。</summary>
-    private void TeardownStoppedCapture(WasapiCapture? stopped)
-    {
-        if (stopped is null || _disposed) return;
-
-        stopped.DataAvailable -= OnCaptureDataAvailable;
-        stopped.RecordingStopped -= OnCaptureStopped;
-
-        bool isCurrent;
+        // 否则正常 Stop() 路径从不释放采集器与设备，每次听写泄漏一组 COM 对象与采集线程（R1-3）。
+        // 快速连按热键时新的 Start() 可能已经换了 _current——此时只释放旧上下文自己的资源。
+        ctx.Release();
         lock (_lock)
         {
-            isCurrent = ReferenceEquals(stopped, _capture);
-            if (isCurrent)
-            {
-                _capture = null;
-                _resampledProvider = null;
-                _inputBuffer = null;
-            }
+            if (ReferenceEquals(_current, ctx)) _current = null;
         }
+    }
 
-        try { stopped.Dispose(); } catch (Exception ex) { AppLog.Warn("audio", $"释放采集器异常: {ex.Message}"); }
-
-        if (isCurrent)
-        {
-            MMDevice? device;
-            lock (_lock) { device = _device; _device = null; }
-            try { device?.Dispose(); } catch (Exception ex) { AppLog.Warn("audio", $"释放设备异常: {ex.Message}"); }
-        }
+    private bool IsCurrent(CaptureContext ctx)
+    {
+        lock (_lock) return ReferenceEquals(_current, ctx);
     }
 
     /// <summary>
     /// 保留已采到的音频交给当前会话完成识别（走与正常停止相同的尾音刷出路径），
     /// 但明确告知用户设备已变化、本次录音已结束——不做自动重建/自动恢复（F-15 / R2-03）。
     /// </summary>
-    private void HandleDeviceChangedDuringRecording()
+    private void HandleDeviceChangedDuringRecording(CaptureContext ctx)
     {
         bool wasRunning;
         lock (_lock)
         {
+            // 迟到的设备变化回调属于旧采集：不得结束现在这一次录音。
+            if (!ReferenceEquals(ctx, _current)) return;
             wasRunning = _running;
             if (_running)
             {
@@ -426,29 +467,29 @@ internal sealed class AudioCaptureService : IAudioCapturing
         callback((float)Math.Sqrt(sum / count));
     }
 
-    private void AppendSamples(float[] buffer, int count)
+    private void AppendSamples(CaptureContext ctx, float[] buffer, int count)
     {
-        ReportLevel(buffer, count);
         lock (_lock)
         {
-            if (!_running)
+            if (!_running || !ReferenceEquals(ctx, _current))
             {
-                // stop() 已经把 running 置 false 并取走尾音：这批样本必然是"迟到"的，
-                // 若仍写进 chunker 会成为永远不会被 flush 的孤儿数据（R3-01 场景 a）。
+                // stop() 已经把 running 置 false 并取走尾音，或这批样本来自已被替换的旧采集：
+                // 必然是"迟到"的，若仍写进 chunker 会成为永远不会被 flush 的孤儿数据，
+                // 甚至混进新一次录音（R3-01 场景 a）。
                 _droppedNotRunningCount++;
                 return;
             }
 
             var chunks = _chunker.Append(buffer.AsSpan(0, count));
-            if (chunks.Count == 0) return;
-
             var handler = OnChunk;
             // 入队动作必须在锁内完成，才能保证与 Stop()/设备变化那侧的入队顺序一致（见类注释）。
             foreach (var chunk in chunks)
             {
-                _deliveryQueue.Add(() => handler?.Invoke(chunk));
+                EnqueueDelivery(() => handler?.Invoke(chunk));
             }
         }
+        // 电平回调在锁外触发，避免调用方的代码在持锁时运行。
+        ReportLevel(buffer, count);
     }
 
     /// <summary>只记计数，不含音频内容（AGENTS.md 日志约束）。"迟到"丢帧是 stop() 与音频线程
@@ -482,20 +523,28 @@ internal sealed class AudioCaptureService : IAudioCapturing
         }
     }
 
+    /// <summary>释放当前上下文（Dispose 与启动失败路径）。已停止、仍在等 RecordingStopped 的旧上下文
+    /// 由各自的回调释放。</summary>
     private void Cleanup()
     {
-        var capture = _capture;
-        if (capture is not null)
+        CaptureContext? ctx;
+        lock (_lock)
         {
-            capture.DataAvailable -= OnCaptureDataAvailable;
-            capture.RecordingStopped -= OnCaptureStopped;
+            ctx = _current;
+            _current = null;
         }
-        try { capture?.Dispose(); } catch { }
-        try { _device?.Dispose(); } catch { }
-        _capture = null;
-        _resampledProvider = null;
-        _device = null;
-        _inputBuffer = null;
+        ctx?.Release();
+    }
+
+    /// <summary>投递队列关闭后（Dispose 之后的迟到调用）丢弃任务，而不是抛出到音频线程。</summary>
+    private void EnqueueDelivery(Action action)
+    {
+        try
+        {
+            if (!_deliveryQueue.TryAdd(action)) AppLog.Debug("audio", "投递队列已关闭，丢弃任务");
+        }
+        catch (InvalidOperationException) { AppLog.Debug("audio", "投递队列已关闭，丢弃任务"); }
+        catch (ObjectDisposedException) { AppLog.Debug("audio", "投递队列已释放，丢弃任务"); }
     }
 
     public void Dispose()
@@ -505,7 +554,8 @@ internal sealed class AudioCaptureService : IAudioCapturing
         StopWithoutResult();
         Cleanup();
         _deliveryQueue.CompleteAdding();
-        _deliveryThread.Join(TimeSpan.FromSeconds(2));
-        _deliveryQueue.Dispose();
+        // 投递线程仍在跑（回调卡住）时不释放队列：它随后会访问已释放的集合。交给进程退出回收。
+        if (_deliveryThread.Join(TimeSpan.FromSeconds(2))) _deliveryQueue.Dispose();
+        else AppLog.Warn("audio", "音频投递线程 2 秒内未退出，保留队列由进程退出回收");
     }
 }

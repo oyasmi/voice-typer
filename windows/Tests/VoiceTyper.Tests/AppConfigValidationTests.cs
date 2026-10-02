@@ -158,4 +158,68 @@ public class AppConfigValidationTests
         Assert.Equal(5, validated.Llm.Timeout);
         Assert.Equal(0.85, validated.UI.Opacity);
     }
+
+    // ─── 修饰键规范化 ──────────────────────────────────────────
+
+    [Fact]
+    public void NormalizesModifierAliases_AndDeduplicates()
+    {
+        var config = new AppConfig();
+        config.Hotkey = new HotkeyConfig { Modifiers = new() { "Control", "CTRL", "option", "cmd", "Shift" }, Key = "d" };
+
+        Assert.Equal(new[] { "ctrl", "alt", "win", "shift" }, config.Validated().Hotkey.Modifiers);
+    }
+
+    [Fact]
+    public void DropsUnknownModifiers_AndKeepsTheValidOnes()
+    {
+        var config = new AppConfig();
+        config.Hotkey = new HotkeyConfig { Modifiers = new() { "foo", "alt" }, Key = "d" };
+
+        var validated = config.Validated().Hotkey;
+        Assert.Equal("d", validated.Key);
+        Assert.Equal(new[] { "alt" }, validated.Modifiers);
+    }
+
+    /// <summary>全是未知修饰键时，HotkeyService 会忽略它们而退化成裸主键全局热键——必须回落默认热键。</summary>
+    [Fact]
+    public void FallsBackToDefaultHotkey_WhenAllModifiersUnknown()
+    {
+        var config = new AppConfig();
+        config.Hotkey = new HotkeyConfig { Modifiers = new() { "foo" }, Key = "d" };
+
+        var validated = config.Validated().Hotkey;
+        Assert.Equal("f2", validated.Key);
+        Assert.NotEmpty(validated.Modifiers);
+    }
+
+    // ─── ConfigLimits 与 Validated() 一致 ──────────────────────
+
+    [Fact]
+    public void ConfigLimits_MatchValidatedClamping()
+    {
+        var low = new AppConfig();
+        low.Asr.Threads = -1; low.Asr.IdleUnloadMinutes = -1; low.Asr.PreviewWindowSeconds = -1;
+        low.Llm.Temperature = -1; low.Llm.MaxTokens = -1; low.Llm.Timeout = -1; low.UI.Opacity = -1;
+        var lo = low.Validated();
+        Assert.Equal(ConfigLimits.ThreadsMin, lo.Asr.Threads);
+        Assert.Equal(ConfigLimits.IdleUnloadMinutesMin, lo.Asr.IdleUnloadMinutes);
+        Assert.Equal(ConfigLimits.PreviewWindowSecondsMin, lo.Asr.PreviewWindowSeconds);
+        Assert.Equal(ConfigLimits.TemperatureMin, lo.Llm.Temperature);
+        Assert.Equal(ConfigLimits.MaxTokensMin, lo.Llm.MaxTokens);
+        Assert.Equal(ConfigLimits.TimeoutSecondsMin, lo.Llm.Timeout);
+        Assert.Equal(ConfigLimits.OpacityMin, lo.UI.Opacity);
+
+        var high = new AppConfig();
+        high.Asr.Threads = 1_000_000; high.Asr.IdleUnloadMinutes = 1_000_000; high.Asr.PreviewWindowSeconds = 1_000_000;
+        high.Llm.Temperature = 1_000; high.Llm.MaxTokens = 1_000_000; high.Llm.Timeout = 1_000_000; high.UI.Opacity = 1_000;
+        var hi = high.Validated();
+        Assert.Equal(ConfigLimits.ThreadsMax, hi.Asr.Threads);
+        Assert.Equal(ConfigLimits.IdleUnloadMinutesMax, hi.Asr.IdleUnloadMinutes);
+        Assert.Equal(ConfigLimits.PreviewWindowSecondsMax, hi.Asr.PreviewWindowSeconds);
+        Assert.Equal(ConfigLimits.TemperatureMax, hi.Llm.Temperature);
+        Assert.Equal(ConfigLimits.MaxTokensMax, hi.Llm.MaxTokens);
+        Assert.Equal(ConfigLimits.TimeoutSecondsMax, hi.Llm.Timeout);
+        Assert.Equal(ConfigLimits.OpacityMax, hi.UI.Opacity);
+    }
 }

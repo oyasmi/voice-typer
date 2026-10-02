@@ -42,13 +42,13 @@ internal sealed class AppConfig
     public AppConfig Validated()
     {
         var config = Clone();
-        config.Asr.Threads = ClampInt(config.Asr.Threads, 0, 32, "asr.threads");
-        config.Asr.IdleUnloadMinutes = ClampInt(config.Asr.IdleUnloadMinutes, 0, 24 * 60, "asr.idle_unload_minutes");
-        config.Asr.PreviewWindowSeconds = ClampInt(config.Asr.PreviewWindowSeconds, 0, 30, "asr.preview_window");
-        config.Llm.Temperature = ClampDouble(config.Llm.Temperature, 0, 2, "llm.temperature");
-        config.Llm.MaxTokens = ClampInt(config.Llm.MaxTokens, 64, 8192, "llm.max_tokens");
-        config.Llm.Timeout = ClampDouble(config.Llm.Timeout, 1, 120, "llm.timeout");
-        config.UI.Opacity = ClampDouble(config.UI.Opacity, 0.1, 1.0, "ui.opacity");
+        config.Asr.Threads = ClampInt(config.Asr.Threads, ConfigLimits.ThreadsMin, ConfigLimits.ThreadsMax, "asr.threads");
+        config.Asr.IdleUnloadMinutes = ClampInt(config.Asr.IdleUnloadMinutes, ConfigLimits.IdleUnloadMinutesMin, ConfigLimits.IdleUnloadMinutesMax, "asr.idle_unload_minutes");
+        config.Asr.PreviewWindowSeconds = ClampInt(config.Asr.PreviewWindowSeconds, ConfigLimits.PreviewWindowSecondsMin, ConfigLimits.PreviewWindowSecondsMax, "asr.preview_window");
+        config.Llm.Temperature = ClampDouble(config.Llm.Temperature, ConfigLimits.TemperatureMin, ConfigLimits.TemperatureMax, "llm.temperature");
+        config.Llm.MaxTokens = ClampInt(config.Llm.MaxTokens, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax, "llm.max_tokens");
+        config.Llm.Timeout = ClampDouble(config.Llm.Timeout, ConfigLimits.TimeoutSecondsMin, ConfigLimits.TimeoutSecondsMax, "llm.timeout");
+        config.UI.Opacity = ClampDouble(config.UI.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax, "ui.opacity");
         config.Hotkey = ValidatedHotkey(config.Hotkey);
         config.Audio ??= new AudioConfig();
         config.Audio.InputDevice = string.IsNullOrWhiteSpace(config.Audio.InputDevice)
@@ -87,12 +87,41 @@ internal sealed class AppConfig
             }
             return new HotkeyConfig { Modifiers = new List<string>(), Key = key, ModeValue = mode };
         }
-        if (hotkey.Modifiers is null || hotkey.Modifiers.Count == 0)
+        var modifiers = NormalizeModifiers(hotkey.Modifiers);
+        if (modifiers.Count == 0)
         {
-            AppLog.Warn("config", $"配置字段 hotkey 未搭配修饰键({hotkey.Key})，已回落为默认热键 Ctrl+F2");
+            // 含"写了修饰键但全是未知值"：HotkeyService 会忽略未知值，放行就会退化成裸主键全局热键。
+            AppLog.Warn("config", $"配置字段 hotkey 未搭配有效修饰键({hotkey.Key})，已回落为默认热键 Ctrl+F2");
             return new HotkeyConfig { ModeValue = mode };
         }
-        return new HotkeyConfig { Modifiers = new List<string>(hotkey.Modifiers), Key = key, ModeValue = mode };
+        return new HotkeyConfig { Modifiers = modifiers, Key = key, ModeValue = mode };
+    }
+
+    /// <summary>
+    /// 把修饰键规范化为 <c>ctrl/alt/shift/win</c> 并去重（保持首次出现的顺序）；别名与
+    /// <see cref="Services.HotkeyService"/> 的识别范围一致。未知值记 warning 后丢弃。
+    /// </summary>
+    internal static List<string> NormalizeModifiers(IEnumerable<string>? modifiers)
+    {
+        var result = new List<string>();
+        foreach (var raw in modifiers ?? Array.Empty<string>())
+        {
+            var canonical = (raw ?? "").Trim().ToLowerInvariant() switch
+            {
+                "ctrl" or "control" => "ctrl",
+                "alt" or "option" => "alt",
+                "shift" => "shift",
+                "win" or "win_l" or "win_r" or "super" or "command" or "cmd" => "win",
+                _ => null,
+            };
+            if (canonical is null)
+            {
+                AppLog.Warn("config", $"配置字段 hotkey.modifiers 含未知修饰键({raw})，已丢弃");
+                continue;
+            }
+            if (!result.Contains(canonical)) result.Add(canonical);
+        }
+        return result;
     }
 
     private static int ClampInt(int value, int lower, int upper, string field)
@@ -117,6 +146,28 @@ internal sealed class AppConfig
         AppLog.Warn("config", $"配置字段 {field} 越界({value})，已夹逼为 {clamped}");
         return clamped;
     }
+}
+
+/// <summary>
+/// 配置数值范围的唯一来源：<see cref="AppConfig.Validated"/> 的夹逼与设置页控件的范围共用，
+/// 避免控件比配置更窄，打开合法配置即被夹逼并误判为"已修改"。
+/// </summary>
+internal static class ConfigLimits
+{
+    public const int ThreadsMin = 0;
+    public const int ThreadsMax = 32;
+    public const int IdleUnloadMinutesMin = 0;
+    public const int IdleUnloadMinutesMax = 24 * 60;
+    public const int PreviewWindowSecondsMin = 0;
+    public const int PreviewWindowSecondsMax = 30;
+    public const double TemperatureMin = 0;
+    public const double TemperatureMax = 2;
+    public const int MaxTokensMin = 64;
+    public const int MaxTokensMax = 8192;
+    public const double TimeoutSecondsMin = 1;
+    public const double TimeoutSecondsMax = 120;
+    public const double OpacityMin = 0.1;
+    public const double OpacityMax = 1.0;
 }
 
 /// <summary>支持的 SenseVoice 识别语言。与 client-server/server/voice_typer_server/recognizer.py 的 _SENSEVOICE_LID 表一一对应。</summary>

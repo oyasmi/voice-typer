@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using VoiceTyper.Core;
@@ -34,26 +35,71 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     public string? FailureMessage { get; private set; }
     public Action<AsrState>? OnStateChange;
 
-    private readonly AsrPump _pump = new();
+    private readonly AsrPump _pump;
+    private readonly Func<string, ModelBundle?> _locate;
+    private readonly Func<ModelBundle, AsrLanguage, int, IAsrEngine> _build;
+    private readonly Func<TimeSpan, Action, IDisposable> _schedule;
     /// <summary>
     /// 引擎引用本身用 <see cref="_engineLock"/> 保护，而不是靠"只在 AsrPump 上访问"的约定——
     /// <see cref="CurrentEngine"/> 会被 <see cref="LocalAsrSession"/> 从 UI 线程直接调用
     /// （不经过 AsrPump），此前那条约定实际已被违反，属于无同步的跨线程读写（N-01）。
     /// </summary>
     private readonly object _engineLock = new();
-    private SenseVoiceEngine? _engine;
+    private IAsrEngine? _engine;
     private AsrConfig _config = new();
-    private System.Windows.Forms.Timer? _idleTimer;
+    private IDisposable? _idleTimer;
     private int _loadGeneration;
-    private int _resolvedPreviewWindowSamples = 15 * AppConstants.TargetSampleRate;
-    /// <summary>当前在飞的加载任务。<see cref="PreloadAsync"/>（EnsureLoaded 语义）在有它时
-    /// 直接共享、绝不追加新加载；只有 <see cref="ReloadAsync"/>（配置版本变化 / 用户点重载）
-    /// 才会在它非空时记一次 <see cref="_pendingReload"/>。这样"重载 → 卸载 → 状态置 Unloaded →
-    /// 协调器自动 EnsureLoaded"这条链不再自激成无限重载环（R2-3）。</summary>
-    private Task? _inFlightLoad;
+    /// <summary>当前存活（尚未 Close）的会话数。UI 线程写、pump 线程读，所以用 Volatile/Interlocked。
+    /// 大于 0 时不得空闲卸载：会话持有的引擎实例不能在它还在用时被 Dispose。</summary>
+    private int _activeSessions;
+    /// <summary>自动校准的预览窗口（采样点）；null 表示尚未校准。只在 UI 线程读写。</summary>
+    private int? _calibratedWindowSamples;
+    /// <summary>校准结果对应的 (模型文件, 线程数)；二者不变时重载/冷恢复复用结果，不再重测。</summary>
+    private string? _calibrationKey;
+    /// <summary>当前在飞的加载任务（占位在工作开始前发布）。<see cref="PreloadAsync"/>
+    /// （EnsureLoaded 语义）在有它时直接共享、绝不追加新加载；只有 <see cref="ReloadAsync"/>
+    /// （配置版本变化 / 用户点重载）才会在它非空时记一次 <see cref="_pendingReload"/>。
+    /// 这样"重载 → 卸载 → 状态置 Unloaded → 协调器自动 EnsureLoaded"这条链不再自激成无限重载环（R2-3）。
+    /// 任务同步完成（如模型缺失）时，清理按身份匹配，不会把已完成的任务留在字段里。</summary>
+    private TaskCompletionSource? _inFlightLoad;
     /// <summary>加载进行中又收到一次真正的重载请求：完成后再合并跑一遍，确保最新配置最终生效。</summary>
     private bool _pendingReload;
     private bool _disposed;
+
+    public AsrService()
+        : this(ModelLocator.Locate, (bundle, language, threads) => new SenseVoiceEngine(bundle, language, threads),
+            ScheduleWithFormsTimer)
+    {
+    }
+
+    /// <param name="schedule">一次性延迟回调；返回的句柄 Dispose 即取消。回调须在 UI 线程触发。</param>
+    internal AsrService(Func<string, ModelBundle?> locate, Func<ModelBundle, AsrLanguage, int, IAsrEngine> build,
+        Func<TimeSpan, Action, IDisposable> schedule, AsrPump? pump = null)
+    {
+        _locate = locate;
+        _build = build;
+        _schedule = schedule;
+        _pump = pump ?? new AsrPump();
+    }
+
+    private static IDisposable ScheduleWithFormsTimer(TimeSpan delay, Action action)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = (int)Math.Min(delay.TotalMilliseconds, int.MaxValue) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            action();
+        };
+        timer.Start();
+        return timer;
+    }
+
+    /// <summary>用户显式配置优先；否则用自校准结果；都没有时取默认 15 秒。每次建会话时现算，
+    /// 所以保存 <c>preview_window</c> 后对下一次会话立即生效。</summary>
+    private int EffectivePreviewWindowSamples =>
+        _config.PreviewWindowSeconds > 0
+            ? _config.PreviewWindowSeconds * AppConstants.TargetSampleRate
+            : _calibratedWindowSamples ?? 15 * AppConstants.TargetSampleRate;
 
     /// <summary>配置变化时调用：语言变化直接热更新引擎；模型目录/线程数变化触发重新加载。</summary>
     public void UpdateConfig(AsrConfig newConfig)
@@ -89,7 +135,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     public Task PreloadAsync()
     {
         if (State is AsrState.Loading or AsrState.Ready) return Task.CompletedTask;
-        return _inFlightLoad ?? StartLoad(unloadFirst: false);
+        return _inFlightLoad?.Task ?? StartLoad(unloadFirst: false);
     }
 
     /// <summary>
@@ -104,7 +150,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         if (_inFlightLoad is not null) return;
         // 引擎已经在内存里就别往回降级。
         if (CurrentEngine() is not null) return;
-        var target = ModelLocator.Locate(_config.ModelDir) is null ? AsrState.ModelMissing : AsrState.SuspendedForIdle;
+        var target = _locate(_config.ModelDir) is null ? AsrState.ModelMissing : AsrState.SuspendedForIdle;
         if (State != target) SetState(target);
     }
 
@@ -114,57 +160,72 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         if (_inFlightLoad is { } inFlight)
         {
             _pendingReload = true;
-            return inFlight;
+            return inFlight.Task;
         }
         return StartLoad(unloadFirst: true);
     }
 
     private Task StartLoad(bool unloadFirst)
     {
-        var task = RunLoadAsync(unloadFirst);
-        _inFlightLoad = task;
-        return task;
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // 先发布占位再启动工作：加载同步完成（模型缺失）或状态回调重入时，都能看到"有加载在飞"。
+        _inFlightLoad = tcs;
+        _ = RunLoadAsync(unloadFirst, tcs);
+        return tcs.Task;
     }
 
-    private async Task RunLoadAsync(bool unloadFirst)
+    private async Task RunLoadAsync(bool unloadFirst, TaskCompletionSource tcs)
     {
         try
         {
-            if (unloadFirst)
+            try
             {
-                await UnloadNowAsync(dueToIdle: false).ConfigureAwait(true);
+                if (unloadFirst)
+                {
+                    await UnloadNowAsync(dueToIdle: false).ConfigureAwait(true);
+                }
+                await LoadAsync().ConfigureAwait(true);
             }
-            await LoadAsync().ConfigureAwait(true);
+            catch (Exception ex)
+            {
+                // LoadAsync 内部已把失败转成 Failed 状态；这里只兜底卸载阶段等意外异常。
+                AppLog.Error("asr", "加载任务异常", ex);
+            }
+            finally
+            {
+                // 覆盖异常与正常完成：按身份清除，加载标志不会卡在"永远在飞"。
+                if (ReferenceEquals(_inFlightLoad, tcs)) _inFlightLoad = null;
+            }
+
+            // 合并重载完成后 tcs 才完成：等待 ReloadAsync 的调用方看到的是最新配置的结果。
+            if (_pendingReload)
+            {
+                _pendingReload = false;
+                await StartLoad(unloadFirst: true).ConfigureAwait(true);
+            }
         }
         finally
         {
-            // 覆盖异常、取消与正常完成：加载标志一定清除，不会卡在"永远在飞"。
-            _inFlightLoad = null;
-        }
-
-        if (_pendingReload)
-        {
-            _pendingReload = false;
-            await ReloadAsync().ConfigureAwait(true);
+            tcs.TrySetResult();
         }
     }
 
     /// <summary>引擎当前实例。可从任意线程调用（<see cref="LocalAsrSession"/> 会在 UI 线程上直接
     /// 读取，而写入发生在 <see cref="AsrPump"/>）——引用本身由 <see cref="_engineLock"/> 保护，
     /// 可安全跨线程访问。</summary>
-    public SenseVoiceEngine? CurrentEngine()
+    public IAsrEngine? CurrentEngine()
     {
         lock (_engineLock) return _engine;
     }
 
     /// <summary>写入引擎引用；只应在 AsrPump 上调用，与推理串行化的约定保持一致。</summary>
-    private void SetEngine(SenseVoiceEngine? newEngine)
+    private void SetEngine(IAsrEngine? newEngine)
     {
         lock (_engineLock) _engine = newEngine;
     }
 
     /// <summary>原子地取走并清空当前引擎引用，供调用方在 AsrPump 上 Dispose。</summary>
-    private SenseVoiceEngine? TakeAndClearEngine()
+    private IAsrEngine? TakeAndClearEngine()
     {
         lock (_engineLock)
         {
@@ -186,16 +247,17 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         {
             _ = PreloadAsync();
         }
-        _idleTimer?.Stop();
-        _idleTimer?.Dispose();
-        _idleTimer = null; // 录音期间不应触发空闲卸载；结束后由 SessionEnded 重新安排
-        return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, _resolvedPreviewWindowSamples,
+        // 租约：会话存活期间不得空闲卸载；由 LocalAsrSession.Close 恰好释放一次。
+        CancelIdleTimer();
+        Interlocked.Increment(ref _activeSessions);
+        return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, EffectivePreviewWindowSamples,
             engineLoadError: () => State switch
             {
                 AsrState.Failed => FailureMessage ?? L10n.T("模型加载失败"),
                 AsrState.ModelMissing => L10n.T("识别模型缺失，请在设置中下载模型"),
                 _ => null,
-            });
+            },
+            onClosed: () => Interlocked.Decrement(ref _activeSessions));
     }
 
     IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector) => MakeSession(corrector);
@@ -208,7 +270,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         _loadGeneration++;
         var generation = _loadGeneration;
 
-        var bundle = ModelLocator.Locate(_config.ModelDir);
+        var bundle = _locate(_config.ModelDir);
         if (bundle is null)
         {
             SetState(AsrState.ModelMissing);
@@ -221,7 +283,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
 
         try
         {
-            var built = await _pump.PostAsync(() => new SenseVoiceEngine(bundle, language, threads)).ConfigureAwait(true);
+            var built = await _pump.PostAsync(() => _build(bundle, language, threads)).ConfigureAwait(true);
 
             if (generation != _loadGeneration)
             {
@@ -243,7 +305,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
                 built.SetLanguage(latestLanguage);
             }).ConfigureAwait(true);
 
-            CalibratePreviewWindowIfNeeded(built);
+            _ = CalibratePreviewWindowIfNeededAsync(built, $"{bundle.OnnxFilePath}|{threads}");
             SetState(AsrState.Ready);
             ScheduleIdleUnloadIfNeeded();
         }
@@ -260,15 +322,15 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// <see cref="ReloadAsync"/> 内部调用时传 false。</param>
     private async Task UnloadNowAsync(bool dueToIdle)
     {
-        _idleTimer?.Stop();
-        _idleTimer?.Dispose();
-        _idleTimer = null;
+        CancelIdleTimer();
 
         // 取走引用与 Dispose 都在 AsrPump 上完成：Dispose 必须与"推理仍在跑"这件事互斥，
         // 而正在执行中的 Recognize() 调用同样跑在 AsrPump 上——两者天然靠这条串行队列互斥，
         // 换到别的线程 Dispose 就可能与一次仍在进行的推理调用竞争同一个 ONNX session。
         var hadEngine = await _pump.PostAsync(() =>
         {
+            // 空闲卸载在入队后、执行前可能已有新会话开始：再查一次租约，有会话就放弃。
+            if (dueToIdle && Volatile.Read(ref _activeSessions) > 0) return false;
             var old = TakeAndClearEngine();
             old?.Dispose();
             return old is not null;
@@ -289,64 +351,77 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         {
             SetState(dueToIdle ? AsrState.SuspendedForIdle : AsrState.Unloaded);
         }
+
+        // 与新会话的开始竞态：会话在引擎被取走之后才拿到租约时，它看到的状态仍是 Ready、
+        // 不会自己发起加载，这里补一次。
+        if (dueToIdle && Volatile.Read(ref _activeSessions) > 0) _ = PreloadAsync();
     }
 
     /// <summary>
-    /// 首次加载后用 5 秒静音张量测一次本机 RTF，据此把预览窗口自动选到 15/10/6 秒之一——
+    /// 用 5 秒静音张量测一次本机 RTF，据此把预览窗口自动选到 15/10/6 秒之一——
     /// 不改识别算法，只是调一个服务端本来就有的参数（<c>asr.preview_window</c>）。
-    /// 用户在设置里显式指定了非 0 值时跳过校准，直接采用配置值。
+    /// 用户显式指定了非 0 值时不需要校准（见 <see cref="EffectivePreviewWindowSamples"/>）；
+    /// 模型文件与线程数没变时复用上次结果，空闲卸载后的冷恢复不再多跑一次。
+    /// 推理在 <see cref="AsrPump"/> 上，结果在 UI 线程续体里写回字段。
     /// </summary>
-    private void CalibratePreviewWindowIfNeeded(SenseVoiceEngine engine)
+    private async Task CalibratePreviewWindowIfNeededAsync(IAsrEngine engine, string key)
     {
-        if (_config.PreviewWindowSeconds > 0)
-        {
-            _resolvedPreviewWindowSamples = _config.PreviewWindowSeconds * AppConstants.TargetSampleRate;
-            return;
-        }
+        if (_config.PreviewWindowSeconds > 0) return;
+        if (_calibratedWindowSamples is not null && _calibrationKey == key) return;
 
-        _pump.Post(() =>
+        int samples;
+        try
         {
-            try
+            var rtf = await _pump.PostAsync(() =>
             {
                 var silence = new float[5 * AppConstants.TargetSampleRate];
                 var sw = Stopwatch.StartNew();
                 engine.Recognize(silence);
                 sw.Stop();
-                double rtf = sw.Elapsed.TotalSeconds / 5.0;
+                return sw.Elapsed.TotalSeconds / 5.0;
+            }).ConfigureAwait(true);
 
-                int seconds = rtf <= 0.05 ? 15 : rtf <= 0.15 ? 10 : 6;
-                _resolvedPreviewWindowSamples = seconds * AppConstants.TargetSampleRate;
-                AppLog.Info("asr", $"预览窗口自校准: RTF={rtf:F3} → preview_window={seconds}s");
-            }
-            catch (Exception ex)
-            {
-                AppLog.Warn("asr", $"预览窗口自校准失败，使用默认 15s: {ex.Message}");
-                _resolvedPreviewWindowSamples = 15 * AppConstants.TargetSampleRate;
-            }
-        });
+            int seconds = rtf <= 0.05 ? 15 : rtf <= 0.15 ? 10 : 6;
+            samples = seconds * AppConstants.TargetSampleRate;
+            AppLog.Info("asr", $"预览窗口自校准: RTF={rtf:F3} → preview_window={seconds}s");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("asr", $"预览窗口自校准失败，使用默认 15s: {ex.Message}");
+            samples = 15 * AppConstants.TargetSampleRate;
+        }
+        if (_disposed) return;
+        _calibratedWindowSamples = samples;
+        _calibrationKey = key;
+    }
+
+    private void CancelIdleTimer()
+    {
+        _idleTimer?.Dispose();
+        _idleTimer = null;
     }
 
     private void ScheduleIdleUnloadIfNeeded()
     {
-        _idleTimer?.Stop();
-        _idleTimer?.Dispose();
-        _idleTimer = null;
+        CancelIdleTimer();
         if (_config.IdleUnloadMinutes <= 0) return;
+        // 有存活会话时不计时；会话 Close 后由 SessionEnded 重新安排。
+        if (Volatile.Read(ref _activeSessions) > 0) return;
 
-        _idleTimer = new System.Windows.Forms.Timer { Interval = _config.IdleUnloadMinutes * 60 * 1000 };
-        _idleTimer.Tick += async (_, _) =>
+        _idleTimer = _schedule(TimeSpan.FromMinutes(_config.IdleUnloadMinutes), () => _ = IdleUnloadAsync());
+    }
+
+    private async Task IdleUnloadAsync()
+    {
+        CancelIdleTimer(); // 一次性计时器已触发，释放句柄
+        try
         {
-            _idleTimer?.Stop();
-            try
-            {
-                await UnloadNowAsync(dueToIdle: true).ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                AppLog.Error("asr", "空闲卸载失败", ex);
-            }
-        };
-        _idleTimer.Start();
+            await UnloadNowAsync(dueToIdle: true).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("asr", "空闲卸载失败", ex);
+        }
     }
 
     private void SetState(AsrState state, string? message = null)
@@ -360,8 +435,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _idleTimer?.Stop();
-        _idleTimer?.Dispose();
+        CancelIdleTimer();
         _pump.Post(() => TakeAndClearEngine()?.Dispose());
         _pump.Dispose();
     }

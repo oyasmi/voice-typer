@@ -788,7 +788,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | **未签名安装包被 SmartScreen 拦** | 新用户装不上 | README 图文说明"更多信息 → 仍要运行"；长期解法是买 EV 证书（与 macOS 公证同一个决策位，本轮都不做） |
 | **UIPI：无法向提权窗口插入文本** | 在管理员终端里听写静默失败 | 检测目标窗口提权并给明确提示，而不是让用户以为识别坏了；README 记为已知限制 |
 | **AV 误报**（全局键盘钩子 + 剪贴板 + SendInput + 下载大文件） | 用户被吓退 | 目录式部署代替自解压单文件（减少一大类启发式命中）；README 说明各权限用途；必要时向主流 AV 提交白名单 |
-| **ORT NuGet 版本漂移** | 构建不可复现 | csproj 钉死 `1.24.2`；`packages.lock.json` 入库（`RestorePackagesWithLockFile=true`） |
+| **ORT NuGet 版本漂移** | 构建不可复现 | csproj 钉死 `1.24.2`；`packages.lock.json` 尚未启用（仓库中没有该文件，csproj 也未设置 `RestorePackagesWithLockFile`），待在 Windows 环境生成 |
 | **arm64 变体缺乏验证** | Snapdragon 机器上出问题无人知 | ORT 官方提供 win-arm64 原生库（✅ 实测存在）；若手上无 arm64 设备，README 标注"arm64 构建未经实机验证"，不假装它测过 |
 | **无法在本机验证任何 Windows 行为** | 方案里的估算可能全错 | 已在文档顶部与各处显式标注 ✅/⚠️；P0 探针阶段就是为消除这一整类不确定性而存在的 |
 | 两个 App 同时安装 | 热键互抢、双份内存 | 配置目录已隔离（`VoiceTyper` vs `voice_typer`）；安装包检测到旧版时提示卸载 |
@@ -1049,3 +1049,69 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
    换行、滚动、Tab 焦点和保存按钮均可用，此项尚未宣称真机通过。
 6. 核对开机自启注册表与重新登录、界面语言重启；测试纠错地址/错误密钥/超时，确认失败保留
    原识别文本且日志无密钥。
+
+## 17. 2026-10-02 审查分诊修复批次
+
+依据 [TRIAGE_2026-10-02.md](TRIAGE_2026-10-02.md) 的工单实施，原始审查见
+[REVIEW_2026-10-02.md](REVIEW_2026-10-02.md)。
+
+### 17.1 当前不变量与所有权
+
+- **加载占位**：`AsrService._inFlightLoad` 是 `TaskCompletionSource`，在工作开始前发布，清理按身份匹配。
+  合并重载完成后调用方的 Task 才完成。
+- **会话租约**：`MakeSession` 递增 `_activeSessions`，`LocalAsrSession.Close()`（幂等）恰好释放一次。
+  租约大于 0 时不安排空闲计时；已入队的卸载闭包在 `AsrPump` 上执行前再检查一次。
+  引擎仍只在 `AsrPump` 上 Dispose。
+- **预览窗口**：有效值在每次 `MakeSession` 时现算（显式配置 > 校准结果 > 15 秒）；校准结果按
+  `(模型文件, 线程数)` 缓存，写回发生在 UI 线程续体。
+- **门禁事实源**：破坏性操作用 `VoiceTyperController.HasActiveDictation`，不用会被错误提示覆盖的显示状态。
+- **剪贴板**：应用级唯一 `TextInsertionService`（协调器持有，控制器借用）；恢复闭包只处理仍属于自己的 pending。
+- **采集**：`AudioCaptureService.CaptureContext` 拥有单次采集的 capture/device/缓冲/重采样器与事件订阅，
+  回调只操作自己捕获的上下文；`_current` 之外的旧上下文由各自的 `RecordingStopped` 释放。
+- **配置范围**：`ConfigLimits` 是设置页控件与 `AppConfig.Validated()` 共用的唯一来源。
+
+### 17.2 工单状态
+
+| 工单 | 代码 | 自动化测试 | 备注 |
+| --- | --- | --- | --- |
+| T1-0 / T1-1 / T1-2 / T2-2 | 完成 | 已编写（`AsrServiceLifecycleTests`） | 经 `IAsrEngine` 与注入的 locate/build/schedule 接缝 |
+| T1-3 | 完成 | 控制器部分已编写 | 协调器门禁无测试 harness，靠代码审查 |
+| T1-4 | 完成 | 未新增 | 构造顺序调整，没有原生资源计数手段 |
+| T1-5 | 完成 | 已编写（`AsrPumpTests`） | 采集服务的同类修改靠代码审查 |
+| T1-6 | 完成 | 判定函数已编写 | 真实剪贴板路径靠手工验证 |
+| T1-7 | 完成 | 已编写（`AppLogRotationTests`） | |
+| T2-1 / T2-7 | 完成 | 已编写 | |
+| T2-3 | 完成 | 控制器事件已编写 | HUD 绘制资源与副标题靠手工验证 |
+| T2-4 | 完成 | 无 | 协调器无 harness，靠代码审查 |
+| T2-5 | 完成 | 已编写 | |
+| T2-6 | 完成 | 无 | `WasapiCapture` 无法替身，靠手工验证 |
+| T3-1 第一步 | 测试已写 | 未运行 | 见 17.4 |
+| T3-2 | **未做** | — | 需要用户在真机采集数据，agent 不得自行判定 |
+
+### 17.3 验证状态
+
+| 项 | 状态 |
+| --- | --- |
+| 代码完成 | 是（T3-2 除外，按分诊要求先采数据） |
+| `dotnet build` / `dotnet test` | **未验证**：本批次在没有 .NET SDK 的 Linux 环境完成，一次都没有编译或运行 |
+| Windows x64 真机 | **未验证** |
+| Windows arm64 真机 | **未验证** |
+
+合并前必须先在带 .NET 10 SDK 的环境运行 `dotnet test`，并修正可能的编译或用例问题。
+
+### 17.4 T3-1 重采样测量
+
+`ResamplerStreamingTests` 用生产同一条链（`AudioCaptureService.BuildResamplingChain` /
+`DrainResampled`）对 48k/44.1k、单/双声道、10ms 固定与 7–13ms 随机分块做流式与一次性输出的对比，
+指标写入测试输出（样本数偏差、SNR、最大相邻跳变）。常规运行只断言样本数偏差 < 1%；设置
+`VOICETYPER_RESAMPLER_STRICT=1` 才断言 SNR ≥ 40dB。**测量结果尚未产生**。判定规则：达标则不改实现并在此记录
+结论；不达标才改为 `WdlResampler` 输入驱动。
+
+### 17.5 手工验证清单（Windows 真机）
+
+1. 删除模型目录后启动 → 自动下载 → 下载完成后不重启即可听写；断网使下载失败 → 恢复后手动重试 → 就绪。
+2. 空闲卸载设为 1 分钟，等待卸载 → 按热键说约 90 秒 → 正常出字。
+3. 录音中连点两次「重新加载模型」、保存设备设置、尝试录制热键：当前听写都应正常上屏，并看到拒绝原因。
+4. 先复制文本 X → 三次间隔小于 1 秒的短听写 → 最终剪贴板为 X；复制 X → 听写 → 1 秒内保存热键设置 → 再听写 → 最终为 X。
+5. Esc 取消后立即重按热键，连续 20 次均正常录音；录音中拔掉 USB 麦克风 → 本次结束并提示 → 插回后正常。
+6. 配置不可达的 LLM 地址后听写：成功提示带「已使用识别原文（纠错未成功）」。
