@@ -396,7 +396,7 @@ windows/
 ├── VoiceTyper.csproj                  # net10.0-windows
 ├── app.manifest                       # PerMonitorV2 DPI 感知
 ├── Assets/icon.ico
-├── Resources/correction.md            # 从 client-server/server/voice_typer_server/prompts/ 搬运（与 macOS 同一份）
+├── Resources/correction.md            # 校对提示词（与 macOS 同一份）
 ├── installer/VoiceTyper.iss           # Inno Setup 脚本
 ├── scripts/fetch_model.ps1            # 开发/测试用：命令行下载同一份模型
 ├── App/            Program, TrayApplicationContext, AppCoordinator
@@ -537,7 +537,7 @@ C# 直接用 `HttpClient` + `HttpCompletionOption.ResponseHeadersRead` 流式写
 
 `macos/Sources/VoiceTyper/LLM/LLMCorrector.swift` 的直译，逻辑不变：
 system prompt 从 `Resources/correction.md` 读（**与 macOS 同一份文件，不改一个字**）、
-3 组固定 few-shot、`<asr_text>` 标签包裹、`maxTokens = max(configured, len*2+128)`、
+8 组固定 few-shot（与 macOS 逐字一致）、`<asr_text>` 标签包裹、`maxTokens = max(configured, len*2+128)`、
 `finish_reason == "length"` → 放弃修正返回原文、防御性剥离回显标签、
 任何失败 → 记日志 + `OnWarning` + **使用 ASR 原文**。
 

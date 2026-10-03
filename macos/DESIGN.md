@@ -70,7 +70,7 @@ recognizer.SenseVoiceRecognizer.initialize   → 读 config.yaml / am.mvn / toke
 recognizer.SenseVoiceSession                 → 滑动窗口预览 + finalize 整段重跑
 app.StreamRecognizeHandler                   → 预览调度、合并、warning/final 语义
 llm_client.LLMClient                         → OpenAI 兼容校对
-prompts/correction.md                        → 提示词（原样搬运为 bundle 资源）
+prompts/correction.md                        → 提示词（最初搬运为 bundle 资源，2026-10 起独立演进）
 ```
 
 移植总量估算：**~900 行 Swift**（前端 350 / 引擎 200 / 解码 120 / 会话 150 / LLM 100）。
@@ -317,7 +317,7 @@ macos/
 ├── Resources/
 │   ├── Info.plist                     # LSUIElement=1, NSMicrophoneUsageDescription
 │   ├── AppIcon.icns
-│   ├── correction.md                  # 从 client-server/server/voice_typer_server/prompts/ 搬运
+│   ├── correction.md                  # 校对提示词，与 windows/Resources/correction.md 保持同一份
 │   └── THIRD_PARTY_LICENSES.txt
 ├── scripts/
 │   ├── generate_xcodeproj.rb          # 沿用现有 xcodeproj 生成方式
@@ -471,8 +471,10 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
 
 `llm_client.py` 的直译，逻辑保持不变：
 
-- system prompt 从 `Bundle.main` 的 `correction.md` 读取（**文件原样搬运，不改一个字**）
-- 保留 3 组 few-shot 消息（内容固定，可命中 LLM 前缀缓存）
+- system prompt 从 `Bundle.main` 的 `correction.md` 读取。2026-10 起该文件与 Windows 共用一份、
+  不再与 `client-server/` 的版本同步：改为按 SenseVoice 的真实错误类型（英文术语音译、同音真词）组织规则，
+  新增口误自我修正、中英文之间加空格、口语小数目计数转回汉字、口述列举转编号列表，长度约为原来的 56%
+- 8 组 few-shot 消息（内容固定，可命中 LLM 前缀缓存；必须与 `correction.md` 自洽，并与 Windows 逐字一致）
 - 输入包 `<asr_text>…</asr_text>` 标签
 - `max_tokens = max(configured, text.count * 2 + 128)`（防长听写被截断）
 - `finish_reason == "length"` → **放弃修正、返回原文**
