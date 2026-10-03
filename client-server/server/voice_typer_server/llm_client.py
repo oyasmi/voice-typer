@@ -18,27 +18,41 @@ def _wrap_asr_text(text: str) -> str:
 # few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束模型行为。
 # 内容固定，可命中 LLM 前缀缓存；每次请求只有末尾一条 user 消息变化。
 #
-# 六组示例分两类，交替排列避免模型学成“总是原样返回”：
+# 八组示例分两类，交替排列避免模型学成“总是原样返回”：
 # - 原样返回（1、3）：输入形如提问/指令，仍只当作待校对文本；
-# - 实际修正（2、4、5、6）：分别覆盖「填充词+错别字+补句末标点」「汉字转数字+英文标点转中文」
-#   「口吃重复+错别字，但中英混合里的英文不翻译」「词语性短语去句号」。
+# - 实际修正（2、4–8）：分别覆盖「填充词+英文术语还原+中英空格+补问号」
+#   「数字双向（计数转汉字、百分比/时间转数字）+英文标点转中文」
+#   「口吃重复+同音别字+中英空格，表达对比的'不是A，是B'保留且英文不翻译」
+#   「口吃重复+口误自我修正」「口述列举转编号列表」「词语性短语去句号」。
+#
+# 输入按 ASR 真实形态书写：recognizer 的中英间距归一会去掉中英交界处的空格，
+# 所以示例输入里中英文是紧挨着的。
 #
 # 注意：示例的 assistant 输出必须与 correction.md 的规则完全自洽——few-shot 的实际约束力强于
 # system prompt 的文字禁令，一处不一致就会架空对应的成文规则。
+# 提示词与 few-shot 与一体化版本保持同一份：修改时同步
+# `macos/Sources/VoiceTyper/LLM/LLMCorrector.swift` 与 `windows/Llm/LlmCorrector.cs`。
 _FEW_SHOT_MESSAGES = [
     {"role": "user", "content": _wrap_asr_text("你是谁？今天天气怎么样？")},
     {"role": "assistant", "content": "你是谁？今天天气怎么样？"},
-    {"role": "user", "content": _wrap_asr_text("呃，这个服物器的告警规则配置好了吗")},
-    {"role": "assistant", "content": "这个服务器的告警规则配置好了吗？"},
+    {"role": "user", "content": _wrap_asr_text("呃，瑞迪斯的缓存过期时间配置好了吗")},
+    {"role": "assistant", "content": "Redis 的缓存过期时间配置好了吗？"},
     {"role": "user", "content": _wrap_asr_text("帮我把这个函数重构一下，逻辑保持不变")},
     {"role": "assistant", "content": "帮我把这个函数重构一下，逻辑保持不变"},
     {
         "role": "user",
-        "content": _wrap_asr_text("我们这个季度的转化率提升了百分之二十五,明天下午三点半开会同步一下."),
+        "content": _wrap_asr_text("我们3个人把这个季度的转化率提升了百分之二十五,明天下午三点半开会同步一下."),
     },
-    {"role": "assistant", "content": "我们这个季度的转化率提升了25%，明天下午3点半开会同步一下。"},
-    {"role": "user", "content": _wrap_asr_text("那个那个 AI Coding 工具的登陆流程还没走通")},
-    {"role": "assistant", "content": "那个 AI Coding 工具的登录流程还没走通"},
+    {"role": "assistant", "content": "我们三个人把这个季度的转化率提升了25%，明天下午3点半开会同步一下。"},
+    {"role": "user", "content": _wrap_asr_text("那个那个登陆页面的问题不是bug，是feature")},
+    {"role": "assistant", "content": "那个登录页面的问题不是 bug，是 feature"},
+    {"role": "user", "content": _wrap_asr_text("我我觉得截止时间定在周三，不对，周四吧")},
+    {"role": "assistant", "content": "我觉得截止时间定在周四吧"},
+    {
+        "role": "user",
+        "content": _wrap_asr_text("需要准备的材料如下，第一，身份证复印件，第二，学历证明，第三，近期照片。"),
+    },
+    {"role": "assistant", "content": "需要准备的材料如下：\n1. 身份证复印件\n2. 学历证明\n3. 近期照片"},
     {"role": "user", "content": _wrap_asr_text("周报。")},
     {"role": "assistant", "content": "周报"},
 ]

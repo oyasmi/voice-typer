@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- LLM 校对提示词与 few-shot 跟进一体化版本 3.5.1 的重写：`prompts/correction.md` 与
+  `macos/Resources/correction.md`（`windows/Resources/correction.md`）恢复为同一份；
+  few-shot 由 6 组扩到 8 组，与 `LLMCorrector.swift` / `LlmCorrector.cs` 逐字一致。
+  此前一体化版本已于 2026-10 起独立演进，本次同步后三处内容重新对齐。
 - 代码组织与部署侧的一批清理：容器镜像改为构建期烘入 SenseVoice 模型（首启不
   再现下 241MB），移除未使用的 `ffmpeg` / `libsndfile1` / `jieba` 依赖，新增
   `.dockerignore`（此前 `COPY . .` 会把本地 `.venv-release/`、`dist/`、

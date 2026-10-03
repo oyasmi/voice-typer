@@ -7,7 +7,7 @@
 A single-process macOS menu bar app: the SenseVoice recognition pipeline from
 [`client-server/server/`](../client-server/server/README.md) rewritten in Swift and inlined into the
 client. Drag it into Applications and it works — **no** separate Python server to deploy. Current
-version **3.5.0**, app name **VoiceTyper**, bundle ID `com.voicetyper.app`.
+version **3.5.1**, app name **VoiceTyper**, bundle ID `com.voicetyper.app`.
 
 **Who this is for**: people who want to use it on their own Mac, and people who want to build it or
 hack on it. Deeper architectural decisions, measured numbers and the trade-offs behind them are in

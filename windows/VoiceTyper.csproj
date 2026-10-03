@@ -12,9 +12,9 @@
     <!-- 版本号与 macOS 对齐：3.5.0 = 对齐 macOS 3.5.0 的行为基线（首启引导、切换式热键、就绪反馈、
          HUD 反馈组、输入设备策略、单独修饰键热键、LLM 关闭深度思考、分段下载、耗时度量，
          详见 CHANGELOG.md），并首次在带 SDK 的环境里真实编译、跑通测试与两个 RID 的发布。 -->
-    <Version>3.5.0</Version>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
-    <FileVersion>3.5.0.0</FileVersion>
+    <Version>3.5.1</Version>
+    <AssemblyVersion>3.5.1.0</AssemblyVersion>
+    <FileVersion>3.5.1.0</FileVersion>
     <Company>VoiceTyper</Company>
     <Product>VoiceTyper</Product>
     <Description>VoiceTyper —— 前后端一体的离线语音输入工具（Windows 原生，内嵌 SenseVoice-Small 识别引擎）</Description>

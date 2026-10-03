@@ -73,7 +73,7 @@ Default hotkeys:
 | Platform | Default hotkey | Status |
 | --- | --- | --- |
 | macOS | `Fn` / globe key | Available; Apple Silicon, macOS 14 or later |
-| Windows | `Ctrl + F2` | The unified version has feature parity with macOS 3.5.0; it still needs verification on real Windows hardware before a formal release |
+| Windows | `Ctrl + F2` | The unified version has feature parity with macOS 3.5.1; it still needs verification on real Windows hardware before a formal release |
 | Linux | — | No unified version yet; use the [client–server version](client-server/client_linux/README.md) |
 
 ## Why local recognition
@@ -133,8 +133,8 @@ and answers to common questions, see the [full macOS guide](macos/README.en.md).
 
 ### Windows
 
-The unified Windows app (3.5.0) supports Windows 10/11 on both x64 and arm64 and has feature parity
-with macOS 3.5.0: a four-step first-run guide, hold and toggle triggers, a lone Right Ctrl key as the
+The unified Windows app (3.5.1) supports Windows 10/11 on both x64 and arm64 and has feature parity
+with macOS 3.5.1: a four-step first-run guide, hold and toggle triggers, a lone Right Ctrl key as the
 hotkey, explicit messages when not ready, a waveform and device name in the overlay, automatic use of
 the built-in microphone with Bluetooth headsets, segmented model download with automatic retry, and
 more (see the [changelog](windows/CHANGELOG.md), Chinese only).

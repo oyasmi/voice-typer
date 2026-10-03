@@ -4,7 +4,14 @@ macOS 一体化 App（`macos/`）的版本变更记录。3.3.1 之前的版本�
 [`DESIGN.md`](DESIGN.md) 决策记录 D3；旧客户端—服务端架构的变更见
 [`client-server/server/CHANGELOG.md`](../client-server/server/CHANGELOG.md)。
 
-## 未发布
+## 3.5.1
+
+### 变更
+
+- **重写 LLM 校对提示词并扩充 few-shot**（`correction.md` 与 Windows 共用一份）：按 SenseVoice 真实
+  错误类型重组规则，新增口误自我修正、中英文之间加空格、口语小数目计数转回汉字、口述列举转编号列表；
+  few-shot 由 6 组扩到 8 组。`client-server/` 服务端的提示词与 few-shot 已同步回同一份
+  （见 `client-server/server/CHANGELOG.md`）。校对效果未用真实模型评测。
 
 ### 修复
 

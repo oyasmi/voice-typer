@@ -6,7 +6,7 @@
 
 A single-process Windows desktop app: the SenseVoice recognition pipeline from
 [`client-server/server/`](../client-server/server/README.md) rewritten in C# and inlined into the
-client. Install and use it — **no** separate Python server to deploy. Current version **3.5.0** (feature parity with macOS 3.5.0,
+client. Install and use it — **no** separate Python server to deploy. Current version **3.5.1** (feature parity with macOS 3.5.1,
 see the [changelog](CHANGELOG.md)), app name **VoiceTyper**.
 
 **Who this is for**: people who want to use it on their own Windows PC, and people who want to build it
