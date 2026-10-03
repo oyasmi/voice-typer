@@ -50,6 +50,7 @@ final class AudioCaptureService: @unchecked Sendable {
     /// 录音期间输入设备变化（拔麦克风、切换音频设备等）导致本次录音被迫结束时触发一次。
     /// 已采到的音频仍会通过 `onTailChunk`（本回调触发前已同步调用）正常交给当前会话
     /// 完成识别；这里只做"可见告知"，不做自动重建 converter 或自动恢复（F-15）。
+    /// 例外：还没收到任何样本时的配置变更（启动阶段）会在内部透明重启，不触发本回调。
     /// 在主线程触发。
     var onDeviceChanged: (() -> Void)?
 
@@ -58,7 +59,11 @@ final class AudioCaptureService: @unchecked Sendable {
     /// 本次录音实际使用的输入设备；`start` 成功后才有值，只在主线程读写。
     private(set) var activeInputDevice: ActiveInputDevice?
 
-    private let engine = AVAudioEngine()
+    /// 跨会话复用；只在"上次钉过设备、这次要回到跟随系统默认"时整体重建（见 `bindInputDevice`）。
+    /// 只在主线程替换，且只在未录音时替换。
+    private var engine = AVAudioEngine()
+    /// 上一次显式钉到引擎上的输入设备；nil 表示引擎处于跟随系统默认的状态。只在主线程读写。
+    private var pinnedDeviceID: AudioDeviceID?
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: AppConstants.targetSampleRate,
@@ -79,6 +84,14 @@ final class AudioCaptureService: @unchecked Sendable {
     private var chunker: AudioChunker
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
+    /// 每次（重新）启动引擎递增；配置变更通知经 `main.async` 转发，可能在 stop / 重启之后
+    /// 才到达，用它丢弃上一轮引擎的过期通知。只在主线程读写。
+    private var engineGeneration = 0
+    /// 本次录音是否已因"启动阶段配置变更"重启过一次引擎，防止反复重启。只在主线程读写。
+    private var hasRestartedForConfigurationChange = false
+    /// 本次录音是否已收到过有效样本（受 `lock` 保护）：区分"启动阶段的配置变更"
+    /// （可安全重启，用户无感）与"录音中途的设备变化"（结束本次录音）。
+    private var hasReceivedAudio = false
     /// 转换失败丢帧计数：只用于诊断，日志里只记数量，不记音频内容。
     private var droppedConversionFailedCount = 0
     /// `stop()` 与音频线程竞态导致的"迟到"丢帧计数：这是 R3-01 场景 (a) 的正常代价
@@ -99,13 +112,37 @@ final class AudioCaptureService: @unchecked Sendable {
     func start(inputPolicy: AudioInputPolicy) throws {
         guard !isRunning else { return }
 
+        // 必须在读取 inputFormat / installTap 之前完成：换设备会改变输入格式。
+        activeInputDevice = bindInputDevice(inputPolicy)
+
+        // isRunning 必须在 installTap 之前、且在锁内置位：tap 回调理论上可能在
+        // engine.start() 返回后的极窄窗口内、于音频线程几乎立即触发，若仍在锁外、
+        // 在 engine.start() 之后才置位，这段窗口里到达的样本会被 append(buffer:)
+        // 误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的跨线程写（R4-07）。
         lock.lock()
         chunker = AudioChunker(chunkSamples: chunkSamples)
+        droppedConversionFailedCount = 0
+        droppedNotRunningCount = 0
+        hasReceivedAudio = false
+        isRunning = true
         lock.unlock()
+        hasRestartedForConfigurationChange = false
 
+        do {
+            try startEngine()
+        } catch {
+            // 启动失败时回滚 isRunning，避免残留一个不会再被 stop() 正常清理的挂起状态。
+            lock.lock()
+            isRunning = false
+            lock.unlock()
+            throw error
+        }
+    }
+
+    /// 按当前输入格式建 converter、装 tap、启动引擎并开始监听配置变更。
+    /// 失败时撤掉 tap 与 converter 后抛出，`isRunning` 由调用方负责回滚。
+    private func startEngine() throws {
         let inputNode = engine.inputNode
-        // 必须在读取 inputFormat / installTap 之前设置：换设备会改变输入格式。
-        activeInputDevice = applyInputDevice(inputPolicy, to: inputNode)
         let inputFormat = inputNode.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0 else {
             throw NSError(
@@ -121,18 +158,7 @@ final class AudioCaptureService: @unchecked Sendable {
                 userInfo: [NSLocalizedDescriptionKey: L("无法创建音频格式转换器")]
             )
         }
-
         self.converter = converter
-
-        // isRunning 必须在 installTap 之前、且在锁内置位：tap 回调理论上可能在
-        // engine.start() 返回后的极窄窗口内、于音频线程几乎立即触发，若仍在锁外、
-        // 在 engine.start() 之后才置位，这段窗口里到达的样本会被 append(buffer:)
-        // 误判为"stop() 已经跑过"而丢弃，且这本身就是一处不受锁保护的跨线程写（R4-07）。
-        lock.lock()
-        droppedConversionFailedCount = 0
-        droppedNotRunningCount = 0
-        isRunning = true
-        lock.unlock()
 
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -143,16 +169,13 @@ final class AudioCaptureService: @unchecked Sendable {
         do {
             try engine.start()
         } catch {
-            // 启动失败时回滚已安装的 tap与 isRunning，避免残留一个不会再被 stop()
-            // 正常清理的挂起状态。
             inputNode.removeTap(onBus: 0)
             self.converter = nil
-            lock.lock()
-            isRunning = false
-            lock.unlock()
             throw error
         }
 
+        engineGeneration &+= 1
+        let generation = engineGeneration
         configurationChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -160,22 +183,41 @@ final class AudioCaptureService: @unchecked Sendable {
         ) { [weak self] _ in
             AppLog.audio.warning("音频引擎配置变更（设备切换），当前录音可能受影响")
             DispatchQueue.main.async {
-                self?.handleConfigurationChangeDuringRecording()
+                self?.handleConfigurationChangeDuringRecording(generation: generation)
             }
         }
     }
 
-    /// 按策略解析并设置输入设备，返回实际使用的设备。
+    /// 按策略解析输入设备并绑定到引擎，返回实际使用的设备。
     ///
-    /// 引擎在多次录音间复用：某次把输入钉在内置麦克风后，下一次「跟随系统」也必须显式设回
-    /// 当前默认输入，否则会一直停留在上一次的设备——所以只要解析出设备就一律显式设置。
+    /// - 目标就是系统默认输入（`auto` 的绝大多数情况、`system`）：**不设置设备**，让引擎跟随
+    ///   系统默认。显式设置会让 AUHAL 从引擎自己的默认聚合设备切到麦克风本身，引擎启动后
+    ///   随即发出配置变更并停机（原因见 `AudioInputDevice.deviceToPin`）。引擎空闲期间系统
+    ///   默认设备变化（睡眠唤醒、插拔设备、合盖）时，引擎会自行重建聚合设备，所以这条路径
+    ///   在"隔夜后第一次按热键"时同样稳定。
+    /// - 上一次钉过别的设备、这次要回到系统默认：引擎不能"取消钉住"，直接换一个新引擎。
+    /// - 需要钉到非默认设备（蓝牙场景改用内置麦克风、指定 UID）：显式设置。此时仍可能在启动
+    ///   阶段收到一次配置变更，由 `handleConfigurationChangeDuringRecording` 透明重启兜底。
+    ///
     /// 设置失败只记 warning、沿用引擎当前设备，不中断录音。
-    /// 已知副作用：录音被钉在内置麦克风时，中途连上 / 断开其他设备仍可能触发
-    /// `AVAudioEngineConfigurationChange`，沿用现有"结束本次录音并照常识别"的处理。
-    private func applyInputDevice(_ policy: AudioInputPolicy, to inputNode: AVAudioInputNode) -> ActiveInputDevice? {
+    private func bindInputDevice(_ policy: AudioInputPolicy) -> ActiveInputDevice? {
         let resolved = AudioInputDevice.resolveCurrent(policy: policy)
-        guard var deviceID = resolved.deviceID, let audioUnit = inputNode.audioUnit else { return nil }
 
+        guard let pinID = AudioInputDevice.deviceToPin(
+            resolvedID: resolved.deviceID, defaultInputID: resolved.defaultInputID
+        ) else {
+            if pinnedDeviceID != nil {
+                engine = AVAudioEngine()
+                pinnedDeviceID = nil
+            }
+            // 跟随默认时 AUHAL 读回的是聚合设备，展示名称与耗时日志以系统默认输入为准。
+            return resolved.deviceID.map {
+                AudioInputDevice.activeDevice(id: $0, switchedByAuto: resolved.switchedByAuto)
+            }
+        }
+
+        guard let audioUnit = engine.inputNode.audioUnit else { return nil }
+        var deviceID = pinID
         let status = AudioUnitSetProperty(
             audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
             &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -183,6 +225,8 @@ final class AudioCaptureService: @unchecked Sendable {
         if status != noErr {
             AppLog.audio.warning("设置输入设备失败（OSStatus \(status, privacy: .public)），沿用引擎当前设备")
         }
+        // 即使设置失败也记为"钉过"：引擎状态已不可知，下次回到默认时宁可重建。
+        pinnedDeviceID = pinID
 
         // 读回实际使用的设备：显示名称与耗时日志都以它为准，而不是以"想设置的"为准。
         var actualID = AudioDeviceID(0)
@@ -191,14 +235,36 @@ final class AudioCaptureService: @unchecked Sendable {
             audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actualID, &size
         ) == noErr, actualID != 0 else { return nil }
         return AudioInputDevice.activeDevice(
-            id: actualID, switchedByAuto: resolved.switchedByAuto && actualID == resolved.deviceID
+            id: actualID, switchedByAuto: resolved.switchedByAuto && actualID == pinID
         )
     }
 
-    /// 保留已采到的音频交给当前会话完成识别（走与正常停止相同的尾音刷出路径），
-    /// 但明确告知用户设备已变化、本次录音已结束——不做自动重建 converter 或自动恢复。
-    private func handleConfigurationChangeDuringRecording() {
-        guard isRunning else { return }
+    /// 配置变更的两种处理：
+    /// - 还没收到任何样本（启动阶段，设备切换尚未"落定"）：按新格式重建 converter 与 tap、
+    ///   重启引擎，录音继续，用户无感；每次录音至多重启一次。
+    /// - 已经在收音（录音中途拔麦克风、切换设备等）：保留已采到的音频交给当前会话完成识别
+    ///   （走与正常停止相同的尾音刷出路径），并明确告知用户设备已变化、本次录音已结束。
+    private func handleConfigurationChangeDuringRecording(generation: Int) {
+        guard isRunning, generation == engineGeneration else { return }
+
+        lock.lock()
+        let receivedAudio = hasReceivedAudio
+        lock.unlock()
+
+        if !receivedAudio, !hasRestartedForConfigurationChange {
+            hasRestartedForConfigurationChange = true
+            removeConfigurationChangeObserver()
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            do {
+                try startEngine()
+                AppLog.audio.info("录音启动阶段音频引擎配置变更，已重启采集")
+                return
+            } catch {
+                AppLog.audio.error("配置变更后重启采集失败: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         stop()
         onDeviceChanged?()
     }
@@ -306,6 +372,7 @@ final class AudioCaptureService: @unchecked Sendable {
             lock.unlock()
             return
         }
+        hasReceivedAudio = true
         let chunks = chunker.append(newSamples)
         if !chunks.isEmpty {
             let handler = onChunk

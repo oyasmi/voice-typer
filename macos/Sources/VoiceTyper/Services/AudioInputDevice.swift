@@ -91,8 +91,23 @@ enum AudioInputDevice {
         }
     }
 
-    /// 读取当前系统状态并按策略解析。
-    static func resolveCurrent(policy: AudioInputPolicy) -> (deviceID: AudioDeviceID?, switchedByAuto: Bool) {
+    /// 解析出的设备是否需要钉到引擎上；返回 nil 表示"跟随系统默认输入，不要设置设备"。
+    ///
+    /// 跟随系统默认时，AVAudioEngine 的输入节点挂在它自己创建的默认聚合设备
+    /// （`CADefaultDeviceAggregate-<pid>-<n>`）上，而不是直接挂在麦克风上。此时若再把
+    /// `kAudioOutputUnitProperty_CurrentDevice` 显式设成同一个麦克风，AUHAL 会真的发生一次
+    /// "聚合设备 → 麦克风"的切换，引擎在 `start()` 后约 100ms 发出
+    /// `AVAudioEngineConfigurationChange` 并自行停机——表现为启动后 / 睡眠唤醒后第一次按热键
+    /// HUD 一闪而过、什么都没录到。所以目标就是系统默认输入时一律不钉。
+    static func deviceToPin(resolvedID: AudioDeviceID?, defaultInputID: AudioDeviceID?) -> AudioDeviceID? {
+        guard let resolvedID, resolvedID != defaultInputID else { return nil }
+        return resolvedID
+    }
+
+    /// 读取当前系统状态并按策略解析；同时返回解析时读到的系统默认输入，供 `deviceToPin` 使用。
+    static func resolveCurrent(
+        policy: AudioInputPolicy
+    ) -> (deviceID: AudioDeviceID?, switchedByAuto: Bool, defaultInputID: AudioDeviceID?) {
         // 只有 `.automatic` 需要输出与合盖信息；其余策略不做多余的 CoreAudio 查询。
         let outputTransport: AudioTransport
         let lidClosed: Bool
@@ -103,13 +118,15 @@ enum AudioInputDevice {
             outputTransport = .unknown
             lidClosed = false
         }
-        return resolveInput(
+        let defaultInputID = defaultInputDeviceID()
+        let resolved = resolveInput(
             policy: policy,
             devices: allInputDevices(),
-            defaultInputID: defaultInputDeviceID(),
+            defaultInputID: defaultInputID,
             defaultOutputTransport: outputTransport,
             lidClosed: lidClosed
         )
+        return (resolved.deviceID, resolved.switchedByAuto, defaultInputID)
     }
 
     /// 由设备 ID 生成展示信息；取不到名称时返回 nil（HUD 只显示"录音中"）。
