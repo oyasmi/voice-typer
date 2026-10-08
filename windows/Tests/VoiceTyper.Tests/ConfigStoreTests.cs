@@ -25,7 +25,8 @@ public class ConfigStoreTests
 
         Assert.Equal(new[] { "ctrl" }, original.Hotkey.Modifiers);
         Assert.Equal("auto", original.Asr.Language);
-        Assert.Equal(0.85, original.UI.Opacity);
+        // 0.9：ui.opacity 语义改为"背景不透明度"（文字不随之变淡）后的新默认值。
+        Assert.Equal(0.9, original.UI.Opacity);
     }
 
     [Fact]

@@ -10,13 +10,11 @@ namespace VoiceTyper.UI;
 
 internal sealed partial class SetupForm
 {
-    private static readonly Color Accent = Color.FromArgb(38, 99, 218);
-    private static readonly Color Muted = Color.FromArgb(99, 110, 128);
     private readonly Panel _pageHost = new() { Dock = DockStyle.Fill };
     private readonly Dictionary<SetupTab, Control> _pages = new();
-    private readonly Dictionary<SetupTab, Button> _navigation = new();
-    private readonly Button _discardButton = new();
-    private readonly Button _modelDetailsButton = new();
+    private readonly Dictionary<SetupTab, NavButton> _navigation = new();
+    private readonly RoundedButton _discardButton = new();
+    private readonly RoundedButton _modelDetailsButton = new();
     private readonly Label _modelProgressText = new();
     private bool _loading;
     private bool _saving;
@@ -35,18 +33,18 @@ internal sealed partial class SetupForm
         _windowLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var sidebar = Stack();
         sidebar.Dock = DockStyle.Fill;
-        sidebar.BackColor = Color.FromArgb(239, 242, 247);
+        sidebar.BackColor = UiPalette.SidebarBackground;
         sidebar.Padding = new Padding(16, 26, 16, 16);
         Add(sidebar, TextLabel("VoiceTyper", 15, true));
-        Add(sidebar, TextLabel(L10n.T("设置"), 9, false, Muted));
+        Add(sidebar, TextLabel(L10n.T("设置"), 9.5f, false, UiPalette.TextSecondary));
 
-        AddNavigation(sidebar, SetupTab.Hotkey, L10n.T("听写"));
-        AddNavigation(sidebar, SetupTab.Recognition, L10n.T("语音模型"));
-        AddNavigation(sidebar, SetupTab.Correction, L10n.T("智能纠错"));
-        AddNavigation(sidebar, SetupTab.General, L10n.T("外观与通用"));
-        AddNavigation(sidebar, SetupTab.Permissions, L10n.T("诊断与帮助"));
+        AddNavigation(sidebar, SetupTab.Hotkey, L10n.T("听写"), "\uE720");        // 麦克风
+        AddNavigation(sidebar, SetupTab.Recognition, L10n.T("语音模型"), "\uE896"); // 下载
+        AddNavigation(sidebar, SetupTab.Correction, L10n.T("智能纠错"), "\uE73E");  // 对勾
+        AddNavigation(sidebar, SetupTab.General, L10n.T("外观与通用"), "\uE713");   // 齿轮
+        AddNavigation(sidebar, SetupTab.Permissions, L10n.T("诊断与帮助"), "\uE90F");// 扳手
         _versionLabel.Text = L10n.F("版本 {0}", AppConstants.Version);
-        StyleLabel(_versionLabel, Muted);
+        StyleLabel(_versionLabel, UiPalette.TextSecondary, 9f);
         _versionLabel.Margin = new Padding(0, 24, 0, 0);
         Add(sidebar, _versionLabel);
         _windowLayout.Controls.Add(sidebar, 0, 0);
@@ -60,7 +58,8 @@ internal sealed partial class SetupForm
         _bannerPanel.Visible = false;
         var banner = Stack();
         banner.Padding = new Padding(24, 12, 24, 12);
-        StyleLabel(_bannerLabel, Color.DarkGoldenrod);
+        banner.BackColor = UiPalette.WarningBackground;
+        StyleLabel(_bannerLabel, UiPalette.Warning);
         Add(banner, _bannerLabel);
         StyleButton(_bannerOpenMicSettings, L10n.T("打开麦克风设置"));
         _bannerOpenMicSettings.Click += (_, _) => OpenMicrophonePrivacySettings();
@@ -80,15 +79,13 @@ internal sealed partial class SetupForm
         ShowSettingsPage(SetupTab.Hotkey);
     }
 
-    private void AddNavigation(TableLayoutPanel sidebar, SetupTab tab, string title)
+    private void AddNavigation(TableLayoutPanel sidebar, SetupTab tab, string title, string glyph)
     {
-        var button = new Button
+        var button = new NavButton
         {
-            Text = title, Dock = DockStyle.Fill, Height = 42, FlatStyle = FlatStyle.Flat,
-            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0),
-            Margin = new Padding(0, tab == SetupTab.Hotkey ? 24 : 4, 0, 0), Cursor = Cursors.Hand,
+            Text = title, Dock = DockStyle.Fill, Height = 40, IconGlyph = glyph,
+            Margin = new Padding(0, tab == SetupTab.Hotkey ? 24 : 4, 0, 0),
         };
-        button.FlatAppearance.BorderSize = 0;
         button.Click += (_, _) => ShowSettingsPage(tab);
         _navigation.Add(tab, button);
         Add(sidebar, button);
@@ -100,11 +97,7 @@ internal sealed partial class SetupForm
         StopHotkeyRecording();
         _selectedTab = tab;
         foreach (var (key, page) in _pages) page.Visible = key == tab;
-        foreach (var (key, button) in _navigation)
-        {
-            button.BackColor = key == tab ? Color.FromArgb(222, 232, 251) : Color.FromArgb(239, 242, 247);
-            button.ForeColor = key == tab ? Accent : Color.FromArgb(52, 62, 80);
-        }
+        foreach (var (key, button) in _navigation) button.Selected = key == tab;
         RefreshPermissionPolling();
     }
 
@@ -114,8 +107,8 @@ internal sealed partial class SetupForm
         var content = Stack();
         content.Dock = DockStyle.Top;
         Add(content, TextLabel(title, 18, true));
-        var hint = TextLabel(description, 9, false, Muted);
-        hint.Margin = new Padding(0, 5, 0, 18);
+        var hint = TextLabel(description, 9.5f, false, UiPalette.TextSecondary);
+        hint.Margin = new Padding(0, 6, 0, 20);
         Add(content, hint);
         scroll.Controls.Add(content);
         _pageHost.Controls.Add(scroll);
@@ -127,7 +120,7 @@ internal sealed partial class SetupForm
     {
         var page = Page(SetupTab.Hotkey, L10n.T("听写"), L10n.T("选择输入方式，按下快捷键即可开始说话。"));
         var hotkey = Card(page, L10n.T("快捷键"));
-        StyleLabel(_hotkeyPreview, Accent, 17, true);
+        StyleLabel(_hotkeyPreview, UiPalette.Accent, 13, true);
         Add(hotkey, _hotkeyPreview);
         StyleButton(_recordHotkeyButton, L10n.T("录制热键"), true);
         _recordHotkeyButton.Click += (_, _) => ToggleHotkeyRecording();
@@ -137,9 +130,15 @@ internal sealed partial class SetupForm
             foreach (var modifier in new[] { _modCtrl, _modAlt, _modShift, _modWin }) modifier.Checked = false;
             _hotkeyKey.Text = ModifierHotkeys.RightCtrl;
         };
-        Add(hotkey, ButtonRow(_recordHotkeyButton, _useRightCtrlButton));
+        StyleButton(_useRightAltButton, L10n.T("使用右 Alt"));
+        _useRightAltButton.Click += (_, _) =>
+        {
+            foreach (var modifier in new[] { _modCtrl, _modAlt, _modShift, _modWin }) modifier.Checked = false;
+            _hotkeyKey.Text = ModifierHotkeys.RightAlt;
+        };
+        Add(hotkey, ButtonRow(_recordHotkeyButton, _useRightCtrlButton, _useRightAltButton));
         ConfigureCombo(_hotkeyModeCombo, Enum.GetValues<HotkeyMode>(), value => ((HotkeyMode)value).DisplayName());
-        AddField(hotkey, L10n.T("触发方式"), L10n.T("按住说话，或按一次开始、再按一次结束。"), _hotkeyModeCombo);
+        AddField(hotkey, L10n.T("触发方式"), L10n.T("按住说话，或按一次开始、再按一次结束。"), _hotkeyModeCombo, 320);
         var manual = Stack();
         var modifiers = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
         foreach (var (control, title) in new[] { (_modCtrl, "Ctrl"), (_modAlt, "Alt"), (_modShift, "Shift"), (_modWin, "Win") })
@@ -150,29 +149,29 @@ internal sealed partial class SetupForm
         }
         Add(manual, modifiers);
         _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
-        AddField(manual, L10n.T("主键"), L10n.T("字母、数字、F1–F12 或右 Ctrl。"), _hotkeyKey);
+        AddField(manual, L10n.T("主键"), L10n.T("字母、数字、F1–F12、右 Ctrl 或右 Alt。"), _hotkeyKey, 160);
         AddDisclosure(hotkey, L10n.T("手动编辑快捷键"), manual);
-        StyleLabel(_hotkeyMessage, Muted);
+        StyleLabel(_hotkeyMessage, UiPalette.TextSecondary);
         Add(hotkey, _hotkeyMessage);
 
         var input = Card(page, L10n.T("语音输入"));
         _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo);
+        AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo, 320);
         ConfigureCombo(_languageCombo, Enum.GetValues<AsrLanguage>(), value => ((AsrLanguage)value).DisplayName());
-        AddField(input, L10n.T("识别语言"), L10n.T("通常使用自动识别，也可以指定语言。"), _languageCombo);
+        AddField(input, L10n.T("识别语言"), L10n.T("通常使用自动识别，也可以指定语言。"), _languageCombo, 320);
     }
 
     private void BuildModelSettings()
     {
         var page = Page(SetupTab.Recognition, L10n.T("语音模型"), L10n.T("模型保存在本机，准备完成后即可离线听写。"));
         var model = Card(page, "SenseVoice-Small");
-        StyleLabel(_modelStatusLabel, Muted, 10, true);
-        StyleLabel(_modelPathLabel, Muted, 8);
-        StyleLabel(_modelErrorLabel, Color.Firebrick);
+        StyleLabel(_modelStatusLabel, UiPalette.TextSecondary, 10, true);
+        StyleLabel(_modelPathLabel, UiPalette.TextSecondary, 9);
+        StyleLabel(_modelErrorLabel, UiPalette.Error);
         _modelProgressBar.Dock = DockStyle.Top;
         _modelProgressBar.Height = 8;
         _modelProgressBar.Visible = false;
-        StyleLabel(_modelProgressText, Muted);
+        StyleLabel(_modelProgressText, UiPalette.TextSecondary);
         _modelProgressText.Visible = false;
         Add(model, _modelStatusLabel); Add(model, _modelPathLabel); Add(model, _modelProgressBar);
         Add(model, _modelProgressText); Add(model, _modelErrorLabel);
@@ -186,12 +185,12 @@ internal sealed partial class SetupForm
         _preloadCheck.Text = L10n.T("启动时预加载模型");
         _preloadCheck.AutoSize = true;
         Add(performance, _preloadCheck);
-        Add(performance, TextLabel(L10n.T("提前准备识别引擎，减少首次听写的等待。"), 9, false, Muted));
+        Add(performance, TextLabel(L10n.T("提前准备识别引擎，减少首次听写的等待。"), 9, false, UiPalette.TextSecondary));
         ConfigureNumber(_idleUnloadField, ConfigLimits.IdleUnloadMinutesMin, ConfigLimits.IdleUnloadMinutesMax, 0, 1);
-        AddField(performance, L10n.T("空闲卸载（分钟）"), L10n.T("设为 0 时保持模型常驻。"), _idleUnloadField);
+        AddField(performance, L10n.T("空闲卸载（分钟）"), L10n.T("设为 0 时保持模型常驻。"), _idleUnloadField, 110);
         var advanced = Stack();
         ConfigureNumber(_previewWindowField, ConfigLimits.PreviewWindowSecondsMin, ConfigLimits.PreviewWindowSecondsMax, 0, 1);
-        AddField(advanced, L10n.T("预览窗口（秒）"), L10n.T("设为 0 时自动按本机性能校准。"), _previewWindowField);
+        AddField(advanced, L10n.T("预览窗口（秒）"), L10n.T("设为 0 时自动按本机性能校准。"), _previewWindowField, 110);
         AddDisclosure(performance, L10n.T("高级设置"), advanced);
     }
 
@@ -212,9 +211,9 @@ internal sealed partial class SetupForm
         ConfigureNumber(_llmTemperatureField, (decimal)ConfigLimits.TemperatureMin, (decimal)ConfigLimits.TemperatureMax, 2, 0.05m);
         ConfigureNumber(_llmMaxTokensField, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax, 0, 64);
         ConfigureNumber(_llmTimeoutField, (decimal)ConfigLimits.TimeoutSecondsMin, (decimal)ConfigLimits.TimeoutSecondsMax, 0, 1);
-        AddField(advanced, L10n.T("温度"), L10n.T("数值越低，纠错结果越稳定。"), _llmTemperatureField);
-        AddField(advanced, L10n.T("最大 Token"), L10n.T("限制纠错回复的长度。"), _llmMaxTokensField);
-        AddField(advanced, L10n.T("超时（秒）"), L10n.T("超时后仍使用原识别文本。"), _llmTimeoutField);
+        AddField(advanced, L10n.T("温度"), L10n.T("数值越低，纠错结果越稳定。"), _llmTemperatureField, 110);
+        AddField(advanced, L10n.T("最大 Token"), L10n.T("限制纠错回复的长度。"), _llmMaxTokensField, 110);
+        AddField(advanced, L10n.T("超时（秒）"), L10n.T("超时后仍使用原识别文本。"), _llmTimeoutField, 110);
         AddDisclosure(fields, L10n.T("高级设置"), advanced);
         StyleButton(_llmTestButton, L10n.T("测试纠错"));
         _llmTestButton.Click += async (_, _) => await HandleTestLlmCorrection();
@@ -222,7 +221,7 @@ internal sealed partial class SetupForm
         Add(card, fields);
         _llmEnabledCheck.CheckedChanged += (_, _) => fields.Visible = _llmEnabledCheck.Checked;
         fields.Visible = false;
-        StyleLabel(_recognitionMessage, Muted);
+        StyleLabel(_recognitionMessage, UiPalette.TextSecondary);
         Add(card, _recognitionMessage);
     }
 
@@ -231,44 +230,44 @@ internal sealed partial class SetupForm
         var page = Page(SetupTab.General, L10n.T("外观与通用"), L10n.T("调整浮窗显示和应用启动方式。"));
         var appearance = Card(page, L10n.T("听写浮窗"));
         ConfigureCombo(_hudPositionCombo, Enum.GetValues<HudPlacement>(), value => ((HudPlacement)value).DisplayName());
-        AddField(appearance, L10n.T("浮窗位置"), L10n.T("选择听写反馈在屏幕上的位置。"), _hudPositionCombo);
+        AddField(appearance, L10n.T("浮窗位置"), L10n.T("选择听写反馈在屏幕上的位置。"), _hudPositionCombo, 320);
         ConfigureNumber(_opacityField, (decimal)ConfigLimits.OpacityMin, (decimal)ConfigLimits.OpacityMax, 2, 0.05m);
-        AddField(appearance, L10n.T("不透明度"), L10n.T("修改时立即预览；撤销后恢复。"), _opacityField);
+        AddField(appearance, L10n.T("不透明度"), L10n.T("修改时立即预览；撤销后恢复。"), _opacityField, 110);
         _opacityField.ValueChanged += (_, _) => { if (!_loading) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value); };
         var general = Card(page, L10n.T("应用"));
         _startupCheck.Text = L10n.T("开机自启"); _startupCheck.AutoSize = true;
         Add(general, _startupCheck);
         ConfigureCombo(_interfaceLanguageCombo, Enum.GetValues<AppLanguage>(), value => ((AppLanguage)value).DisplayName());
-        AddField(general, L10n.T("界面语言"), L10n.T("保存后重启应用，使全部界面文本生效。"), _interfaceLanguageCombo);
+        AddField(general, L10n.T("界面语言"), L10n.T("保存后重启应用，使全部界面文本生效。"), _interfaceLanguageCombo, 320);
     }
 
     private void BuildDiagnosticsSettings()
     {
         var page = Page(SetupTab.Permissions, L10n.T("诊断与帮助"), L10n.T("检查麦克风访问状态，查看故障与使用说明。"));
         var microphone = Card(page, L10n.T("麦克风访问"));
-        StyleLabel(_micStatusLabel, Muted, 10, true); Add(microphone, _micStatusLabel);
+        StyleLabel(_micStatusLabel, UiPalette.TextSecondary, 10, true); Add(microphone, _micStatusLabel);
         StyleButton(_micRetryButton, L10n.T("重新检测"));
         _micRetryButton.Click += (_, _) => OnRetryMicProbe?.Invoke();
         StyleButton(_micOpenSettingsButton, L10n.T("打开麦克风设置"));
         _micOpenSettingsButton.Click += (_, _) => OpenMicrophonePrivacySettings();
         Add(microphone, ButtonRow(_micRetryButton, _micOpenSettingsButton));
-        Add(microphone, TextLabel(L10n.T("如果无法向以管理员身份运行的应用输入文字，请让两个应用以相同权限运行。"), 9, false, Muted));
+        Add(microphone, TextLabel(L10n.T("如果无法向以管理员身份运行的应用输入文字，请让两个应用以相同权限运行。"), 9, false, UiPalette.TextSecondary));
         var help = Card(page, L10n.T("帮助与诊断"));
-        var logs = new Button(); StyleButton(logs, L10n.T("打开日志目录"));
+        var logs = new RoundedButton(); StyleButton(logs, L10n.T("打开日志目录"));
         logs.Click += (_, _) => OpenLocalFolder(AppConstants.LogDirectory);
-        var config = new Button(); StyleButton(config, L10n.T("打开配置目录"));
+        var config = new RoundedButton(); StyleButton(config, L10n.T("打开配置目录"));
         config.Click += (_, _) => OpenLocalFolder(AppConstants.ConfigDirectory);
         Add(help, ButtonRow(logs, config));
-        Add(help, TextLabel("Powered by SenseVoice-Small · FunAudioLLM", 9, false, Muted));
+        Add(help, TextLabel("Powered by SenseVoice-Small · FunAudioLLM", 9, false, UiPalette.TextSecondary));
     }
 
     private void BuildSaveFooter()
     {
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2,
-            Padding = new Padding(26, 14, 26, 14), BackColor = Color.White, Margin = Padding.Empty };
+            Padding = new Padding(26, 14, 26, 14), BackColor = UiPalette.Card, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        StyleLabel(_generalMessage, Muted);
+        StyleLabel(_generalMessage, UiPalette.TextSecondary);
         footer.Controls.Add(_generalMessage, 0, 0);
         StyleButton(_discardButton, L10n.T("撤销更改"));
         _discardButton.Click += (_, _) => DiscardChanges();
@@ -300,10 +299,17 @@ internal sealed partial class SetupForm
     private static TableLayoutPanel Card(TableLayoutPanel page, string title)
     {
         var card = Stack();
-        card.BackColor = Color.White;
-        card.Padding = new Padding(20, 12, 20, 12);
-        card.Margin = new Padding(0, 0, 0, 14);
-        var heading = TextLabel(title, 11, true);
+        card.BackColor = UiPalette.Card;
+        card.Padding = new Padding(20, 16, 20, 16);
+        card.Margin = new Padding(0, 0, 0, 16);
+        // 卡片靠 1px 描边而不是阴影分块；TableLayoutPanel 的 Paint 事件足够画边缘一圈。
+        card.Resize += (_, _) => card.Invalidate();
+        card.Paint += (_, e) =>
+        {
+            using var pen = new Pen(UiPalette.CardBorder) { Alignment = System.Drawing.Drawing2D.PenAlignment.Inset };
+            e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
+        };
+        var heading = TextLabel(title, 11.5f, true);
         heading.Margin = new Padding(0, 0, 0, 12);
         Add(card, heading); Add(page, card);
         return card;
@@ -312,11 +318,11 @@ internal sealed partial class SetupForm
     private static Label TextLabel(string text, float size, bool bold = false, Color? color = null)
     {
         var label = new Label { Text = text };
-        StyleLabel(label, color ?? Color.FromArgb(34, 43, 58), size, bold);
+        StyleLabel(label, color ?? UiPalette.TextPrimary, size, bold);
         return label;
     }
 
-    private static void StyleLabel(Label label, Color color, float size = 9, bool bold = false)
+    private static void StyleLabel(Label label, Color color, float size = 10, bool bold = false)
     {
         label.AutoSize = true; label.Dock = DockStyle.Top;
         label.Margin = new Padding(0, 3, 0, 6);
@@ -344,14 +350,11 @@ internal sealed partial class SetupForm
         };
     }
 
-    private static void StyleButton(Button button, string text, bool primary = false)
+    private static void StyleButton(RoundedButton button, string text, bool primary = false)
     {
-        button.Text = text; button.AutoSize = true; button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        button.Padding = new Padding(12, 6, 12, 6); button.MinimumSize = new Size(92, 34);
-        button.FlatStyle = FlatStyle.Flat; button.Cursor = Cursors.Hand;
-        button.FlatAppearance.BorderColor = primary ? Accent : Color.FromArgb(213, 220, 230);
-        button.BackColor = primary ? Accent : Color.White;
-        button.ForeColor = primary ? Color.White : Color.FromArgb(43, 54, 71);
+        button.Text = text; button.Primary = primary;
+        button.AutoSize = true; button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        button.Padding = new Padding(12, 7, 12, 7); button.MinimumSize = new Size(92, 34);
         button.Margin = new Padding(0, 3, 8, 3);
     }
 
@@ -363,15 +366,28 @@ internal sealed partial class SetupForm
         return row;
     }
 
-    private static void AddField(TableLayoutPanel card, string title, string description, Control editor)
+    /// <summary>卡片内一行设置项：左侧标题 + 说明，右侧编辑器。
+    /// <paramref name="editorWidth"/> 为 0 时编辑器占满整列（服务地址这类长文本），
+    /// 否则固定宽度靠左——下拉框 320、数字输入 110，避免数字框被拉到 400px 宽。</summary>
+    private static void AddField(TableLayoutPanel card, string title, string description, Control editor, int editorWidth = 0)
     {
-        var row = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2, Margin = new Padding(0, 6, 0, 6) };
+        var row = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2, Margin = new Padding(0, 10, 0, 10) };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
         var text = Stack(); text.Margin = new Padding(0, 0, 16, 0);
-        Add(text, TextLabel(title, 9, true)); Add(text, TextLabel(description, 8, false, Muted));
-        editor.Dock = DockStyle.Top;
-        editor.Margin = new Padding(0, 5, 0, 0);
+        Add(text, TextLabel(title, 10, true)); Add(text, TextLabel(description, 9, false, UiPalette.TextSecondary));
+        if (editorWidth > 0)
+        {
+            editor.Dock = DockStyle.None;
+            editor.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+            editor.Width = editorWidth;
+            editor.Margin = new Padding(0, 4, 0, 0);
+        }
+        else
+        {
+            editor.Dock = DockStyle.Top;
+            editor.Margin = new Padding(0, 5, 0, 0);
+        }
         row.Controls.Add(text, 0, 0); row.Controls.Add(editor, 1, 0); Add(card, row);
     }
 
@@ -389,10 +405,13 @@ internal sealed partial class SetupForm
 
     private static void AddDisclosure(TableLayoutPanel parent, string title, TableLayoutPanel content)
     {
-        var toggle = new Button(); StyleButton(toggle, "+ " + title);
-        toggle.FlatAppearance.BorderSize = 0; toggle.ForeColor = Accent;
+        var toggle = new DisclosureToggle
+        {
+            Text = title, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(20, 4, 4, 4), Margin = new Padding(0, 6, 0, 2),
+        };
         content.Visible = false;
-        toggle.Click += (_, _) => { content.Visible = !content.Visible; toggle.Text = (content.Visible ? "− " : "+ ") + title; };
+        toggle.Click += (_, _) => { content.Visible = !content.Visible; toggle.Expanded = content.Visible; };
         Add(parent, toggle); Add(parent, content);
     }
 
@@ -460,7 +479,7 @@ internal sealed partial class SetupForm
             || _llmApiKeyField.Text != _loadedApiKey || _startupCheck.Checked != _loadedStartup;
         _saveRecognitionButton.Enabled = _discardButton.Enabled = _dirty;
         _generalMessage.Text = _dirty ? L10n.T("有未保存的更改") : L10n.T("所有更改已保存");
-        _generalMessage.ForeColor = _dirty ? Accent : Muted;
+        _generalMessage.ForeColor = _dirty ? UiPalette.Accent : UiPalette.TextSecondary;
     }
 
     internal void DiscardChanges()
@@ -480,7 +499,7 @@ internal sealed partial class SetupForm
             || (!ModifierHotkeys.IsModifierOnlyKey(draft.Hotkey.Key) && draft.Hotkey.Modifiers.Count == 0))
         {
             ShowSettingsPage(SetupTab.Hotkey);
-            SetMessage(_generalMessage, L10n.T("请录制有效快捷键；组合键至少需要一个修饰键。"), Color.Firebrick);
+            SetMessage(_generalMessage, L10n.T("请录制有效快捷键；组合键至少需要一个修饰键。"), UiPalette.Error);
             return;
         }
         var startup = _startupCheck.Checked;
@@ -490,7 +509,7 @@ internal sealed partial class SetupForm
         string? newKey = apiKey == _loadedApiKey ? null : apiKey;
         _saving = true;
         _pageHost.Enabled = _saveRecognitionButton.Enabled = _discardButton.Enabled = false;
-        SetMessage(_generalMessage, L10n.T("保存中..."), Muted);
+        SetMessage(_generalMessage, L10n.T("保存中..."), UiPalette.TextSecondary);
         try
         {
             await OnSaveRecognition(draft, newKey).ConfigureAwait(true);
@@ -502,12 +521,12 @@ internal sealed partial class SetupForm
             _dirty = false;
             SetMessage(_generalMessage, !startupOk ? L10n.T("设置已保存，但开机自启更新失败，请重试。")
                 : languageChanged ? L10n.T("界面语言已保存。请重启 VoiceTyper 使全部界面文本生效。")
-                : L10n.T("设置已保存并生效。"), startupOk ? Color.SeaGreen : Color.Firebrick);
+                : L10n.T("设置已保存并生效。"), startupOk ? UiPalette.Success : UiPalette.Error);
         }
         catch (Exception error)
         {
             AppLog.Warn("ui", $"设置保存失败：{error.GetType().Name}");
-            SetMessage(_generalMessage, L10n.F("保存失败：{0}", error.Message), Color.Firebrick);
+            SetMessage(_generalMessage, L10n.F("保存失败：{0}", error.Message), UiPalette.Error);
         }
         finally
         {

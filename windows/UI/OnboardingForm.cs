@@ -57,7 +57,7 @@ internal sealed class OnboardingForm : Form
         _stepLabel.SetBounds(28, 20, 544, 20);
         _stepLabel.AutoSize = false;
         _stepLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _stepLabel.ForeColor = Color.Gray;
+        _stepLabel.ForeColor = UiPalette.TextSecondary;
 
         _titleLabel.SetBounds(28, 42, 544, 36);
         _titleLabel.AutoSize = false;
@@ -83,7 +83,7 @@ internal sealed class OnboardingForm : Form
         _detailLabel.SetBounds(0, 0, 544, 90);
         _detailLabel.AutoSize = false;
         _detailLabel.TextAlign = ContentAlignment.TopLeft;
-        _detailLabel.ForeColor = Color.DimGray;
+        _detailLabel.ForeColor = UiPalette.TextSecondary;
         _progress.SetBounds(0, 0, 400, 18);
         _actionButton.AutoSize = true;
         _actionButton.Padding = new Padding(10, 3, 10, 3);
@@ -208,12 +208,12 @@ internal sealed class OnboardingForm : Form
     {
         var (text, color) = _model.Mic switch
         {
-            MicProbeResult.Available => (L10n.T("麦克风可用"), Color.SeaGreen),
-            MicProbeResult.Silent => (L10n.T("麦克风已打开，但只收到静音"), Color.DarkGoldenrod),
-            MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), Color.Firebrick),
-            MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), Color.Firebrick),
-            MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), Color.Firebrick),
-            _ => (L10n.T("正在检测麦克风..."), Color.DimGray),
+            MicProbeResult.Available => (L10n.T("麦克风可用"), UiPalette.Success),
+            MicProbeResult.Silent => (L10n.T("麦克风已打开，但只收到静音"), UiPalette.Warning),
+            MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), UiPalette.Error),
+            MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), UiPalette.Error),
+            MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), UiPalette.Error),
+            _ => (L10n.T("正在检测麦克风..."), UiPalette.TextSecondary),
         };
         _statusLabel.Text = text;
         _statusLabel.ForeColor = color;
@@ -245,7 +245,7 @@ internal sealed class OnboardingForm : Form
         if (downloading)
         {
             status = L10n.F("正在下载模型 {0}%", (int)((_model.DownloadProgress ?? 0) * 100));
-            color = Color.DimGray;
+            color = UiPalette.TextSecondary;
             detail = L10n.T("模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。");
             _progress.Value = Math.Clamp((int)((_model.DownloadProgress ?? 0) * 100), 0, 100);
             Place(_progress, 34);
@@ -257,21 +257,21 @@ internal sealed class OnboardingForm : Form
                 case AsrState.Ready:
                 case AsrState.SuspendedForIdle:
                     status = L10n.T("语音模型已就绪");
-                    color = Color.SeaGreen;
+                    color = UiPalette.Success;
                     break;
                 case AsrState.Loading:
                 case AsrState.Unloaded:
                     status = L10n.T("模型加载中...");
-                    color = Color.DimGray;
+                    color = UiPalette.TextSecondary;
                     break;
                 case AsrState.Failed:
                     status = L10n.T("模型加载失败");
-                    color = Color.Firebrick;
+                    color = UiPalette.Error;
                     detail = L10n.T("可以到设置 → 语音模型中重新加载，或重新下载模型。");
                     break;
                 default:
                     status = L10n.T("需要下载语音模型（约 230 MB）");
-                    color = Color.DarkGoldenrod;
+                    color = UiPalette.Warning;
                     break;
             }
             if (!string.IsNullOrEmpty(_model.DownloadError)) detail = _model.DownloadError!;
@@ -311,11 +311,11 @@ internal sealed class OnboardingForm : Form
             _statusLabel.Text = summary.Title;
             _statusLabel.ForeColor = _model.Trial.Kind switch
             {
-                OnboardingTrialKind.Succeeded => Color.SeaGreen,
-                OnboardingTrialKind.Recording => Color.Firebrick,
-                OnboardingTrialKind.Recognizing or OnboardingTrialKind.NoSpeech or OnboardingTrialKind.Blocked => Color.DarkGoldenrod,
-                OnboardingTrialKind.Failed => Color.Firebrick,
-                _ => Color.DimGray,
+                OnboardingTrialKind.Succeeded => UiPalette.Success,
+                OnboardingTrialKind.Recording => UiPalette.Error,
+                OnboardingTrialKind.Recognizing or OnboardingTrialKind.NoSpeech or OnboardingTrialKind.Blocked => UiPalette.Warning,
+                OnboardingTrialKind.Failed => UiPalette.Error,
+                _ => UiPalette.TextSecondary,
             };
             _detailLabel.Text = summary.Detail;
             _detailLabel.Height = S(70);

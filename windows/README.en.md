@@ -42,15 +42,17 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 - One-time model download on first launch (~240MB; the large file downloads in four parallel segments,
   resumes, and retries automatically with backoff), then works fully offline
 - Hold the hotkey (`Ctrl+F2` by default) to record; release to recognize and insert the text. You can
-  also switch to "press once to start, again to stop", or use the **Right Ctrl** key alone as the hotkey
-  (only a clean tap triggers it; holding it while pressing another key or clicking the mouse remains a
-  normal shortcut)
+  also switch to "press once to start, again to stop", or use the **Right Ctrl** or **Right Alt** key
+  alone as the hotkey (only a clean tap triggers it; holding it while pressing another key or clicking
+  the mouse remains a normal shortcut)
 - When not ready (model downloading / loading / failed), pressing the hotkey is no longer silent: the
   HUD says what is missing
 - Live streaming preview: the HUD overlay keeps showing recognized text while you record (up to two
   lines, keeping the newest tail), and corrects itself; it shows a live waveform and the input device
   name, warns to check the microphone if nothing is heard after 1.5 s, and says so explicitly when
   nothing was recognized
+- The HUD renders with per-pixel alpha: the dark capsule lets the desktop faintly show through while
+  text stays fully opaque, corners are anti-aliased, and it fades in and out gently
 - HUD position: bottom center / bottom right / follow cursor / hidden (errors still surface); scaled to
   the current screen's DPI
 - Bluetooth-headset friendly: when both the default input and the playback device are Bluetooth, the
@@ -62,7 +64,7 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 - Interface language can be set to Chinese (default) or English; a restart applies it everywhere
 - Automatically releases engine memory after an idle period and reloads it in parallel with your next
   recording
-- Launch at login, adjustable HUD opacity; "Check for Updates..." in the tray menu queries the latest
+- Launch at login, adjustable HUD background opacity (text stays fully opaque); "Check for Updates..." in the tray menu queries the latest
   GitHub release on demand (no background network activity)
 - Every dictation leaves one log line of timings containing only numbers and enums (never any
   recognized text) for diagnosing "why was that slow"
@@ -72,10 +74,12 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 **Not supported / known limits**
 
 - Hotkey main keys are limited to letters, digits, `space`/`tab`/`enter`/`esc`, `F1`–`F12`, arrow keys
-  and similar named keys (the settings page can "Record Hotkey" for you). A lone modifier key is only
-  supported for **Right Ctrl**: tapping Alt activates the window's menu bar, tapping Win opens the Start
-  menu, tapping Shift toggles Chinese/English in Chinese IMEs, and a low-level keyboard hook cannot
-  swallow modifier events
+  and similar named keys (the settings page can "Record Hotkey" for you). A lone modifier key is
+  supported for **Right Ctrl** and **Right Alt** — for Right Alt, the app injects a pair of no-op keys
+  at the start of a clean tap so releasing it does not activate the window's menu bar; AltGr compose
+  characters and Right Alt+Tab are unaffected. Left Alt (same menu-bar activation, much larger
+  mis-touch surface), Win (opens the Start menu) and Shift (toggles Chinese/English in Chinese IMEs)
+  remain unsupported, and a low-level keyboard hook cannot swallow modifier events
 - Official releases are not code-signed, so SmartScreen may block the first run — click “More info →
   Run anyway”. Signing is available when you build it yourself, see
   [Building → Signing](#signing-optional)
@@ -214,10 +218,10 @@ The settings window has five sidebar pages. Edits remain in a shared draft until
 
 | Page | Contents |
 | --- | --- |
-| **Dictation** | Record a shortcut, Right Ctrl, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
+| **Dictation** | Record a shortcut, Right Ctrl / Right Alt, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
 | **Speech Model** | Download, retry, cancel, reload, per-source diagnostics, preload and idle unload; preview tuning is collapsed |
 | **Text correction** | Enable, service URL, encrypted API key, model name and test; advanced parameters are collapsed |
-| **Appearance and general** | Overlay position and opacity, startup registration and interface language |
+| **Appearance and general** | Overlay position and background opacity, startup registration and interface language |
 | **Diagnostics and help** | Microphone probe, Windows privacy settings, UIPI guidance, log and configuration folders |
 
 ### Interface language
@@ -253,12 +257,12 @@ llm:
   # api_key is not here — see below
 hotkey:
   modifiers: ["ctrl"]
-  key: "f2"                  # may also be "right_ctrl" (the Right Ctrl key alone; leave modifiers empty)
+  key: "f2"                  # may also be "right_ctrl" / "right_alt" (the Right Ctrl / Right Alt key alone; leave modifiers empty)
   mode: "hold"               # hold = hold to talk; toggle = press once to start, again to stop
 audio:
   input_device: "auto"       # auto = use the built-in mic during Bluetooth call mode; system = strictly follow the system default; or an audio endpoint ID
 ui:
-  opacity: 0.85
+  opacity: 0.9                # HUD background opacity (0.4-1.0; text and waveform are unaffected)
   hud_position: "bottom_center"  # bottom_center / bottom_right / near_cursor / hidden
   interface_language: "zh"   # zh / en; interface language, applied fully after a restart
 ```
