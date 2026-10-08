@@ -52,12 +52,20 @@ internal sealed class HotkeyService : IHotkeyListening
     /// </summary>
     private const int HealthCheckIntervalMs = 30_000;
 
+    /// <summary>掩码哑键的虚拟键码。0xFF 未被任何键盘布局映射、应用与输入法都不产生字符，
+    /// 是 AutoHotkey 等工具做"修饰键单击掩码"的惯用值。</summary>
+    private const ushort VK_NOOP_MASK = 0xFF;
+
     private IntPtr _hookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
     /// <summary>仅单独修饰键热键才安装的鼠标钩子：按住修饰键期间点了鼠标 = 组合用法，作废本次手势。</summary>
     private IntPtr _mouseHookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _mouseProc;
     private HotkeyConfig? _hotkey;
+    /// <summary>当前热键目标键的 vkCode（自愈重装用 MapKeyToVk 重算，与钩子同生命周期）。</summary>
+    private int _targetVk;
+    /// <summary>右 Alt 作为单独修饰键时为 true：干净手势开始需要注入哑键掩掉菜单栏激活。</summary>
+    private bool _needsMenuBarMask;
     /// <summary>按键判定逻辑抽到 <see cref="HotkeyStateMachine"/>（纯逻辑、可单测，R2-1）。
     /// 钩子回调只做注入过滤 + 委派 + 把动作异步投递到 UI 线程。</summary>
     private HotkeyStateMachine? _stateMachine;
@@ -122,6 +130,8 @@ internal sealed class HotkeyService : IHotkeyListening
             ? HotkeyStateMachine.ForModifierOnly(vk)
             : new HotkeyStateMachine(vk, BuildExpected(hotkey.Modifiers));
         _stateMachine.AcceptsCancelWhenInactive = _acceptsCancelWhenInactive;
+        _targetVk = vk;
+        _needsMenuBarMask = hotkey.IsModifierOnly && ModifierHotkeys.NeedsMenuBarMask(hotkey.Key);
         // 只在安装这一刻取一次 GetAsyncKeyState 快照播种物理修饰键（区别于"在事件里推断释放"）。
         SeedPhysicalModifierState();
 
@@ -284,6 +294,10 @@ internal sealed class HotkeyService : IHotkeyListening
         switch (action)
         {
             case HotkeyAction.Press:
+                // 右 Alt 的干净手势刚开始：在 Alt down 送达前台应用之前/之后紧跟一对哑键，
+                // 让系统把这次 Alt 记为"按住期间出现过别的键"，松开时不进入菜单栏模式。
+                // 必须在钩子回调里同步注入，保证排在用户松开 Alt 之前（见 SendMenuBarMask 注释）。
+                if (_needsMenuBarMask) SendMenuBarMask();
                 UiDispatcher.PostAsync(() => OnPress?.Invoke());
                 break;
             case HotkeyAction.Release:
@@ -301,6 +315,49 @@ internal sealed class HotkeyService : IHotkeyListening
         // 修饰键事件必须继续传递，否则会破坏其他应用看到的修饰键 down/up 配对（R2-1）。
         return consume ? (IntPtr)1 : CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
+
+    /// <summary>
+    /// 为右 Alt 的干净单击注入掩码：紧跟在（已放行的）Alt down 之后补一对哑键
+    /// （VK 0xFF down + up）。Windows 在<b>松开</b>孤立 Alt 时才激活前台窗口的菜单栏，
+    /// 且"按住期间出现过其他键"即视为组合用法、不激活——哑键正是利用这一点，它本身
+    /// 不映射任何字符、不影响修饰键状态。
+    /// 不采用"吞掉 Alt 的 keyup"：低级钩子吞掉的事件不会更新 GetAsyncKeyState 的异步
+    /// 键状态表（2026-10-08 本机实测：放行 down、吞 up 会把 VK_MENU 永久卡在按下），
+    /// TextInsertionService 的修饰键检查与其后所有 Ctrl+V 都会被误判破坏。掩码方案对
+    /// 按键流零干预：AltGr 组合字符、右 Alt+Tab 全部照常工作。GUI_INMENUMODE 实测证据
+    /// 见 <see cref="ModifierHotkeys"/> 的类注释。失败只记日志：掩码缺失的后果退化为
+    /// 松开右 Alt 时菜单栏被激活（老问题），热键与听写本身不受影响。
+    /// </summary>
+    private static void SendMenuBarMask()
+    {
+        var inputs = new[]
+        {
+            MakeMaskInput(keyUp: false),
+            MakeMaskInput(keyUp: true),
+        };
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent != inputs.Length)
+        {
+            AppLog.Warn("hotkey", $"注入右 Alt 菜单栏掩码失败 (Win32 error {Marshal.GetLastWin32Error()})，本次松开右 Alt 可能激活菜单栏");
+        }
+    }
+
+    /// <summary>哑键没有扫描码映射（MapVirtualKeyW 返回 0），连原始输入层都最安静。</summary>
+    private static INPUT MakeMaskInput(bool keyUp) => new()
+    {
+        type = INPUT_KEYBOARD,
+        U = new InputUnion
+        {
+            ki = new KEYBDINPUT
+            {
+                wVk = VK_NOOP_MASK,
+                wScan = (ushort)MapVirtualKeyW(VK_NOOP_MASK, 0),
+                dwFlags = keyUp ? KEYEVENTF_KEYUP : 0,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero,
+            },
+        },
+    };
 
     private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {

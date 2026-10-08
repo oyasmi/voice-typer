@@ -563,7 +563,7 @@ internal sealed class AppCoordinator : IDisposable
     }
 
     /// <summary>
-    /// 单独修饰键（右 Ctrl）作为组合快捷键使用时也会短暂进入录音，浮窗若立即出现会闪烁，
+    /// 单独修饰键（右 Ctrl / 右 Alt）作为组合快捷键使用时也会短暂进入录音，浮窗若立即出现会闪烁，
     /// 因此延迟 150ms 再显示；录音本身不延迟，不影响开头的字。其他热键立即显示。
     /// </summary>
     private void ShowRecordingHud(VoiceTyperController controller)

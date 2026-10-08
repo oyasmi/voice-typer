@@ -143,6 +143,23 @@ public class ConfigParityTests
     }
 
     [Fact]
+    public void RightAlt_ModifierOnlyKey_ValidWithoutModifiers_AndSurvivesYamlRoundTrip()
+    {
+        var config = new AppConfig();
+        config.Hotkey = new HotkeyConfig { Modifiers = new() { "alt" }, Key = "Right_Alt", ModeValue = HotkeyMode.Hold };
+        var validated = config.Validated().Hotkey;
+        Assert.Equal(ModifierHotkeys.RightAlt, validated.Key);
+        Assert.Empty(validated.Modifiers);
+        Assert.True(validated.IsModifierOnly);
+        Assert.Equal("右 Alt", validated.DisplayString);
+
+        var roundTrip = Parse(Serialize(config)).Hotkey;
+        Assert.Equal(ModifierHotkeys.RightAlt, roundTrip.Key);
+        Assert.Empty(roundTrip.Modifiers);
+        Assert.Equal(HotkeyMode.Hold, roundTrip.ModeValue);
+    }
+
+    [Fact]
     public void Clone_IsDeepForNewSections()
     {
         var original = new AppConfig();

@@ -84,7 +84,7 @@ internal static partial class L10n
         ["诊断与帮助"] = "Diagnostics and help",
         ["智能纠错"] = "Text correction",
         ["主键"] = "Primary key",
-        ["字母、数字、F1–F12 或右 Ctrl。"] = "Letters, digits, F1–F12, or Right Ctrl.",
+        ["字母、数字、F1–F12、右 Ctrl 或右 Alt。"] = "Letters, digits, F1–F12, Right Ctrl, or Right Alt.",
         ["自动模式优先避免蓝牙通话模式影响声音。"] = "Auto mode avoids Bluetooth call mode when possible.",
         // ── 托盘菜单 / 应用级 ────────────────────────────────
         ["启动中"] = "Starting up",
@@ -324,6 +324,7 @@ internal static partial class L10n
 
         // ── 热键 / 通用设置新增项 ───────────────────────────
         ["使用右 Ctrl"] = "Use Right Ctrl",
+        ["使用右 Alt"] = "Use Right Alt",
         ["录制热键"] = "Record Hotkey",
         ["停止录制"] = "Stop Recording",
         ["正在听写，请等这一段结束后再录制热键。"] = "A dictation is in progress; wait for it to finish before recording a hotkey.",
@@ -332,6 +333,7 @@ internal static partial class L10n
         ["这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"] = "That key can't be used as a hotkey. Try another (letters, digits, F1–F12, arrow keys, ...).",
         ["已录制：{0}，点「保存并应用」生效。"] = "Recorded: {0}. Click \"Save and Apply\" to use it.",
         ["右 Ctrl"] = "Right Ctrl",
+        ["右 Alt"] = "Right Alt",
         ["按住说话"] = "Hold to talk",
         ["按一次开始，再按一次结束"] = "Press once to start, again to stop",
         ["底部居中"] = "Bottom center",
