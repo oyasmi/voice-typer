@@ -77,7 +77,7 @@ internal sealed class AppConfig
             AppLog.Warn("config", $"配置字段 hotkey.key 不支持({hotkey.Key})，已回落为默认热键 Ctrl+F2");
             return new HotkeyConfig { ModeValue = mode };
         }
-        // 单独修饰键（右 Ctrl / 右 Alt）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
+        // 单独修饰键（右 Ctrl）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
         // 对不上，忽略并记 warning。
         if (ModifierHotkeys.IsModifierOnlyKey(key))
         {
@@ -343,7 +343,7 @@ internal sealed class HotkeyConfig
         set => Mode = value.ToYamlValue();
     }
 
-    /// <summary>热键是单独的修饰键（右 Ctrl / 右 Alt）：干净单击即触发，按住它再按别的键或点鼠标则
+    /// <summary>热键是单独的修饰键（右 Ctrl）：干净单击即触发，按住它再按别的键或点鼠标则
     /// 作为普通快捷键使用（本次录音被静默丢弃）。</summary>
     public bool IsModifierOnly => ModifierHotkeys.IsModifierOnlyKey(Key);
 
@@ -426,10 +426,8 @@ internal static class HudPlacementExtensions
 
 internal sealed class UIConfig
 {
-    /// <summary>浮窗<b>背景</b>不透明度（0.4–1.0）。逐像素分层渲染后只作用于胶囊底色，
-    /// 文字与波形保持全不透明；此前整窗透明会把文字一起变淡，故默认值随语义变更上调。</summary>
     [YamlMember(Alias = "opacity")]
-    public double Opacity { get; set; } = 0.9;
+    public double Opacity { get; set; } = 0.85;
 
     /// <summary>浮窗落点。"不显示"的语义是不显示<b>过程</b>，不是什么都不显示：错误与"没有识别到内容"
     /// 这类提示仍会浮出来——那些信息在别处拿不到，一并静音会把可配置项变成静默失败的陷阱。</summary>

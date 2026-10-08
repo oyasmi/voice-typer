@@ -264,7 +264,7 @@ internal static class GraphicsExtensions
         g.DrawPath(pen, path);
     }
 
-    public static GraphicsPath BuildRoundedPath(RectangleF rect, float radius)
+    private static GraphicsPath BuildRoundedPath(RectangleF rect, float radius)
     {
         var path = new GraphicsPath();
         var d = radius * 2;

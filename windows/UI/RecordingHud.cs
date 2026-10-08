@@ -2,9 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Drawing.Text;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using VoiceTyper.Core;
 using VoiceTyper.Support;
@@ -18,17 +16,6 @@ namespace VoiceTyper.UI;
 /// 上方一行：圆点 / 结果图标 + 实时波形 + 状态文字（含输入设备名）+ 计时。
 /// 下方（有内容时才展开）：最多两行的预览，放不下时保留<b>尾部</b>并以省略号开头。
 /// 阶段：Recording → Recognizing（→ 纠错中）→ 一次性结果（成功 / 错误 / 已取消 / 没有识别到内容）。
-///
-/// 渲染路径：<b>逐像素 alpha 分层窗口</b>（<c>WS_EX_LAYERED</c> + <c>UpdateLayeredWindow</c>）。
-/// 每帧把整个 HUD 画进 32bpp ARGB 位图，预乘 alpha 后一次性推给系统合成——
-/// 背景半透明而文字保持全不透明（对齐 macOS 磨砂层的视觉层级），圆角自带抗锯齿，
-/// Win10 / Win11 一致，不再需要 DWM 圆角探测与 Region 裁剪两条路径。
-/// <c>ui.opacity</c> 的语义因此是<b>背景不透明度</b>（文字不随之变淡）。
-/// 若 <c>UpdateLayeredWindow</c> 不可用（理论上仅在特殊驱动 / 远程会话下），
-/// 重建句柄退回普通实心窗口 + WM_PAINT 绘制。
-///
-/// 出现 / 消失带约 120ms / 100ms 的整窗淡入淡出；错误类提示立即出现（要被注意到），
-/// 只淡出。系统关闭动画时不做任何呼吸 / 脉冲 / 淡入淡出。
 ///
 /// 落点由 <c>ui.hud_position</c> 决定；"不显示"只静音<b>过程</b>，错误与"没有识别到内容"仍会浮出来。
 /// 所有像素尺寸按窗口当前 DPI 缩放（PerMonitorV2 下窗口拖到别的屏幕会收到 DPI 变化）。
@@ -51,12 +38,6 @@ internal sealed class RecordingHud : Form
     private const int BarCount = 9;
     /// <summary>宽度按档位增长而不是逐像素跟随文本，避免文字一边识别一边窗口一直在抖。</summary>
     private static readonly int[] WidthSteps = { 420, 560, 700, 860 };
-    /// <summary>胶囊圆角半径（画进 ARGB 位图，边缘自带抗锯齿）。</summary>
-    private const float CornerRadius = 14f;
-
-    // ─── 淡入淡出节奏（计时器 33ms 一拍）─────────────────────────
-    private const float FadeInStep = 0.3f;   // ≈110ms
-    private const float FadeOutStep = 0.34f; // ≈100ms
 
     private readonly System.Windows.Forms.Timer _animationTimer;
     private readonly Font _statusFont;
@@ -77,33 +58,15 @@ internal sealed class RecordingHud : Form
     /// <summary>状态文字是否处于 FlashWarning 的警示色闪现期（约 1.2s）。</summary>
     private bool _statusWarning;
     private bool _isCorrecting;
+    private bool _useDwmRoundCorners;
     private readonly float[] _bars = new float[BarCount];
     private long _lastLevelTimestamp; // 0 = 尚未收到过电平
-    /// <summary>背景不透明度（来自 <c>ui.opacity</c>）；文字与描边不随它变淡。</summary>
-    private double _bgAlpha = 0.9;
 
     private HudPlacement _placement = HudPlacement.BottomCenter;
     /// <summary>底部落点时，展开 / 收起保持底边不动、向上生长；跟随光标时保持左上角不动。</summary>
     private Point _anchor;
     private int _currentWidth;
-    private int _currentHeight;
     private Screen? _targetScreen;
-
-    // ─── 渲染资源（按窗口尺寸重建；UI 线程独占）──────────────────
-    /// <summary>直通 alpha 的场景位图（画笔画的都是"未预乘"颜色）。</summary>
-    private Bitmap? _scene;
-    /// <summary>预乘 alpha + 淡出系数后的成品帧，UpdateLayeredWindow 直接消费。</summary>
-    private Bitmap? _frame;
-    private byte[]? _premultiplyBuffer;
-    private IntPtr _memoryDc;
-    /// <summary>ULW 调用失败后置位：重建句柄去掉 WS_EX_LAYERED，退回实心 WM_PAINT 绘制。</summary>
-    private bool _layeredBroken;
-
-    /// <summary>整窗淡入淡出的当前值与目标值（1 = 完全显示；淡出到位后真正 Hide）。</summary>
-    private float _fadeAlpha = 1f;
-    private float _fadeTarget = 1f;
-    /// <summary>处于"淡出收起"中：期间继续画旧内容，alpha 到 0 才真正隐藏。</summary>
-    private bool _hiding;
 
     /// <summary>一次性提示（成功/错误/已取消）的自动隐藏任务；状态变化时作废。</summary>
     private System.Windows.Forms.Timer? _transientHideTimer;
@@ -112,7 +75,7 @@ internal sealed class RecordingHud : Form
     /// <summary>预览短暂清空时延迟收起，避免窗口一伸一缩地抖动。</summary>
     private System.Windows.Forms.Timer? _collapseTimer;
 
-    /// <summary>系统关闭动画（设置 → 辅助功能 → 视觉效果 → 动画效果）时不做呼吸 / 脉冲 / 淡入淡出，
+    /// <summary>系统关闭动画（设置 → 辅助功能 → 视觉效果 → 动画效果）时不做呼吸 / 脉冲，
     /// 只保留电平波形（它是功能性反馈，不是装饰）。</summary>
     private static bool MotionEnabled => SystemInformation.UIEffectsEnabled;
 
@@ -122,14 +85,12 @@ internal sealed class RecordingHud : Form
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
         TopMost = true;
-        // 注意：不设置 Form.Opacity——它会让整个窗口（含文字）统一变淡，
-        // 与逐像素路径冲突；半透明只作用于背景（见 RenderScene）。
-        _bgAlpha = Math.Clamp(uiConfig.Opacity, 0.4, 1.0);
+        Opacity = Math.Clamp(uiConfig.Opacity, 0.4, 1.0);
         _placement = uiConfig.HudPositionValue;
-        BackColor = Color.FromArgb(26, 28, 33); // 仅实心回退路径可见；分层路径整帧自绘
+        BackColor = Color.FromArgb(20, 20, 22);
+        DoubleBuffered = true;
         Size = new Size(S(WidthSteps[0]), S(CompactHeight));
         _currentWidth = WidthSteps[0];
-        _currentHeight = CompactHeight;
 
         // 层级约定与 macOS 一致：预览文字是 HUD 的正文（用户实时校对识别结果），
         // 字号与亮度都高于顶行的状态提示（呼吸点/波形已在传达录音状态）。
@@ -137,8 +98,21 @@ internal sealed class RecordingHud : Form
         _timerFont = new Font("Consolas", 9f, FontStyle.Regular);
         _previewFont = new Font("Segoe UI", 10.5f, FontStyle.Regular);
 
+        HandleCreated += (_, _) =>
+        {
+            _useDwmRoundCorners = TryEnableDwmRoundCorners();
+            ApplyRoundedRegionIfNeeded();
+        };
+        Resize += (_, _) => ApplyRoundedRegionIfNeeded();
+
         _animationTimer = new System.Windows.Forms.Timer { Interval = 33 };
-        _animationTimer.Tick += (_, _) => AnimationTick();
+        _animationTimer.Tick += (_, _) =>
+        {
+            _pulsePhase = (_pulsePhase + 0.16) % (Math.PI * 2);
+            // 电平自然衰减：静音时波形回落，而不是停在最后一次的高度。
+            for (int i = 0; i < _bars.Length; i++) _bars[i] *= 0.94f;
+            Invalidate();
+        };
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -149,7 +123,6 @@ internal sealed class RecordingHud : Form
         {
             var cp = base.CreateParams;
             cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-            if (!_layeredBroken) cp.ExStyle |= WS_EX_LAYERED;
             return cp;
         }
     }
@@ -179,7 +152,8 @@ internal sealed class RecordingHud : Form
         SetStatus(_recordingStatusText);
         Array.Clear(_bars);
         SetPreviewSource("");
-        Present(anchorToScreen: true, fadeIn: true);
+        Present(anchorToScreen: true);
+        _animationTimer.Start();
     }
 
     public void SetRecognizing()
@@ -195,8 +169,8 @@ internal sealed class RecordingHud : Form
         _glyph = Glyph.None;
         // 松键后冻结计时（保留最后时长）；动画继续，用于"处理中"的呼吸。
         _frozenElapsedSeconds = ElapsedRecordingSeconds();
-        EnsureTimerRunning();
-        RequestRender();
+        if (!_animationTimer.Enabled) _animationTimer.Start();
+        Invalidate();
     }
 
     /// <summary>
@@ -212,35 +186,17 @@ internal sealed class RecordingHud : Form
         _recognizingStatusText = L10n.T("纠错中…");
         SetStatus(_recognizingStatusText);
         _accent = Color.FromArgb(70, 140, 255);
-        RequestRender();
+        Invalidate();
     }
 
     public void HideHud()
     {
+        _animationTimer.Stop();
         ResetTimers();
+        _phase = Phase.Hidden;
         _isCorrecting = false;
         SetPreviewSource("");
-        if (!Visible)
-        {
-            _phase = Phase.Hidden;
-            _fadeAlpha = 0;
-            _fadeTarget = 0;
-            return;
-        }
-        if (MotionEnabled)
-        {
-            // 先淡出再隐藏；淡出期间继续显示当前内容（阶段在到位后才切到 Hidden）。
-            _hiding = true;
-            _fadeTarget = 0;
-            EnsureTimerRunning();
-        }
-        else
-        {
-            _phase = Phase.Hidden;
-            _fadeAlpha = _fadeTarget = 0;
-            Hide();
-            _animationTimer.Stop();
-        }
+        if (Visible) Hide();
     }
 
     /// <summary>显示流式 partial 文本。本地识别引擎给出的是<b>全量</b>预览，这里整体替换而非追加。</summary>
@@ -290,29 +246,29 @@ internal sealed class RecordingHud : Form
     {
         if (SuppressesProgress) return;
         ShowTransient(L10n.T("已输入"), note ?? "", Glyph.Check, Color.FromArgb(60, 190, 90),
-            TimeSpan.FromSeconds(string.IsNullOrEmpty(note) ? 0.7 : 1.8), fadeIn: true);
+            TimeSpan.FromSeconds(string.IsNullOrEmpty(note) ? 0.7 : 1.8));
     }
 
     /// <summary>一次性错误提示，约 2.5s 后自动隐藏——托盘的错误态回落时长与此对齐（R3-04）。</summary>
     public void ShowError(string message) =>
         ShowTransient(L10n.T("错误"), string.IsNullOrEmpty(message) ? L10n.T("服务异常") : message,
-            Glyph.Exclaim, Color.FromArgb(235, 70, 60), TimeSpan.FromSeconds(2.5), fadeIn: false);
+            Glyph.Exclaim, Color.FromArgb(235, 70, 60), TimeSpan.FromSeconds(2.5));
 
     /// <summary>识别跑通但结果为空的一次性提示。与"错误"分开：这不是故障，而是没采到语音，
     /// 用户需要的是"去检查麦克风 / 输入设备"这条具体线索，而不是一个红色叉。</summary>
     public void ShowNoSpeech() =>
         ShowTransient(L10n.T("没有识别到内容"), L10n.T("没听到说话内容，请确认麦克风未静音、输入设备选择正确。"),
-            Glyph.Exclaim, Color.FromArgb(240, 150, 40), TimeSpan.FromSeconds(2.5), fadeIn: false);
+            Glyph.Exclaim, Color.FromArgb(240, 150, 40), TimeSpan.FromSeconds(2.5));
 
     /// <summary>尚未就绪时按下热键的说明（模型下载中等）。不是故障，用橙色而不是红色。</summary>
     public void ShowNotice(string status, string message) =>
-        ShowTransient(status, message, Glyph.Exclaim, Color.FromArgb(240, 150, 40), TimeSpan.FromSeconds(2.5), fadeIn: false);
+        ShowTransient(status, message, Glyph.Exclaim, Color.FromArgb(240, 150, 40), TimeSpan.FromSeconds(2.5));
 
     /// <summary>用户按 Esc 取消后的一次性提示，约 1.0s 后自动隐藏。</summary>
     public void ShowCanceled()
     {
         if (SuppressesProgress) return;
-        ShowTransient(L10n.T("已取消"), "", Glyph.Cross, Color.FromArgb(170, 170, 170), TimeSpan.FromSeconds(1.0), fadeIn: true);
+        ShowTransient(L10n.T("已取消"), "", Glyph.Cross, Color.FromArgb(170, 170, 170), TimeSpan.FromSeconds(1.0));
     }
 
     /// <summary>
@@ -327,7 +283,7 @@ internal sealed class RecordingHud : Form
         CancelWarningRestore();
         _statusText = string.IsNullOrEmpty(message) ? L10n.T("识别提示") : message;
         _statusWarning = true;
-        RequestRender();
+        Invalidate();
 
         var timer = new System.Windows.Forms.Timer { Interval = 1200 };
         timer.Tick += (_, _) =>
@@ -337,7 +293,7 @@ internal sealed class RecordingHud : Form
             _warningRestoreTimer = null;
             _statusWarning = false;
             _statusText = _phase == Phase.Recording ? _recordingStatusText : _recognizingStatusText;
-            RequestRender();
+            Invalidate();
         };
         _warningRestoreTimer = timer;
         timer.Start();
@@ -346,19 +302,14 @@ internal sealed class RecordingHud : Form
     /// <summary>应用已保存的 UI 配置。就地生效，不重建 HUD 实例（VW-15）。</summary>
     public void ApplyConfig(UIConfig config)
     {
-        _bgAlpha = Math.Clamp(config.Opacity, 0.4, 1.0);
+        Opacity = Math.Clamp(config.Opacity, 0.4, 1.0);
         _placement = config.HudPositionValue;
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
         if (SuppressesProgress && (_phase is Phase.Recording or Phase.Recognizing)) HideHud();
-        else RequestRender();
     }
 
-    /// <summary>背景不透明度是设置页可实时预览的外观项；文字不随之变淡。</summary>
-    public void ApplyOpacity(double opacity)
-    {
-        _bgAlpha = Math.Clamp(opacity, 0.4, 1.0);
-        RequestRender();
-    }
+    /// <summary>透明度是设置页可实时预览的外观项。</summary>
+    public void ApplyOpacity(double opacity) => Opacity = Math.Clamp(opacity, 0.4, 1.0);
 
     // ─── 内部状态 ─────────────────────────────────────────────────
 
@@ -374,10 +325,10 @@ internal sealed class RecordingHud : Form
         if (string.IsNullOrEmpty(text)) _previewLines = Array.Empty<string>();
     }
 
-    private void ShowTransient(string status, string message, Glyph glyph, Color accent,
-        TimeSpan autoHideAfter, bool fadeIn)
+    private void ShowTransient(string status, string message, Glyph glyph, Color accent, TimeSpan autoHideAfter)
     {
         ResetTimers();
+        _animationTimer.Stop();
 
         _phase = Phase.Transient;
         _isCorrecting = false;
@@ -385,7 +336,7 @@ internal sealed class RecordingHud : Form
         _accent = accent;
         SetStatus(status);
         SetPreviewSource(message);
-        Present(anchorToScreen: true, fadeIn: fadeIn);
+        Present(anchorToScreen: true);
 
         var timer = new System.Windows.Forms.Timer { Interval = Math.Max(1, (int)autoHideAfter.TotalMilliseconds) };
         timer.Tick += (_, _) =>
@@ -429,79 +380,19 @@ internal sealed class RecordingHud : Form
         _collapseTimer = null;
     }
 
-    // ─── 动画节拍 ────────────────────────────────────────────────
-
-    private void EnsureTimerRunning()
-    {
-        if (!_animationTimer.Enabled) _animationTimer.Start();
-    }
-
-    /// <summary>一拍（约 33ms）：呼吸相位、电平衰减、淡入淡出推进，随后重绘一帧。
-    /// 静止且无动画可推进时停表，不空转。</summary>
-    private void AnimationTick()
-    {
-        bool animate = false;
-
-        if (_phase is Phase.Recording or Phase.Recognizing)
-        {
-            // 电平自然衰减：静音时波形回落，而不是停在最后一次的高度。衰减不依赖动画开关。
-            for (int i = 0; i < _bars.Length; i++) _bars[i] *= 0.94f;
-            animate = true;
-        }
-        if (MotionEnabled && _phase is Phase.Recording or Phase.Recognizing)
-        {
-            _pulsePhase = (_pulsePhase + 0.16) % (Math.PI * 2);
-            animate = true;
-        }
-
-        if (Math.Abs(_fadeAlpha - _fadeTarget) > 0.001f)
-        {
-            var step = _fadeTarget > _fadeAlpha ? FadeInStep : FadeOutStep;
-            _fadeAlpha = _fadeTarget > _fadeAlpha
-                ? Math.Min(_fadeTarget, _fadeAlpha + step)
-                : Math.Max(_fadeTarget, _fadeAlpha - step);
-            animate = true;
-            if (_hiding && _fadeAlpha <= 0f)
-            {
-                _hiding = false;
-                _phase = Phase.Hidden;
-                Hide();
-            }
-        }
-
-        if (Visible)
-        {
-            if (_layeredBroken) Invalidate(); // 实心回退路径走系统 WM_PAINT
-            else PushFrame();
-        }
-        if (!animate && Math.Abs(_fadeAlpha - _fadeTarget) <= 0.001f) _animationTimer.Stop();
-    }
-
     // ─── 布局与定位 ───────────────────────────────────────────────
 
     /// <summary>错误 / "没有识别到内容"即使在"不显示"下也要浮出来，此时落在底部居中。</summary>
     private HudPlacement EffectivePlacement => SuppressesProgress ? HudPlacement.BottomCenter : _placement;
 
-    /// <summary>确定目标屏幕与锚点，按当前内容布局后显示。
-    /// 测试可通过 <see cref="SuppressPresentationForTest"/> 关掉显示（只做布局），
-    /// 避免 dotnet test 在真实屏幕上弹出 HUD。</summary>
-    internal bool SuppressPresentationForTest;
-
-    private void Present(bool anchorToScreen, bool fadeIn)
+    /// <summary>确定目标屏幕与锚点，按当前内容布局后显示。</summary>
+    private void Present(bool anchorToScreen)
     {
-        _hiding = false;
         _targetScreen = ResolveTargetScreen();
         if (anchorToScreen) ComputeAnchor(_targetScreen);
         Relayout();
-        if (SuppressPresentationForTest) return;
-        if (!Visible)
-        {
-            _fadeAlpha = fadeIn && MotionEnabled ? 0f : 1f;
-            _fadeTarget = 1f;
-            Show();
-        }
-        EnsureTimerRunning();
-        RequestRender();
+        if (!Visible) Show();
+        Invalidate();
     }
 
     private Screen ResolveTargetScreen()
@@ -573,7 +464,6 @@ internal sealed class RecordingHud : Form
         {
             height += S(PreviewPadTop) + _previewLines.Length * PreviewLineHeight() + S(PreviewPadBottom);
         }
-        _currentHeight = height;
 
         Point location = EffectivePlacement switch
         {
@@ -591,7 +481,7 @@ internal sealed class RecordingHud : Form
 
         var bounds = new Rectangle(location, new Size(_currentWidth, height));
         if (Bounds != bounds) Bounds = bounds;
-        RequestRender();
+        Invalidate();
     }
 
     private int PreviewLineHeight() => (int)Math.Ceiling(_previewFont.GetHeight(DeviceDpi) * 1.15);
@@ -623,179 +513,48 @@ internal sealed class RecordingHud : Form
     protected override void OnDpiChanged(DpiChangedEventArgs e)
     {
         base.OnDpiChanged(e);
-        _scene?.Dispose(); _scene = null;
-        _frame?.Dispose(); _frame = null;
         if (Visible) Relayout();
     }
 
-    // ─── 帧合成（UpdateLayeredWindow）────────────────────────────
-
-    /// <summary>请求重绘一帧；分层路径立即推帧，实心回退路径走 Invalidate。</summary>
-    private void RequestRender()
+    /// <summary>
+    /// DWMWA_WINDOW_CORNER_PREFERENCE 仅 Windows 11 22000+ 支持；老版本调用会失败，
+    /// 静默回退到 Region 裁剪（不判断系统版本号，直接以调用结果为准更可靠）。
+    /// </summary>
+    private bool TryEnableDwmRoundCorners()
     {
-        if (!Visible && !_hiding) return;
-        if (_layeredBroken)
-        {
-            Invalidate();
-            return;
-        }
-        PushFrame();
-    }
-
-    private void EnsureFrameResources(int width, int height)
-    {
-        if (_scene is not null && _scene.Width == width && _scene.Height == height) return;
-        _scene?.Dispose();
-        _frame?.Dispose();
-        _scene = new Bitmap(width, height, PixelFormat.Format32bppArgb);
-        // 位图分辨率跟随窗口 DPI：点阵字号（pt）据此换算成像素，跨屏拖动后重建即可。
-        _scene.SetResolution(DeviceDpi, DeviceDpi);
-        _frame = new Bitmap(width, height, PixelFormat.Format32bppArgb);
-        _frame.SetResolution(DeviceDpi, DeviceDpi);
-        _premultiplyBuffer = new byte[width * height * 4]; // 32bpp 的 Stride 恒等于 w*4
-    }
-
-    /// <summary>渲染场景 → 预乘 + 淡出 → UpdateLayeredWindow。失败一次即永久回退实心窗口。</summary>
-    private void PushFrame()
-    {
-        if (_layeredBroken) return;
         try
         {
-            EnsureFrameResources(Width, Height);
-            RenderSceneTo(_scene!);
-            // 先把直通 alpha 的场景整帧拷进成品位图，再做预乘（GDI+ 的 DrawImage 保留 alpha 通道）。
-            using (var fg = Graphics.FromImage(_frame!))
-            {
-                fg.DrawImage(_scene!, new Rectangle(0, 0, _frame!.Width, _frame.Height),
-                    new Rectangle(0, 0, _scene!.Width, _scene.Height), GraphicsUnit.Pixel);
-            }
-            PremultiplyWithFade(_frame, (int)Math.Round(Math.Clamp(_fadeAlpha, 0f, 1f) * 255));
-            PresentLayered(_frame);
+            int pref = DWMWCP_ROUND;
+            var hr = DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
+            return hr == 0;
         }
-        catch (Exception error)
+        catch
         {
-            // 渲染管线出问题（特殊驱动 / 远程会话）不应让 HUD 永远消失：退回实心窗口。
-            AppLog.Warn("hud", $"分层渲染失败，回退实心窗口：{error.GetType().Name}");
-            DisableLayeredMode();
+            return false;
         }
     }
 
-    private void PremultiplyWithFade(Bitmap frame, int fade)
+    private void ApplyRoundedRegionIfNeeded()
     {
-        var rect = new Rectangle(0, 0, frame.Width, frame.Height);
-        var bits = frame.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
-        try
-        {
-            var bytes = _premultiplyBuffer!;
-            Marshal.Copy(bits.Scan0, bytes, 0, bytes.Length);
-            for (int i = 0; i < bytes.Length; i += 4)
-            {
-                var a = bytes[i + 3] * fade / 255;
-                bytes[i + 3] = (byte)a;
-                // GDI+ 画出来是直通 alpha；UpdateLayeredWindow 要求预乘。
-                bytes[i] = (byte)(bytes[i] * a / 255);
-                bytes[i + 1] = (byte)(bytes[i + 1] * a / 255);
-                bytes[i + 2] = (byte)(bytes[i + 2] * a / 255);
-            }
-            Marshal.Copy(bytes, 0, bits.Scan0, bytes.Length);
-        }
-        finally
-        {
-            frame.UnlockBits(bits);
-        }
-    }
-
-    private void PresentLayered(Bitmap frame)
-    {
-        if (_memoryDc == IntPtr.Zero) _memoryDc = CreateCompatibleDC(IntPtr.Zero);
-        if (_memoryDc == IntPtr.Zero) throw new InvalidOperationException("CreateCompatibleDC 失败");
-
-        // hBitmap 保持选中状态，下一帧 SelectObject 换新的时释放旧的；Dispose 时统一清理。
-        var hBitmap = frame.GetHbitmap(Color.FromArgb(0));
-        var previous = SelectObject(_memoryDc, hBitmap);
-        if (previous != IntPtr.Zero) DeleteObject(previous);
-
-        var location = new Point(Left, Top);
-        var size = new Size(frame.Width, frame.Height);
-        var source = Point.Empty;
-        var blend = new BLENDFUNCTION
-        {
-            BlendOp = AC_SRC_OVER,
-            BlendFlags = 0,
-            SourceConstantAlpha = 255,
-            AlphaFormat = AC_SRC_ALPHA,
-        };
-        if (!UpdateLayeredWindow(Handle, IntPtr.Zero, ref location, ref size,
-                _memoryDc, ref source, 0, ref blend, ULW_ALPHA))
-        {
-            throw new InvalidOperationException($"UpdateLayeredWindow 失败：{Marshal.GetLastWin32Error()}");
-        }
-    }
-
-    /// <summary>ULW 不可用：去掉 WS_EX_LAYERED 重建句柄，改走普通 WM_PAINT（OnPaintFallback）。</summary>
-    private void DisableLayeredMode()
-    {
-        if (_layeredBroken) return;
-        _layeredBroken = true;
-        var wasVisible = Visible;
-        RecreateHandle();
-        if (wasVisible && !IsDisposed)
-        {
-            Show();
-            Invalidate();
-        }
+        if (!IsHandleCreated || _useDwmRoundCorners) return;
+        var old = Region;
+        Region = BuildRoundedRegion(ClientRectangle, S(14));
+        old?.Dispose();
     }
 
     // ─── 绘制 ─────────────────────────────────────────────────────
 
-    /// <summary>测试与预览用途：把当前状态渲染成一张直通 alpha 的完整帧（不做预乘、不推窗口）。
-    /// 前提是先驱动过一次状态（如 ShowRecording），让布局几何生效。</summary>
-    internal Bitmap RenderPreviewFrame()
-    {
-        var preview = new Bitmap(Width, Height, PixelFormat.Format32bppArgb);
-        preview.SetResolution(DeviceDpi, DeviceDpi);
-        RenderSceneTo(preview);
-        return preview;
-    }
-
-    private void RenderSceneTo(Bitmap target)
-    {
-        using var g = Graphics.FromImage(target);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        // ClearType 依赖不透明底色；半透明背景上会出彩色镶边，改用灰度抗锯齿。
-        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-        RenderScene(g, opaque: false);
-    }
-
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        if (!_layeredBroken) return; // 分层路径的内容不走 WM_PAINT
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-        RenderScene(g, opaque: true);
-    }
 
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        if (_layeredBroken) base.OnPaintBackground(e);
-        // 分层窗口的背景擦除会破坏 ULW 内容，跳过。
-    }
-
-    private void RenderScene(Graphics g, bool opaque)
-    {
-        g.Clear(Color.Transparent);
-
-        // 胶囊底：半透明深色（实心回退时不透明）。文字与波形的亮度不随 ui.opacity 变化。
-        var bgAlpha = opaque ? 255 : (int)(255 * _bgAlpha);
-        using (var path = BuildRoundedPath(new RectangleF(0, 0, Width, Height), S(CornerRadius)))
+        if (!_useDwmRoundCorners)
         {
-            using (var background = new SolidBrush(Color.FromArgb(bgAlpha, 26, 28, 33)))
-            {
-                g.FillPath(background, path);
-            }
-            using var border = new Pen(Color.FromArgb(38, 255, 255, 255), 1f);
+            using var border = new Pen(Color.FromArgb(40, 255, 255, 255), 1f);
+            using var path = BuildRoundedPath(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), S(13f));
             g.DrawPath(border, path);
         }
 
@@ -919,6 +678,12 @@ internal sealed class RecordingHud : Form
         }
     }
 
+    private static Region BuildRoundedRegion(Rectangle rect, float radius)
+    {
+        using var path = BuildRoundedPath(rect, radius);
+        return new Region(path);
+    }
+
     private static GraphicsPath BuildRoundedPath(RectangleF rect, float radius)
     {
         var path = new GraphicsPath();
@@ -950,13 +715,6 @@ internal sealed class RecordingHud : Form
             _previewFont.Dispose();
             _previewFormat.Dispose();
             _statusFormat.Dispose();
-            _scene?.Dispose();
-            _frame?.Dispose();
-            if (_memoryDc != IntPtr.Zero)
-            {
-                DeleteDC(_memoryDc);
-                _memoryDc = IntPtr.Zero;
-            }
         }
         base.Dispose(disposing);
     }

@@ -60,14 +60,14 @@ internal sealed partial class SetupForm : Form
     // ─ 顶部横幅 ────────────────────────────────────────────────
     private readonly Panel _bannerPanel = new();
     private readonly Label _bannerLabel = new();
-    private readonly RoundedButton _bannerOpenMicSettings = new();
+    private readonly Button _bannerOpenMicSettings = new();
 
     // ─ Tab 1：识别 ────────────────────────────────────────────
     private readonly Label _modelStatusLabel = new();
     private readonly Label _modelPathLabel = new();
     private readonly Label _modelErrorLabel = new();
     private readonly ProgressBar _modelProgressBar = new();
-    private readonly RoundedButton _modelActionButton = new();
+    private readonly Button _modelActionButton = new();
     private readonly ComboBox _languageCombo = new();
     private readonly CheckBox _llmEnabledCheck = new();
     private readonly TextBox _llmBaseUrlField = new();
@@ -78,9 +78,9 @@ internal sealed partial class SetupForm : Form
     private readonly NumericUpDown _llmTemperatureField = new();
     private readonly NumericUpDown _llmMaxTokensField = new();
     private readonly NumericUpDown _llmTimeoutField = new();
-    private readonly RoundedButton _llmTestButton = new();
+    private readonly Button _llmTestButton = new();
     private readonly Label _recognitionMessage = new();
-    private readonly RoundedButton _saveRecognitionButton = new();
+    private readonly Button _saveRecognitionButton = new();
 
     // ─ Tab 2：热键 ────────────────────────────────────────────
     private readonly CheckBox _modCtrl = new();
@@ -90,17 +90,16 @@ internal sealed partial class SetupForm : Form
     private readonly TextBox _hotkeyKey = new();
     private readonly Label _hotkeyPreview = new();
     private readonly ComboBox _hotkeyModeCombo = new();
-    private readonly RoundedButton _useRightCtrlButton = new();
-    private readonly RoundedButton _useRightAltButton = new();
-    private readonly RoundedButton _recordHotkeyButton = new();
+    private readonly Button _useRightCtrlButton = new();
+    private readonly Button _recordHotkeyButton = new();
     private bool _isRecordingHotkey;
 
     private readonly Label _hotkeyMessage = new();
 
     // ─ Tab 3：权限 ────────────────────────────────────────────
     private readonly Label _micStatusLabel = new();
-    private readonly RoundedButton _micRetryButton = new();
-    private readonly RoundedButton _micOpenSettingsButton = new();
+    private readonly Button _micRetryButton = new();
+    private readonly Button _micOpenSettingsButton = new();
 
     // ─ Tab 4：通用 ────────────────────────────────────────────
     private readonly CheckBox _startupCheck = new();
@@ -123,11 +122,11 @@ internal sealed partial class SetupForm : Form
         Text = L10n.F("{0} 设置", "VoiceTyper");
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96f, 96f);
-        ClientSize = new Size(960, 700);
+        ClientSize = new Size(1080, 800);
         MinimumSize = new Size(860, 640);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
-        BackColor = UiPalette.PageBackground;
+        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = Color.FromArgb(247, 248, 250);
         BuildSettingsLayout();
         WireDraftEvents(this);
         VisibleChanged += (_, _) =>
@@ -213,7 +212,7 @@ internal sealed partial class SetupForm : Form
 
         if (apiKeyStatus == SecretReadStatus.Failed)
         {
-            SetMessage(_recognitionMessage, L10n.T("无法读取已保存的 API Key，请重新填写并保存。"), UiPalette.Error);
+            SetMessage(_recognitionMessage, L10n.T("无法读取已保存的 API Key，请重新填写并保存。"), Color.Firebrick);
         }
         else
         {
@@ -251,9 +250,9 @@ internal sealed partial class SetupForm : Form
         if (micBanner is not null)
         {
             _bannerPanel.Visible = true;
-            _bannerPanel.BackColor = UiPalette.WarningBackground;
+            _bannerPanel.BackColor = Color.FromArgb(255, 245, 220);
             _bannerLabel.Text = micBanner;
-            _bannerLabel.ForeColor = UiPalette.Warning;
+            _bannerLabel.ForeColor = Color.FromArgb(120, 70, 0);
         }
         else
         {
@@ -267,7 +266,7 @@ internal sealed partial class SetupForm : Form
         _modelErrorLabel.Text = downloadError ?? "";
         _downloadDetails = downloadDetails ?? "";
         _modelDetailsButton.Visible = !string.IsNullOrEmpty(_downloadDetails);
-        _modelStatusLabel.ForeColor = asrState == AsrState.Ready ? UiPalette.Success : ForeColor;
+        _modelStatusLabel.ForeColor = asrState == AsrState.Ready ? Color.SeaGreen : ForeColor;
         _modelErrorLabel.Visible = !string.IsNullOrEmpty(downloadError);
 
         var progress = downloadProgress ?? 0;
@@ -292,12 +291,12 @@ internal sealed partial class SetupForm : Form
 
         (_micStatusLabel.Text, _micStatusLabel.ForeColor) = micProbe switch
         {
-            MicProbeResult.Available => (L10n.T("麦克风可用"), UiPalette.Success),
-            MicProbeResult.Silent => (L10n.T("麦克风已打开，但只收到静音"), UiPalette.Warning),
-            MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), UiPalette.Error),
-            MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), UiPalette.Error),
-            MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), UiPalette.Error),
-            _ => (L10n.T("麦克风状态未知"), UiPalette.Warning),
+            MicProbeResult.Available => (L10n.T("麦克风可用"), Color.SeaGreen),
+            MicProbeResult.Silent => (L10n.T("麦克风已打开，但只收到静音"), Color.DarkGoldenrod),
+            MicProbeResult.AccessDenied => (L10n.T("麦克风不可用：被系统隐私设置阻止"), Color.Firebrick),
+            MicProbeResult.NoDevice => (L10n.T("未检测到麦克风设备"), Color.Firebrick),
+            MicProbeResult.DeviceFailure => (L10n.T("麦克风打开失败：可能被其他应用占用"), Color.Firebrick),
+            _ => (L10n.T("麦克风状态未知"), Color.DarkGoldenrod),
         };
 
         _lastMicProbe = micProbe;
@@ -372,7 +371,7 @@ internal sealed partial class SetupForm : Form
     internal void ShowModelActionMessage(string message)
     {
         _modelStatusLabel.Text = message;
-        _modelStatusLabel.ForeColor = UiPalette.Warning;
+        _modelStatusLabel.ForeColor = Color.FromArgb(180, 100, 0);
     }
 
     private void UpdateHotkeyPreview()
@@ -411,15 +410,15 @@ internal sealed partial class SetupForm : Form
         };
 
         _llmTestButton.Enabled = false;
-        SetMessage(_recognitionMessage, L10n.T("正在测试纠错..."), UiPalette.TextSecondary);
+        SetMessage(_recognitionMessage, L10n.T("正在测试纠错..."), Color.Gray);
         try
         {
             var result = await OnTestLlmCorrection(llmConfig, _llmApiKeyField.Text).ConfigureAwait(true);
-            SetMessage(_recognitionMessage, result.Message, result.Ok ? UiPalette.Success : UiPalette.Error);
+            SetMessage(_recognitionMessage, result.Message, result.Ok ? Color.SeaGreen : Color.Firebrick);
         }
         catch (Exception ex)
         {
-            SetMessage(_recognitionMessage, L10n.F("纠错测试失败：{0}", ex.Message), UiPalette.Error);
+            SetMessage(_recognitionMessage, L10n.F("纠错测试失败：{0}", ex.Message), Color.Firebrick);
         }
         finally
         {
@@ -438,12 +437,12 @@ internal sealed partial class SetupForm : Form
         }
         if (OnBeginHotkeyRecording?.Invoke() == false)
         {
-            SetMessage(_hotkeyMessage, L10n.T("正在听写，请等这一段结束后再录制热键。"), UiPalette.Error);
+            SetMessage(_hotkeyMessage, L10n.T("正在听写，请等这一段结束后再录制热键。"), Color.Firebrick);
             return;
         }
         _isRecordingHotkey = true;
         _recordHotkeyButton.Text = L10n.T("停止录制");
-        SetMessage(_hotkeyMessage, L10n.T("请按下要使用的快捷键（Esc 取消）……"), UiPalette.Accent);
+        SetMessage(_hotkeyMessage, L10n.T("请按下要使用的快捷键（Esc 取消）……"), Color.RoyalBlue);
         ActiveControl = null; // 焦点离开输入框，按键才会走到 ProcessCmdKey
     }
 
@@ -468,14 +467,14 @@ internal sealed partial class SetupForm : Form
             case HotkeyRecording.Kind.WaitForMore:
                 break;
             case HotkeyRecording.Kind.Cancel:
-                SetMessage(_hotkeyMessage, L10n.T("已取消录制。"), UiPalette.TextSecondary);
+                SetMessage(_hotkeyMessage, L10n.T("已取消录制。"), Color.Gray);
                 StopHotkeyRecording();
                 break;
             case HotkeyRecording.Kind.NeedModifier:
-                SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), UiPalette.Error);
+                SetMessage(_hotkeyMessage, L10n.T("至少选择一个修饰键（Ctrl/Alt/Shift/Win），否则会拦截普通输入。"), Color.Firebrick);
                 break;
             case HotkeyRecording.Kind.Unsupported:
-                SetMessage(_hotkeyMessage, L10n.T("这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"), UiPalette.Error);
+                SetMessage(_hotkeyMessage, L10n.T("这个键不能用作热键，请换一个（字母、数字、F1–F12、方向键等）。"), Color.Firebrick);
                 break;
             default:
                 _modCtrl.Checked = result.Modifiers!.Contains("ctrl");
@@ -484,7 +483,7 @@ internal sealed partial class SetupForm : Form
                 _modWin.Checked = result.Modifiers!.Contains("win");
                 _hotkeyKey.Text = result.Key!;
                 UpdateHotkeyPreview();
-                SetMessage(_hotkeyMessage, L10n.F("已录制：{0}，点「保存并应用」生效。", _hotkeyPreview.Text), UiPalette.Success);
+                SetMessage(_hotkeyMessage, L10n.F("已录制：{0}，点「保存并应用」生效。", _hotkeyPreview.Text), Color.SeaGreen);
                 StopHotkeyRecording();
                 break;
         }
