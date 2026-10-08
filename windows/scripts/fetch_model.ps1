@@ -1,4 +1,4 @@
-# 开发/测试用：命令行下载 SenseVoice-Small 模型到应用运行时会用到的同一个位置
+﻿# 开发/测试用：命令行下载 SenseVoice-Small 模型到应用运行时会用到的同一个位置
 # (%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\)，供跑金标准测试或跳过首启下载引导时使用。
 #
 # 生产环境下应用本身会在首次启动时通过设置窗口引导用户完成同样的下载

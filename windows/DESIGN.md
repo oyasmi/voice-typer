@@ -701,6 +701,16 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 - 发布不含 PDB / 原生 `.lib`；调试符号保留在构建目录。`scripts/verify_publish.ps1` 由构建与 CI
   共用，防止把共享运行时、模型、无用音频模块或测试文件再次打进包。
 - `Version` 从 csproj 单点读取，安装包版本号与之同步
+- **构建脚本的可移植性约束**（2026-10-08 真机踩坑后固化）：
+  - `.bat` 必须以 **CRLF** 检出。本仓库常见 `core.autocrlf=input`，会把 LF 行尾的批处理
+    检出成 cmd.exe 无法可靠解析的形态（吃行首字符、把注释当命令执行）。根目录
+    `.gitattributes` 强制 `*.bat`/`*.cmd` 为 `eol=crlf`，新增批处理脚本自动受保护。
+  - `build.bat` 内容保持**纯 ASCII**。`chcp 65001` 下 cmd.exe 在执行外部命令后回读文件时，
+    会因多字节 UTF-8 字符算错偏移、从字符中间重新进入脚本（实测注释被切成两半当命令执行）。
+    中文解释写到 README/DESIGN，不进 `.bat`。
+  - 脚本内调用 `powershell -File` 一律带 `-ExecutionPolicy Bypass`：多数 Windows 默认
+    Restricted 策略会拒绝加载 .ps1，导致打包误报失败。`fetch_model.ps1` 带 UTF-8 BOM，
+    保证 Windows PowerShell 5.1 正确按 UTF-8 读取中文提示。
 - **代码签名**：本轮不做。SmartScreen 会对未签名安装包显示"Windows 已保护你的电脑"，
   README 需给出"更多信息 → 仍要运行"的截图说明。与 macOS 不做公证是同一个取舍位。
 

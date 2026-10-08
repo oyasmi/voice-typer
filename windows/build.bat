@@ -1,5 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
+REM Keep this file pure ASCII. With "chcp 65001" active, cmd.exe mis-seeks the file
+REM when it resumes reading after external commands if the file contains multi-byte
+REM UTF-8 characters (e.g. Chinese comments), which corrupts parsing mid-script.
+REM Put Chinese explanations in README.md / DESIGN.md instead.
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -31,7 +35,7 @@ echo.
 
 REM ===== Clean previous build =====
 if exist dist rd /s /q dist
-REM 不删除整个 bin：开发者可能正在运行其中的预览版本。
+REM Do not wipe the whole bin tree: a developer build may be running from it.
 mkdir dist 2>nul
 
 REM ===== Restore =====
@@ -45,12 +49,14 @@ if errorlevel 1 (
 echo       OK
 echo.
 
-REM ===== 发布 x64 + arm64：目录式，依赖系统 .NET 10 桌面运行时 =====
-REM 见 windows/DESIGN.md §7 D9：常驻自启工具不该用 PublishSingleFile 自解压，
-REM 目录式部署 + Inno Setup 安装包才是最终产物。
+REM ===== Publish x64 + arm64: directory layout, needs the system .NET 10 Desktop Runtime =====
+REM See windows/DESIGN.md section 7 D9: a resident autostart tray tool must not
+REM self-extract via PublishSingleFile; directory deploy + Inno Setup installer
+REM is the final artifact.
 for %%R in (win-x64 win-arm64) do (
     echo [2/4] Publishing %%R framework-dependent...
-    REM 清理目标 RID 的旧输出，避免切换 ReadyToRun 后误用上次预编译的依赖 DLL。
+    REM Clean stale output for the target RID so precompiled dependency DLLs
+    REM from a previous publish are never reused after toggling ReadyToRun.
     dotnet clean VoiceTyper.csproj -c Release -r %%R --nologo -v q
     if errorlevel 1 (
         echo [ERROR] Clean %%R failed.
@@ -67,7 +73,10 @@ for %%R in (win-x64 win-arm64) do (
         pause
         exit /b 1
     )
-    powershell -NoProfile -File scripts\verify_publish.ps1 -PublishDirectory dist\%%R
+    REM -ExecutionPolicy Bypass applies to this child process only: most Windows
+    REM boxes default to Restricted and would refuse to load verify_publish.ps1,
+    REM falsely failing the build.
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_publish.ps1 -PublishDirectory dist\%%R
     if errorlevel 1 (
         echo [ERROR] Publish output verification failed for %%R.
         pause
@@ -77,10 +86,10 @@ for %%R in (win-x64 win-arm64) do (
 )
 echo.
 
-REM ===== Code signing (optional,见 windows/README.md "签名" 章节) =====
-REM 不设置 VOICETYPER_SIGN_THUMBPRINT 时整段跳过，行为完全不变——与 macOS 侧
-REM build_xcode.sh 的可选签名对称。不签名的可执行文件会触发 SmartScreen
-REM "未知发布者" 警告，与 Gatekeeper 是同一类问题（W-31）。
+REM ===== Code signing (optional, see windows/README.md) =====
+REM Skipped entirely when VOICETYPER_SIGN_THUMBPRINT is unset -- symmetric with the
+REM optional signing in the macOS build_xcode.sh. An unsigned executable triggers
+REM the SmartScreen "unknown publisher" warning, same class of issue as Gatekeeper (W-31).
 if not "%VOICETYPER_SIGN_THUMBPRINT%"=="" (
     if "%VOICETYPER_TIMESTAMP_URL%"=="" set VOICETYPER_TIMESTAMP_URL=http://timestamp.digicert.com
     echo Signing build outputs with thumbprint %VOICETYPER_SIGN_THUMBPRINT% ...
@@ -114,7 +123,7 @@ REM ===== Inno Setup installers (optional: skipped if ISCC.exe not found) =====
 echo [4/4] Building installers (Inno Setup)...
 where iscc.exe >nul 2>&1
 if errorlevel 1 (
-    echo       [WARN] ISCC.exe (Inno Setup) not found in PATH — skipping installer build.
+    echo       [WARN] ISCC.exe ^(Inno Setup^) not found in PATH -- skipping installer build.
     echo       Install from https://jrsoftware.org/isdl.php to produce the setup .exe.
 ) else (
     for %%R in (x64 arm64) do (
@@ -137,6 +146,6 @@ if errorlevel 1 (
 echo.
 
 echo ========================================
-echo  Build complete! Output dir: %CD%\dist\
+echo  Build complete. Output dir: %CD%\dist\
 echo ========================================
 if "%1"=="" pause

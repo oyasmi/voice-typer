@@ -1,0 +1,4 @@
+# cmd.exe 的批处理解析器对 LF 行尾不可靠（会吃掉行首字符、把注释当命令执行）。
+# 本仓库常见 core.autocrlf=input 检出，必须强制 .bat/.cmd 以 CRLF 落盘。
+*.bat text eol=crlf
+*.cmd text eol=crlf
