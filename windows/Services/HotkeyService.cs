@@ -31,6 +31,9 @@ internal sealed class HotkeyService : IHotkeyListening
     /// true = （重新）安装成功。在 UI 线程触发。</summary>
     public Action<bool>? OnHealthChanged { get; set; }
 
+    /// <inheritdoc/>
+    public HotkeyTriggerStamp? LastTrigger { get; private set; }
+
     private bool _acceptsCancelWhenInactive;
     /// <inheritdoc/>
     public bool AcceptsCancelWhenInactive
@@ -294,6 +297,7 @@ internal sealed class HotkeyService : IHotkeyListening
         switch (action)
         {
             case HotkeyAction.Press:
+                LastTrigger = StampOf(data);
                 // 右 Alt 的干净手势刚开始：在 Alt down 送达前台应用之前/之后紧跟一对哑键，
                 // 让系统把这次 Alt 记为"按住期间出现过别的键"，松开时不进入菜单栏模式。
                 // 必须在钩子回调里同步注入，保证排在用户松开 Alt 之前（见 SendMenuBarMask 注释）。
@@ -301,6 +305,7 @@ internal sealed class HotkeyService : IHotkeyListening
                 UiDispatcher.PostAsync(() => OnPress?.Invoke());
                 break;
             case HotkeyAction.Release:
+                LastTrigger = StampOf(data);
                 UiDispatcher.PostAsync(() => OnRelease?.Invoke());
                 break;
             case HotkeyAction.Cancel:
@@ -314,6 +319,16 @@ internal sealed class HotkeyService : IHotkeyListening
         // 被接管的主键 down/repeat/up 与生效的 Esc 一律消费掉，不再下发给前台应用；
         // 修饰键事件必须继续传递，否则会破坏其他应用看到的修饰键 down/up 配对（R2-1）。
         return consume ? (IntPtr)1 : CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// 按键事件的系统时间戳（GetTickCount 毫秒）到此刻的延迟，用来判断钩子回调是否被 UI 线程阻塞耽误。
+    /// 超过一分钟视为时间戳不可用（回绕或异常值），不报。
+    /// </summary>
+    private static HotkeyTriggerStamp StampOf(KBDLLHOOKSTRUCT data)
+    {
+        var lag = unchecked((uint)Environment.TickCount - data.time);
+        return new HotkeyTriggerStamp(System.Diagnostics.Stopwatch.GetTimestamp(), lag <= 60_000 ? (int)lag : null);
     }
 
     /// <summary>

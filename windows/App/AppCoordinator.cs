@@ -79,6 +79,9 @@ internal sealed class AppCoordinator : IDisposable
     private static readonly TimeSpan BlockedGuidanceThrottle = TimeSpan.FromSeconds(5);
     /// <summary>单独修饰键热键下浮窗延迟出现，避免 Ctrl+点击这类组合用法让浮窗一闪。</summary>
     private System.Windows.Forms.Timer? _hudShowTimer;
+    /// <summary>本次听写的麦克风是否已经出声（<see cref="VoiceTyperController.MicrophoneReady"/>）。
+    /// 防闪烁延迟到点时据此决定显示"麦克风启动中"还是直接"录音中"。</summary>
+    private bool _microphoneReady;
     /// <summary>每个进程对缺失模型至少自动尝试一次，同一进程内失败后不无限重试。
     /// 下次启动会再自动尝试，并复用 <see cref="ModelDownloader"/> 已保存的断点数据（W-29）。</summary>
     private bool _hasAttemptedAutomaticModelDownload;
@@ -159,6 +162,8 @@ internal sealed class AppCoordinator : IDisposable
         if (_hud is null)
         {
             _hud = new RecordingHud(_config.UI);
+            // 浮窗真正画到屏幕上的时刻并入本次听写的耗时摘要（控制器可能被重建，按当前实例转发）。
+            _hud.ProgressPainted = (ready, timestamp) => _controller?.NoteHudPainted(ready, timestamp);
         }
         else
         {
@@ -501,8 +506,8 @@ internal sealed class AppCoordinator : IDisposable
             {
                 case AppState.Recording:
                     CancelDictationErrorRecovery();
+                    _microphoneReady = false;
                     ShowRecordingHud(controller);
-                    ForwardToOnboarding(new OnboardingDictationEvent.RecordingStarted());
                     break;
                 case AppState.Recognizing:
                     _hud?.SetRecognizing();
@@ -529,6 +534,20 @@ internal sealed class AppCoordinator : IDisposable
             UpdateTray();
         };
 
+        controller.MicrophoneReady = () =>
+        {
+            _microphoneReady = true;
+            // 防闪烁延迟还没到：交给计时器到点后直接显示"录音中"。
+            if (_hudShowTimer is null) _hud?.ShowRecording(controller.RecordingInputDeviceName);
+            // 引导页的"录音中"也以麦克风真正出声为准。
+            ForwardToOnboarding(new OnboardingDictationEvent.RecordingStarted());
+        };
+        controller.ReleasedBeforeReady = () =>
+        {
+            var message = L10n.T("请等浮窗显示「录音中」后再开口。本次没有录到声音。");
+            _hud?.ShowNotice(L10n.T("麦克风还没准备好"), message);
+            ForwardToOnboarding(new OnboardingDictationEvent.Failed(message));
+        };
         controller.PreviewUpdate = preview => _hud?.ShowPreview(preview);
         controller.PreviewWarning = message => _hud?.FlashWarning(message);
         controller.CorrectionStarted = () => _hud?.SetCorrecting();
@@ -563,23 +582,25 @@ internal sealed class AppCoordinator : IDisposable
     }
 
     /// <summary>
+    /// 按下热键即显示浮窗："麦克风启动中"，等 <see cref="VoiceTyperController.MicrophoneReady"/> 再切到"录音中"。
     /// 单独修饰键（右 Ctrl / 右 Alt）作为组合快捷键使用时也会短暂进入录音，浮窗若立即出现会闪烁，
-    /// 因此延迟 150ms 再显示；录音本身不延迟，不影响开头的字。其他热键立即显示。
+    /// 因此延迟 150ms 再显示（从按下算起，与麦克风启动并行）；录音本身不延迟。其他热键立即显示。
     /// </summary>
     private void ShowRecordingHud(VoiceTyperController controller)
     {
-        var deviceName = controller.RecordingInputDeviceName;
+        CancelPendingHudShow();
         if (!_config.Hotkey.IsModifierOnly)
         {
-            _hud?.ShowRecording(deviceName);
+            _hud?.ShowPreparing();
             return;
         }
-        CancelPendingHudShow();
         var timer = new System.Windows.Forms.Timer { Interval = 150 };
         timer.Tick += (_, _) =>
         {
             CancelPendingHudShow();
-            if (_currentState.State == AppState.Recording) _hud?.ShowRecording(deviceName);
+            if (_currentState.State != AppState.Recording) return;
+            if (_microphoneReady) _hud?.ShowRecording(controller.RecordingInputDeviceName);
+            else _hud?.ShowPreparing();
         };
         _hudShowTimer = timer;
         timer.Start();

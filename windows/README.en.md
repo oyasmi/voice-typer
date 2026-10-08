@@ -177,7 +177,9 @@ profile follows the login, and stuffing a 240MB model into it would make domain 
 1. The VoiceTyper icon appears in the system tray after launch (Windows 11 tucks new icons under the “^”
    overflow by default — drag it out to keep it visible). The first launch opens the four-step guide.
 2. **Hold the hotkey** (`Ctrl+F2` by default) to start recording; the HUD overlay appears on the screen
-   containing the foreground window. In toggle mode, press once to start and again to stop.
+   containing the foreground window. It first shows a grey “Starting microphone…”, then turns red with
+   “Recording” once the microphone is live — **start speaking when it turns red**; releasing before
+   that tells you nothing was recorded. In toggle mode, press once to start and again to stop.
 3. Speak. The HUD shows recognized text live and corrects itself as you continue; press `Esc` while
    recording or recognizing to cancel this dictation (cancelling during recognition does not interrupt
    the inference already running, but its result is discarded and never inserted).
@@ -418,12 +420,15 @@ Each dictation ends with one `[metrics]` line containing only numbers and enums 
 device names or window titles — for example:
 
 ```
-dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=42 first_buffer=71 audio=3.4s
+dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=420 first_buffer=436
+key_lag=0 dispatch=1 start_queue=0 dev_resolve=6 dev_cached=1 activate=31 init=380 hud_shown=18 hud_ready=452 audio=3.4s
 release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
 ```
 
-A trailing `*` as in `input=bluetooth*` means the "automatic" policy switched away from the system
-default input.
+(It is a single line, wrapped here for layout; the numbers are illustrative.) A trailing `*` as in
+`input=bluetooth*` means the "automatic" policy switched away from the system default input. The fields
+from `key_lag` to `hud_ready` break down the time from pressing the hotkey to being able to speak; see
+[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段) for their meaning.
 
 Note that log messages themselves stay in Chinese: they are a diagnostic channel for developers, not
 part of the user interface.

@@ -25,6 +25,7 @@ public class VoiceTyperControllerTests
         public Action? OnGestureCancelled { get; set; }
         public Action<bool>? OnHealthChanged { get; set; }
         public bool AcceptsCancelWhenInactive { get; set; }
+        public HotkeyTriggerStamp? LastTrigger { get; set; }
         public int StartCount, StopCount;
         public void Start(HotkeyConfig hotkey) => StartCount++;
         public void Stop() => StopCount++;
@@ -40,13 +41,33 @@ public class VoiceTyperControllerTests
         public ActiveInputDevice? ActiveDevice { get; set; } = new("Test Mic", AudioTransport.BuiltIn, false);
         public AudioStartException? StartError;
         public AudioInputPolicy? LastPolicy;
-        public int StartCount, StopCount, StopWithoutResultCount;
+        public AudioInputPolicy? PreparedPolicy;
+        public int StartCount, StopCount, StopWithoutResultCount, PrepareCount;
+        /// <summary>true 时启动挂起，由测试调用 <see cref="CompleteStart"/> 完成——模拟真实的异步打开麦克风。</summary>
+        public bool DeferStart;
+        public Action<AudioStartResult>? PendingStart;
+        public readonly AudioStartTimings Timings = new() { ResolveTicks = 1, ActivateTicks = 2, InitTicks = 3, DeviceCached = true };
 
-        public void Start(AudioInputPolicy policy)
+        public void PrepareInput(AudioInputPolicy policy)
         {
-            if (StartError is not null) throw StartError;
+            PrepareCount++;
+            PreparedPolicy = policy;
+        }
+
+        public void BeginStart(AudioInputPolicy policy, Action<AudioStartResult> completed)
+        {
             LastPolicy = policy;
             StartCount++;
+            if (StartError is not null) completed(new AudioStartResult.Failed(StartError));
+            else if (DeferStart) PendingStart = completed;
+            else completed(new AudioStartResult.Started(Timings));
+        }
+
+        public void CompleteStart(AudioStartResult? result = null)
+        {
+            var completed = PendingStart ?? throw new InvalidOperationException("没有挂起的启动");
+            PendingStart = null;
+            completed(result ?? new AudioStartResult.Started(Timings));
         }
 
         public void Stop()
@@ -136,7 +157,7 @@ public class VoiceTyperControllerTests
         public readonly List<string> Blocked = new();
         public readonly List<DictationMetrics> Metrics = new();
         public readonly List<string> Recognized = new();
-        public int CancelledCount, EmptyCount, CorrectionCount;
+        public int CancelledCount, EmptyCount, CorrectionCount, ReadyCount, NotReadyCount;
         public readonly List<float> Levels = new();
         public readonly VoiceTyperController Controller;
         private long _ticks = 1_000;
@@ -163,7 +184,11 @@ public class VoiceTyperControllerTests
             Controller.EmptyRecognition = () => EmptyCount++;
             Controller.CorrectionStarted = () => CorrectionCount++;
             Controller.AudioLevel = l => Levels.Add(l);
+            Controller.MicrophoneReady = () => ReadyCount++;
+            Controller.ReleasedBeforeReady = () => NotReadyCount++;
         }
+
+        public long Now => _ticks;
 
         public AppConfig Config { get; }
         public FakeSession Session => Factory.Sessions.Last();
@@ -790,5 +815,231 @@ public class VoiceTyperControllerTests
         corrected.Session.Timings.LlmResult = AsrSessionTimings.LlmOutcome.Corrected;
         corrected.Session.OnFinal!("纠错后");
         Assert.Equal(0, fired);
+    }
+    // ─── 异步打开麦克风（Starting → Recording → 就绪）─────────────
+
+    private static Harness StartedDeferred(Action<AppConfig>? configure = null)
+    {
+        var h = Started(configure);
+        h.Audio.DeferStart = true;
+        return h;
+    }
+
+    [Fact]
+    public void Start_PreparesInputDeviceForConfiguredPolicy()
+    {
+        var h = Started(c => c.Audio.InputDevice = AudioConfig.System);
+        Assert.Equal(1, h.Audio.PrepareCount);
+        Assert.IsType<AudioInputPolicy.SystemDefault>(h.Audio.PreparedPolicy);
+    }
+
+    [Fact]
+    public void Press_EntersRecordingBeforeMicrophoneOpens_AndReadyWaitsForFirstBuffer()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+
+        // HUD 立即出现（Recording），但麦克风还没打开：不能宣布就绪，也不该开始静音探测。
+        Assert.Equal(AppState.Recording, h.States.Last().State);
+        Assert.True(h.Controller.HasActiveDictation);
+        Assert.True(h.Hotkey.AcceptsCancelWhenInactive);
+        Assert.Equal(0, h.ReadyCount);
+        Assert.Empty(h.Probes);
+
+        h.Advance(400);
+        h.Audio.CompleteStart();
+        Assert.Equal(0, h.ReadyCount); // 采集已开始，但还没收到声音
+        Assert.Equal(VoiceTyperController.SilenceProbeDelays.Length, h.Probes.Count);
+
+        h.Advance(15);
+        h.Audio.OnLevel!(0.01f);
+        h.Audio.OnLevel!(0.02f);
+        Assert.Equal(1, h.ReadyCount);
+
+        h.Advance(800);
+        h.Hotkey.OnRelease!();
+        h.Session.OnFinal!("好");
+        var metrics = Assert.Single(h.Metrics);
+        Assert.Equal(DictationOutcome.Inserted, metrics.Outcome);
+        Assert.Same(h.Audio.Timings, metrics.AudioStart);
+        Assert.True(metrics.CaptureStartedAt > metrics.PressedAt);
+        Assert.True(metrics.FirstBufferAt > metrics.CaptureStartedAt);
+    }
+
+    [Fact]
+    public void MicrophoneReady_FiresWhenFirstBufferArrivesBeforeStartCompletion()
+    {
+        // 第一段音频与"启动完成"从不同线程投递到 UI 线程，先后不确定。
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Advance(10);
+        h.Audio.OnLevel!(0.01f);
+        Assert.Equal(0, h.ReadyCount);
+
+        h.Audio.CompleteStart();
+        Assert.Equal(1, h.ReadyCount);
+        h.Audio.OnLevel!(0.01f);
+        Assert.Equal(1, h.ReadyCount);
+    }
+
+    [Fact]
+    public void ReleaseWhileStarting_AfterThreshold_ReportsNotReady_AndIgnoresLateCompletion()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Advance(600);
+        h.Hotkey.OnRelease!();
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount); // 撤销启动
+        Assert.Equal(0, h.Audio.StopCount);              // 没有尾音可取
+        Assert.Equal(0, h.Session.FinalizeCount);
+        Assert.Equal(AppState.Idle, h.States.Last().State);
+        Assert.Equal(1, h.NotReadyCount);
+        Assert.True(h.Session.Closed);
+        Assert.False(h.Hotkey.AcceptsCancelWhenInactive);
+        Assert.Equal(DictationOutcome.NotReady, Assert.Single(h.Metrics).Outcome);
+
+        // 撤销与启动完成竞态：迟到的 Started 不能让已结束的听写复活。
+        var statesBefore = h.States.Count;
+        h.Audio.CompleteStart();
+        h.Audio.OnLevel!(0.05f);
+        Assert.Equal(statesBefore, h.States.Count);
+        Assert.Equal(0, h.ReadyCount);
+        Assert.Empty(h.Probes);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void ReleaseWhileStarting_BelowThreshold_IsSilentDiscard()
+    {
+        var h = StartedDeferred();
+        h.HoldFor(100);
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount);
+        Assert.Equal(0, h.NotReadyCount);
+        Assert.Equal(AppState.Idle, h.States.Last().State);
+        Assert.Equal(DictationOutcome.Discarded, Assert.Single(h.Metrics).Outcome);
+    }
+
+    [Fact]
+    public void EscWhileStarting_CancelsAndRevokesStart()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Hotkey.OnCancel!();
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount);
+        Assert.Equal(1, h.CancelledCount);
+        Assert.Equal(DictationOutcome.Cancelled, Assert.Single(h.Metrics).Outcome);
+
+        h.Audio.CompleteStart(new AudioStartResult.Cancelled());
+        Assert.Single(h.Metrics);
+    }
+
+    [Fact]
+    public void GestureWhileStarting_DiscardsSilently()
+    {
+        var h = StartedDeferred(UseModifierOnly);
+        h.Hotkey.OnPress!();
+        h.Hotkey.OnGestureCancelled!();
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount);
+        Assert.Equal(0, h.CancelledCount);
+        Assert.Equal(DictationOutcome.GestureCancelled, Assert.Single(h.Metrics).Outcome);
+    }
+
+    [Fact]
+    public void Toggle_SecondPressWhileStarting_EndsTheUtterance()
+    {
+        var h = StartedDeferred(UseToggle);
+        h.Hotkey.OnPress!();
+        h.Advance(700);
+        h.Hotkey.OnPress!();
+
+        Assert.Single(h.Factory.Sessions); // 不是"上一段尚未完成"，也没开第二段
+        Assert.Empty(h.Warnings);
+        Assert.Equal(1, h.NotReadyCount);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void StopWhileStarting_TearsDownWithoutReporting()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Controller.Stop();
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount);
+        Assert.True(h.Session.Closed);
+        Assert.Empty(h.Metrics);
+        h.Audio.CompleteStart();
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void AsyncStartFailure_ReportsError()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Audio.CompleteStart(new AudioStartResult.Failed(new AudioStartException("busy", AudioStartFailureKind.DeviceFailure)));
+
+        Assert.Equal(AppState.Error, h.States.Last().State);
+        Assert.Contains("开始录音失败", h.States.Last().Message);
+        Assert.True(h.Session.Closed);
+        Assert.Equal(DictationOutcome.StartFailed, Assert.Single(h.Metrics).Outcome);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void UnexpectedCancellation_IsTreatedAsStartFailure()
+    {
+        var h = StartedDeferred();
+        h.Hotkey.OnPress!();
+        h.Audio.CompleteStart(new AudioStartResult.Cancelled());
+
+        Assert.Equal(AppState.Error, h.States.Last().State);
+        Assert.Equal(DictationOutcome.StartFailed, Assert.Single(h.Metrics).Outcome);
+    }
+
+    [Fact]
+    public void Metrics_RecordHookStampAndHudPaints()
+    {
+        var h = Started();
+        h.Hotkey.LastTrigger = new HotkeyTriggerStamp(h.Now, 7);
+        h.Advance(3);
+        h.Hotkey.OnPress!();
+        h.Advance(20);
+        h.Controller.NoteHudPainted(ready: false, h.Now);
+        h.Advance(400);
+        h.Controller.NoteHudPainted(ready: true, h.Now);
+        h.Controller.NoteHudPainted(ready: true, h.Now + 999); // 只记第一次
+
+        h.Advance(500);
+        h.Hotkey.OnRelease!();
+        h.Session.OnFinal!("好");
+
+        var metrics = Assert.Single(h.Metrics);
+        Assert.Equal(7, metrics.KeyEventLagMs);
+        Assert.NotNull(metrics.HookAt);
+        Assert.True(metrics.HookAt < metrics.PressedAt);
+        Assert.NotNull(metrics.HudShownAt);
+        Assert.True(metrics.HudReadyAt > metrics.HudShownAt);
+        var line = metrics.SummaryLine();
+        Assert.Contains("key_lag=7 dispatch=3 ", line);
+        Assert.Contains("hud_shown=20 hud_ready=420", line);
+    }
+
+    [Fact]
+    public void Metrics_IgnoreStaleHookStamp()
+    {
+        // 钩子时间戳远早于本次按下：不是触发这次听写的按键，不能算进耗时。
+        var h = Started();
+        h.Hotkey.LastTrigger = new HotkeyTriggerStamp(h.Now, 7);
+        h.Advance(10_000);
+        h.HoldFor(600);
+        h.Session.OnFinal!("好");
+        var metrics = Assert.Single(h.Metrics);
+        Assert.Null(metrics.HookAt);
+        Assert.Null(metrics.KeyEventLagMs);
     }
 }

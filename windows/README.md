@@ -146,7 +146,8 @@ TLS 使用系统协议与证书信任，代理沿用 .NET 默认代理；不会�
 
 1. 启动后系统托盘出现 VoiceTyper 图标（Windows 11 默认把新图标收在任务栏右下角的「^」里，
    可以把它拖到外面常驻）。首次启动会先弹出四步引导。
-2. **按住热键**（默认 `Ctrl+F2`）开始录音，HUD 浮窗出现在前台窗口所在的屏幕上。
+2. **按住热键**（默认 `Ctrl+F2`）开始录音，HUD 浮窗出现在前台窗口所在的屏幕上。浮窗先显示灰色的
+   「麦克风启动中…」，麦克风出声后变成红色「录音中」，**变红后再开口**；变红之前松开会提示本次没有录到声音。
    切换模式下改为按一次开始、再按一次结束。
 3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正；录音中或识别中按 `Esc` 可取消本次听写
    （识别中取消不会中断已经在跑的那次推理，但结果会被丢弃、不会插入）。
@@ -397,11 +398,14 @@ Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 每次听写收尾会输出一行 `[metrics]` 摘要（只含数字与枚举，不含识别文本、设备名或窗口标题），例如：
 
 ```
-dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=42 first_buffer=71 audio=3.4s
+dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=420 first_buffer=436
+key_lag=0 dispatch=1 start_queue=0 dev_resolve=6 dev_cached=1 activate=31 init=380 hud_shown=18 hud_ready=452 audio=3.4s
 release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
 ```
 
-`input=bluetooth*` 末尾的星号表示这次是「自动」策略从系统默认输入切换而来。
+（实际是一行，这里为排版折开；数字仅为示意。）`input=bluetooth*` 末尾的星号表示这次是「自动」策略从系统默认
+输入切换而来。`key_lag` 到 `hud_ready` 拆解了「按下热键到可以开口」的耗时，字段含义见
+[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段)。
 
 ### 模型下载失败
 

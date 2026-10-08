@@ -367,6 +367,10 @@ internal static partial class L10n
         ["没听到说话内容，请确认麦克风未静音、输入设备选择正确。"] =
             "No speech was heard. Make sure the microphone is not muted and the right input device is selected.",
         ["没有检测到声音，请检查麦克风与输入设备"] = "No sound detected — check the microphone and input device",
+        ["麦克风启动中…"] = "Starting microphone…",
+        ["麦克风还没准备好"] = "Microphone wasn't ready",
+        ["请等浮窗显示「录音中」后再开口。本次没有录到声音。"] =
+            "Wait until the overlay shows \"Recording\" before you speak. Nothing was recorded this time.",
         ["还不能听写"] = "Cannot dictate yet",
 
         // ── 就绪门禁 / 下载重试 ─────────────────────────────

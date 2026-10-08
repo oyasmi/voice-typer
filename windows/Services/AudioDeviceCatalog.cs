@@ -71,10 +71,24 @@ internal static class AudioDeviceCatalog
     /// <summary>当前所有活动的采集端点。</summary>
     public static IReadOnlyList<AudioDeviceInfo> ListCaptureDevices()
     {
-        var result = new List<AudioDeviceInfo>();
         try
         {
             using var enumerator = new MMDeviceEnumerator();
+            return ListCaptureDevices(enumerator);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("audio", $"枚举采集设备失败: {ex.Message}");
+            return Array.Empty<AudioDeviceInfo>();
+        }
+    }
+
+    /// <summary>用调用方持有的枚举器列出活动采集端点（录音服务在控制线程上复用同一个枚举器）。</summary>
+    public static IReadOnlyList<AudioDeviceInfo> ListCaptureDevices(MMDeviceEnumerator enumerator)
+    {
+        var result = new List<AudioDeviceInfo>();
+        try
+        {
             foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
             {
                 using (device) result.Add(Describe(device));

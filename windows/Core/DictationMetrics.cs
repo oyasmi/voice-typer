@@ -41,6 +41,8 @@ internal enum DictationOutcome
     GestureCancelled,
     Failed,
     StartFailed,
+    /// <summary>麦克风还没启动完成就松开了热键：没有录到任何音频。</summary>
+    NotReady,
 }
 
 internal enum HotkeyKind { Combo, Modifier }
@@ -60,9 +62,21 @@ internal sealed class DictationMetrics
     public HotkeyMode Mode;
     public HotkeyKind Hotkey;
 
+    /// <summary>控制器开始处理热键的时刻；下列"距按下"的耗时都以它为起点。</summary>
     public long PressedAt;
+    /// <summary>钩子回调收到这次按键的时刻（早于 <see cref="PressedAt"/>，差值是投递到 UI 线程的排队时间）。</summary>
+    public long? HookAt;
+    /// <summary>系统按键事件时间戳到钩子回调的毫秒数。</summary>
+    public int? KeyEventLagMs;
+    /// <summary>麦克风启动完成（采集已开始）的时刻；启动在采集服务的控制线程上异步进行。</summary>
     public long? CaptureStartedAt;
     public long? FirstBufferAt;
+    /// <summary>打开麦克风的分段耗时，见 <see cref="AudioStartTimings"/>。</summary>
+    public AudioStartTimings? AudioStart;
+    /// <summary>HUD 第一次画到屏幕上（"麦克风启动中"或直接"录音中"）的时刻。</summary>
+    public long? HudShownAt;
+    /// <summary>HUD 第一次画出"录音中"（用户可以开口）的时刻。</summary>
+    public long? HudReadyAt;
     public long? ReleasedAt;
     public long? FinalizeCalledAt;
     public long? DoneAt;
@@ -90,6 +104,7 @@ internal sealed class DictationMetrics
         DictationOutcome.Discarded => "discarded",
         DictationOutcome.GestureCancelled => "gesture_cancelled",
         DictationOutcome.StartFailed => "start_failed",
+        DictationOutcome.NotReady => "not_ready",
         _ => "failed",
     };
 
@@ -118,6 +133,15 @@ internal sealed class DictationMetrics
             ("input", input),
             ("capture_start", Ms(Interval(PressedAt, CaptureStartedAt))),
             ("first_buffer", Ms(Interval(PressedAt, FirstBufferAt))),
+            ("key_lag", KeyEventLagMs is { } lag ? lag.ToString(inv) : "-"),
+            ("dispatch", Ms(Interval(HookAt, PressedAt))),
+            ("start_queue", Ms(AudioStart?.QueueTicks)),
+            ("dev_resolve", Ms(AudioStart?.ResolveTicks)),
+            ("dev_cached", AudioStart is null ? "-" : (AudioStart.DeviceCached ? "1" : "0")),
+            ("activate", Ms(AudioStart?.ActivateTicks)),
+            ("init", Ms(AudioStart?.InitTicks)),
+            ("hud_shown", Ms(Interval(PressedAt, HudShownAt))),
+            ("hud_ready", Ms(Interval(PressedAt, HudReadyAt))),
             ("audio", audioSeconds + "s"),
             ("release_to_finalize", Ms(Interval(ReleasedAt, FinalizeCalledAt))),
             ("engine_wait", Ms(Timings.FinalizeStartedAt is null ? null : Timings.EngineWaitTicks)),

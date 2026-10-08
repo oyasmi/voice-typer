@@ -1147,3 +1147,109 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
 4. 先复制文本 X → 三次间隔小于 1 秒的短听写 → 最终剪贴板为 X；复制 X → 听写 → 1 秒内保存热键设置 → 再听写 → 最终为 X。
 5. Esc 取消后立即重按热键，连续 20 次均正常录音；录音中拔掉 USB 麦克风 → 本次结束并提示 → 插回后正常。
 6. 配置不可达的 LLM 地址后听写：成功提示带「已使用识别原文（纠错未成功）」。
+
+## 18. 2026-10-09 按热键到可开口的延迟
+
+### 18.1 证据（Windows 10 真机日志，3.5.1）
+
+用户反馈每次按热键都要等 2–3 秒浮窗才出现、才能说话，不只是第一次。日志里 `capture_start`（控制器开始处理
+热键 → 麦克风打开）按距上一次录音的间隔明显分成两档：
+
+| 距上次录音 | `capture_start` | 样本 |
+| --- | --- | --- |
+| ≤ 约 9 秒 | 412–541 ms | 00:31:41 → 463，00:31:44 → 447，00:25:27（间隔 9.3 秒）→ 518 |
+| ≥ 约 15 秒 | 917–1178 ms | 23:41:04（间隔 15.5 秒）→ 1006，00:12:36 → 1178 |
+
+`first_buffer − capture_start` 稳定在 13–17 ms：采集一开始就有数据，耗时全在打开之前。单独修饰键热键另有
+150 ms 浮窗防闪烁延迟。日志能解释的是 0.6–1.35 秒；与用户感知的 2–3 秒之间的差距当时没有数据（钩子到控制器的
+排队、浮窗真正画出来的时刻都没记录），因此本批次先补计时。
+
+### 18.2 原因与改动
+
+1. **打开麦克风在 UI 线程上同步执行**（`VoiceTyperController.BeginDictationSession` → `AudioCaptureService.Start`）：
+   每次按键都新建枚举器、「自动」策略下枚举全部采集端点并读属性、再读默认播放端点，然后激活 IAudioClient、
+   `StartRecording`（NAudio 在调用线程上做 `IAudioClient.Initialize`，已反编译 NAudio.Wasapi 2.2.1 核实）。
+   浮窗要等这一切做完、`StateChanged(Recording)` 之后才出现。
+2. **两档差距约 0.5–0.6 秒**，分界在间隔 9.3–15 秒之间。推断是声卡或驱动空闲约 10 秒后进入低功耗、
+   再次打开时要唤醒。**未验证**；本批次不处理这一项（见 18.6）。
+3. **UI 线程同时承载全局键盘 / 鼠标低级钩子**：阻塞期间整机键鼠事件都要等钩子返回，按住热键时的自动重复
+   还会撞上 `LowLevelHooksTimeout`。日志里的「键盘钩子长时间无回调」是否与此有关**未验证**。
+
+改动：
+
+- **采集服务控制线程**：`AudioCaptureService` 新增专用 MTA 线程，解析设备、构造 `WasapiCapture`、
+  `StartRecording`、`StopRecording`、释放全部在它上面串行执行。`IAudioCapturing.Start` 改为
+  `BeginStart(policy, completed)`；完成前 `StopWithoutResult` 即撤销（代号 `_pendingStart` 在锁内清零，
+  控制线程在打开设备后、置 `_running` 前、`StartRecording` 后三处检查）。`_lock` 不再在任何 WASAPI 调用期间持有。
+  `MicPermissionProbe` 走同步包装 `Start`。
+- **`RecordingStopped` 线程变化**：采集器在没有 `SynchronizationContext` 的控制线程上构造后，NAudio 在采集线程上
+  直接触发 `RecordingStopped`（此前经 UI 线程同步上下文投递）。设备意外断开时的收尾依赖 `_current` 仍指向本
+  上下文，因此改为「收尾 → 释放」在同一个 UI 投递里依次执行；释放本身排回控制线程。
+- **控制器 Starting 阶段**：`Phase { Starting, Recording, Recognizing }`。按下即 `StateChanged(Recording)`；
+  启动完成进入 Recording 并开始静音探测；采集已开始且收到第一段电平后触发 `MicrophoneReady`（两者从不同线程
+  投递到 UI 线程，先后不定，任一顺序都只触发一次）。Starting 期间松键 / 切换模式再按 / Esc / 组合手势 / Stop
+  都会撤销启动；松键时按住不足 0.3 秒照旧静默丢弃，超过则 `Outcome.NotReady` → `ReleasedBeforeReady`。
+  迟到的启动结果按 `ReferenceEquals(_active, utterance) && Phase == Starting` 作废。
+- **HUD**：新增 `Phase.Preparing`（「麦克风启动中…」、灰色静止圆点、平直暗波形、不计时）；`ShowRecording` 从
+  Preparing 原地切换时保留锚点。协调器在 Recording 时显示 Preparing，在 `MicrophoneReady` 时切到「录音中」；
+  单独修饰键的 150 ms 防闪烁计时从按下算起，到点时按是否已就绪选择显示哪一种。引导页的「录音中」也改为以
+  `MicrophoneReady` 为准。
+- **输入端点缓存**：`OpenInputDevice` 按策略缓存解析结果（端点 ID + 设备描述），命中时只剩 `GetDevice(id)`；
+  `IMMNotificationClient` 的增删、启停用、默认设备变化递增拓扑版本，并合并成一次后台重新预解析
+  （属性变化不处理：驱动会频繁上报，且不影响选哪个端点）。通知注册失败则不缓存；缓存端点打开失败或启动失败时
+  作废。控制器 `Start` 时调用 `PrepareInput` 预解析。
+
+### 18.3 新增耗时字段
+
+均为毫秒，`-` 表示本次没有该值。除 `key_lag`、`dispatch` 与 `AudioStartTimings` 的几段外，「距按下」均以
+控制器开始处理热键（`PressedAt`）为起点，与旧数据的 `capture_start`、`first_buffer` 可比。
+
+| 字段 | 含义 |
+| --- | --- |
+| `key_lag` | 系统给按键事件打的时间戳（`KBDLLHOOKSTRUCT.time`）到钩子回调；UI 线程被阻塞时变大 |
+| `dispatch` | 钩子回调到控制器处理热键（投递到 UI 消息队列的排队时间） |
+| `start_queue` | 发起启动到控制线程开始处理（控制线程正在后台预解析时才不为 0） |
+| `dev_resolve` | 选定并打开输入端点 |
+| `dev_cached` | 1 = 端点命中缓存 |
+| `activate` | 构造 `WasapiCapture`：激活 IAudioClient、读混音格式 |
+| `init` | `StartRecording`：`IAudioClient.Initialize` 与采集线程启动 |
+| `capture_start` | 距按下：麦克风启动完成（控制器在 UI 线程上收到结果） |
+| `first_buffer` | 距按下：第一段音频到达（在音频线程上取时） |
+| `hud_shown` | 距按下：浮窗第一次画到屏幕上（`OnPaint` 执行完） |
+| `hud_ready` | 距按下：浮窗第一次画出「录音中」，即用户被告知可以开口 |
+
+「录音启动」日志行同时给出 `queue/resolve(cached)/activate/init`，覆盖不进耗时摘要的麦克风探测。
+用户感知的等待 ≈ `key_lag + dispatch + hud_ready`。
+
+### 18.4 验证状态
+
+| 项 | 状态 |
+| --- | --- |
+| macOS 主机交叉编译（win-x64） | 通过，0 警告 |
+| `dotnet test`（macOS 主机） | 343 通过、1 跳过；5 项 `SetupFormTests` 因需要 WinForms STA 线程在 macOS 上无法运行，改动前同样失败 |
+| NAudio 线程行为 | 反编译 NAudio.Wasapi 2.2.1 核实：构造时捕获 `SynchronizationContext.Current`；`StartRecording` 在调用线程上 `Initialize`；`StopRecording` 只置标记 |
+| 非公开类实现 `IMMNotificationClient` 的 COM 回调 | **未验证**；失败时日志有「注册音频端点变化通知失败」，缓存自动停用 |
+| Windows 真机 | **未验证** |
+
+### 18.5 真机采集步骤
+
+1. 安装本版本，确认设置里输入设备为「自动」。打开日志：
+   `Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50`。
+2. 启动后确认没有「注册音频端点变化通知失败」。
+3. 两档各做 5 次以上：连续听写（间隔 < 5 秒）与间隔 > 20 秒的听写。每次说一句话即可。
+4. 观感：按下后浮窗是否立刻出现「麦克风启动中…」，变红「录音中」后再开口，开头的字是否完整。
+5. 按下后立刻松开（< 0.3 秒）：应无提示；按住约 0.5 秒、在变红之前松开：应提示「麦克风还没准备好」
+   （若麦克风打开很快、来不及在变红前松开，这一项可跳过）。
+6. 录音中拔插 USB / 蓝牙麦克风：本次结束并提示「输入设备已变化」，已录内容正常上屏；随后一次听写
+   `dev_cached=0`，再下一次 `dev_cached=1`。
+7. 按住右 Ctrl 时移动鼠标、在别的窗口打字：不应再出现卡顿。
+8. 把 `[metrics]` 与「录音启动」两类日志行发回，用于判断 18.6 的下一步。
+
+### 18.6 留待数据决定
+
+- 若 `init` 仍占大头（预期如此，尤其是空闲后的那一档），下一步是 **预初始化 IAudioClient**：空闲时完成
+  `Initialize` 但不 `Start`，按键时只 `Start`。需要先在真机确认已初始化未启动的流**不会**点亮任务栏麦克风图标、
+  不会出现在「隐私 → 麦克风 → 正在使用」里，否则与「不做常驻监听」的定位冲突（macOS 同理否决过 pre-roll，
+  见 `macos/DESIGN.md` §4.3）；还要确认它能否阻止空闲约 10 秒后的低功耗。
+- 若 `dev_resolve` 在命中缓存后仍明显，检查 `GetDevice` 或 `device.State` 本身的耗时。
+- 若 `key_lag` / `dispatch` 偏大，说明 UI 线程还有别的阻塞来源，需要再排查。

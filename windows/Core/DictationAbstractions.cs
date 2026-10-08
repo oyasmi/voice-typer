@@ -20,9 +20,16 @@ internal interface IHotkeyListening : IDisposable
     Action<bool>? OnHealthChanged { get; set; }
     /// <summary>无进行中的组合键时是否仍受理 Esc（见 <see cref="HotkeyStateMachine.AcceptsCancelWhenInactive"/>）。</summary>
     bool AcceptsCancelWhenInactive { get; set; }
+    /// <summary>最近一次触发 <see cref="OnPress"/>/<see cref="OnRelease"/> 的按键在钩子里的时间戳，只用于耗时日志。
+    /// 钩子与这两个回调都在 UI 线程上，回调执行时读到的就是触发它的那次按键。</summary>
+    HotkeyTriggerStamp? LastTrigger { get; }
     void Start(HotkeyConfig hotkey);
     void Stop();
 }
+
+/// <param name="HookTimestamp">钩子回调收到按键时的 <see cref="System.Diagnostics.Stopwatch"/> 时间戳。</param>
+/// <param name="KeyEventLagMs">系统给按键事件打的时间戳到钩子回调之间的毫秒数；UI 线程被阻塞时会明显变大。</param>
+internal readonly record struct HotkeyTriggerStamp(long HookTimestamp, int? KeyEventLagMs);
 
 internal interface IAudioCapturing : IDisposable
 {
@@ -32,9 +39,16 @@ internal interface IAudioCapturing : IDisposable
     Action? OnDeviceChanged { get; set; }
     /// <summary>录音期间的实时线性 RMS 电平（0…1 量级），在音频线程触发，调用方须自行回到 UI 线程。</summary>
     Action<float>? OnLevel { get; set; }
-    /// <summary>本次录音实际使用的输入设备；<see cref="Start"/> 成功后才有值。</summary>
+    /// <summary>本次录音实际使用的输入设备；<see cref="BeginStart"/> 成功后才有值。</summary>
     ActiveInputDevice? ActiveDevice { get; }
-    void Start(AudioInputPolicy policy);
+    /// <summary>空闲时提前解析输入端点（不打开麦克风），让下一次 <see cref="BeginStart"/> 省掉设备枚举。</summary>
+    void PrepareInput(AudioInputPolicy policy);
+    /// <summary>
+    /// 异步打开麦克风（打开设备与 IAudioClient 初始化可能要数百毫秒，不得占用 UI 线程）。
+    /// <paramref name="completed"/> 恰好触发一次，在后台线程上，调用方须自行回到 UI 线程。
+    /// 完成前调用 <see cref="StopWithoutResult"/> 即撤销本次启动。
+    /// </summary>
+    void BeginStart(AudioInputPolicy policy, Action<AudioStartResult> completed);
     void Stop();
     void StopWithoutResult();
 }

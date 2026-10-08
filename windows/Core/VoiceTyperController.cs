@@ -14,13 +14,19 @@ namespace VoiceTyper.Core;
 /// 逻辑对应 <c>macos/Sources/VoiceTyper/Core/VoiceTyperController.swift</c>。
 ///
 /// <b>一次听写 = 一个 <see cref="Utterance"/></b>，控制器是它的唯一强持有者，同一时刻至多一个
-/// （主流程本就是单段 Idle → Recording → Recognizing → Inserting）。所有终止路径（识别完成、
+/// （主流程本就是单段 Idle → Recording → Recognizing → Inserting）。
+///
+/// <b>录音阶段分两步</b>：按下热键立即进入 Recording（HUD 显示"麦克风启动中"），麦克风在采集服务的
+/// 控制线程上异步打开（实测 0.4~1.2s，此前在 UI 线程上同步执行，HUD 与全局键鼠钩子都被它卡住）；
+/// 收到第一段音频后触发 <see cref="MicrophoneReady"/>，HUD 才切到"录音中"——这才是用户可以开口的时刻。
+/// 启动完成前松开热键，本次没有任何音频，按 <see cref="Outcome.NotReady"/> 收尾。所有终止路径（识别完成、
 /// 出错、Esc 取消、短录音丢弃、组合手势作废、Stop）都只走 <see cref="Finish"/>：靠"先取走
 /// <c>_active</c> 再处理"保证幂等，已关闭会话的迟到回调不会二次收尾。
 /// </summary>
 internal sealed class VoiceTyperController : IDisposable
 {
-    private enum Phase { Recording, Recognizing }
+    /// <summary>Starting：已按下热键、麦克风还在打开；Recording：采集已开始。</summary>
+    private enum Phase { Starting, Recording, Recognizing }
 
     private sealed class Utterance
     {
@@ -30,7 +36,8 @@ internal sealed class VoiceTyperController : IDisposable
         public required ForegroundTarget Target { get; init; }
         public required long StartedAt { get; init; }
         public required DictationMetrics Metrics { get; init; }
-        public Phase Phase { get; set; } = Phase.Recording;
+        public Phase Phase { get; set; } = Phase.Starting;
+        public bool ReadyAnnounced { get; set; }
     }
 
     private abstract record Outcome
@@ -42,6 +49,9 @@ internal sealed class VoiceTyperController : IDisposable
         public sealed record Discarded : Outcome;
         /// <summary>单独修饰键被用作组合快捷键：静默丢弃，不弹"已取消"。</summary>
         public sealed record GestureDiscarded : Outcome;
+        /// <summary>麦克风还没打开就松开了热键，且按住时长超过误触阈值：用户多半已经开口，要告诉用户没录到。</summary>
+        public sealed record NotReady : Outcome;
+        public sealed record StartFailed(bool AccessDenied) : Outcome;
         /// <summary>Stop()：控制器整体停止，不发任何状态变化，也不上报耗时。</summary>
         public sealed record Shutdown : Outcome;
     }
@@ -80,6 +90,11 @@ internal sealed class VoiceTyperController : IDisposable
     public Action? InsertedWithCorrectionFallback;
     /// <summary>录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。</summary>
     public Action<float>? AudioLevel;
+    /// <summary>麦克风已开始产出音频（采集已启动且收到第一段数据）：用户从这一刻起可以开口。
+    /// 每次听写至多触发一次，在 <see cref="StateChanged"/>(Recording) 之后。</summary>
+    public Action? MicrophoneReady;
+    /// <summary>麦克风还没打开就松开了热键（按住超过误触阈值）：本次没有录到声音。在 Idle 之后触发。</summary>
+    public Action? ReleasedBeforeReady;
     /// <summary>每次听写收尾时恰好触发一次（<see cref="Stop"/> 除外），内容只含数字与枚举。</summary>
     public Action<DictationMetrics>? MetricsReported;
 
@@ -124,6 +139,9 @@ internal sealed class VoiceTyperController : IDisposable
 
     /// <summary>派生自 <see cref="_active"/>，不是独立事实源。</summary>
     private bool IsRecording => _active?.Phase == Phase.Recording;
+
+    /// <summary>录音阶段（含麦克风仍在打开的 Starting）：松键 / 再按一次 / Esc 都要结束它。</summary>
+    private bool IsCapturing => _active?.Phase is Phase.Starting or Phase.Recording;
 
     /// <summary>当前录音实际使用的输入设备名，供 HUD 显示；Start 成功后才有值。</summary>
     public string? RecordingInputDeviceName
@@ -218,6 +236,8 @@ internal sealed class VoiceTyperController : IDisposable
                 if (_active is { } utterance && utterance.Metrics.FirstBufferAt is null && receivedAt >= utterance.Metrics.PressedAt)
                 {
                     utterance.Metrics.FirstBufferAt = receivedAt;
+                    // 先宣布就绪再转发电平：HUD 要先切到"录音中"，第一格波形才画得出来。
+                    AnnounceReadyIfPossible(utterance);
                 }
                 _recordingPeakLevel = Math.Max(_recordingPeakLevel, level);
                 AudioLevel?.Invoke(level);
@@ -227,6 +247,8 @@ internal sealed class VoiceTyperController : IDisposable
 
         _hotkey.Start(_config.Hotkey);
         _isRunning = true;
+        // 空闲时先把输入端点解析好，按下热键时只剩打开设备本身。
+        _audio.PrepareInput(AudioInputPolicy.FromConfigValue(_config.Audio.InputDevice));
         // 被门禁时不能发 Idle：那会把协调器的当前状态从"下载中"覆盖成"就绪"，托盘显示与真实能力脱节。
         // 就绪后由协调器自己置 Idle。
         if (_blockedReason is null) StateChanged?.Invoke(AppStateInfo.Idle);
@@ -342,7 +364,7 @@ internal sealed class VoiceTyperController : IDisposable
                 // 单独修饰键的 toggle：只有干净的单击才算，改在 Release 里切换，
                 // 这样按住右 Ctrl 再按 C 之类的组合快捷键不会误开录音。
                 if (_config.Hotkey.IsModifierOnly) return;
-                if (IsRecording) FinishRecording();
+                if (IsCapturing) FinishRecording();
                 // 非录音态（含 _active 已进入 Recognizing）统一走 BeginRecording：
                 // 它自带"上一段听写尚未完成"的拒绝分支，toggle 模式无需重复判断。
                 else BeginRecording(pressedAt);
@@ -368,7 +390,7 @@ internal sealed class VoiceTyperController : IDisposable
             case HotkeyMode.Toggle:
                 // 普通热键的松开不是结束信号；单独修饰键的松开才是"一次干净的单击"。
                 if (!_config.Hotkey.IsModifierOnly) return;
-                if (IsRecording) FinishRecording();
+                if (IsCapturing) FinishRecording();
                 else BeginRecording(_now());
                 break;
         }
@@ -377,7 +399,7 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>单独修饰键（Hold 模式）在按住期间被用作组合快捷键：静默丢弃本次录音，不弹任何提示。</summary>
     private void DiscardByGesture()
     {
-        if (_config.Hotkey.ModeValue != HotkeyMode.Hold || _active is not { Phase: Phase.Recording }) return;
+        if (_config.Hotkey.ModeValue != HotkeyMode.Hold || !IsCapturing) return;
         _audio.StopWithoutResult();
         Finish(new Outcome.GestureDiscarded());
     }
@@ -390,8 +412,9 @@ internal sealed class VoiceTyperController : IDisposable
     private void CancelByUser()
     {
         if (_active is not { } utterance) return;
-        if (utterance.Phase == Phase.Recording)
+        if (utterance.Phase is Phase.Starting or Phase.Recording)
         {
+            // 麦克风仍在打开时，这一步撤销启动。
             _audio.StopWithoutResult();
         }
         // 识别阶段采集早已在松键时停止；这里只需走收尾，让 Session.Close() 抑制迟到回调。
@@ -414,11 +437,22 @@ internal sealed class VoiceTyperController : IDisposable
 
     private void FinishRecording()
     {
-        if (_active is not { Phase: Phase.Recording } utterance) return;
+        if (_active is not { Phase: Phase.Starting or Phase.Recording } utterance) return;
         utterance.Metrics.ReleasedAt = _now();
+        var heldLongEnough = Stopwatch.GetElapsedTime(utterance.StartedAt, _now()) >= MinimumRecordingDuration;
+
+        if (utterance.Phase == Phase.Starting)
+        {
+            // 麦克风还没打开：没有任何音频可识别，撤销启动。按住时长过了误触阈值说明用户多半已经开口，
+            // 要明确告诉用户没录到，否则 HUD 静默消失，用户会以为识别出了问题。
+            AppLog.Info("controller", "麦克风尚未就绪即结束录音，本次没有音频");
+            _audio.StopWithoutResult();
+            Finish(heldLongEnough ? new Outcome.NotReady() : new Outcome.Discarded());
+            return;
+        }
 
         // 短录音过滤：低于阈值的录音视为误触，立即取消。
-        if (Stopwatch.GetElapsedTime(utterance.StartedAt, _now()) < MinimumRecordingDuration)
+        if (!heldLongEnough)
         {
             AppLog.Info("controller", "录音时长低于阈值，已丢弃");
             _audio.StopWithoutResult();
@@ -458,6 +492,13 @@ internal sealed class VoiceTyperController : IDisposable
             Hotkey = _config.Hotkey.IsModifierOnly ? HotkeyKind.Modifier : HotkeyKind.Combo,
             PressedAt = pressedAt,
         };
+        // 钩子与本方法同在 UI 线程，LastTrigger 就是触发这次听写的按键；时间顺序不对（理论上不会）就不报。
+        if (_hotkey.LastTrigger is { } trigger && trigger.HookTimestamp <= pressedAt
+            && Stopwatch.GetElapsedTime(trigger.HookTimestamp, pressedAt) < TimeSpan.FromSeconds(5))
+        {
+            metrics.HookAt = trigger.HookTimestamp;
+            metrics.KeyEventLagMs = trigger.KeyEventLagMs;
+        }
         var utterance = new Utterance
         {
             Session = session,
@@ -523,39 +564,68 @@ internal sealed class VoiceTyperController : IDisposable
             StateChanged?.Invoke(AppStateInfo.Recognizing);
         });
 
-        try
-        {
-            _audio.Start(AudioInputPolicy.FromConfigValue(_config.Audio.InputDevice));
-        }
-        catch (AudioStartException ex)
-        {
-            AppLog.Error("controller", "启动录音失败", ex);
-            session.Close();
-            _sessions.SessionEnded();
-            _audio.OnChunk = null;
-            _audio.OnTailChunk = null;
-            metrics.Outcome = DictationOutcome.StartFailed;
-            metrics.DoneAt = _now();
-            MetricsReported?.Invoke(metrics);
-            StateChanged?.Invoke(AppStateInfo.ErrorWith(ex.IsAccessDenied
-                ? L10n.T("麦克风权限被拒绝，请在 Windows 设置中允许应用访问麦克风")
-                : L10n.T("开始录音失败")));
-            return;
-        }
-
-        metrics.CaptureStartedAt = _now();
-        if (_audio.ActiveDevice is { } device)
-        {
-            metrics.InputTransport = device.Transport;
-            metrics.InputSwitchedByAuto = device.SwitchedByAuto;
-        }
         _active = utterance;
         _previewText = "";
         _recordingPeakLevel = 0;
-        // 切换模式下录音阶段没有"按住的主键"，Esc 必须在整个听写期间都能取消。
+        // 切换模式下录音阶段没有"按住的主键"，Esc 必须在整个听写期间都能取消（含麦克风仍在打开时）。
         _hotkey.AcceptsCancelWhenInactive = true;
-        ScheduleSilenceProbes();
+        // 先进入 Recording 再打开麦克风：HUD 立即出现（"麦克风启动中"），不再等设备打开。
         StateChanged?.Invoke(AppStateInfo.Recording);
+        if (!IsCurrent()) return;
+
+        _audio.BeginStart(AudioInputPolicy.FromConfigValue(_config.Audio.InputDevice),
+            result => _post(() => OnAudioStartCompleted(utterance, result)));
+    }
+
+    /// <summary>麦克风启动完成（UI 线程）。</summary>
+    private void OnAudioStartCompleted(Utterance utterance, AudioStartResult result)
+    {
+        // 启动期间本次听写已经结束（松键、Esc、组合手势、Stop）：收尾时已撤销启动，结果作废。
+        if (!ReferenceEquals(_active, utterance) || utterance.Phase != Phase.Starting) return;
+
+        switch (result)
+        {
+            case AudioStartResult.Started started:
+                var metrics = utterance.Metrics;
+                metrics.CaptureStartedAt = _now();
+                metrics.AudioStart = started.Timings;
+                if (_audio.ActiveDevice is { } device)
+                {
+                    metrics.InputTransport = device.Transport;
+                    metrics.InputSwitchedByAuto = device.SwitchedByAuto;
+                }
+                utterance.Phase = Phase.Recording;
+                ScheduleSilenceProbes();
+                // 第一段音频可能先于本回调到达（两者从不同线程投递到 UI 线程）。
+                AnnounceReadyIfPossible(utterance);
+                break;
+
+            case AudioStartResult.Failed failed:
+                AppLog.Error("controller", "启动录音失败", failed.Error);
+                Finish(new Outcome.StartFailed(failed.Error.IsAccessDenied));
+                break;
+
+            default:
+                // 没有人撤销却收到"已取消"：不能让 HUD 停在"麦克风启动中"，按启动失败收尾。
+                AppLog.Error("controller", "录音启动被意外撤销");
+                Finish(new Outcome.StartFailed(AccessDenied: false));
+                break;
+        }
+    }
+
+    private void AnnounceReadyIfPossible(Utterance utterance)
+    {
+        if (utterance.ReadyAnnounced || utterance.Phase != Phase.Recording || utterance.Metrics.FirstBufferAt is null) return;
+        utterance.ReadyAnnounced = true;
+        MicrophoneReady?.Invoke();
+    }
+
+    /// <summary>HUD 把"麦克风启动中"/"录音中"真正画到屏幕上的时刻，只用于耗时日志。</summary>
+    public void NoteHudPainted(bool ready, long timestamp)
+    {
+        if (_active is not { } utterance) return;
+        utterance.Metrics.HudShownAt ??= timestamp;
+        if (ready) utterance.Metrics.HudReadyAt ??= timestamp;
     }
 
     /// <summary>
@@ -628,6 +698,20 @@ internal sealed class VoiceTyperController : IDisposable
             case Outcome.GestureDiscarded:
                 if (_isRunning) StateChanged?.Invoke(AppStateInfo.Idle);
                 result = DictationOutcome.GestureCancelled;
+                break;
+            case Outcome.NotReady:
+                if (_isRunning)
+                {
+                    StateChanged?.Invoke(AppStateInfo.Idle);
+                    ReleasedBeforeReady?.Invoke();
+                }
+                result = DictationOutcome.NotReady;
+                break;
+            case Outcome.StartFailed startFailed:
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(startFailed.AccessDenied
+                    ? L10n.T("麦克风权限被拒绝，请在 Windows 设置中允许应用访问麦克风")
+                    : L10n.T("开始录音失败")));
+                result = DictationOutcome.StartFailed;
                 break;
             default: // Shutdown：Stop() 不是一次完整听写，不上报。
                 return;

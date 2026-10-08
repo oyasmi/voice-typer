@@ -15,7 +15,8 @@ namespace VoiceTyper.UI;
 ///
 /// 上方一行：圆点 / 结果图标 + 实时波形 + 状态文字（含输入设备名）+ 计时。
 /// 下方（有内容时才展开）：最多两行的预览，放不下时保留<b>尾部</b>并以省略号开头。
-/// 阶段：Recording → Recognizing（→ 纠错中）→ 一次性结果（成功 / 错误 / 已取消 / 没有识别到内容）。
+/// 阶段：Preparing（麦克风启动中）→ Recording → Recognizing（→ 纠错中）→ 一次性结果
+/// （成功 / 错误 / 已取消 / 没有识别到内容）。
 ///
 /// 落点由 <c>ui.hud_position</c> 决定；"不显示"只静音<b>过程</b>，错误与"没有识别到内容"仍会浮出来。
 /// 所有像素尺寸按窗口当前 DPI 缩放（PerMonitorV2 下窗口拖到别的屏幕会收到 DPI 变化）。
@@ -23,7 +24,8 @@ namespace VoiceTyper.UI;
 /// </summary>
 internal sealed class RecordingHud : Form
 {
-    private enum Phase { Hidden, Recording, Recognizing, Transient }
+    /// <summary>Preparing：已按下热键、麦克风还在打开，此时说的话录不进去，必须和 Recording 一眼可分。</summary>
+    private enum Phase { Hidden, Preparing, Recording, Recognizing, Transient }
     private enum Glyph { None, Check, Cross, Exclaim }
 
     // ─── 几何常量（96 DPI 下的像素，绘制与布局时经 S() 缩放）───────────
@@ -49,6 +51,7 @@ internal sealed class RecordingHud : Form
     private long _startedTimestamp = Stopwatch.GetTimestamp();
     private double _pulsePhase;
     private string _statusText = "";
+    private string _preparingStatusText = L10n.T("麦克风启动中…");
     private string _recordingStatusText = L10n.T("录音中");
     private string _recognizingStatusText = L10n.T("识别中");
     private string[] _previewLines = Array.Empty<string>();
@@ -78,6 +81,12 @@ internal sealed class RecordingHud : Form
     /// <summary>系统关闭动画（设置 → 辅助功能 → 视觉效果 → 动画效果）时不做呼吸 / 脉冲，
     /// 只保留电平波形（它是功能性反馈，不是装饰）。</summary>
     private static bool MotionEnabled => SystemInformation.UIEffectsEnabled;
+
+    /// <summary>"麦克风启动中"（false）/"录音中"（true）第一次真正画到屏幕上时触发，参数二是
+    /// <see cref="Stopwatch"/> 时间戳。只用于耗时日志：Show/Invalidate 之后要等消息循环处理 WM_PAINT 才算显示出来。</summary>
+    public Action<bool, long>? ProgressPainted;
+    /// <summary>等待下一次绘制时上报的里程碑；null 表示没有。</summary>
+    private bool? _pendingPaintReady;
 
     public RecordingHud(UIConfig uiConfig)
     {
@@ -135,11 +144,35 @@ internal sealed class RecordingHud : Form
 
     // ─── 公共接口 ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// 已按下热键、麦克风还在打开：灰色静止圆点、平直波形、不计时，明确表示"还不能说话"。
+    /// 麦克风出声后由 <see cref="ShowRecording"/> 原地切成红色脉冲的"录音中"。
+    /// </summary>
+    public void ShowPreparing()
+    {
+        if (SuppressesProgress) return;
+        ResetTimers();
+
+        _phase = Phase.Preparing;
+        _isCorrecting = false;
+        _glyph = Glyph.None;
+        _accent = Color.FromArgb(150, 150, 150);
+        _preparingStatusText = L10n.T("麦克风启动中…");
+        SetStatus(_preparingStatusText);
+        Array.Clear(_bars);
+        SetPreviewSource("");
+        _pendingPaintReady = false;
+        Present(anchorToScreen: true);
+        _animationTimer.Start();
+    }
+
     /// <param name="inputDeviceName">本次录音实际使用的输入设备名（可能与系统默认不同，见 AudioInputPolicy）。</param>
     public void ShowRecording(string? inputDeviceName)
     {
         if (SuppressesProgress) return;
         ResetTimers();
+        // 从"麦克风启动中"原地切换：不重新取锚点，否则跟随光标落点下浮窗会跳到光标的新位置。
+        var keepAnchor = _phase == Phase.Preparing && Visible;
 
         _phase = Phase.Recording;
         _isCorrecting = false;
@@ -152,7 +185,8 @@ internal sealed class RecordingHud : Form
         SetStatus(_recordingStatusText);
         Array.Clear(_bars);
         SetPreviewSource("");
-        Present(anchorToScreen: true);
+        _pendingPaintReady = true;
+        Present(anchorToScreen: !keepAnchor);
         _animationTimer.Start();
     }
 
@@ -195,6 +229,7 @@ internal sealed class RecordingHud : Form
         ResetTimers();
         _phase = Phase.Hidden;
         _isCorrecting = false;
+        _pendingPaintReady = null;
         SetPreviewSource("");
         if (Visible) Hide();
     }
@@ -278,7 +313,7 @@ internal sealed class RecordingHud : Form
     /// </summary>
     public void FlashWarning(string message)
     {
-        if (_phase is not (Phase.Recording or Phase.Recognizing)) return;
+        if (_phase is not (Phase.Preparing or Phase.Recording or Phase.Recognizing)) return;
 
         CancelWarningRestore();
         _statusText = string.IsNullOrEmpty(message) ? L10n.T("识别提示") : message;
@@ -292,7 +327,12 @@ internal sealed class RecordingHud : Form
             timer.Dispose();
             _warningRestoreTimer = null;
             _statusWarning = false;
-            _statusText = _phase == Phase.Recording ? _recordingStatusText : _recognizingStatusText;
+            _statusText = _phase switch
+            {
+                Phase.Preparing => _preparingStatusText,
+                Phase.Recording => _recordingStatusText,
+                _ => _recognizingStatusText,
+            };
             Invalidate();
         };
         _warningRestoreTimer = timer;
@@ -305,7 +345,7 @@ internal sealed class RecordingHud : Form
         Opacity = Math.Clamp(config.Opacity, 0.4, 1.0);
         _placement = config.HudPositionValue;
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
-        if (SuppressesProgress && (_phase is Phase.Recording or Phase.Recognizing)) HideHud();
+        if (SuppressesProgress && (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)) HideHud();
     }
 
     /// <summary>透明度是设置页可实时预览的外观项。</summary>
@@ -332,6 +372,7 @@ internal sealed class RecordingHud : Form
 
         _phase = Phase.Transient;
         _isCorrecting = false;
+        _pendingPaintReady = null;
         _glyph = glyph;
         _accent = accent;
         SetStatus(status);
@@ -568,8 +609,8 @@ internal sealed class RecordingHud : Form
         DrawIndicator(g, dotRect);
         x += dot + S(10f);
 
-        // 波形（录音与识别阶段）
-        if (_phase is Phase.Recording or Phase.Recognizing)
+        // 波形（启动中、录音与识别阶段；启动中是平直的暗条，表示还没在听）
+        if (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)
         {
             var waveWidth = S(40f);
             DrawWaveform(g, new RectangleF(x, rowCenterY - S(11f), waveWidth, S(22f)));
@@ -614,6 +655,12 @@ internal sealed class RecordingHud : Form
                 g.DrawString(line, _previewFont, previewBrush, inset, y, format);
                 y += lineHeight;
             }
+        }
+
+        if (_pendingPaintReady is { } ready)
+        {
+            _pendingPaintReady = null;
+            ProgressPainted?.Invoke(ready, Stopwatch.GetTimestamp());
         }
     }
 
@@ -660,7 +707,12 @@ internal sealed class RecordingHud : Form
     private void DrawWaveform(Graphics g, RectangleF area)
     {
         var barWidth = area.Width / (BarCount * 2 - 1);
-        var color = _phase == Phase.Recording ? Color.FromArgb(230, 255, 255, 255) : Color.FromArgb(150, 255, 255, 255);
+        var color = _phase switch
+        {
+            Phase.Recording => Color.FromArgb(230, 255, 255, 255),
+            Phase.Preparing => Color.FromArgb(90, 255, 255, 255),
+            _ => Color.FromArgb(150, 255, 255, 255),
+        };
         using var brush = new SolidBrush(color);
         for (int i = 0; i < BarCount; i++)
         {
