@@ -137,7 +137,13 @@ internal sealed partial class SetupForm
             foreach (var modifier in new[] { _modCtrl, _modAlt, _modShift, _modWin }) modifier.Checked = false;
             _hotkeyKey.Text = ModifierHotkeys.RightCtrl;
         };
-        Add(hotkey, ButtonRow(_recordHotkeyButton, _useRightCtrlButton));
+        StyleButton(_useRightAltButton, L10n.T("使用右 Alt"));
+        _useRightAltButton.Click += (_, _) =>
+        {
+            foreach (var modifier in new[] { _modCtrl, _modAlt, _modShift, _modWin }) modifier.Checked = false;
+            _hotkeyKey.Text = ModifierHotkeys.RightAlt;
+        };
+        Add(hotkey, ButtonRow(_recordHotkeyButton, _useRightCtrlButton, _useRightAltButton));
         ConfigureCombo(_hotkeyModeCombo, Enum.GetValues<HotkeyMode>(), value => ((HotkeyMode)value).DisplayName());
         AddField(hotkey, L10n.T("触发方式"), L10n.T("按住说话，或按一次开始、再按一次结束。"), _hotkeyModeCombo);
         var manual = Stack();
@@ -150,7 +156,7 @@ internal sealed partial class SetupForm
         }
         Add(manual, modifiers);
         _hotkeyKey.TextChanged += (_, _) => UpdateHotkeyPreview();
-        AddField(manual, L10n.T("主键"), L10n.T("字母、数字、F1–F12 或右 Ctrl。"), _hotkeyKey);
+        AddField(manual, L10n.T("主键"), L10n.T("字母、数字、F1–F12、右 Ctrl 或右 Alt。"), _hotkeyKey);
         AddDisclosure(hotkey, L10n.T("手动编辑快捷键"), manual);
         StyleLabel(_hotkeyMessage, Muted);
         Add(hotkey, _hotkeyMessage);

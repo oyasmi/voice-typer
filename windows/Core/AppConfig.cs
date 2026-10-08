@@ -77,7 +77,7 @@ internal sealed class AppConfig
             AppLog.Warn("config", $"配置字段 hotkey.key 不支持({hotkey.Key})，已回落为默认热键 Ctrl+F2");
             return new HotkeyConfig { ModeValue = mode };
         }
-        // 单独修饰键（右 Ctrl）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
+        // 单独修饰键（右 Ctrl / 右 Alt）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
         // 对不上，忽略并记 warning。
         if (ModifierHotkeys.IsModifierOnlyKey(key))
         {
@@ -343,7 +343,7 @@ internal sealed class HotkeyConfig
         set => Mode = value.ToYamlValue();
     }
 
-    /// <summary>热键是单独的修饰键（右 Ctrl）：干净单击即触发，按住它再按别的键或点鼠标则
+    /// <summary>热键是单独的修饰键（右 Ctrl / 右 Alt）：干净单击即触发，按住它再按别的键或点鼠标则
     /// 作为普通快捷键使用（本次录音被静默丢弃）。</summary>
     public bool IsModifierOnly => ModifierHotkeys.IsModifierOnlyKey(Key);
 

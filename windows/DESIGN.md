@@ -943,15 +943,37 @@ HUD 反馈与性能优化）、3.3.x 的默认值与加载期修复、3.4.0 的�
 - **Esc 窗口**：`IHotkeyListening.AcceptsCancelWhenInactive`。默认 Esc 只在按住热键期间受理（否则会吞掉用户正常使用的
   Esc）；有听写进行时（识别阶段、切换模式的录音阶段）打开，收尾时关闭。窗口内的 Esc 被消费。
 
-### 15.2 热键：单独修饰键只支持右 Ctrl
+### 15.2 热键：单独修饰键支持右 Ctrl 与右 Alt
 
 macOS 支持右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃。Windows 上低级钩子**不能吞掉修饰键事件**（吞掉会破坏其他应用看到的 down/up 配对），
-所以只有「单击本身没有系统副作用」的修饰键才能用：Alt 单击会激活菜单栏（随后的 `Ctrl+V` 粘贴落空）、Win 单击弹开始菜单、
-Shift 单击在中文输入法里切换中英文、左 Ctrl 是几乎所有快捷键的前缀。因此只保留**右 Ctrl**。
+所以只有「单击的系统副作用可以被绕开」的修饰键才能用。左 Alt 单击会激活菜单栏（随后的 `Ctrl+V` 粘贴落空）且是近一半
+快捷键的前缀、Win 单击弹开始菜单、Shift 单击在中文输入法里切换中英文、左 Ctrl 是几乎所有快捷键的前缀——均不支持；
+**右 Ctrl** 单击没有任何系统行为；**右 Alt** 的菜单栏激活副作用用「哑键掩码」绕开（见下）。
 
 `HotkeyStateMachine.ForModifierOnly` 实现「干净单击」：目标键按下且此刻没有别的修饰键 → `Press`；按住期间出现任何非修饰键、
 另一个修饰键或鼠标按下（`WH_MOUSE_LL`，仅此类热键才安装，覆盖 Ctrl+点击 / Ctrl+滚轮）→ `GestureCancel`，每次手势最多一次；
-干净抬起 → `Release`。Esc 是用户明确的取消意图，走 `Cancel` 而不是静默的 `GestureCancel`。
+干净抬起 → `Release`。Esc 是用户明确的取消意图，走 `Cancel` 而不是静默的 `GestureCancel`。右 Alt 走同一状态机、事件同样
+全部放行（`RightAlt_CleanTap_NeverConsumes_LikeRightCtrl`）。
+
+**右 Alt 的菜单栏掩码**（2026-10-08 设计，依据同日本机 Win10 19045 探针实验）：Windows 在**松开**孤立 Alt 时才激活前台
+窗口的菜单栏，且「按住期间出现过其他键」即按组合快捷键处理、不激活。因此 `HotkeyService` 在右 Alt 干净手势开始的
+`Press` 时同步 `SendInput` 一对哑键（VK 0xFF down + up，不映射任何字符、不影响修饰键状态，AutoHotkey 的修饰键单击
+热键即此手法）。掩码失败只记日志，退化为松开时菜单栏被激活（即没有右 Alt 热键之前的老行为），听写本身不受影响。
+
+为什么不用另外两个候选方案（都有实测反证）：
+- **吞掉 keyup**：低级钩子吞掉的事件不会更新 `GetAsyncKeyState` 的异步键状态表——实验里放行 down、吞掉 up 后
+  `VK_MENU` 的异步状态**永久卡在按下**；`TextInsertionService.AreNonPasteModifiersHeld` 会一直误判 Alt 按住，所有
+  `Ctrl+V` 插入降级为「已复制到剪贴板」，前台应用的按键状态同步也被污染。
+- **不处理菜单栏**：孤立右 Alt down→up 实测（记事本 + `GetGUIThreadInfo` 的 `GUI_INMENUMODE`）确实进入菜单模式；
+  掩码组（Alt down + 哑键对 + Alt up）实测不进入。
+
+AltGr 兼容性：欧洲键盘布局按下 AltGr 时系统会先注入一个假的左 Ctrl（或右 Alt 按下时已有其他修饰键），「此刻没有别的
+修饰键才触发」的判定会直接不接管，组合字符不受任何影响；少数无假 Ctrl 的布局上会短暂进入录音再被 `GestureCancel`
+静默丢弃（HUD 闪烁已有抑制）。右 Alt+Tab、右 Alt+F4 等组合按住期间即作废手势，照常传递给系统。
+
+⚠️ 待真机验证（本节掩码行为目前仅有注入式按键 + 记事本的自动化实验证据）：物理右 Alt 键在记事本 / Word / 浏览器里
+单击触发听写且松开后菜单栏不激活；AltGr 布局键盘打字不受影响；右 Alt+Tab 切窗口正常；哑键对个别以原始输入扫描全部
+按键的程序（游戏、远程桌面客户端）无可感知干扰。
 
 ### 15.3 输入设备
 

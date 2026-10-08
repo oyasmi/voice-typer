@@ -91,6 +91,7 @@ internal sealed partial class SetupForm : Form
     private readonly Label _hotkeyPreview = new();
     private readonly ComboBox _hotkeyModeCombo = new();
     private readonly Button _useRightCtrlButton = new();
+    private readonly Button _useRightAltButton = new();
     private readonly Button _recordHotkeyButton = new();
     private bool _isRecordingHotkey;
 
