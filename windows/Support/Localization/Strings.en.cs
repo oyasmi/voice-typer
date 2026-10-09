@@ -257,8 +257,6 @@ internal static partial class L10n
         ["麦克风访问被拒绝，请在 Windows 设置中允许应用访问麦克风"] =
             "Microphone access was denied. Allow apps to use the microphone in Windows Settings.",
         ["未找到可用麦克风设备"] = "No usable microphone device was found",
-        ["暂不支持 {0} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风"] =
-            "Input devices with {0} channels are not supported yet; switch to a mono or stereo microphone in the system sound settings",
         ["启动录音失败: {0}"] = "Failed to start recording: {0}",
         ["不支持的热键主键: {0}"] = "Unsupported hotkey main key: {0}",
         ["安装键盘钩子失败 (Win32 error {0})"] = "Installing the keyboard hook failed (Win32 error {0})",

@@ -47,6 +47,8 @@ internal sealed class AppCoordinator : IDisposable
     private AppConfig _config = new();
     private AppStateInfo _currentState = AppStateInfo.Booting;
     private MicProbeResult _micProbe = MicProbeResult.Unknown;
+    /// <summary>最近一次探测失败的详情（真实异常消息与 HRESULT），来自 <see cref="MicPermissionProbe"/>。</summary>
+    private string? _micProbeDetail;
     private bool _userOpenedSetup;
     /// <summary>用户是否已从托盘菜单主动暂停听写。暂停时不监听热键（W-28）。</summary>
     private bool _isPaused;
@@ -298,7 +300,16 @@ internal sealed class AppCoordinator : IDisposable
                     return;
                 }
 
-                _micProbe = t.IsCompletedSuccessfully ? t.Result : MicProbeResult.Unknown;
+                if (t.IsCompletedSuccessfully)
+                {
+                    _micProbe = t.Result.Result;
+                    _micProbeDetail = t.Result.FailureDetail;
+                }
+                else
+                {
+                    _micProbe = MicProbeResult.Unknown;
+                    _micProbeDetail = null;
+                }
                 if (isFirstProbe && _micProbe == MicProbeResult.AccessDenied)
                 {
                     PresentBlockingGuidance(ForcedPresentation.Permissions, SetupTab.Permissions);
@@ -995,7 +1006,8 @@ internal sealed class AppCoordinator : IDisposable
             engineStatus: EngineStatusText(),
             downloadError: _modelDownloadError,
             downloadDetails: _modelDownloadDetails,
-            modelDirectory: _asrService.ModelDirectory
+            modelDirectory: _asrService.ModelDirectory,
+            micProbeDetail: _micProbeDetail
         );
         SyncOnboarding();
     }
@@ -1043,6 +1055,7 @@ internal sealed class AppCoordinator : IDisposable
     {
         if (_onboarding is not { } model || _onboardingForm is not { IsDisposed: false } form) return;
         model.Mic = _micProbe;
+        model.MicDetail = _micProbeDetail;
         model.AsrState = _asrService.State;
         model.DownloadProgress = _isDownloadingModel ? _downloadProgress : null;
         model.DownloadError = _modelDownloadError;

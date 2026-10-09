@@ -98,8 +98,11 @@ public class ResamplerStreamingTests
     {
         new object[] { 48_000, 1 },
         new object[] { 48_000, 2 },
+        // Windows 11 麦克风阵列（Intel Smart Sound 等）的共享模式混音格式可能是 4 声道。
+        new object[] { 48_000, 4 },
         new object[] { 44_100, 1 },
         new object[] { 44_100, 2 },
+        new object[] { 44_100, 3 },
     };
 
     [Theory]
@@ -148,5 +151,35 @@ public class ResamplerStreamingTests
         var streamed = Run(signal, 48_000, 1, _ => 480);
         Assert.NotEmpty(streamed);
         Assert.All(streamed, v => Assert.Equal(0f, v));
+    }
+
+    /// <summary>4 声道按帧平均：此前这类设备直接被 BuildResamplingChain 拒绝（真机上表现为
+    /// 设置页「麦克风设备打开失败」），现在必须能正常下混。</summary>
+    [Fact]
+    public void FourChannelInput_IsAveragedToMonoPerFrame()
+    {
+        var format = WaveFormat.CreateIeeeFloatWaveFormat(16_000, 4);
+        var input = new BufferedWaveProvider(format) { ReadFully = false };
+        // 两帧，各声道取不同值：验证按帧平均，而不是跨声道 / 跨帧错位折叠。
+        input.AddSamples(ToBytes(new float[] { 1f, 2f, 3f, 4f, 8f, 6f, 4f, 2f }), 0, 8 * 4);
+        var mono = new MultichannelToMonoSampleProvider(input.ToSampleProvider());
+        var buffer = new float[8];
+        int read = mono.Read(buffer, 0, buffer.Length);
+        Assert.Equal(2, read);
+        Assert.Equal(2.5f, buffer[0], precision: 4); // (1+2+3+4)/4
+        Assert.Equal(5f, buffer[1], precision: 4);   // (8+6+4+2)/4
+    }
+
+    [Fact]
+    public void ThreeAndFourChannelChains_ProduceSixteenKilohertzMono()
+    {
+        foreach (int channels in new[] { 3, 4 })
+        {
+            var signal = MakeSignal(48_000, channels);
+            var streamed = Run(signal, 48_000, channels, _ => 480);
+            Assert.True(streamed.Count > OutRate, $"{channels} 声道链路输出过短: {streamed.Count}");
+            // 各声道信号相同 → 平均后仍是同一信号；静音段之外的幅值应接近原幅度，而不是被声道数除小。
+            Assert.All(streamed.GetRange(OutRate / 10, 100), v => Assert.True(Math.Abs(v) > 0.001f));
+        }
     }
 }

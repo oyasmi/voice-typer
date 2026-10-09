@@ -249,7 +249,7 @@ internal sealed class OnboardingForm : Form
             MicProbeResult.Silent => L10n.T("请确认 Windows 设置 → 隐私和安全性 → 麦克风中「让桌面应用访问你的麦克风」已打开，并且麦克风没有被静音（包括键盘 / 耳机上的静音键）。也可能只是当前环境太安静——可以直接进入下一步试说一句话。"),
             MicProbeResult.AccessDenied => L10n.T("请在 Windows 设置 → 隐私和安全性 → 麦克风中，打开「麦克风访问」和「让桌面应用访问你的麦克风」，然后点「重新检测」。"),
             MicProbeResult.NoDevice => L10n.T("请插入麦克风，或在 Windows 设置 → 系统 → 声音 → 输入中启用一个输入设备，然后点「重新检测」。"),
-            MicProbeResult.DeviceFailure => L10n.T("请关闭正在独占麦克风的应用（会议软件、录音软件等），然后点「重新检测」。"),
+            MicProbeResult.DeviceFailure => AppendMicDetail(L10n.T("请关闭正在独占麦克风的应用（会议软件、录音软件等），然后点「重新检测」。"), _model.MicDetail),
             _ => "",
         };
         _actionButton.Text = L10n.T("重新检测");
@@ -261,6 +261,10 @@ internal sealed class OnboardingForm : Form
         _secondaryButton.Location = new Point(_actionButton.Right + S(12), _actionButton.Top);
         _secondaryButton.Visible = true;
     }
+
+    /// <summary>「被独占」只是按分类的猜测；探测拿到的真实原因（HRESULT、声道数）拼在后面，便于对照日志反馈。</summary>
+    private static string AppendMicDetail(string message, string? detail) =>
+        string.IsNullOrWhiteSpace(detail) ? message : $"{message}\n{detail}";
 
     private void LayoutModel()
     {

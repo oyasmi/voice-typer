@@ -397,7 +397,10 @@ internal sealed class AudioCaptureService : IAudioCapturing
         catch (Exception ex)
         {
             FailStart(created, device);
-            throw new AudioStartException(L10n.F("启动录音失败: {0}", ex.Message), AudioStartFailureKind.DeviceFailure, ex);
+            // HRESULT 十六进制拼进消息：COMException 的 Message 不总包含它，而设置页横幅与探测日志
+            // 只拿得到这条消息（AUDCLNT_E_* 等错误码是真机排障的唯一线索）。
+            throw new AudioStartException(L10n.F("启动录音失败: {0}", $"{ex.Message} (0x{ex.HResult:X8})"),
+                AudioStartFailureKind.DeviceFailure, ex);
         }
 
         return IsPending(generation) ? new AudioStartResult.Started(timings) : new AudioStartResult.Cancelled();
@@ -620,8 +623,9 @@ internal sealed class AudioCaptureService : IAudioCapturing
     /// <summary>
     /// 重采样到 16kHz / mono / float32（IEEE float）。
     /// 选 WDL 而非 MediaFoundationResampler：纯托管、不依赖 MF DLL，且对语音 16kHz 重采样质量足够。
-    /// 声道处理显式分三种（R1-3）：ToMono() 内部是 StereoToMonoSampleProvider，
-    /// 源声道数 != 2 会抛 ArgumentException，被外层吞成笼统的"启动录音失败"。
+    /// 声道处理（R1-3）：单声道直通；立体声用 NAudio 内置下混；3 声道及以上用
+    /// <see cref="MultichannelToMonoSampleProvider"/> 平均下混——Windows 11 麦克风阵列在共享模式下的
+    /// 混音格式可能是 4 声道，此前直接抛异常，在设置页表现为笼统的「设备打开失败」。
     /// 单独成方法是为了让重采样质量测试与生产共用同一条链。
     /// </summary>
     internal static ISampleProvider BuildResamplingChain(BufferedWaveProvider input, int channels)
@@ -635,9 +639,8 @@ internal sealed class AudioCaptureService : IAudioCapturing
                 sampleProvider = sampleProvider.ToMono();
                 break;
             default:
-                throw new AudioStartException(
-                    L10n.F("暂不支持 {0} 声道的输入设备，请在系统声音设置中改用单声道或立体声麦克风", channels),
-                    AudioStartFailureKind.DeviceFailure);
+                sampleProvider = new MultichannelToMonoSampleProvider(sampleProvider);
+                break;
         }
         return new WdlResamplingSampleProvider(sampleProvider, AppConstants.TargetSampleRate);
     }

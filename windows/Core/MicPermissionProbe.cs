@@ -20,6 +20,9 @@ internal enum MicProbeResult
     Unknown,
 }
 
+/// <summary>一次探测的完整结局：分类 + 供界面横幅展示的失败详情（真实异常消息与 HRESULT）。</summary>
+internal sealed record MicProbeOutcome(MicProbeResult Result, string? FailureDetail = null);
+
 /// <summary>
 /// Windows 对非打包桌面应用的麦克风管控在"设置 → 隐私和安全性 → 麦克风"里，
 /// 没有对应的查询 API——只能通过实际尝试打开设备来判断。启动时做一次极短的
@@ -36,7 +39,7 @@ internal static class MicPermissionProbe
     internal static MicProbeResult Classify(int callbackCount, float peakLevel) =>
         callbackCount >= MinimumCallbacks && peakLevel <= 0f ? MicProbeResult.Silent : MicProbeResult.Available;
 
-    public static MicProbeResult Probe()
+    public static MicProbeOutcome Probe()
     {
         var capture = new AudioCaptureService();
         try
@@ -55,25 +58,38 @@ internal static class MicPermissionProbe
             capture.Start(new AudioInputPolicy.Automatic());
             Thread.Sleep(ListenMilliseconds);
             capture.StopWithoutResult();
-            lock (gate) return Classify(callbacks, peak);
+            lock (gate) return new MicProbeOutcome(Classify(callbacks, peak));
         }
         catch (AudioStartException ex)
         {
-            return ex.Kind switch
+            var result = ex.Kind switch
             {
                 AudioStartFailureKind.AccessDenied => MicProbeResult.AccessDenied,
                 AudioStartFailureKind.NoDevice => MicProbeResult.NoDevice,
                 _ => MicProbeResult.DeviceFailure,
             };
+            // 横幅只按分类显示笼统文案；真实原因（HRESULT、声道数、端点错误）必须完整落日志，
+            // 否则真机上这类失败无法定位（横幅里的「被独占 / 驱动异常」只是猜测，不是事实）。
+            AppLog.Error("permission", $"麦克风探测失败（{ex.Kind}）: {DescribeFailure(ex)}", ex);
+            return new MicProbeOutcome(result, result is MicProbeResult.DeviceFailure ? DescribeFailure(ex) : null);
         }
         catch (Exception ex)
         {
-            AppLog.Warn("permission", $"麦克风探测异常: {ex.Message}");
-            return MicProbeResult.Unknown;
+            AppLog.Error("permission", $"麦克风探测异常: {ex.Message}", ex);
+            return new MicProbeOutcome(MicProbeResult.Unknown, $"{ex.Message} (0x{ex.HResult:X8})");
         }
         finally
         {
             capture.Dispose();
         }
+    }
+
+    /// <summary>取异常链最深处的真实原因：最外层的 AudioStartException 消息是分类文案，
+    /// 设备层的 COMException 才带 HRESULT 与具体错误。</summary>
+    private static string DescribeFailure(AudioStartException ex)
+    {
+        Exception deepest = ex;
+        while (deepest.InnerException is not null) deepest = deepest.InnerException;
+        return ReferenceEquals(deepest, ex) ? ex.Message : $"{ex.Message}（{deepest.Message}，0x{deepest.HResult:X8}）";
     }
 }

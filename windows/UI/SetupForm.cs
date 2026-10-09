@@ -257,7 +257,7 @@ internal sealed partial class SetupForm : Form
         string hotkeyDisplay,
         string engineStatus,
         string? downloadError = null, string? downloadDetails = null,
-        string? modelDirectory = null)
+        string? modelDirectory = null, string? micProbeDetail = null)
     {
         // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
@@ -273,6 +273,10 @@ internal sealed partial class SetupForm : Form
         };
         if (micBanner is not null)
         {
+            // 「被独占 / 驱动异常」只是按分类的猜测；真实原因（HRESULT、声道数、端点错误）来自探测，
+            // 拼在后面让用户与日志可以直接对照，不再需要靠猜。
+            if (micProbe == MicProbeResult.DeviceFailure && !string.IsNullOrWhiteSpace(micProbeDetail))
+                micBanner += $"（{micProbeDetail}）";
             _bannerPanel.Visible = true;
             _bannerPanel.BackColor = Color.FromArgb(255, 245, 220);
             _bannerLabel.Text = micBanner;

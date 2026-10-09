@@ -85,6 +85,8 @@ internal sealed class OnboardingModel
 {
     public OnboardingStep Step { get; private set; } = OnboardingStep.Welcome;
     public MicProbeResult Mic { get; set; } = MicProbeResult.Unknown;
+    /// <summary>设备打开失败时的真实原因（异常消息与 HRESULT），拼进引导页的失败提示。</summary>
+    public string? MicDetail { get; set; }
     public AsrState AsrState { get; set; } = AsrState.Unloaded;
     public double? DownloadProgress { get; set; }
     public string? DownloadError { get; set; }
