@@ -10,10 +10,13 @@ It sits quietly in the menu bar or the system tray. When you need to type, hold 
 release it and carry on with what you were doing. No web page to open, no recording to upload to the
 cloud, no copying and pasting between a transcript and the window you actually work in.
 
-> **The macOS version now ships as a single, self-contained app.** The recognition engine lives
+> **Both macOS and Windows now ship as a single, self-contained app.** The recognition engine lives
 > inside VoiceTyper — there is no Python to configure and no server to start.
-> [Download for macOS](https://github.com/oyasmi/voice-typer/releases) ·
-> [Installation guide](macos/README.en.md)
+>
+> - macOS (Apple Silicon): [Download](https://github.com/oyasmi/voice-typer/releases) ·
+>   [Installation guide](macos/README.en.md)
+> - Windows 10/11 (x64 / arm64): [Download](https://github.com/oyasmi/voice-typer/releases) ·
+>   [Installation guide](windows/README.en.md)
 
 ## Voice input the way it should feel
 
@@ -34,8 +37,8 @@ That ease comes from a few choices that look small and matter a lot:
   of each other.
 - **Letting go means done.** The final recognition adds punctuation and normalizes spoken numbers into
   more natural written forms — “sixty-four megabytes” becomes “64MB”.
-- **It does not sit around eating memory.** By default the macOS version loads the engine the first
-  time you press the hotkey (in parallel with recording, about one second) and releases it again after
+- **It does not sit around eating memory.** By default the engine is loaded the first
+  time you press the hotkey (in parallel with recording, about one second) and released again after
   a period of inactivity; starting at login does not mean keeping hundreds of megabytes resident for a
   dictation that may never happen.
 - **It is a complete desktop app.** Model download, language selection, hotkey, permissions, launch at
@@ -44,14 +47,20 @@ That ease comes from a few choices that look small and matter a lot:
 
 ## The first run only asks for permissions
 
-On first launch, VoiceTyper walks you through the system permissions that only you can grant. The
-macOS version downloads, verifies and loads the ~240MB speech model in the background — there is no
-download button to hunt for, and the model is fetched only once.
+On first launch, VoiceTyper only walks you through the things that only you can confirm. The ~240MB
+speech model is downloaded once.
 
-macOS turns that preparation into a four-step guide (Welcome → Permissions → Model → Try it), and the
-last step has you complete a real dictation inside the guide window: all three permissions being green
-does not mean the thing works. Only running the whole chain — hotkey → microphone → recognition →
-insertion — proves it, and whichever link fails is called out on the spot.
+- **macOS**: guides you through the system permissions, and downloads, verifies and loads the model in
+  the background — there is no download button to hunt for.
+- **Windows**: there are no extra system permission prompts; you confirm the microphone works in the
+  guide, then click once to download the model (four parallel segments, resumable, automatic retry, and
+  pinned SHA256 verification).
+
+Both platforms turn that preparation into a four-step guide (macOS: Welcome → Permissions → Model →
+Try it; Windows: Welcome → Microphone → Model → Try it), and the last step has you complete a real
+dictation inside the guide window: everything being ready does not mean the thing works. Only running
+the whole chain — hotkey → microphone → recognition → insertion — proves it, and whichever link fails
+is called out on the spot.
 
 Once that is done, everyday use is three actions:
 
@@ -73,7 +82,7 @@ Default hotkeys:
 | Platform | Default hotkey | Status |
 | --- | --- | --- |
 | macOS | `Fn` / globe key | Available; Apple Silicon, macOS 14 or later |
-| Windows | `Ctrl + F2` | The unified version has feature parity with macOS 3.5.1; it still needs verification on real Windows hardware before a formal release |
+| Windows | `Ctrl + F2` | Available; Windows 10/11 on x64 / arm64; a lone Right Ctrl / Right Alt key can also be the hotkey |
 | Linux | — | No unified version yet; use the [client–server version](client-server/client_linux/README.md) |
 
 ## Why local recognition
@@ -133,28 +142,33 @@ and answers to common questions, see the [full macOS guide](macos/README.en.md).
 
 ### Windows
 
-The unified Windows app (3.5.1) supports Windows 10/11 on both x64 and arm64 and has feature parity
-with macOS 3.5.1: a four-step first-run guide, hold and toggle triggers, a lone Right Ctrl key as the
-hotkey, explicit messages when not ready, a waveform and device name in the overlay, automatic use of
-the built-in microphone with Bluetooth headsets, segmented model download with automatic retry, and
-more (see the [changelog](windows/CHANGELOG.md), Chinese only).
+Requirements: Windows 10 (1809+) or Windows 11, x64 or arm64 (including Snapdragon X laptops), with
+the **.NET 10 Desktop Runtime** installed.
 
-Windows packages use the computer's installed **.NET 10 Desktop Runtime, matching the app's
-architecture**, and no longer bundle .NET. If it is missing, install the Desktop Runtime from the
-[.NET 10 download page](https://dotnet.microsoft.com/download/dotnet/10.0) first; the regular .NET Runtime
-or .NET 8/9 is insufficient. See the [package size audit](windows/PACKAGE_SIZE_AUDIT.md) (Chinese).
+1. Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) first
+   (the **Desktop Runtime**, matching your PC's architecture; the regular .NET Runtime or .NET 8/9 is
+   insufficient, and a .NET 10 SDK already includes it). Packages no longer bundle .NET, and the
+   installer tells you where to get it if it is missing.
+2. Download `VoiceTyper-<version>-win-x64-setup.exe` (most PCs) or
+   `VoiceTyper-<version>-win-arm64-setup.exe` (ARM laptops) from
+   [Releases](https://github.com/oyasmi/voice-typer/releases). A no-install portable ZIP is also available.
+3. Run the installer. It installs into your user directory and needs no administrator rights.
+4. Open VoiceTyper from the Start menu, follow the four-step guide to confirm the microphone and
+   download the model, and finish with one real dictation in the last step.
 
-Cross-compilation, automated recognition checks, and publishing for x64 and arm64 have succeeded.
-On 2026-09-30, the user confirmed basic usability on Windows. A full model download and all four pinned
-SHA256 checks also passed on this Windows machine. Settings now use five sidebar pages with shared drafts,
-unified saving, and per-source download diagnostics. **Performance, long-running stability, arm64 hardware,
-and actual DPI transitions between monitors still require verification**; this is not yet a stable release.
+The installer is not code-signed. If SmartScreen blocks the first run, choose “More info → Run anyway”.
+Windows that run as administrator block system-level text input; the result then stays on the clipboard
+for a manual `Ctrl+V`. “Copy last result” in the tray menu retrieves your most recent text at any time.
+For uninstalling, settings and troubleshooting, see the [full Windows guide](windows/README.en.md).
 
-If you want to help verify it or build from source, read the
-[Windows usage and development guide](windows/README.en.md) and the
-[list of risks still to verify](windows/DESIGN.md#11-风险与对策). The checklist to walk through on real
-hardware is in the [changelog](windows/CHANGELOG.md#真机验证清单). This status will be updated once
-hardware verification is done.
+**Verification status**: the Windows app has feature parity with macOS (see the
+[changelog](windows/CHANGELOG.md), Chinese only). The full dictation flow has been run on real Windows
+hardware, including the complete model download with SHA256 verification, and publishing for both x64
+and arm64 has succeeded. **arm64 hardware, long-running stability, performance numbers and DPI
+behavior across monitors are still being verified.** If you want to help verify it or build from
+source, read the [Windows usage and development guide](windows/README.en.md), the
+[list of risks still to verify](windows/DESIGN.md#11-风险与对策) and the item-by-item
+[real-hardware checklist](windows/CHANGELOG.md#真机验证清单).
 
 ## FAQ
 
@@ -171,9 +185,11 @@ Only LLM proofreading, if you turn it on, talks to the model service you configu
 
 ### Why does it need microphone, accessibility and input-monitoring permissions?
 
-The microphone is for recording, input monitoring is for responding to the global hotkey inside other
-apps, and accessibility is for delivering text to the current cursor position. VoiceTyper does not use
-these permissions to record anything unrelated to voice input.
+These are the macOS permissions: the microphone is for recording, input monitoring is for responding to
+the global hotkey inside other apps, and accessibility is for delivering text to the current cursor
+position. The Windows version needs none of these grants — only that apps are allowed to use the
+microphone (Settings → Privacy & security → Microphone). VoiceTyper does not use these permissions to
+record anything unrelated to voice input.
 
 ### Where can I use it?
 
@@ -183,7 +199,7 @@ clipboard so you can paste it manually.
 
 ### Does it support Intel Macs or Linux?
 
-The current unified macOS app is Apple Silicon only, and there is no unified Linux version yet. For
+The unified macOS app is Apple Silicon only, the Windows app supports x64 and arm64, and there is no unified Linux version yet. For
 Intel Macs, Linux, remote recognition, or sharing one ASR server between several machines, use the
 [client–server implementation](client-server/README.md) kept in this repository.
 
