@@ -42,7 +42,9 @@ Optimal 压缩；x64 ZIP 为 6,167,740 字节，arm64 ZIP 为 6,874,308 字节�
 ## 已落实的发布规则
 
 - `VoiceTyper.csproj`、`build.bat` 与 CI 使用依赖框架发布（`SelfContained=false`）。
-- 默认关闭 ReadyToRun：额外携带 IL 与预编译代码的启动收益此前尚未实测；不影响 ORT 原生推理实现。
+- 2026-10-09 起开启 ReadyToRun（`PublishReadyToRun=true`）：换取开机后首次听写前更少的 JIT。上表“最终”两行是开启前
+  的数字；开启后（macOS 主机交叉发布，同一代码仅切换开关）win-x64 为 18,572 KB（+2.6 MB）、ZIP +1.1 MB，
+  win-arm64 为 19,280 KB（+3.3 MB）、ZIP +1.1 MB。启动收益尚未真机实测，不影响 ORT 原生推理实现。
 - NAudio 总包改为 `NAudio.Wasapi`，继续传递引用 `NAudio.Core`；不改采集与重采样代码。
 - 移除编译器提示冗余的 ProtectedData 包引用，DPAPI 使用 WindowsDesktop 共享框架提供的程序集。
 - 发布不含调试 PDB 或原生链接用 `.lib`，保留运行必需的 DLL、图标和 LLM 提示词。

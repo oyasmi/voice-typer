@@ -77,4 +77,32 @@ public class HotkeyRecordingTests
     {
         Assert.Equal(supported, HotkeyService.IsSupportedKey(key));
     }
+
+    [Theory]
+    [InlineData("c", "ctrl")]
+    [InlineData("v", "ctrl")]
+    [InlineData("s", "ctrl")]
+    [InlineData("space", "ctrl")]
+    [InlineData("f4", "alt")]
+    [InlineData("tab", "alt")]
+    [InlineData("space", "shift")]
+    [InlineData("space", "win")]
+    public void CommonShortcuts_GetAConflictNote(string key, string modifier)
+    {
+        var note = HotkeyRecording.ConflictNote(key, new[] { modifier });
+        Assert.NotNull(note);
+        // 说明里要点名具体的组合，用户才知道指的是哪一个。
+        Assert.Contains(key.ToUpperInvariant(), note!);
+    }
+
+    [Theory]
+    [InlineData("f2", "ctrl")]        // 默认热键
+    [InlineData("space", "ctrl", "shift")]  // 修饰键集合不同：Ctrl+Shift+Space 不在冲突表里
+    [InlineData("c", "ctrl", "alt")]
+    [InlineData("q", "ctrl")]
+    [InlineData("f4", "ctrl")]
+    public void UncommonCombinations_HaveNoNote(string key, params string[] modifiers)
+    {
+        Assert.Null(HotkeyRecording.ConflictNote(key, modifiers));
+    }
 }

@@ -52,12 +52,16 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
   name, warns to check the microphone if nothing is heard after 1.5 s, and says so explicitly when
   nothing was recognized
 - HUD position: bottom center / bottom right / follow cursor / hidden (errors still surface); scaled to
-  the current screen's DPI
+  the current screen's DPI. "Follow cursor" prefers the text insertion point you are typing at, and falls
+  back to the mouse position when the app does not report one (Chrome, Electron and UWP draw their own
+  text boxes)
 - Bluetooth-headset friendly: when both the default input and the playback device are Bluetooth, the
   built-in microphone is used instead, so the headset is not forced into phone-call quality
 - `Esc` cancels a dictation both while recording and while recognizing
 - Optional LLM correction, configured right in the settings panel (base URL / API key / model /
-  temperature / timeout)
+  temperature / timeout). When enabled, recording start sends the correction service a key-less,
+  text-less `HEAD /` request to open the connection ahead of time (at most once per 30 s), so the
+  correction request after recognition reuses it
 - Recognition language can be set to auto / Chinese / English / Cantonese / Japanese / Korean
 - Interface language can be set to Chinese (default) or English; a restart applies it everywhere
 - Automatically releases engine memory after an idle period and reloads it in parallel with your next
@@ -209,7 +213,9 @@ Tray icon states:
 | Dark red dot | Error |
 
 Right-click the tray icon for the menu: Settings, **Pause/Resume dictation** (while paused the hotkey
-does nothing until you resume from the menu), launch at login, Setup Guide (reopens the first-run guide),
+does nothing until you resume from the menu), **Copy last transcription** (a sent paste keystroke does
+not guarantee the target app accepted the text, so this is the last way to get it back; the text is kept
+in memory only — never written to disk or logs — and dropped when the app exits), launch at login, Setup Guide (reopens the first-run guide),
 Check for Updates, About, Quit.
 
 ---
@@ -221,11 +227,11 @@ The settings window has five sidebar pages. Edits remain in a shared draft until
 
 | Page | Contents |
 | --- | --- |
-| **Dictation** | Record a shortcut, Right Ctrl / Right Alt, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
+| **Dictation** | Record a shortcut (recording a common one such as Ctrl+C / Ctrl+V, Alt+F4 or Ctrl+Space shows a conflict warning, but is not blocked), Right Ctrl / Right Alt, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
 | **Speech Model** | Download, retry, cancel, reload, per-source diagnostics, preload and idle unload; preview tuning is collapsed |
 | **Text correction** | Enable, service URL, encrypted API key, model name and test; advanced parameters are collapsed |
 | **Appearance and general** | Overlay position and opacity, startup registration and interface language |
-| **Diagnostics and help** | Microphone probe, Windows privacy settings, UIPI guidance, log and configuration folders |
+| **Diagnostics and help** | Microphone probe (tests the input device selected in Settings), Windows privacy settings, UIPI guidance, log and configuration folders |
 
 ### Interface language
 
@@ -343,7 +349,7 @@ VoiceTyper-<version>-win-arm64-portable.zip
 Without Inno Setup installed the script skips the installer step and produces only the portable zips.
 
 Both architectures publish framework-dependent directories (`--self-contained false`), with
-ReadyToRun and IL trimming disabled. Only the WASAPI audio modules are included; debug symbols
+ReadyToRun enabled (precompiled code, less JIT before first use) and IL trimming disabled. Only the WASAPI audio modules are included; debug symbols
 and native import libraries are excluded. Builds and CI run `scripts/verify_publish.ps1` to ensure
 required files are present and reject bundled .NET runtimes, models, and test assemblies.
 See the [package size audit](PACKAGE_SIZE_AUDIT.md) (Chinese) for measured sizes and manual checks.
@@ -410,11 +416,11 @@ xUnit 2.x has no built-in runtime skip; tests missing fixtures or a model use `X
 
 ## Logs and troubleshooting
 
-Logs are written to `%APPDATA%\VoiceTyper\logs\app.log` and roll over above 2MB (3 backups kept).
+Logs are written to `%LOCALAPPDATA%\VoiceTyper\logs\app.log` and roll over above 2MB (3 backups kept).
 
 ```bat
 :: Follow live (PowerShell)
-Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
+Get-Content "$env:LOCALAPPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 
 The “Diagnostics and help” page in Settings provides buttons for the log and config folders.

@@ -71,4 +71,28 @@ public class TextInsertionServiceTests
         Assert.False(TextInsertionService.ShouldApplyScheduledRestore(true, pending, pending));
         Assert.False(TextInsertionService.ShouldApplyScheduledRestore(false, null, pending));
     }
+
+    /// <summary>识别期间用户没碰剪贴板：提前备份的快照可直接使用，插入时不必再读一遍。</summary>
+    [Fact]
+    public void PrefetchedBackup_IsUsed_WhenClipboardUnchanged()
+    {
+        Assert.True(TextInsertionService.ShouldUsePrefetchedBackup(
+            hasPendingRestore: false, currentSequence: 12, snapshotSequence: 12));
+    }
+
+    /// <summary>识别期间用户复制了新内容：旧快照不再是"用户原剪贴板"，必须重新备份。</summary>
+    [Fact]
+    public void PrefetchedBackup_IsDropped_WhenUserCopiedSomethingNew()
+    {
+        Assert.False(TextInsertionService.ShouldUsePrefetchedBackup(
+            hasPendingRestore: false, currentSequence: 13, snapshotSequence: 12));
+    }
+
+    /// <summary>仍有待恢复的临时文本：剪贴板里是我们自己写的内容，走继承原始快照的路径，不用提前备份。</summary>
+    [Fact]
+    public void PrefetchedBackup_IsDropped_WhileARestoreIsPending()
+    {
+        Assert.False(TextInsertionService.ShouldUsePrefetchedBackup(
+            hasPendingRestore: true, currentSequence: 12, snapshotSequence: 12));
+    }
 }

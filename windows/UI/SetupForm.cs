@@ -514,7 +514,11 @@ internal sealed partial class SetupForm : Form
                 _modWin.Checked = result.Modifiers!.Contains("win");
                 _hotkeyKey.Text = result.Key!;
                 UpdateHotkeyPreview();
-                SetMessage(_hotkeyMessage, L10n.F("已录制：{0}，点「保存并应用」生效。", _hotkeyPreview.Text), Color.SeaGreen);
+                var recorded = L10n.F("已录制：{0}，点「保存并应用」生效。", _hotkeyPreview.Text);
+                if (HotkeyRecording.ConflictNote(result.Key!, result.Modifiers!) is { } conflict)
+                    SetMessage(_hotkeyMessage, recorded + "\n" + conflict, Color.DarkOrange);
+                else
+                    SetMessage(_hotkeyMessage, recorded, Color.SeaGreen);
                 StopHotkeyRecording();
                 break;
         }

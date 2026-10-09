@@ -29,8 +29,10 @@
     <PublishTrimmed>false</PublishTrimmed>
     <!-- 使用目标架构的 .NET 10 Desktop Runtime，不把共享运行时重复装进应用目录。 -->
     <SelfContained>false</SelfContained>
-    <!-- 优先缩小分发体积；ReadyToRun 的启动收益尚未实测，不默认携带额外的预编译代码。 -->
-    <PublishReadyToRun>false</PublishReadyToRun>
+    <!-- ReadyToRun：开机自启的常驻工具，登录后第一次按热键要先把 WinForms、托盘、热键钩子、ONNX 封装这些路径
+         全部 JIT 一遍。预编译换掉这部分启动开销，代价是发布目录里这几个托管程序集变大（体积见
+         PACKAGE_SIZE_AUDIT.md）。只在 publish 时生效，build / 测试不受影响。 -->
+    <PublishReadyToRun>true</PublishReadyToRun>
     <!-- 英文资源为框架的默认资源；应用仅提供中文和英文界面。 -->
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
     <!-- 调试符号保留在构建目录，不随面向用户的发布包分发。 -->

@@ -35,6 +35,8 @@ internal sealed class RecordingHud : Form
     private const int HorizontalInset = 16;
     private const int BottomInset = 80;
     private const int CursorGap = 24;
+    /// <summary>浮窗与文字插入点之间的间距：比鼠标指针的 <see cref="CursorGap"/> 小，插入点本身很细。</summary>
+    private const int CaretGap = 8;
     private const int ScreenMargin = 16;
     private const int PreviewMaxLines = 2;
     private const int BarCount = 9;
@@ -42,6 +44,8 @@ internal sealed class RecordingHud : Form
     private static readonly int[] WidthSteps = { 420, 560, 700, 860 };
 
     private readonly System.Windows.Forms.Timer _animationTimer;
+    /// <summary>状态 / 预览字体取自 <see cref="UiFonts"/>（与设置窗口同一字体族，中文用微软雅黑 UI），
+    /// 是进程共享实例，窗体不拥有、不 Dispose。计时用等宽 Consolas，由窗体自己持有。</summary>
     private readonly Font _statusFont;
     private readonly Font _timerFont;
     private readonly Font _previewFont;
@@ -66,8 +70,12 @@ internal sealed class RecordingHud : Form
     private long _lastLevelTimestamp; // 0 = 尚未收到过电平
 
     private HudPlacement _placement = HudPlacement.BottomCenter;
-    /// <summary>底部落点时，展开 / 收起保持底边不动、向上生长；跟随光标时保持左上角不动。</summary>
+    /// <summary>底部落点时，展开 / 收起保持底边不动、向上生长；跟随光标时保持上边中点不动。</summary>
     private Point _anchor;
+    /// <summary>"跟随光标"的参照：水平中心 X，放下方时的上边 Y，放上方（下方放不下时翻转）时的下边 Y。
+    /// 参照点优先取文字插入点，取不到再用鼠标位置；只在重新定锚时更新。</summary>
+    private readonly record struct FollowPoint(int X, int BelowY, int AboveY);
+    private FollowPoint _follow;
     private int _currentWidth;
     private Screen? _targetScreen;
 
@@ -103,9 +111,9 @@ internal sealed class RecordingHud : Form
 
         // 层级约定与 macOS 一致：预览文字是 HUD 的正文（用户实时校对识别结果），
         // 字号与亮度都高于顶行的状态提示（呼吸点/波形已在传达录音状态）。
-        _statusFont = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+        _statusFont = UiFonts.Get(9.5f);
         _timerFont = new Font("Consolas", 9f, FontStyle.Regular);
-        _previewFont = new Font("Segoe UI", 10.5f, FontStyle.Regular);
+        _previewFont = UiFonts.Get(10.5f);
 
         HandleCreated += (_, _) => RefreshCornerStrategy();
         Resize += (_, _) => ApplyRoundedRegionIfNeeded();
@@ -159,7 +167,8 @@ internal sealed class RecordingHud : Form
         SetPreviewSource("");
         _pendingPaintReady = false;
         Present(anchorToScreen: true);
-        _animationTimer.Start();
+        // 此阶段画面完全静止（灰点、平直暗条、不计时），不需要动画帧；切到录音时由 ShowRecording 启动。
+        _animationTimer.Stop();
     }
 
     /// <param name="inputDeviceName">本次录音实际使用的输入设备名（可能与系统默认不同，见 AudioInputPolicy）。</param>
@@ -308,6 +317,11 @@ internal sealed class RecordingHud : Form
     public void ShowNotice(string status, string message) =>
         ShowTransient(status, message, Glyph.Exclaim, Color.FromArgb(240, 150, 40), TimeSpan.FromSeconds(2.5));
 
+    /// <summary>"复制上一次识别结果"的反馈。这是用户主动操作，即使浮窗设为"不显示"也要给出确认。</summary>
+    public void ShowCopied() =>
+        ShowTransient(L10n.T("已复制"), L10n.T("上一次的识别结果已复制到剪贴板，可手动粘贴。"),
+            Glyph.Check, Color.FromArgb(60, 190, 90), TimeSpan.FromSeconds(1.8));
+
     /// <summary>用户按 Esc 取消后的一次性提示，约 1.0s 后自动隐藏。</summary>
     public void ShowCanceled()
     {
@@ -444,6 +458,7 @@ internal sealed class RecordingHud : Form
     /// <summary>确定目标屏幕与锚点，按当前内容布局后显示。</summary>
     private void Present(bool anchorToScreen)
     {
+        if (anchorToScreen && EffectivePlacement == HudPlacement.NearCursor) _follow = ResolveFollowPoint();
         _targetScreen = ResolveTargetScreen();
         if (anchorToScreen) ComputeAnchor(_targetScreen);
         Relayout();
@@ -455,7 +470,7 @@ internal sealed class RecordingHud : Form
     {
         try
         {
-            if (EffectivePlacement == HudPlacement.NearCursor) return Screen.FromPoint(Cursor.Position);
+            if (EffectivePlacement == HudPlacement.NearCursor) return Screen.FromPoint(new Point(_follow.X, _follow.BelowY));
             var fg = GetForegroundWindow();
             if (fg != IntPtr.Zero) return Screen.FromHandle(fg);
         }
@@ -475,13 +490,24 @@ internal sealed class RecordingHud : Form
                 _anchor = new Point(wa.Right - S(ScreenMargin), wa.Bottom - S(BottomInset)); // 右下角
                 break;
             case HudPlacement.NearCursor:
-                var cursor = Cursor.Position;
-                _anchor = new Point(cursor.X, cursor.Y + S(CursorGap));                       // 左上角
+                _anchor = new Point(_follow.X, _follow.BelowY);                               // 上边中点
                 break;
             default:
                 _anchor = new Point(wa.Left + wa.Width / 2, wa.Bottom - S(BottomInset));      // 底边中点
                 break;
         }
+    }
+
+    /// <summary>"跟随光标"的参照点：正在输入的文字插入点优先，取不到（自绘输入框、提权窗口等）回落到鼠标位置。</summary>
+    private FollowPoint ResolveFollowPoint()
+    {
+        if (CaretLocator.TryGetScreenRect(out var caret))
+        {
+            var gap = S(CaretGap);
+            return new FollowPoint(caret.Left, caret.Bottom + gap, caret.Top - gap);
+        }
+        var cursor = Cursor.Position;
+        return new FollowPoint(cursor.X, cursor.Y + S(CursorGap), cursor.Y - S(CursorGap));
     }
 
     /// <summary>按当前预览内容重排文字、确定宽高并放到锚点上。</summary>
@@ -527,10 +553,10 @@ internal sealed class RecordingHud : Form
             HudPlacement.NearCursor => new Point(_anchor.X - _currentWidth / 2, _anchor.Y),
             _ => new Point(_anchor.X - _currentWidth / 2, _anchor.Y - height),
         };
-        // 不出屏：跟随光标时靠近屏幕边缘要翻到光标上方 / 收回边界内。
+        // 不出屏：跟随光标时靠近屏幕边缘要翻到光标 / 插入点上方 / 收回边界内。
         if (EffectivePlacement == HudPlacement.NearCursor && location.Y + height > wa.Bottom)
         {
-            location.Y = Math.Max(wa.Top, Cursor.Position.Y - S(CursorGap) - height);
+            location.Y = Math.Max(wa.Top, _follow.AboveY - height);
         }
         location.X = Math.Clamp(location.X, wa.Left + S(ScreenMargin), Math.Max(wa.Left + S(ScreenMargin), wa.Right - _currentWidth - S(ScreenMargin)));
         location.Y = Math.Clamp(location.Y, wa.Top, Math.Max(wa.Top, wa.Bottom - height));
@@ -813,9 +839,7 @@ internal sealed class RecordingHud : Form
             _transientHideTimer?.Dispose();
             _warningRestoreTimer?.Dispose();
             _collapseTimer?.Dispose();
-            _statusFont.Dispose();
             _timerFont.Dispose();
-            _previewFont.Dispose();
             _previewFormat.Dispose();
             _statusFormat.Dispose();
         }

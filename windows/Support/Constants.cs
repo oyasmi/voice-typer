@@ -50,7 +50,8 @@ internal static class AppConstants
     );
 
     public static string ConfigFilePath => Path.Combine(ConfigDirectory, ConfigFileName);
-    public static string LogDirectory => Path.Combine(ConfigDirectory, "logs");
+    /// <summary>日志放本机目录而非漫游目录：它只对本机排障有意义，不该随域账户漫游到别的机器。</summary>
+    public static string LogDirectory => Path.Combine(LocalDataDirectory, "logs");
     public static string LogFilePath => Path.Combine(LogDirectory, LogFileName);
     public static string SecretFilePath => Path.Combine(ConfigDirectory, SecretFileName);
 

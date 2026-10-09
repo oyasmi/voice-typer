@@ -121,6 +121,42 @@ internal sealed class LlmCorrector : IDisposable
         }
     }
 
+    /// <summary>两次预连接之间的最短间隔：连接空闲期间不必反复探；服务端回收了空闲连接时，下一次按键会重新探。</summary>
+    private static readonly TimeSpan WarmUpInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan WarmUpTimeout = TimeSpan.FromSeconds(3);
+    /// <summary>上次发起预连接的 <see cref="Stopwatch"/> 时间戳，0 = 从未。只在 UI 线程读写。</summary>
+    private long _lastWarmUpTimestamp;
+
+    /// <summary>
+    /// 提前建立到纠错服务的连接（DNS + TCP + TLS），让识别完成后的纠错请求直接复用，省掉握手。
+    /// 开始录音时调用：说话期间握手并行完成。发出的是一个不带密钥、不带任何文本的 <c>HEAD /</c>，
+    /// 响应内容与状态码都不重要，失败也无所谓（真正的请求会自己重连）；30 秒内至多发起一次。
+    /// 必须在 UI 线程调用。
+    /// </summary>
+    public void WarmUp()
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (_lastWarmUpTimestamp != 0 && Stopwatch.GetElapsedTime(_lastWarmUpTimestamp, now) < WarmUpInterval) return;
+        _lastWarmUpTimestamp = now;
+        // 放到线程池：首个请求可能触发系统代理探测等同步工作，不能占用 UI 线程。
+        _ = Task.Run(WarmUpAsync);
+    }
+
+    private async Task WarmUpAsync()
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(_config.ChatCompletionsUrl, "/"));
+            using var cts = new CancellationTokenSource(WarmUpTimeout);
+            // HEAD 没有响应体，读到头部连接就回到池里。
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Debug("llm", $"连接预热未成功（忽略）: {ex.GetType().Name}");
+        }
+    }
+
     private static string LoadSystemPrompt()
     {
         try

@@ -41,6 +41,8 @@ internal sealed class AppCoordinator : IDisposable
     /// <summary>是否有一次听写正在进行。破坏性操作的门禁依据：显示状态（<see cref="_currentState"/>）
     /// 会被错误提示等覆盖，不能当作事实源。</summary>
     private bool IsDictating => _controller?.HasActiveDictation == true;
+    /// <summary>最近一次听写的最终文本，供托盘"复制上一次识别结果"。只在内存里，不落盘、不进日志。</summary>
+    private string? _lastResultText;
     /// <summary>本次听写成功插入时附带的 HUD 副标题（纠错回落说明）；在 Idle 分支消费一次。</summary>
     private string? _pendingSuccessNote;
 
@@ -97,6 +99,7 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnOpenSetup = () => OpenSetup();
         _tray.OnQuit = () => Application.Exit();
         _tray.OnTogglePause = TogglePause;
+        _tray.OnCopyLastResult = CopyLastResult;
         _tray.OnOpenOnboarding = PresentOnboarding;
         _tray.OnCheckForUpdates = () => _ = CheckForUpdatesAsync();
 
@@ -193,6 +196,7 @@ internal sealed class AppCoordinator : IDisposable
                 throw new InvalidOperationException(L10n.T("启用智能纠错时必须填写模型名称。"));
         }
         bool keyChanged = newApiKey is not null;
+        bool audioChanged = !AudioConfigEquals(_config.Audio, draft.Audio);
         bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm)
             && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey) && AudioConfigEquals(_config.Audio, draft.Audio));
 
@@ -224,6 +228,8 @@ internal sealed class AppCoordinator : IDisposable
         {
             // 走重建路径：控制器构造时会重新从 SecretStore 读密钥，新密钥立即生效。
             await ReloadAndReevaluateAsync().ConfigureAwait(true);
+            // 换了输入设备：之前的探测结果测的是旧设备，重新测一次。
+            if (audioChanged) ProbeMicrophone(isFirstProbe: false);
         }
         else
         {
@@ -282,7 +288,9 @@ internal sealed class AppCoordinator : IDisposable
         }
         _probeInFlight = true;
 
-        _ = Task.Run(MicPermissionProbe.Probe).ContinueWith(t =>
+        // 按当前配置的输入设备探测，与真实录音所用的设备一致；补跑的探测会重新读取配置。
+        var policy = AudioInputPolicy.FromConfigValue(_config.Audio.InputDevice);
+        _ = Task.Run(() => MicPermissionProbe.Probe(policy)).ContinueWith(t =>
         {
             UiDispatcher.Post(() =>
             {
@@ -480,6 +488,20 @@ internal sealed class AppCoordinator : IDisposable
         }
     }
 
+    /// <summary>托盘"复制上一次识别结果"：把最近一次的最终文本放回剪贴板，供插入未生效时手动粘贴。</summary>
+    private void CopyLastResult()
+    {
+        if (_lastResultText is not { } text) return;
+        // 听写进行中复制会和插入流程抢剪贴板（还会盖掉浮窗的录音状态），等这一段结束。
+        if (IsDictating)
+        {
+            _hud?.FlashWarning(L10n.T("正在听写，请等这一段结束后再复制"));
+            return;
+        }
+        if (_textInsertion.CopyToClipboard(text)) _hud?.ShowCopied();
+        else _hud?.ShowNotice(L10n.T("复制失败"), L10n.T("复制到剪贴板失败，请重试。"));
+    }
+
     private void ActivateReadyState()
     {
         // 就绪：解除门禁，并允许"下次再不就绪时"重新提醒一次（VW-11）。
@@ -600,6 +622,11 @@ internal sealed class AppCoordinator : IDisposable
             ForwardToOnboarding(new OnboardingDictationEvent.Inserted(text ?? ""));
         };
         // 摘要只含数字与枚举（DictationMetrics 禁止承载用户文本），可以放心落日志。
+        controller.FinalTextReady = text =>
+        {
+            _lastResultText = text;
+            _tray.SetLastResultAvailable(true);
+        };
         controller.MetricsReported = metrics => AppLog.Info("metrics", metrics.SummaryLine());
     }
 

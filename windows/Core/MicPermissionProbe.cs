@@ -39,7 +39,8 @@ internal static class MicPermissionProbe
     internal static MicProbeResult Classify(int callbackCount, float peakLevel) =>
         callbackCount >= MinimumCallbacks && peakLevel <= 0f ? MicProbeResult.Silent : MicProbeResult.Available;
 
-    public static MicProbeOutcome Probe()
+    /// <param name="policy">与真实录音相同的输入设备策略：探测测的必须是用户实际会用的那台设备。</param>
+    public static MicProbeOutcome Probe(AudioInputPolicy policy)
     {
         var capture = new AudioCaptureService();
         try
@@ -55,7 +56,7 @@ internal static class MicPermissionProbe
                     if (level > peak) peak = level;
                 }
             };
-            capture.Start(new AudioInputPolicy.Automatic());
+            capture.Start(policy);
             Thread.Sleep(ListenMilliseconds);
             capture.StopWithoutResult();
             lock (gate) return new MicProbeOutcome(Classify(callbacks, peak));

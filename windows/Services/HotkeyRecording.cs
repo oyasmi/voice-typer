@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using System.Linq;
+using VoiceTyper.Core;
+using VoiceTyper.Support;
 
 namespace VoiceTyper.Services;
 
@@ -40,5 +43,31 @@ internal static class HotkeyRecording
         if (modifiers.Count == 0) return new Result(Kind.NeedModifier, key);
 
         return new Result(Kind.Accepted, key, modifiers);
+    }
+
+    /// <summary>
+    /// 与全局快捷键冲突的常见组合（修饰键集合需完全一致）。听写热键由全局钩子接管、主键被吞掉，
+    /// 选中这些组合后，它们原本的用途在所有应用里都会失效：通用编辑键、关闭 / 切换窗口，
+    /// 以及中文输入法与系统占用的 Space 组合。只提醒，不禁止——用户可能确有取舍。
+    /// </summary>
+    private static readonly (string[] Modifiers, string[] Keys)[] KnownConflicts =
+    {
+        (new[] { "ctrl" }, new[] { "c", "v", "x", "z", "y", "a", "s", "space" }),
+        (new[] { "alt" }, new[] { "f4", "tab", "space" }),
+        (new[] { "shift" }, new[] { "space" }),
+        (new[] { "win" }, new[] { "space" }),
+    };
+
+    /// <summary>录制得到的组合若与常用快捷键冲突，返回给用户的说明；否则 null。</summary>
+    public static string? ConflictNote(string key, IReadOnlyCollection<string> modifiers)
+    {
+        foreach (var (conflictMods, conflictKeys) in KnownConflicts)
+        {
+            if (modifiers.Count != conflictMods.Length || !conflictMods.All(modifiers.Contains)) continue;
+            if (!conflictKeys.Contains(key)) continue;
+            var display = new HotkeyConfig { Modifiers = modifiers.ToList(), Key = key }.DisplayString;
+            return L10n.F("注意：{0} 是系统、输入法或通用编辑的常用快捷键，设为听写热键后它在其他应用里将被拦截、无法使用。建议换一个不常用的组合。", display);
+        }
+        return null;
     }
 }

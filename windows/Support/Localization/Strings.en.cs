@@ -386,6 +386,17 @@ internal static partial class L10n
 
         ["下载 {0} 失败（连接提前结束）。"] = "Downloading {0} failed (the connection ended early).",
 
+        ["注意：{0} 是系统、输入法或通用编辑的常用快捷键，设为听写热键后它在其他应用里将被拦截、无法使用。建议换一个不常用的组合。"] =
+            "Note: {0} is a common system, input-method or editing shortcut. As the dictation hotkey it will be intercepted and stop working in other apps. Consider a less common combination.",
+
+        // ── 托盘：复制上一次识别结果 ─────────────────────────
+        ["复制上一次识别结果"] = "Copy last transcription",
+        ["已复制"] = "Copied",
+        ["上一次的识别结果已复制到剪贴板，可手动粘贴。"] = "The last transcription is on the clipboard. Paste it wherever you need it.",
+        ["复制失败"] = "Copy failed",
+        ["复制到剪贴板失败，请重试。"] = "Copying to the clipboard failed. Please try again.",
+        ["正在听写，请等这一段结束后再复制"] = "Dictation in progress. Wait for it to finish before copying.",
+
         // ── LLM 探测 ────────────────────────────────────────
         ["该服务不支持关闭深度思考的参数，已自动改为不带该参数请求。"] =
             "This service does not accept the parameter that turns off deep thinking; requests now omit it automatically.",

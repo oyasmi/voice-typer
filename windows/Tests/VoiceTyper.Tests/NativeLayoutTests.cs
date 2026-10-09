@@ -1,5 +1,7 @@
+using System;
 using System.Runtime.InteropServices;
 using VoiceTyper.Support;
+using VoiceTyper.UI;
 using Xunit;
 
 namespace VoiceTyper.Tests;
@@ -31,5 +33,21 @@ public class NativeLayoutTests
         Assert.Equal(32, Marshal.SizeOf<NativeMethods.MOUSEINPUT>());
         Assert.Equal(24, Marshal.SizeOf<NativeMethods.KEYBDINPUT>());
         Assert.Equal(32, Marshal.SizeOf<NativeMethods.InputUnion>());
+    }
+
+    [Fact]
+    public void GuiThreadInfo_MatchesNativeSize()
+    {
+        // 原生 GUITHREADINFO：2 个 DWORD + 6 个句柄 + RECT(16)；x64/arm64 为 72，x86 为 48。
+        Assert.Equal(IntPtr.Size == 8 ? 72 : 48, Marshal.SizeOf<NativeMethods.GUITHREADINFO>());
+        Assert.Equal(IntPtr.Size == 8 ? 56 : 32, (int)Marshal.OffsetOf<NativeMethods.GUITHREADINFO>(nameof(NativeMethods.GUITHREADINFO.rcCaret)));
+    }
+
+    [Fact]
+    public void CaretRect_EmptyOrDegenerateIsNotUsable()
+    {
+        Assert.False(CaretLocator.IsUsable(default));
+        Assert.False(CaretLocator.IsUsable(new NativeMethods.RECT { Left = 10, Top = 20, Right = 12, Bottom = 20 }));
+        Assert.True(CaretLocator.IsUsable(new NativeMethods.RECT { Left = 10, Top = 20, Right = 12, Bottom = 38 }));
     }
 }

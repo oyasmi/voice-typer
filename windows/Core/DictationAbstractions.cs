@@ -65,6 +65,11 @@ internal interface ITextInserting
     bool CopyToClipboard(string text);
     /// <summary>目标窗口是否以更高权限运行（UIPI 会阻止向它注入输入）。</summary>
     ForegroundElevation CheckForegroundElevation();
+    /// <summary>录音结束、进入识别时调用：提前在后台备份用户的剪贴板，让随后的 <see cref="Insert"/> 不必在 UI 线程上做。
+    /// 默认空实现（测试替身不需要）。</summary>
+    void PrepareForInsert() { }
+    /// <summary>这次听写不会再插入文本：丢弃 <see cref="PrepareForInsert"/> 备份下的内容，不再占着内存。</summary>
+    void DiscardPreparedBackup() { }
 }
 
 /// <summary>单次录音会话的识别接缝（<see cref="Asr.LocalAsrSession"/> 的抽象）。</summary>

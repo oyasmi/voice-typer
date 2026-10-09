@@ -22,6 +22,8 @@ internal sealed class TrayController : IDisposable
     public Action? OnQuit;
     /// <summary>用户点击"暂停听写"菜单项。由调用方决定实际是否切换（托盘只负责发出请求）。</summary>
     public Action? OnTogglePause;
+    /// <summary>用户点击"复制上一次识别结果"。</summary>
+    public Action? OnCopyLastResult;
     public Action? OnOpenOnboarding;
     public Action? OnCheckForUpdates;
 
@@ -31,6 +33,7 @@ internal sealed class TrayController : IDisposable
     private readonly ToolStripMenuItem _hotkeyItem;
     private readonly ToolStripMenuItem _engineItem;
     private readonly ToolStripMenuItem _pauseItem;
+    private readonly ToolStripMenuItem _copyLastItem;
     private readonly ToolStripMenuItem _startupItem;
     private Icon? _currentIcon;
     private AppState _lastState = AppState.Booting;
@@ -54,6 +57,10 @@ internal sealed class TrayController : IDisposable
 
         _pauseItem = new ToolStripMenuItem(L10n.T("暂停听写")) { CheckOnClick = false };
         _pauseItem.Click += (_, _) => OnTogglePause?.Invoke();
+
+        // 粘贴按键发出去不代表目标应用真的收下了文字；这是识别结果的最后一道找回手段。尚无结果时置灰。
+        _copyLastItem = new ToolStripMenuItem(L10n.T("复制上一次识别结果")) { Enabled = false };
+        _copyLastItem.Click += (_, _) => OnCopyLastResult?.Invoke();
 
         _startupItem = new ToolStripMenuItem(L10n.T("开机自启")) { CheckOnClick = true };
         _startupItem.Checked = StartupRegistration.IsEnabled;
@@ -89,6 +96,7 @@ internal sealed class TrayController : IDisposable
             new ToolStripSeparator(),
             setupItem,
             _pauseItem,
+            _copyLastItem,
             new ToolStripSeparator(),
             _startupItem,
             onboardingItem,
@@ -107,6 +115,9 @@ internal sealed class TrayController : IDisposable
         };
         _notifyIcon.MouseClick += OnTrayClick;
     }
+
+    /// <summary>是否已有可复制的识别结果（菜单项可用状态）。</summary>
+    public void SetLastResultAvailable(bool available) => _copyLastItem.Enabled = available;
 
     public void Update(AppStateInfo info, string hotkeyDisplay, string engineStatus)
     {

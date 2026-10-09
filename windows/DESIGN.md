@@ -552,7 +552,7 @@ system prompt 从 `Resources/correction.md` 读（**与 macOS 同一份文件，
 | 项 | 路径 |
 | --- | --- |
 | 配置 | `%APPDATA%\VoiceTyper\config.yaml` |
-| 日志 | `%APPDATA%\VoiceTyper\logs\` |
+| 日志 | `%LOCALAPPDATA%\VoiceTyper\logs\` |
 | 模型 | `%LOCALAPPDATA%\VoiceTyper\models\sensevoice-small\` |
 | LLM API Key | `%APPDATA%\VoiceTyper\llm_api_key.dat`（DPAPI 加密） |
 
@@ -693,8 +693,12 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
   安装器按目标架构检查官方安装记录，便携版保留 .NET 启动器自带的缺失框架提示。
   升级时根据 `installer/legacy-self-contained-files.iss` 中的已知历史文件名清理旧运行时；
   不使用通配符删除用户额外文件。安装器编译与升级行为的验证状态见体积检查记录。
-- **不开 ReadyToRun**：此前仅推测登录后启动收益，未实测；当前优先缩小分发体积。
-  该设置不会改动 ONNX Runtime 的原生推理实现。
+- **开 ReadyToRun**（2026-10-09 起，`PublishReadyToRun=true`，仅 publish 时生效）：开机自启的常驻工具，
+  登录后第一次按热键要把 WinForms / 托盘 / 钩子 / ONNX 封装路径全部 JIT 一遍。预编译换掉这部分开销，
+  代价是托管程序集变大——macOS 主机交叉发布实测：win-x64 目录 15.6 → 18.1 MiB、ZIP 5.75 → 6.83 MiB，
+  win-arm64 15.6 → 18.8 MiB、ZIP 5.62 → 6.65 MiB（同一代码、仅切换该开关）。
+  **启动收益尚未在真机实测**；若实测没有可感知的差别，应改回 `false` 取回这约 1 MiB 的下载体积。
+  该设置不会改动 ONNX Runtime 的原生推理实现。构建机首次 publish 需要能下载 Crossgen2 工具包（NuGet）。
 - **不开 `PublishTrimmed`**：WinForms 依赖内建 COM 封送，当前 SDK 不支持裁剪该应用类型；
   不绕过 SDK 限制手动删除框架 DLL（[微软说明](https://learn.microsoft.com/en-us/dotnet/core/deploying/trimming/incompatibilities)）。
 - NAudio 仅引用 `NAudio.Wasapi` 与传递依赖 `NAudio.Core`；DPAPI 使用共享框架提供的程序集，
@@ -1235,7 +1239,7 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
 ### 18.5 真机采集步骤
 
 1. 安装本版本，确认设置里输入设备为「自动」。打开日志：
-   `Get-Content "$env:APPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50`。
+   `Get-Content "$env:LOCALAPPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50`。
 2. 启动后确认没有「注册音频端点变化通知失败」。
 3. 两档各做 5 次以上：连续听写（间隔 < 5 秒）与间隔 > 20 秒的听写。每次说一句话即可。
 4. 观感：按下后浮窗是否立刻出现「麦克风启动中…」，变红「录音中」后再开口，开头的字是否完整。
@@ -1263,7 +1267,7 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
 | --- | --- |
 | 含 Alt / Win 的组合热键，主键被吞后系统看到孤立的 Alt / Win 松开，可能弹出菜单栏 / 开始菜单 | 推断出的问题，需要真机确认；修法是复用 §15.2 右 Alt 的哑键掩码，对 Alt / Win 修饰键都注入 |
 | ORT 内存池（长听写 `ctc_logits` 约 200MB）用完不还给系统；Windows 11 对后台进程的 EcoQoS 降频 | 都要真机对比常驻内存与推理耗时（`preview_max`、`asr`）后再决定 |
-| 剪贴板快照在 UI 线程上逐格式读取，延迟渲染的来源（Excel / Word）可能很慢 | 先看耗时摘要里 `insert` 的 p95 |
+| 剪贴板快照在 UI 线程上逐格式读取，延迟渲染的来源（Excel / Word）可能很慢 | 已在 §22.2 改为识别阶段后台备份；真机效果待验证 |
 | 改任何设置都重建整个控制器（采集服务、热键钩子、HTTP 客户端） | 收益小（设置极少改）、改动面大；若要做，让采集 / 热键服务跟随应用生命周期 |
 | 热键自检把鼠标输入也算作「有输入」，只用鼠标时每约 2.5 分钟误重装一次钩子 | 修法是用 Raw Input 区分键盘，需真机验证 |
 | 浮窗字体按固定磅值、尺寸按显示器 DPI，混合 DPI 多屏下文字大小可能不一致；设置页配色 / 浮窗逐像素半透明（a9cb02f，已回退） | 需要多显示器真机；半透明渲染建议拆小再做 |
@@ -1300,7 +1304,7 @@ Win32 桌面应用不出现在「隐私 → 麦克风」的应用列表里，也
 - `MicPermissionProbe`：返回 `MicProbeOutcome`（分类 + 失败详情），失败以 Error 级落完整异常
   （`permission` 类目）；`AudioCaptureService` 的通用失败包装拼入 `0x{HResult:X8}`。
 - 设置页横幅与首启引导页：`DeviceFailure` 时把真实原因（HRESULT / 消息）拼在猜测文案后，便于对照
-  `%APPDATA%\VoiceTyper\logs\app.log` 反馈。
+  `%LOCALAPPDATA%\VoiceTyper\logs\app.log` 反馈。
 
 ### 20.3 手工验证步骤（真机，Win11 多声道阵列优先）
 
@@ -1308,7 +1312,7 @@ Win32 桌面应用不出现在「隐私 → 麦克风」的应用列表里，也
    安装新包后打开设置页：横幅不应再出现「设备打开失败」；引导页麦克风检测应为「可用」。
 2. 按热键说一句话：HUD 变红、出现波形，松开后正常插入文本；`app.log` 的「录音启动」行 format 应为
    `48kHz(或 44.1kHz) float 4ch` 一类，且链路按帧平均下混。
-3. 若真机仍失败：横幅现在会带括号内的真实原因，同时 `%APPDATA%\VoiceTyper\logs\app.log` 有
+3. 若真机仍失败：横幅现在会带括号内的真实原因，同时 `%LOCALAPPDATA%\VoiceTyper\logs\app.log` 有
    `permission: 麦克风探测失败（DeviceFailure）: …（…，0x…）` 完整一行——把它发回来即可定位
    （如 `0x88890008` 为设备被独占、`0x88890004` 为端点失效、`0x80070005` 为访问被拒）。
 
@@ -1356,3 +1360,88 @@ DWM_WINDOW_CORNER_PREFERENCE …」、Microsoft Q&A 1283812）报告了同类现
 3. 若真机仍空白透明：说明该机的 DWM 对 `SetLayeredWindowAttributes` 分层窗口本身有更深的问题
    （与本修复的角偏好路径无关），下一步改用 `UpdateLayeredWindow` 逐像素 alpha 方案
    （a9cb02f 有可参考的实现，当时因改动面大被整体回退，见 §19 遗留项表）。
+
+## 22. 2026-10-09 体验与性能优化批次
+
+来源是一轮对 `windows/` 的代码审查，从中选定 10 项实施（变更清单见 [CHANGELOG.md](CHANGELOG.md)）。
+本节记录有设计取舍的几项，以及验证状态。
+
+### 22.1 范围
+
+| 项 | 落点 |
+| --- | --- |
+| 剪贴板后台备份 | `TextInsertionService.PrepareForInsert` / `DiscardPreparedBackup`，控制器在进入识别时调用 |
+| ReadyToRun | `VoiceTyper.csproj` 的 `PublishReadyToRun=true` |
+| 纠错连接预热 | `LlmCorrector.WarmUp`，控制器在开始听写时调用 |
+| 浮窗字体 | `RecordingHud` 改用 `UiFonts`（共享实例，不 Dispose） |
+| 复制上一次识别结果 | 控制器 `FinalTextReady` 事件 → 协调器内存字段 → 托盘菜单 |
+| 录制热键冲突提醒 | `HotkeyRecording.ConflictNote` |
+| 浮窗跟随插入点 | `CaretLocator` + `RecordingHud.ResolveFollowPoint` |
+| 麦克风探测按所选设备 | `MicPermissionProbe.Probe(AudioInputPolicy)` |
+| 小修 | 日志目录挪到 `%LOCALAPPDATA%`；manifest 版本号；「麦克风启动中」不跑动画计时器 |
+
+### 22.2 剪贴板后台备份
+
+**问题**：`Insert` 在 UI 线程上调用 `SnapshotClipboard`，逐格式 `GetData`。来源应用做延迟渲染时每个格式都要它现场渲染；
+UI 线程同时承载全局键盘 / 鼠标低级钩子，这段时间里钩子回调也被卡住（§18.1 的 `key_lag`）。
+
+**做法**：控制器在 `OnTailChunk` 进入 Recognizing 时调用 `PrepareForInsert()`，起一条一次性后台 STA 线程执行同一个
+`SnapshotClipboard`，并记下读取前后的剪贴板序列号（前后不等则整份作废）。`Insert` 取用时：
+
+1. 仍有待恢复的临时文本（`_pendingRestore`）→ 走原有的“继承上一份原始快照”逻辑，不使用提前备份；
+2. 否则取走后台结果；当前序列号与快照序列号相等才使用，不等（用户在识别 / 纠错期间复制了新内容）则丢弃并同步重新备份；
+3. 后台任务仍在读：最多等 1.5 秒，超时放弃并同步备份。这个上限同时防住一种理论上的死锁——后台线程要回到 UI 线程取数据
+   （剪贴板暂时由本进程持有）而 UI 线程在这里干等。
+
+不插入文本的收尾（取消、出错、识别为空、焦点已变化、`CopyToClipboard`）都会丢弃提前备份，不让可能很大的剪贴板内容
+一直占着内存。
+
+**有意没做**：“单个超大格式直接跳过”。跳过意味着恢复时丢掉用户剪贴板里的那一格式，是静默的数据丢失；而数据在
+`GetData` 时已经取进内存，跳过也省不下读取时间。后台备份之后这段读取已不在 UI 线程上，没有必要冒这个险。
+
+**未验证的假设**：延迟渲染来源（Excel / Word）读取期间，`GetClipboardSequenceNumber` 不会因渲染而变化。若会变，
+提前备份会被判作废、退回同步备份——功能不受影响，只是拿不到收益；此时日志里会出现“后台备份作废”的 Debug 行。
+
+### 22.3 浮窗跟随文字插入点
+
+`GetGUIThreadInfo(前台线程)` 取 `rcCaret` / `hwndCaret`，`ClientToScreen` 转屏幕坐标，落在插入点下方 8px（鼠标指针
+仍是 24px）；下方放不下时翻到插入点上方。屏幕以参照点所在的屏为准。取不到（无 `hwndCaret`、矩形为空、坐标不在任何屏幕内、
+异常）一律回落到鼠标位置，行为与之前一致。
+
+覆盖面有限：只有使用系统插入符的应用才有数据（记事本、各类 Win32 / RichEdit 输入框）。Chrome、Electron（含 VS Code）、
+UWP 自绘输入框不上报。对 DPI 不感知的目标进程，坐标可能被系统虚拟化而偏移；没有处理。
+
+### 22.4 ReadyToRun 数据
+
+macOS 主机交叉发布，同一份代码仅切换 `PublishReadyToRun`：
+
+| | 目录 | ZIP |
+| --- | ---: | ---: |
+| win-x64 JIT → R2R | 15,992 → 18,572 KB | 5.75 → 6.83 MiB |
+| win-arm64 JIT → R2R | 15,984 → 19,280 KB | 5.62 → 6.65 MiB |
+
+文件数不变（13）。**启动收益没有测过**；若真机上冷启动到“可按热键”的耗时没有可感知的差别，应改回 `false`。
+
+### 22.5 验证状态
+
+| 项 | 状态 |
+| --- | --- |
+| macOS 主机交叉编译（win-x64，`--no-incremental`） | 通过，0 警告 |
+| macOS 主机交叉发布 win-x64 / win-arm64（含 R2R） | 通过 |
+| `dotnet test`（macOS 主机） | 407 项：398 过 / 1 跳过 / 8 失败；8 项为需要 STA 线程的 `SetupFormTests` ×5、`HudCornerStrategyTests` ×3，改动前后一致 |
+| 新增单测 | 序列号判定、控制器的备份 / 丢弃调用点与 `FinalTextReady`、热键冲突表、`GUITHREADINFO` 布局、纠错预热（只发一次 / 无密钥 / 失败吞掉） |
+| Windows 真机 | **全部未验证** |
+
+### 22.6 真机验证步骤
+
+1. **剪贴板**：在 Excel 里复制一大块单元格 → 听写一句 → 粘贴后原来的单元格内容应原样恢复；`app.log` 里 `insert` 与
+   `key_lag` 应不再随选区大小增长。再做一次“识别期间复制了别的内容”：该内容必须保留，不得被旧备份覆盖。
+2. **跟随光标**：设置里把浮窗位置改为“跟随光标”，在记事本里听写 → 浮窗应出现在输入位置下方；贴近屏幕底边时翻到上方；
+   在 Chrome / VS Code 里应回落到鼠标位置。
+3. **托盘「复制上一次识别结果」**：听写后在管理员窗口里（插入会失败）从菜单复制 → 能手动粘贴；没有结果时为灰色；
+   听写进行中点击应提示稍后再试。
+4. **热键冲突提醒**：录制 Ctrl+C / Alt+F4 / Ctrl+Space → 出现橙色提醒，仍可保存；录制 Ctrl+F2 无提醒。
+5. **麦克风探测**：把输入设备手选为另一支麦克风，诊断页应测的是它（可临时禁用另一支验证）；保存设备后自动重测。
+6. **纠错预热**：启用智能纠错，抓包 / 看服务端日志确认按下热键后出现一次无 `Authorization` 头的 `HEAD /`，连续听写 30 秒内不重复。
+7. **ReadyToRun**：同一台机器分别安装有 / 无 R2R 的包，重启后计时“登录到第一次按热键出现浮窗”，比较冷启动。
+8. 浮窗中文字体应与设置窗口一致；“麦克风启动中”阶段 CPU 应接近 0。

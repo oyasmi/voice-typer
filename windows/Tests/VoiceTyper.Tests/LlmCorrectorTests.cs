@@ -236,4 +236,42 @@ public class LlmCorrectorTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => corrector.CorrectAsync("原始文本", cts.Token));
     }
+
+    /// <summary>预连接只发一个不带密钥、不带文本的 HEAD /；30 秒内重复调用不再发。</summary>
+    [Fact]
+    public async Task WarmUp_SendsKeylessHeadOnce_AndThrottlesRepeats()
+    {
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<HttpRequestMessage>();
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var corrector = MakeCorrector(request =>
+        {
+            requests.Enqueue(request);
+            first.TrySetResult();
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        corrector.WarmUp();
+        corrector.WarmUp();
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(50); // 给"不该出现的第二个请求"留出到达的时间
+
+        var request = Assert.Single(requests);
+        Assert.Equal(HttpMethod.Head, request.Method);
+        Assert.Equal("https://example.invalid/", request.RequestUri!.ToString());
+        Assert.Null(request.Headers.Authorization);
+        Assert.Null(request.Content);
+    }
+
+    /// <summary>预热失败（连不上、超时）只是少了一次优化，不得抛出，也不影响之后的纠错。</summary>
+    [Fact]
+    public async Task WarmUp_FailureIsSwallowed()
+    {
+        var corrector = MakeCorrectorWithHandler(new ThrowingHandler(new HttpRequestException("boom")));
+        corrector.WarmUp();
+        await Task.Delay(50);
+
+        var result = await corrector.CorrectAsync("原始文本");
+        Assert.True(result.DidFallBack);
+        Assert.Equal("原始文本", result.Text);
+    }
 }

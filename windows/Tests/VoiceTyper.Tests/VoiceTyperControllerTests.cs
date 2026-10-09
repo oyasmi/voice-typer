@@ -105,6 +105,10 @@ public class VoiceTyperControllerTests
         }
 
         public ForegroundElevation CheckForegroundElevation() => Elevation;
+
+        public int PrepareCount, DiscardCount;
+        public void PrepareForInsert() => PrepareCount++;
+        public void DiscardPreparedBackup() => DiscardCount++;
     }
 
     private sealed class FakeSession : IDictationSession
@@ -162,6 +166,7 @@ public class VoiceTyperControllerTests
         public readonly List<string> Blocked = new();
         public readonly List<DictationMetrics> Metrics = new();
         public readonly List<string> Recognized = new();
+        public readonly List<string> FinalTexts = new();
         public int CancelledCount, EmptyCount, CorrectionCount, ReadyCount, NotReadyCount;
         public readonly List<float> Levels = new();
         public readonly VoiceTyperController Controller;
@@ -185,6 +190,7 @@ public class VoiceTyperControllerTests
             Controller.BlockedAttempt = r => Blocked.Add(r);
             Controller.MetricsReported = m => Metrics.Add(m);
             Controller.RecognizedText = t => Recognized.Add(t);
+            Controller.FinalTextReady = t => FinalTexts.Add(t);
             Controller.Cancelled = () => CancelledCount++;
             Controller.EmptyRecognition = () => EmptyCount++;
             Controller.CorrectionStarted = () => CorrectionCount++;
@@ -436,6 +442,61 @@ public class VoiceTyperControllerTests
         h.Hotkey.AcceptsCancelWhenInactive = true;
         h.Controller.BlockedReason = "x";
         Assert.False(h.Hotkey.AcceptsCancelWhenInactive);
+    }
+
+    // ─── 剪贴板提前备份 / 上一次识别结果 ───────────────────────────
+
+    [Fact]
+    public void ClipboardBackup_StartsWhenRecognitionBegins_AndIsConsumedByInsert()
+    {
+        var h = Started();
+        h.Hotkey.OnPress!();
+        Assert.Equal(0, h.Text.PrepareCount); // 录音期间不碰剪贴板
+        h.Advance(800);
+        h.Hotkey.OnRelease!();
+        Assert.Equal(1, h.Text.PrepareCount);
+
+        h.Session.OnFinal!("你好");
+        Assert.Equal(0, h.Text.DiscardCount); // 交给 Insert 取用，不丢弃
+    }
+
+    [Fact]
+    public void ClipboardBackup_IsDiscarded_WhenNothingWillBeInserted()
+    {
+        var cancelled = Started();
+        cancelled.HoldFor(600);
+        cancelled.Hotkey.OnCancel!();
+        Assert.Equal(1, cancelled.Text.DiscardCount);
+
+        var empty = Started();
+        empty.HoldFor(600);
+        empty.Session.OnFinal!("  ");
+        Assert.Equal(1, empty.Text.DiscardCount);
+
+        var failed = Started();
+        failed.HoldFor(600);
+        failed.Session.OnError!("识别超时");
+        Assert.Equal(1, failed.Text.DiscardCount);
+    }
+
+    [Fact]
+    public void FinalTextReady_FiresBeforeInsert_EvenWhenInsertFallsBackToClipboard()
+    {
+        var inserted = Started();
+        inserted.HoldFor(600);
+        inserted.Session.OnFinal!("  你好  ");
+        Assert.Equal(new[] { "你好" }, inserted.FinalTexts);
+
+        var focusChanged = Started();
+        focusChanged.Text.Result = TextInsertionResult.FocusChanged;
+        focusChanged.HoldFor(600);
+        focusChanged.Session.OnFinal!("换了窗口");
+        Assert.Equal(new[] { "换了窗口" }, focusChanged.FinalTexts);
+
+        var empty = Started();
+        empty.HoldFor(600);
+        empty.Session.OnFinal!("   ");
+        Assert.Empty(empty.FinalTexts);
     }
 
     // ─── 取消 ─────────────────────────────────────────────────

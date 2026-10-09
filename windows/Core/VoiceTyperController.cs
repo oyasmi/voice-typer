@@ -109,6 +109,9 @@ internal sealed class VoiceTyperController : IDisposable
     public Action? MicrophoneReady;
     /// <summary>麦克风还没打开就松开了热键（按住超过误触阈值）：本次没有录到声音。在 Idle 之后触发。</summary>
     public Action? ReleasedBeforeReady;
+    /// <summary>最终文本已定（纠错之后、插入之前）：无论随后是粘贴成功还是退化为只复制，都会触发。
+    /// 供界面保留"上一次识别结果"。文本只应留在内存里，不得落日志。</summary>
+    public Action<string>? FinalTextReady;
     /// <summary>每次听写收尾时恰好触发一次（<see cref="Stop"/> 除外），内容只含数字与枚举。</summary>
     public Action<DictationMetrics>? MetricsReported;
 
@@ -510,6 +513,8 @@ internal sealed class VoiceTyperController : IDisposable
     private void BeginDictationSession(long pressedAt)
     {
         var session = _sessions.MakeSession(_llm);
+        // 说话期间并行建好纠错服务的连接，识别完成后的请求直接复用。
+        _llm?.WarmUp();
         var metrics = new DictationMetrics
         {
             SessionId = (ushort)Random.Shared.Next(0x10000),
@@ -590,6 +595,8 @@ internal sealed class VoiceTyperController : IDisposable
             utterance.Metrics.FinalizeCalledAt = tailAt;
             // 松手之后到结果上屏之前，Esc 仍可取消。收尾时由 Finish 统一关闭这个窗口。
             _hotkey.AcceptsCancelWhenInactive = true;
+            // 识别（以及可能的纠错）本来就要等一会儿：趁这段时间在后台把用户的剪贴板备份好。
+            _text.PrepareForInsert();
             // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
             session.FinalizeStream(TimeSpan.FromSeconds(30));
             StateChanged?.Invoke(AppStateInfo.Recognizing);
@@ -696,6 +703,8 @@ internal sealed class VoiceTyperController : IDisposable
 
         // 必须在 Close() 之前取：这是会话内分阶段打点的唯一读取点。
         var metrics = utterance.Metrics;
+        // 只有拿到文本的听写才会走到插入；其余收尾不再需要提前备份的剪贴板内容。
+        if (outcome is not Outcome.Text) _text.DiscardPreparedBackup();
         metrics.Timings = utterance.Session.Timings;
         utterance.Session.Close();
         _sessions.SessionEnded();
@@ -771,6 +780,7 @@ internal sealed class VoiceTyperController : IDisposable
             // 识别链路跑通了但一个字都没有：几乎总是"没说话/麦克风静音/选错输入设备"。
             // 必须给一个可见反馈，否则 HUD 静默消失，与"插进去了但没看见"无法区分。
             AppLog.Info("controller", "识别结果为空，未插入任何文本");
+            _text.DiscardPreparedBackup();
             // 先回 Idle 再通知：协调器在 Idle 分支会收起 HUD，"没有识别到内容"的提示要在其后浮出。
             StateChanged?.Invoke(AppStateInfo.Idle);
             EmptyRecognition?.Invoke();
@@ -779,6 +789,7 @@ internal sealed class VoiceTyperController : IDisposable
 
         if (!_isRunning) return DictationOutcome.Discarded;
 
+        FinalTextReady?.Invoke(trimmed);
         StateChanged?.Invoke(AppStateInfo.Inserting);
         return TryInsertFinalText(new PendingInsert(trimmed, target, metrics, _now(), Attempt: 0));
     }

@@ -61,6 +61,25 @@ internal sealed class TextInsertionService : ITextInserting
     internal static bool ShouldApplyScheduledRestore(bool cancellationRequested, object? currentPending, object scheduledPending)
         => !cancellationRequested && ReferenceEquals(currentPending, scheduledPending);
 
+    /// <summary>识别阶段提前备份好的剪贴板：快照，以及读取完成时的剪贴板序列号。</summary>
+    private sealed record PrefetchedBackup(ClipboardSnapshot Snapshot, uint Sequence);
+
+    /// <summary>
+    /// 后台正在做（或已做完、尚未取用）的备份；只在 UI 线程读写。备份要逐个格式取走剪贴板数据，
+    /// 来源应用做延迟渲染（Excel / Word 的大块选区）时可能要数百毫秒；放在 UI 线程上做，
+    /// 这段时间里同在 UI 线程的全局键盘钩子也被卡住。所以在识别阶段（本来就要等推理）先在后台线程备份好，
+    /// 插入时只做一次序列号核对。
+    /// </summary>
+    private Task<PrefetchedBackup?>? _prefetch;
+
+    /// <summary>
+    /// 纯函数：提前备份的快照是否仍可作为"用户原剪贴板"使用。
+    /// 剪贴板序列号变了说明用户在识别期间复制了新内容；仍有待恢复的临时文本则说明剪贴板里现在是我们自己写的，
+    /// 这两种情况都必须丢弃，走同步重新备份 / 继承上一份原始快照的路径。
+    /// </summary>
+    internal static bool ShouldUsePrefetchedBackup(bool hasPendingRestore, uint currentSequence, uint snapshotSequence)
+        => !hasPendingRestore && currentSequence == snapshotSequence;
+
     /// <summary>
     /// 立即完成尚在等待中的剪贴板恢复（应用退出前调用）：避免刚听写完就退出，
     /// 用户剪贴板里留着识别文本。只在剪贴板仍是我们写入的内容时才恢复。必须在 UI 线程调用。
@@ -85,6 +104,63 @@ internal sealed class TextInsertionService : ITextInserting
         /// <summary>true = 读取原剪贴板本身失败（区别于"原剪贴板为空"）。恢复阶段绝不
         /// <see cref="Clipboard.Clear"/>，优先保留识别结果、让用户自行复制（R3-2）。</summary>
         public bool ReadFailed { get; set; }
+    }
+
+    /// <inheritdoc/>
+    public void PrepareForInsert()
+    {
+        // 上一次的后台备份还没读完就不再叠加：两个线程同时读剪贴板只会互相拖慢。
+        if (_prefetch is { IsCompleted: false }) return;
+        _prefetch = null;
+        // 上一次插入的临时文本还在剪贴板里：这时备份到的是我们自己写的内容，由 Insert 的继承逻辑处理。
+        if (_pendingRestore is not null) return;
+        _prefetch = SnapshotOnStaThreadAsync();
+    }
+
+    /// <inheritdoc/>
+    public void DiscardPreparedBackup() => _prefetch = null;
+
+    /// <summary>剪贴板 API 要求 STA 线程；起一条一次性的后台 STA 线程读取。失败 / 读取期间剪贴板被改动都返回 null。</summary>
+    private static Task<PrefetchedBackup?> SnapshotOnStaThreadAsync()
+    {
+        var done = new TaskCompletionSource<PrefetchedBackup?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var before = GetClipboardSequenceNumber();
+                var snapshot = SnapshotClipboard();
+                // 读取期间剪贴板又变了：快照是新旧内容拼出来的，不可信。
+                done.SetResult(GetClipboardSequenceNumber() == before ? new PrefetchedBackup(snapshot, before) : null);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Debug("input", $"后台备份剪贴板失败，插入时改为同步备份: {ex.Message}");
+                done.SetResult(null);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "VoiceTyper.ClipboardPrefetch",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return done.Task;
+    }
+
+    /// <summary>仍在读取时最多等这么久，超时就放弃它、改为同步备份：后台线程若要回到 UI 线程取数据
+    /// （剪贴板暂时由本进程持有时），而 UI 线程又在这里干等，就是死锁；有上限则最坏也只是退回旧行为。</summary>
+    private static readonly TimeSpan PrefetchWaitLimit = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>取走后台备份。通常早已读完；仍在读时等一小会儿（与同步备份耗时相当）。读取失败 / 超时返回 null。</summary>
+    private PrefetchedBackup? TakePrefetchedBackup()
+    {
+        var task = _prefetch;
+        _prefetch = null;
+        if (task is null) return null;
+        if (task.Wait(PrefetchWaitLimit)) return task.Result; // 任务内部已捕获异常，不会 faulted
+        AppLog.Debug("input", "后台备份剪贴板超时，改为同步备份");
+        return null;
     }
 
     public ForegroundTarget CaptureForegroundTarget()
@@ -174,6 +250,7 @@ internal sealed class TextInsertionService : ITextInserting
     /// 写失败时仍告诉用户"结果已复制到剪贴板"（R3-2）。</summary>
     public bool CopyToClipboard(string text)
     {
+        _prefetch = null;
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
         _pendingRestore = null;
@@ -205,6 +282,15 @@ internal sealed class TextInsertionService : ITextInserting
             {
                 return pending.Snapshot;
             }
+        }
+        var prefetched = TakePrefetchedBackup();
+        if (prefetched is not null)
+        {
+            if (ShouldUsePrefetchedBackup(_pendingRestore is not null, GetClipboardSequenceNumber(), prefetched.Sequence))
+            {
+                return prefetched.Snapshot;
+            }
+            AppLog.Debug("input", "识别期间剪贴板已变化，后台备份作废，改为同步备份");
         }
         return SnapshotClipboard();
     }
