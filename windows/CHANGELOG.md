@@ -6,6 +6,20 @@ Windows 一体化应用（`windows/`）的版本变更记录。macOS 侧见 [`..
 
 ## 未发布
 
+### Win11 真机 HUD 空白透明（2026-10-09）
+
+紧接上批：麦克风修好后，同机按热键 HUD 只剩一个空白透明的框 + 顶部一条细黑线，内容全都不见；
+Win10 正常。分析与修复见 `DESIGN.md` §21：
+
+- **根因**：HUD 用 `Form.Opacity`（分层窗口 + `SetLayeredWindowAttributes`）做整窗半透明，而句柄
+  创建时无条件启用了 Win11 的 DWM 圆角（`DWMWA_WINDOW_CORNER_PREFERENCE`）——DWM 对这类分层窗口
+  改走「自管理形状」合成路径后客户区不再绘制，只补出一条 1px 顶线。Win10 上该调用本就失败回退
+  Region 裁剪，因此表现正常。
+- **修复**：分层窗口改为显式 `DWMWCP_DONOTROUND` + 去掉 DWM 1px 边框，回到与 Win10 一致的
+  Region 圆角 + 自绘边框；不透明度 100%（非分层）时仍用 DWM 圆角。透明度实时调整会正确切换两侧。
+- 新增 STA 单测 `HudCornerStrategyTests`（分层走 Region、两种圆角互斥、切换换边），本机 Win10
+  全量 384 项：382 过 / 2 跳过。**Win11 真机验证步骤见 DESIGN.md §21.4。**
+
 ### Win11 真机麦克风打开失败（2026-10-09）
 
 来自一台 Win11 真机的反馈：设置页报「麦克风设备打开失败：可能被其他应用独占，或驱动异常」，热键只有

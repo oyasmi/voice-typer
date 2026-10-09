@@ -107,11 +107,7 @@ internal sealed class RecordingHud : Form
         _timerFont = new Font("Consolas", 9f, FontStyle.Regular);
         _previewFont = new Font("Segoe UI", 10.5f, FontStyle.Regular);
 
-        HandleCreated += (_, _) =>
-        {
-            _useDwmRoundCorners = TryEnableDwmRoundCorners();
-            ApplyRoundedRegionIfNeeded();
-        };
+        HandleCreated += (_, _) => RefreshCornerStrategy();
         Resize += (_, _) => ApplyRoundedRegionIfNeeded();
 
         _animationTimer = new System.Windows.Forms.Timer { Interval = 33 };
@@ -356,13 +352,19 @@ internal sealed class RecordingHud : Form
     public void ApplyConfig(UIConfig config)
     {
         Opacity = Math.Clamp(config.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        // 透明度变化会改变窗口是否分层（WS_EX_LAYERED），圆角策略必须跟着换。
+        RefreshCornerStrategy();
         _placement = config.HudPositionValue;
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
         if (SuppressesProgress && (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)) HideHud();
     }
 
     /// <summary>透明度是设置页可实时预览的外观项。</summary>
-    public void ApplyOpacity(double opacity) => Opacity = Math.Clamp(opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+    public void ApplyOpacity(double opacity)
+    {
+        Opacity = Math.Clamp(opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        RefreshCornerStrategy();
+    }
 
     // ─── 内部状态 ─────────────────────────────────────────────────
 
@@ -571,16 +573,41 @@ internal sealed class RecordingHud : Form
     }
 
     /// <summary>
-    /// DWMWA_WINDOW_CORNER_PREFERENCE 仅 Windows 11 22000+ 支持；老版本调用会失败，
-    /// 静默回退到 Region 裁剪（不判断系统版本号，直接以调用结果为准更可靠）。
+    /// 决定圆角实现并立即应用，两条路径按窗口是否分层选择：
+    /// - <c>Opacity &lt; 1</c>（WinForms 会挂 <c>WS_EX_LAYERED</c> 并用
+    ///   <c>SetLayeredWindowAttributes</c> 做整窗半透明）：<b>不</b>设置 DWM 圆角，并显式要求
+    ///   DWM 不圆角、不画边框，回到与 Win10 一致的 Region 裁剪 + 自绘边框。Win11 真机上对这类
+    ///   分层窗口设置 <c>DWMWA_WINDOW_CORNER_PREFERENCE</c> 会导致客户区不再合成——表现为
+    ///   HUD 只剩一条 DWM 画的顶部细线、其余纯透明（2026-10 Win11 真机反馈）。
+    /// - <c>Opacity = 1</c>（普通窗口）：优先 DWM 圆角（无锯齿、无自绘边框）；Win10 等老系统
+    ///   调用失败，以调用结果为准回退 Region。
+    /// 不判断系统版本号，直接以调用是否成功为准更可靠。透明度可在设置中实时调整，
+    /// 分层状态随之切换，因此不能只在句柄创建时决定一次。
     /// </summary>
-    private bool TryEnableDwmRoundCorners()
+    private void RefreshCornerStrategy()
+    {
+        if (!IsHandleCreated) return;
+
+        bool isLayered = (GetWindowLong(Handle, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+        if (isLayered)
+        {
+            TrySetDwmAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND);
+            TrySetDwmAttribute(DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
+            _useDwmRoundCorners = false;
+        }
+        else
+        {
+            _useDwmRoundCorners = TrySetDwmAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
+        }
+        ApplyRoundedRegionIfNeeded();
+    }
+
+    /// <summary>尽力设置 DWM 窗口属性；老系统返回错误 HRESULT 时返回 false，调用方自行回退。</summary>
+    private bool TrySetDwmAttribute(int attribute, int value)
     {
         try
         {
-            int pref = DWMWCP_ROUND;
-            var hr = DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
-            return hr == 0;
+            return DwmSetWindowAttribute(Handle, attribute, ref value, sizeof(int)) == 0;
         }
         catch
         {
@@ -590,10 +617,21 @@ internal sealed class RecordingHud : Form
 
     private void ApplyRoundedRegionIfNeeded()
     {
-        if (!IsHandleCreated || _useDwmRoundCorners) return;
-        var old = Region;
+        if (!IsHandleCreated) return;
+        if (_useDwmRoundCorners)
+        {
+            // 从 DWM 圆角切回（如透明度调低）时清掉 Region，避免残留裁剪。
+            if (Region is not null)
+            {
+                var old = Region;
+                Region = null;
+                old.Dispose();
+            }
+            return;
+        }
+        var previous = Region;
         Region = BuildRoundedRegion(ClientRectangle, S(14));
-        old?.Dispose();
+        previous?.Dispose();
     }
 
     // ─── 绘制 ─────────────────────────────────────────────────────

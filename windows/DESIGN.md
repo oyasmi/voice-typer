@@ -1311,3 +1311,48 @@ Win32 桌面应用不出现在「隐私 → 麦克风」的应用列表里，也
 3. 若真机仍失败：横幅现在会带括号内的真实原因，同时 `%APPDATA%\VoiceTyper\logs\app.log` 有
    `permission: 麦克风探测失败（DeviceFailure）: …（…，0x…）` 完整一行——把它发回来即可定位
    （如 `0x88890008` 为设备被独占、`0x88890004` 为端点失效、`0x80070005` 为访问被拒）。
+
+## 21. 2026-10-09 Win11 真机 HUD 空白透明（只剩顶部细线）
+
+### 21.1 现象
+
+§20 的麦克风问题修复后，同一台 Win11 真机上：按热键 HUD 只显示一个空白透明的框，窗口上侧有一条
+细黑线，其余纯透明（背景、圆点、波形、文字全都不见了）；识别与文本上屏正常。Win10 机器上一切正常。
+
+### 21.2 根因（高置信推断，待真机复验）
+
+HUD 的整窗半透明由 WinForms `Form.Opacity`（默认 0.85）实现，即 `WS_EX_LAYERED` +
+`SetLayeredWindowAttributes(LWA_ALPHA)`。`RecordingHud` 此前在句柄创建时无条件调用
+`DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)`——这是 HUD 渲染路径里
+**唯一**的 Win11 / Win10 分叉：Win11 22000+ 上该调用成功并启用 DWM 圆角；Win10 上返回错误
+HRESULT、静默回退 `SetWindowRgn` 圆角 Region。与「Win10 正常、Win11 客户区不合成」的表象吻合。
+
+对 `SetLayeredWindowAttributes` 分层窗口设置角偏好，DWM 会按「自管理形状的应用窗口」处理该窗口
+（合成路径改变，并补 1px 顶部 DWM 边框——即用户看到的细黑线）；分层窗口的客户区内容则不再被合成。
+公开案例（Stack Overflow 79014559「Rounding the corners of a tooltip window with
+DWM_WINDOW_CORNER_PREFERENCE …」、Microsoft Q&A 1283812）报告了同类现象，社区通行做法正是
+对分层窗口显式 `DWMWCP_DONOTROUND` 或改由位图自带圆角。
+
+### 21.3 修复（代码审查 + Win10 本机单测通过；Win11 真机待验证）
+
+`RecordingHud.RefreshCornerStrategy()` 取代只在句柄创建时执行一次的 `TryEnableDwmRoundCorners`：
+
+- **分层窗口（`Opacity < 1`，读实际 `GWL_EXSTYLE` 判定）**：不再设置 `DWMWCP_ROUND`，改为显式
+  `DWMWCP_DONOTROUND` + `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`（消除 1px 顶线），圆角回到
+  与 Win10 完全一致的 Region 裁剪 + 自绘 1px 边框路径。两个 DWM 调用失败无害（Win10 上必然失败）。
+- **不透明窗口（`Opacity = 1`，非分层）**：仍优先 DWM 圆角（平滑无锯齿），失败回退 Region。
+- 透明度可在设置中实时调整，分层状态随之切换，因此 `ApplyConfig` / `ApplyOpacity` 也会重跑策略，
+  并保证「DWM 圆角与 Region 互斥」的不变式（双向切换都会清理另一侧）。
+
+单测 `HudCornerStrategyTests`（STA）：分层窗口必须走 Region；不透明窗口两者互斥；
+透明度来回切换时策略正确换边。本机 Win10 全量 384 项：382 过 / 2 跳过 / 0 失败。
+
+### 21.4 手工验证步骤（真机 Win11）
+
+1. 安装新包，按热键：HUD 应立刻显示深灰半透明圆角框 + 圆点 / 波形 / 状态文字，识别中预览文本展开，
+   不再出现「空白透明 + 顶部细线」。与 Win10 机器的观感应一致（差别仅剩圆角边缘为 Region 硬边）。
+2. 设置 → 外观把浮窗不透明度调到 100%：HUD 变为完全不透明，圆角边缘应更平滑（DWM 圆角路径）；
+   再调回 85%：恢复半透明且内容仍正常显示（验证切换路径）。
+3. 若真机仍空白透明：说明该机的 DWM 对 `SetLayeredWindowAttributes` 分层窗口本身有更深的问题
+   （与本修复的角偏好路径无关），下一步改用 `UpdateLayeredWindow` 逐像素 alpha 方案
+   （a9cb02f 有可参考的实现，当时因改动面大被整体回退，见 §19 遗留项表）。

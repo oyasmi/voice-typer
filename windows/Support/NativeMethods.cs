@@ -155,11 +155,14 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
-    // ─── DWM 圆角（Win11）───────────────────────────────────────
-    // DWMWA_WINDOW_CORNER_PREFERENCE，Windows 11 22000+；老版本 Windows 10 上该调用会
-    // 返回错误 HRESULT，调用方需忽略失败并回退到 Region 裁剪。
+    // ─── DWM 圆角与边框（Win11 22000+）──────────────────────────
+    // 老版本 Windows 10 上这些调用会返回错误 HRESULT，调用方需忽略失败并回退到 Region 裁剪。
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    public const int DWMWCP_DONOTROUND = 1;
     public const int DWMWCP_ROUND = 2;
+    /// <summary>Win11 会给设置了角偏好的无边框窗口画 1px DWM 边框；DWMWA_COLOR_NONE 表示明确要求不画。</summary>
+    public const int DWMWA_BORDER_COLOR = 34;
+    public const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
