@@ -66,13 +66,24 @@ internal sealed class HotkeyStateMachine
     private readonly HashSet<int> _pressedModifierKeys = new();
     private S _state = S.Idle;
     private bool _mainKeyDown;
+    /// <summary><see cref="ResetIfReleased"/> 连续判定"物理上已松开"的次数。</summary>
+    private int _releasedObservations;
+    private volatile bool _acceptsCancelWhenInactive;
+
+    /// <summary>卡键看门狗需要连续判定这么多次才动作，避免一次偶发的读数误判。</summary>
+    public const int ReleasedObservationsRequired = 2;
 
     /// <summary>
     /// 无进行中的组合键时是否仍受理 Esc 取消。默认只在按住热键期间受理 Esc（否则会吞掉用户
     /// 平时正常使用的 Esc）；控制器在有听写进行中（松键后的识别阶段、切换模式的录音阶段）
     /// 把它打开，听写收尾时关闭。
     /// </summary>
-    public bool AcceptsCancelWhenInactive { get; set; }
+    public bool AcceptsCancelWhenInactive
+    {
+        get => _acceptsCancelWhenInactive;
+        // 控制器在 UI 线程写，钩子线程读：一个 bool，volatile 足够。
+        set => _acceptsCancelWhenInactive = value;
+    }
 
     public HotkeyStateMachine(int targetVk, HotkeyModifiers expected)
     {
@@ -264,6 +275,52 @@ internal sealed class HotkeyStateMachine
         foreach (var vk in _pressedModifierKeys)
         {
             if (vk != _targetVk) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 卡键看门狗（B3）：状态机以为热键还按着，但系统的物理按键状态说已经松开了——典型场景是 UAC 弹窗、
+    /// Ctrl+Alt+Del、Win+L 把输入切到安全桌面，松键事件根本到不了低级钩子，录音会一直进行到时长上限。
+    /// 连续 <see cref="ReleasedObservationsRequired"/> 次判定才动作：状态回 Idle、清掉过期的修饰键记录，
+    /// 并在原本正在录音时返回 <see cref="HotkeyAction.Release"/>。
+    ///
+    /// 判据只用<b>修饰键</b>（单独修饰键模式用目标键本身）：组合键的主键事件被钩子消费，
+    /// 不会更新 <c>GetAsyncKeyState</c>（DESIGN §15.2 的实测），用它判断主键会永远得到"已松开"。
+    /// 限制：用户在安全桌面期间仍然按住修饰键时无法发现，下一次真实按键事件会让状态机自行纠正。
+    /// </summary>
+    /// <param name="isPhysicallyDown">按虚拟键码查询物理按下状态（生产传 <c>GetAsyncKeyState</c>）。</param>
+    public HotkeyAction ResetIfReleased(Func<int, bool> isPhysicallyDown)
+    {
+        if (!IsEngaged || !LooksReleased(isPhysicallyDown))
+        {
+            _releasedObservations = 0;
+            return HotkeyAction.None;
+        }
+        if (++_releasedObservations < ReleasedObservationsRequired) return HotkeyAction.None;
+
+        _releasedObservations = 0;
+        var wasRecording = _state is S.Engaged or S.HoldingClean;
+        _state = S.Idle;
+        _mainKeyDown = false;
+        _pressedModifierKeys.RemoveWhere(vk => !isPhysicallyDown(vk));
+        return wasRecording ? HotkeyAction.Release : HotkeyAction.None;
+    }
+
+    private bool LooksReleased(Func<int, bool> isPhysicallyDown)
+    {
+        if (_modifierOnly) return !isPhysicallyDown(_targetVk);
+        // 取消 / 松修饰键之后"等主键抬起"的状态本来就不满足修饰键条件，不能当成卡键。
+        if (_state != S.Engaged) return false;
+        foreach (var bit in new[] { HotkeyModifiers.Ctrl, HotkeyModifiers.Alt, HotkeyModifiers.Shift, HotkeyModifiers.Win })
+        {
+            if ((_expected & bit) == 0) continue;
+            bool down = false;
+            foreach (var vk in AllModifierVks)
+            {
+                if (NormalizeModifier(vk) == bit && isPhysicallyDown(vk)) { down = true; break; }
+            }
+            if (!down) return true;
         }
         return false;
     }

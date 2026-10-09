@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 using VoiceTyper.Core;
 using VoiceTyper.Support;
 using static VoiceTyper.Support.NativeMethods;
@@ -15,7 +14,13 @@ internal sealed class HotkeyServiceException : Exception
 
 /// <summary>
 /// 全局热键监听。基于 <c>WH_KEYBOARD_LL</c> 低级钩子，进程范围内只允许一个实例。
-/// 必须在 UI 线程（即拥有消息泵的线程）上 Start，因为低级钩子的回调通过该线程的消息队列分发。
+///
+/// <b>钩子装在专用线程上</b>（<see cref="HookThread"/>，自带消息循环），而不是 UI 线程：低级钩子的回调要等
+/// 安装它的线程取消息时才被系统调用，装在 UI 线程上时，UI 线程的任何耽搁（窗体布局、GDI+ 绘制、剪贴板读写）
+/// 都会让整机的键盘输入等在钩子上，回调超过 <c>LowLevelHooksTimeout</c> 还会被系统静默摘钩、热键永久失效。
+/// 状态机、健康检查、卡键看门狗全部在这条线程上运行；回调只做按键判定，业务一律经
+/// <see cref="UiDispatcher.PostAsync"/> 投递到 UI 线程。公共方法与事件回调的线程约定不变：
+/// <see cref="Start"/> / <see cref="Stop"/> 在 UI 线程调用（同步等钩子线程完成），事件在 UI 线程触发。
 /// </summary>
 internal sealed class HotkeyService : IHotkeyListening
 {
@@ -34,7 +39,7 @@ internal sealed class HotkeyService : IHotkeyListening
     /// <inheritdoc/>
     public HotkeyTriggerStamp? LastTrigger { get; private set; }
 
-    private bool _acceptsCancelWhenInactive;
+    private volatile bool _acceptsCancelWhenInactive;
     /// <inheritdoc/>
     public bool AcceptsCancelWhenInactive
     {
@@ -42,7 +47,8 @@ internal sealed class HotkeyService : IHotkeyListening
         set
         {
             _acceptsCancelWhenInactive = value;
-            if (_stateMachine is not null) _stateMachine.AcceptsCancelWhenInactive = value;
+            var machine = _stateMachine;
+            if (machine is not null) machine.AcceptsCancelWhenInactive = value;
         }
     }
 
@@ -53,12 +59,18 @@ internal sealed class HotkeyService : IHotkeyListening
     /// 具体超时毫秒数随 Windows 版本而变，未在真机上核实，不在此写死。回调始终立即返回、
     /// 业务异步投递（见 <see cref="HookCallback"/> 使用 <see cref="UiDispatcher.PostAsync"/>）。
     /// </summary>
-    private const int HealthCheckIntervalMs = 30_000;
+    private const uint HealthCheckIntervalMs = 30_000;
+
+    /// <summary>卡键看门狗的检查周期；只在状态机处于接管态时开着。</summary>
+    private const uint WatchdogIntervalMs = 250;
 
     /// <summary>掩码哑键的虚拟键码。0xFF 未被任何键盘布局映射、应用与输入法都不产生字符，
     /// 是 AutoHotkey 等工具做"修饰键单击掩码"的惯用值。</summary>
     private const ushort VK_NOOP_MASK = 0xFF;
 
+    private HookThread? _thread;
+
+    // ─── 以下字段只在钩子线程上访问（_stateMachine 例外：UI 线程只读引用）──────
     private IntPtr _hookHandle = IntPtr.Zero;
     private LowLevelKeyboardProc? _proc;  // 保活，避免 GC
     /// <summary>仅单独修饰键热键才安装的鼠标钩子：按住修饰键期间点了鼠标 = 组合用法，作废本次手势。</summary>
@@ -71,8 +83,9 @@ internal sealed class HotkeyService : IHotkeyListening
     private bool _needsMenuBarMask;
     /// <summary>按键判定逻辑抽到 <see cref="HotkeyStateMachine"/>（纯逻辑、可单测，R2-1）。
     /// 钩子回调只做注入过滤 + 委派 + 把动作异步投递到 UI 线程。</summary>
-    private HotkeyStateMachine? _stateMachine;
-    private System.Windows.Forms.Timer? _healthTimer;
+    private volatile HotkeyStateMachine? _stateMachine;
+    private UIntPtr _healthTimerId;
+    private UIntPtr _watchdogTimerId;
     /// <summary>最近一次钩子回调被系统调用的时间戳（<see cref="Environment.TickCount"/>）。</summary>
     private int _lastHookActivityTick;
     /// <summary>连续两次健康检查都可疑才真正重装——降低 GetLastInputInfo 含鼠标带来的误判影响（R3-5）。</summary>
@@ -84,36 +97,35 @@ internal sealed class HotkeyService : IHotkeyListening
     /// <summary>钩子静默这么久 + 期间确有输入才怀疑被摘钩。取 4 个周期（约 2 分钟），
     /// 远比"用户只是没打字"保守；GetLastInputInfo 无法区分键鼠，故一次多余重装视为可接受
     /// （定时器不受影响、按键状态会被清理）。</summary>
-    private const int SilenceSuspectMs = 4 * HealthCheckIntervalMs;
+    private const uint SilenceSuspectMs = 4 * HealthCheckIntervalMs;
 
     public void Start(HotkeyConfig hotkey)
     {
-        Stop();
-
         var vk = MapKeyToVk(hotkey.Key);
         if (vk == 0)
         {
             throw new HotkeyServiceException(L10n.F("不支持的热键主键: {0}", hotkey.Key));
         }
 
-        _hotkey = hotkey.Clone();
-        _recoveryFailures = 0;
-        _healthSuspectLastTick = false;
-        InstallHook(vk, hotkey);
-
-        // 健康检查定时器的生命周期独立于钩子实例：重装失败也不销毁它，靠它按退避重试（R3-5）。
-        if (_healthTimer is null)
+        var thread = _thread ??= new HookThread("VoiceTyper.HotkeyHook");
+        var config = hotkey.Clone();
+        thread.Invoke(() =>
         {
-            _healthTimer = new System.Windows.Forms.Timer { Interval = HealthCheckIntervalMs };
-            _healthTimer.Tick += (_, _) => CheckHookHealth();
-        }
-        _healthTimer.Start();
-        ReportHealth(true);
+            StopOnHookThread();
+            _hotkey = config;
+            _recoveryFailures = 0;
+            _healthSuspectLastTick = false;
+            InstallHook(vk, config);
+
+            // 健康检查定时器的生命周期独立于钩子实例：重装失败也不销毁它，靠它按退避重试（R3-5）。
+            _healthTimerId = thread.StartTimer(HealthCheckIntervalMs, CheckHookHealth);
+            ReportHealth(true);
+        });
 
         AppLog.Info("hotkey", $"热键监听启动: {hotkey.DisplayString}");
     }
 
-    /// <summary>安装（或重装）低级键盘钩子。失败抛 <see cref="HotkeyServiceException"/>。</summary>
+    /// <summary>安装（或重装）低级键盘钩子。失败抛 <see cref="HotkeyServiceException"/>。只在钩子线程上调用。</summary>
     private void InstallHook(int vk, HotkeyConfig hotkey)
     {
         if (_hookHandle != IntPtr.Zero)
@@ -172,9 +184,24 @@ internal sealed class HotkeyService : IHotkeyListening
 
     public void Stop()
     {
-        _healthTimer?.Stop();
-        _healthTimer?.Dispose();
-        _healthTimer = null;
+        var thread = _thread;
+        if (thread is null) return;
+        try
+        {
+            thread.Invoke(StopOnHookThread);
+        }
+        catch (HotkeyServiceException ex)
+        {
+            AppLog.Error("hotkey", "停止热键监听时钩子线程无响应", ex);
+        }
+    }
+
+    /// <summary>卸钩子、停定时器、清状态。只在钩子线程上调用。</summary>
+    private void StopOnHookThread()
+    {
+        var thread = _thread;
+        if (_healthTimerId != UIntPtr.Zero) { thread?.StopTimer(_healthTimerId); _healthTimerId = UIntPtr.Zero; }
+        StopWatchdog();
 
         if (_hookHandle != IntPtr.Zero)
         {
@@ -194,7 +221,7 @@ internal sealed class HotkeyService : IHotkeyListening
     }
 
     /// <summary>
-    /// 钩子存活性自愈（R3-5）：
+    /// 钩子存活性自愈（R3-5），在钩子线程的定时器上运行：
     /// <list type="bullet">
     /// <item>句柄已丢失（上次重装失败）→ 按退避重试。</item>
     /// <item>句柄仍在但长时间零回调、且期间确有输入 → 连续两次可疑才重装
@@ -229,7 +256,7 @@ internal sealed class HotkeyService : IHotkeyListening
         }
 
         // 退避：连续失败越多，下一次尝试间隔越长（上限 5 分钟）。
-        var backoffMs = Math.Min(HealthCheckIntervalMs << Math.Min(_recoveryFailures, 4), 5 * 60_000);
+        var backoffMs = Math.Min((int)HealthCheckIntervalMs << Math.Min(_recoveryFailures, 4), 5 * 60_000);
         if (_recoveryFailures > 0 && unchecked((uint)(Environment.TickCount - _lastRecoveryAttemptTick)) < backoffMs)
         {
             return;
@@ -261,7 +288,144 @@ internal sealed class HotkeyService : IHotkeyListening
         }
     }
 
-    public void Dispose() => Stop();
+    // ─── 卡键看门狗（B3）──────────────────────────────────────
+
+    /// <summary>干净手势 / 组合键命中时开启；状态机回到空闲后下一次检查会自行关闭。只在钩子线程上调用。</summary>
+    private void EnsureWatchdog()
+    {
+        if (_watchdogTimerId != UIntPtr.Zero || _thread is not { } thread) return;
+        _watchdogTimerId = thread.StartTimer(WatchdogIntervalMs, WatchdogTick);
+    }
+
+    private void StopWatchdog()
+    {
+        if (_watchdogTimerId == UIntPtr.Zero) return;
+        _thread?.StopTimer(_watchdogTimerId);
+        _watchdogTimerId = UIntPtr.Zero;
+    }
+
+    private void WatchdogTick()
+    {
+        var machine = _stateMachine;
+        if (machine is null || !machine.IsEngaged)
+        {
+            StopWatchdog();
+            return;
+        }
+        if (machine.ResetIfReleased(static vk => (GetAsyncKeyState(vk) & 0x8000) != 0) == HotkeyAction.Release)
+        {
+            AppLog.Warn("hotkey", "热键在物理上已松开但没有收到松键事件（可能切换到了安全桌面），按松键处理");
+            UiDispatcher.PostAsync(() => OnRelease?.Invoke());
+        }
+    }
+
+    public void Dispose()
+    {
+        Stop();
+        _thread?.Dispose();
+        _thread = null;
+    }
+
+    /// <summary>
+    /// 专用线程 + 消息循环。<c>WH_KEYBOARD_LL</c> / <c>WH_MOUSE_LL</c> 的回调由系统在安装线程取消息时调用，
+    /// 所以线程必须一直泵消息。其他线程通过 <see cref="Invoke"/> 让它同步执行动作（安装 / 卸载钩子要求在本线程）；
+    /// 线程定时器（<c>SetTimer</c>，hWnd 为空）把到点事件作为 WM_TIMER 投到同一队列，由本线程分发。
+    /// </summary>
+    private sealed class HookThread : IDisposable
+    {
+        private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(5);
+
+        private readonly Thread _thread;
+        private readonly ManualResetEventSlim _ready = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _work = new();
+        /// <summary>定时器 id → 回调；只在本线程上访问。</summary>
+        private readonly Dictionary<UIntPtr, Action> _timers = new();
+        private uint _threadId;
+
+        public HookThread(string name)
+        {
+            _thread = new Thread(Run) { IsBackground = true, Name = name };
+            _thread.Start();
+            _ready.Wait();
+        }
+
+        private void Run()
+        {
+            // 先"偷看"一次消息，让系统为本线程建好消息队列，PostThreadMessage 才不会失败。
+            PeekMessageW(out _, IntPtr.Zero, WM_APP, WM_APP, PM_NOREMOVE);
+            _threadId = GetCurrentThreadId();
+            _ready.Set();
+
+            while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                if (msg.message == WM_APP)
+                {
+                    DrainWork();
+                }
+                else if (msg.message == WM_TIMER && _timers.TryGetValue(msg.wParam, out var callback))
+                {
+                    RunGuarded(callback);
+                }
+            }
+            DrainWork(); // WM_QUIT 之后还留在队列里的动作：让等待它们的调用方得到结果而不是超时。
+        }
+
+        private void DrainWork()
+        {
+            while (_work.TryDequeue(out var action)) action();
+        }
+
+        private static void RunGuarded(Action action)
+        {
+            try { action(); }
+            catch (Exception ex) { AppLog.Error("hotkey", "钩子线程动作异常", ex); }
+        }
+
+        /// <summary>在钩子线程上同步执行，异常原样抛回调用方。必须从别的线程调用。</summary>
+        public void Invoke(Action action)
+        {
+            Exception? error = null;
+            using var done = new ManualResetEventSlim();
+            _work.Enqueue(() =>
+            {
+                try { action(); }
+                catch (Exception ex) { error = ex; }
+                finally { done.Set(); }
+            });
+            if (!PostThreadMessageW(_threadId, WM_APP, UIntPtr.Zero, IntPtr.Zero))
+            {
+                throw new HotkeyServiceException(L10n.T("热键监听线程已退出"));
+            }
+            if (!done.Wait(InvokeTimeout)) throw new HotkeyServiceException(L10n.T("热键监听线程没有响应"));
+            if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        }
+
+        /// <summary>只能在钩子线程上调用。</summary>
+        public UIntPtr StartTimer(uint intervalMs, Action callback)
+        {
+            var id = SetTimer(IntPtr.Zero, UIntPtr.Zero, intervalMs, IntPtr.Zero);
+            if (id != UIntPtr.Zero) _timers[id] = callback;
+            return id;
+        }
+
+        /// <summary>只能在钩子线程上调用。</summary>
+        public void StopTimer(UIntPtr id)
+        {
+            KillTimer(IntPtr.Zero, id);
+            _timers.Remove(id);
+        }
+
+        public void Dispose()
+        {
+            PostThreadMessageW(_threadId, WM_QUIT, UIntPtr.Zero, IntPtr.Zero);
+            if (!_thread.Join(TimeSpan.FromSeconds(2)))
+            {
+                AppLog.Warn("hotkey", "钩子线程 2 秒内未退出，交给进程退出回收");
+                return;
+            }
+            _ready.Dispose();
+        }
+    }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
@@ -297,16 +461,26 @@ internal sealed class HotkeyService : IHotkeyListening
         switch (action)
         {
             case HotkeyAction.Press:
-                LastTrigger = StampOf(data);
+                var pressStamp = StampOf(data);
                 // 右 Alt 的干净手势刚开始：在 Alt down 送达前台应用之前/之后紧跟一对哑键，
                 // 让系统把这次 Alt 记为"按住期间出现过别的键"，松开时不进入菜单栏模式。
                 // 必须在钩子回调里同步注入，保证排在用户松开 Alt 之前（见 SendMenuBarMask 注释）。
                 if (_needsMenuBarMask) SendMenuBarMask();
-                UiDispatcher.PostAsync(() => OnPress?.Invoke());
+                EnsureWatchdog();
+                // LastTrigger 在 UI 线程上、紧挨着回调赋值：回调执行时读到的就是触发它的那次按键，且没有跨线程撕裂。
+                UiDispatcher.PostAsync(() =>
+                {
+                    LastTrigger = pressStamp;
+                    OnPress?.Invoke();
+                });
                 break;
             case HotkeyAction.Release:
-                LastTrigger = StampOf(data);
-                UiDispatcher.PostAsync(() => OnRelease?.Invoke());
+                var releaseStamp = StampOf(data);
+                UiDispatcher.PostAsync(() =>
+                {
+                    LastTrigger = releaseStamp;
+                    OnRelease?.Invoke();
+                });
                 break;
             case HotkeyAction.Cancel:
                 UiDispatcher.PostAsync(() => OnCancel?.Invoke());

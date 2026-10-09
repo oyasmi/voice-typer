@@ -183,7 +183,7 @@ TLS 使用系统协议与证书信任，代理沿用 .NET 默认代理；不会�
 ## 设置
 
 设置窗口使用五项侧栏导航，不需要手工编辑 YAML。跨页保留草稿，底部统一「保存并应用」或「撤销更改」。
-关闭窗口保留草稿，下次打开可继续编辑；浮窗透明度的临时预览在关闭或撤销时恢复。
+关闭窗口保留草稿，下次打开可继续编辑；浮窗位置与透明度的临时预览（会弹出约 2 秒的示例浮窗）在关闭或撤销时恢复。
 
 | 页面 | 内容 |
 | --- | --- |
@@ -191,7 +191,7 @@ TLS 使用系统协议与证书信任，代理沿用 .NET 默认代理；不会�
 | **语音模型** | 模型状态、下载/取消/重试/重新加载、下载诊断、预加载与空闲卸载；预览窗口参数默认折叠 |
 | **智能纠错** | 开关、服务地址、API Key、模型名称、测试；温度/最大 Token/超时默认折叠，关闭功能时隐藏配置 |
 | **外观与通用** | 浮窗位置、不透明度、开机自启、界面语言 |
-| **诊断与帮助** | 麦克风检测（按设置里选定的输入设备测）、系统隐私设置、UIPI 说明、日志与配置目录入口 |
+| **诊断与帮助** | 麦克风检测（按设置里选定的输入设备测）、系统隐私设置、UIPI 说明、最近 20 次听写的耗时与「复制诊断信息」（不含识别文本）、日志与配置目录入口 |
 
 ### 界面语言
 
@@ -406,12 +406,13 @@ Get-Content "$env:LOCALAPPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50
 ```
 dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=420 first_buffer=436
 key_lag=0 dispatch=1 start_queue=0 dev_resolve=6 dev_cached=1 activate=31 init=380 hud_shown=18 hud_ready=452 audio=3.4s
-release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
+release_to_finalize=8 engine_wait=0 final_wait=2 asr=310 llm=- llm_result=off llm_retry=- insert=24 mod_wait=0 backup_wait=0 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 preview_avg=240 preview_abort=0 tail_speech=0 qos=1 cold=0
 ```
 
 （实际是一行，这里为排版折开；数字仅为示意。）`input=bluetooth*` 末尾的星号表示这次是「自动」策略从系统默认
 输入切换而来。`key_lag` 到 `hud_ready` 拆解了「按下热键到可以开口」的耗时，字段含义见
-[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段)。
+[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段)；`final_wait` 起的新字段（终稿排队、预览平均耗时、是否中止预览等）见
+[DESIGN.md §23.5](DESIGN.md#235-新增耗时字段)。设置窗口「诊断与帮助」页以精简形式列出最近 20 次听写。
 
 ### 模型下载失败
 

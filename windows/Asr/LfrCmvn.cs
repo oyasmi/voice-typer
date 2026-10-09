@@ -120,7 +120,7 @@ internal static class LfrCmvn
     /// <summary>
     /// <see cref="ApplyLfr"/> 与 <see cref="ApplyCmvn"/> 合并，直接产出行主序展平的 <c>[frames, rowDim]</c> 缓冲区，
     /// 即 ONNX 输入张量的内存布局。逐元素运算与两步实现完全相同（<c>(x + mean) * var</c>），结果逐位一致；
-    /// 省掉的是每帧各两次的行数组分配和一次整体拷贝（预览约每 600ms 跑一次，长听写时是几 MB 的大对象堆分配）。
+    /// 省掉的是每帧各两次的行数组分配和一次整体拷贝（预览每隔几百毫秒跑一次，长听写时是几 MB 的大对象堆分配）。
     /// </summary>
     public static float[] ApplyLfrCmvnFlat(float[][] feats, int m, int n, CmvnStats stats, out int frames, out int rowDim)
     {

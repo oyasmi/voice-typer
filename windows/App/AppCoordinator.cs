@@ -43,6 +43,8 @@ internal sealed class AppCoordinator : IDisposable
     private bool IsDictating => _controller?.HasActiveDictation == true;
     /// <summary>最近一次听写的最终文本，供托盘"复制上一次识别结果"。只在内存里，不落盘、不进日志。</summary>
     private string? _lastResultText;
+    /// <summary>最近 20 次听写的精简耗时，供设置页诊断。只在内存里，只含数字与枚举。</summary>
+    private readonly DictationHistory _history = new();
     /// <summary>本次听写成功插入时附带的 HUD 副标题（纠错回落说明）；在 Idle 分支消费一次。</summary>
     private string? _pendingSuccessNote;
 
@@ -593,7 +595,7 @@ internal sealed class AppCoordinator : IDisposable
         };
         controller.PreviewUpdate = preview => _hud?.ShowPreview(preview);
         controller.PreviewWarning = message => _hud?.FlashWarning(message);
-        controller.CorrectionStarted = () => _hud?.SetCorrecting();
+        controller.CorrectionStarted = () => _hud?.SetCorrecting(_config.Hotkey.DisplayString);
         controller.EngineWait = waiting => _hud?.SetEngineWait(waiting);
         controller.AudioLevel = level =>
         {
@@ -627,7 +629,12 @@ internal sealed class AppCoordinator : IDisposable
             _lastResultText = text;
             _tray.SetLastResultAvailable(true);
         };
-        controller.MetricsReported = metrics => AppLog.Info("metrics", metrics.SummaryLine());
+        controller.MetricsReported = metrics =>
+        {
+            AppLog.Info("metrics", metrics.SummaryLine());
+            _history.Add(DateTime.Now, metrics);
+            _setupForm?.UpdateRecentDictations(_history.NewestFirst());
+        };
     }
 
     /// <summary>
@@ -985,11 +992,58 @@ internal sealed class AppCoordinator : IDisposable
         form.OnTestLlmCorrection = (llmConfig, apiKey) => TestLlmCorrectionAsync(llmConfig, apiKey);
         form.OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false);
         form.OnPollMicProbe = () => ProbeMicrophone(isFirstProbe: false, automatic: true);
-        form.OnPreviewHudOpacity = opacity => _hud?.ApplyOpacity(opacity);
+        form.OnPreviewHudOpacity = PreviewHudOpacity;
+        form.OnPreviewHudPlacement = placement =>
+        {
+            if (!IsDictating) _hud?.ShowSample(placement);
+        };
+        form.OnBuildDiagnostics = BuildDiagnosticsReport;
+        form.UpdateRecentDictations(_history.NewestFirst());
         form.OnUserClosedWindow = () => _userOpenedSetup = false;
         form.OnBeginHotkeyRecording = BeginHotkeyRecording;
         form.OnEndHotkeyRecording = EndHotkeyRecording;
         _setupForm = form;
+    }
+
+    /// <summary>
+    /// 设置页的浮窗预览。值与已保存的不透明度相同 = 恢复（撤销、关闭窗口、改回原值）：把浮窗整个还原为已保存的设置，
+    /// 位置的预览也一并撤销；否则应用新的不透明度并弹一个示例，让用户看到效果。
+    /// </summary>
+    private void PreviewHudOpacity(double opacity)
+    {
+        if (_hud is null) return;
+        if (Math.Abs(opacity - _config.UI.Opacity) < 1e-9)
+        {
+            _hud.ApplyConfig(_config.UI);
+            return;
+        }
+        _hud.ApplyOpacity(opacity);
+        if (!IsDictating) _hud.ShowSample();
+    }
+
+    /// <summary>「复制诊断信息」的正文。只放数字、布尔与枚举名：不含识别文本、设备名、路径与密钥。</summary>
+    private string BuildDiagnosticsReport()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var facts = new List<(string Key, string Value)>
+        {
+            ("version", AppConstants.Version),
+            ("os", System.Runtime.InteropServices.RuntimeInformation.OSDescription),
+            ("arch", System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString()),
+            ("cpu_cores", Environment.ProcessorCount.ToString(inv)),
+            ("asr_state", _asrService.State.ToString()),
+            ("asr_threads", _config.Asr.Threads == 0 ? "auto" : _config.Asr.Threads.ToString(inv)),
+            ("asr_rtf", _asrService.CalibratedRtf is { } rtf ? rtf.ToString("F3", inv) : "-"),
+            ("preview_window_s", _asrService.PreviewWindowSecondsInUse.ToString(inv)),
+            ("preload_on_launch", _config.Asr.PreloadOnLaunch ? "1" : "0"),
+            ("idle_unload_min", _config.Asr.IdleUnloadMinutes.ToString(inv)),
+            ("hotkey", _config.Hotkey.DisplayString + " / " + _config.Hotkey.ModeValue.ToYamlValue()),
+            ("input_device", _config.Audio.InputDevice == AudioConfig.Auto ? "auto" : "custom"),
+            ("llm_enabled", _config.Llm.Enabled ? "1" : "0"),
+            ("qos_opt_out", PowerThrottling.OptedOut is { } qos ? (qos ? "1" : "0") : "-"),
+            ("mic_probe", _micProbe.ToString()),
+        };
+        return DiagnosticsReport.Build(facts, _history.NewestFirst());
     }
 
     /// <summary>录制热键期间暂停全局热键监听（R2-04）：不然按下当前热键会触发一次听写，而不是被录进设置页。

@@ -20,6 +20,12 @@ internal enum TextInsertionResult
     /// 放弃自动粘贴改为复制到剪贴板（R3-2）。</summary>
     ModifiersHeld,
     Failed,
+    /// <summary>
+    /// 用户原剪贴板的备份还没读完（后台线程在读，来源应用做延迟渲染时可能要数百毫秒）。
+    /// 没有改动剪贴板，调用方应稍后重试 <see cref="TextInsertionService.Insert(string, ForegroundTarget)"/>，
+    /// 而不是在 UI 线程上等——同在 UI 线程的全局键盘钩子会被一起卡住。
+    /// </summary>
+    BackupPending,
 }
 
 /// <summary>前台窗口相对本进程的提权关系（R3-2）。无法判定时为 <see cref="Unknown"/>，
@@ -148,21 +154,6 @@ internal sealed class TextInsertionService : ITextInserting
         return done.Task;
     }
 
-    /// <summary>仍在读取时最多等这么久，超时就放弃它、改为同步备份：后台线程若要回到 UI 线程取数据
-    /// （剪贴板暂时由本进程持有时），而 UI 线程又在这里干等，就是死锁；有上限则最坏也只是退回旧行为。</summary>
-    private static readonly TimeSpan PrefetchWaitLimit = TimeSpan.FromMilliseconds(1500);
-
-    /// <summary>取走后台备份。通常早已读完；仍在读时等一小会儿（与同步备份耗时相当）。读取失败 / 超时返回 null。</summary>
-    private PrefetchedBackup? TakePrefetchedBackup()
-    {
-        var task = _prefetch;
-        _prefetch = null;
-        if (task is null) return null;
-        if (task.Wait(PrefetchWaitLimit)) return task.Result; // 任务内部已捕获异常，不会 faulted
-        AppLog.Debug("input", "后台备份剪贴板超时，改为同步备份");
-        return null;
-    }
-
     public ForegroundTarget CaptureForegroundTarget()
     {
         var window = GetForegroundWindow();
@@ -196,11 +187,13 @@ internal sealed class TextInsertionService : ITextInserting
             return TextInsertionResult.ModifiersHeld;
         }
 
+        // 备份先于一切对剪贴板的改动：没读完就原样返回，调用方稍后重试。
+        var backup = TryGetBackup();
+        if (backup is null) return TextInsertionResult.BackupPending;
+
         // 取消上一轮的剪贴板恢复任务（如果还在等待）
         _pendingRestoreCts?.Cancel();
         _pendingRestoreCts = null;
-
-        var backup = BackupSnapshotInheritingPendingIfNeeded();
 
         if (!TryWriteConcealedText(text))
         {
@@ -266,10 +259,16 @@ internal sealed class TextInsertionService : ITextInserting
         || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
 
     /// <summary>
-    /// 取备份快照：若仍处于上一次粘贴兜底的临时恢复窗口内、且剪贴板未被用户改动，继承上一次
-    /// 备份的「用户原始快照」；否则重新快照当前剪贴板内容。
+    /// 取备份快照，永不阻塞：
+    /// 1. 仍处于上一次粘贴兜底的临时恢复窗口内、且剪贴板未被用户改动 → 继承上一次备份的「用户原始快照」；
+    /// 2. 识别阶段的后台预取已完成、且剪贴板序列号没变 → 用它；
+    /// 3. 其余情况（没有预取、还在读、读失败、读完后剪贴板又变了）→ 启动一次新的后台预取并返回 null，
+    ///    调用方稍后重试。
+    /// 第 2 步不再考虑"是否有待恢复的临时文本"：待恢复存在且剪贴板被用户改过时，预取是在改动之后新启动的，
+    /// 读到的就是用户的新内容；而预取早于待恢复存在的情形不会出现（听写一次只有一段，
+    /// <see cref="PrepareForInsert"/> 在有待恢复时不启动预取）。
     /// </summary>
-    private ClipboardSnapshot BackupSnapshotInheritingPendingIfNeeded()
+    private ClipboardSnapshot? TryGetBackup()
     {
         if (_pendingRestore is { } pending)
         {
@@ -283,16 +282,25 @@ internal sealed class TextInsertionService : ITextInserting
                 return pending.Snapshot;
             }
         }
-        var prefetched = TakePrefetchedBackup();
-        if (prefetched is not null)
+
+        var task = _prefetch;
+        if (task is null)
         {
-            if (ShouldUsePrefetchedBackup(_pendingRestore is not null, GetClipboardSequenceNumber(), prefetched.Sequence))
-            {
-                return prefetched.Snapshot;
-            }
-            AppLog.Debug("input", "识别期间剪贴板已变化，后台备份作废，改为同步备份");
+            _prefetch = SnapshotOnStaThreadAsync();
+            return null;
         }
-        return SnapshotClipboard();
+        if (!task.IsCompleted) return null;
+
+        _prefetch = null;
+        var prefetched = task.Result; // 已完成且内部捕获了异常，不会 faulted、也不会阻塞
+        if (prefetched is not null
+            && ShouldUsePrefetchedBackup(hasPendingRestore: false, GetClipboardSequenceNumber(), prefetched.Sequence))
+        {
+            return prefetched.Snapshot;
+        }
+        AppLog.Debug("input", "后台备份作废（读取失败或识别期间剪贴板已变化），重新在后台备份");
+        _prefetch = SnapshotOnStaThreadAsync();
+        return null;
     }
 
     private static bool TryWriteConcealedText(string text)

@@ -223,7 +223,7 @@ Check for Updates, About, Quit.
 ## Settings
 
 The settings window has five sidebar pages. Edits remain in a shared draft until you choose
-“Save and Apply” or “Discard changes”. Closing preserves the draft and restores the saved overlay opacity.
+“Save and Apply” or “Discard changes”. Closing preserves the draft and restores the saved overlay position and opacity (changing either shows a sample overlay for about two seconds).
 
 | Page | Contents |
 | --- | --- |
@@ -231,7 +231,7 @@ The settings window has five sidebar pages. Edits remain in a shared draft until
 | **Speech Model** | Download, retry, cancel, reload, per-source diagnostics, preload and idle unload; preview tuning is collapsed |
 | **Text correction** | Enable, service URL, encrypted API key, model name and test; advanced parameters are collapsed |
 | **Appearance and general** | Overlay position and opacity, startup registration and interface language |
-| **Diagnostics and help** | Microphone probe (tests the input device selected in Settings), Windows privacy settings, UIPI guidance, log and configuration folders |
+| **Diagnostics and help** | Microphone probe (tests the input device selected in Settings), Windows privacy settings, UIPI guidance, timings of the last 20 dictations with "Copy diagnostics" (no recognized text), log and configuration folders |
 
 ### Interface language
 
@@ -431,13 +431,14 @@ device names or window titles — for example:
 ```
 dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin capture_start=420 first_buffer=436
 key_lag=0 dispatch=1 start_queue=0 dev_resolve=6 dev_cached=1 activate=31 init=380 hud_shown=18 hud_ready=452 audio=3.4s
-release_to_finalize=8 engine_wait=0 asr=310 llm=- llm_result=off llm_retry=- insert=24 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 cold=0
+release_to_finalize=8 engine_wait=0 final_wait=2 asr=310 llm=- llm_result=off llm_retry=- insert=24 mod_wait=0 backup_wait=0 release_to_done=352 previews=5 previews_skipped=1 preview_max=290 preview_avg=240 preview_abort=0 tail_speech=0 qos=1 cold=0
 ```
 
 (It is a single line, wrapped here for layout; the numbers are illustrative.) A trailing `*` as in
 `input=bluetooth*` means the "automatic" policy switched away from the system default input. The fields
 from `key_lag` to `hud_ready` break down the time from pressing the hotkey to being able to speak; see
-[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段) for their meaning.
+[DESIGN.md §18.3](DESIGN.md#183-新增耗时字段) for their meaning; the newer fields from `final_wait` on (final queueing, average preview latency, whether a preview was aborted, …) are in
+[DESIGN.md §23.5](DESIGN.md#235-新增耗时字段). The "Diagnostics and help" page lists the last 20 dictations in a compact form.
 
 Note that log messages themselves stay in Chinese: they are a diagnostic channel for developers, not
 part of the user interface.

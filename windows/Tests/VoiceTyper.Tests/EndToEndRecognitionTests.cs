@@ -117,6 +117,29 @@ public class EndToEndRecognitionTests
         Assert.True(distance <= 2, $"编辑距离应 ≤ 2，实际 {distance}；windows=「{decoded}」 python=「{reference}」");
     }
 
+    /// <summary>
+    /// 松键时中止预览（A3）依赖 ORT 的 <c>RunOptions.Terminate</c>：置位后推理被终止（抛异常），清除后同一个
+    /// 引擎必须恢复正常、结果与中止前一致——终稿紧跟在被中止的预览之后，这是它能正确出字的前提。
+    /// </summary>
+    [SkippableFact]
+    public void AbortTerminatesRun_AndResetAbortRestoresNormalRecognition()
+    {
+        var bundle = ModelLocator.Locate("");
+        Skip.If(bundle is null, "本机未找到 SenseVoice 模型");
+        var wavPath = FixturePath("speech_zh_en_mixed.wav");
+        Skip.IfNot(File.Exists(wavPath), "缺少语音夹具");
+
+        var (samples, _) = LoadMonoWav(wavPath);
+        using var engine = new SenseVoiceEngine(bundle!, AsrLanguage.Auto, threads: 4);
+        var expected = engine.Recognize(samples);
+
+        engine.Abort();
+        Assert.ThrowsAny<Exception>(() => engine.Recognize(samples));
+
+        engine.ResetAbort();
+        Assert.Equal(expected, engine.Recognize(samples));
+    }
+
     [SkippableFact]
     public void ChunkedPreviewFlow_ConvergesToTheSameFinalText()
     {

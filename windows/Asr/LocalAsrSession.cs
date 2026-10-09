@@ -48,7 +48,17 @@ internal sealed class LocalAsrSession : IDictationSession
     /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
     /// 与 finalize 耗时实测（F-07b）。
     /// </summary>
-    private const int MaxSessionSamples = 120 * AppConstants.TargetSampleRate;
+    private const int MaxSessionSamples = AppConstants.MaxSessionSeconds * AppConstants.TargetSampleRate;
+
+    /// <summary>
+    /// 两次预览之间至少要累计这么多新音频（300ms）：采集块只有 200ms，不设下限的话每一块都会触发一次
+    /// 几乎相同的整窗重跑。与 <see cref="_previewNotBefore"/> 一起，把预览节奏交给"上一次跑了多久"决定，
+    /// 而不是固定的 600ms 节拍。
+    /// </summary>
+    private const int MinPreviewGrowthSamples = AppConstants.TargetSampleRate * 3 / 10;
+
+    /// <summary>松键前最后这么长一段（100ms）是否仍有语音，只用于耗时日志（<c>tail_speech</c>）。</summary>
+    private const int TailProbeSamples = AppConstants.TargetSampleRate / 10;
 
     /// <summary>
     /// 会话缓冲区的初始预留。多数听写在半分钟以内，按上限（约 7.7MB）预留既浪费又每次都进大对象堆；
@@ -87,6 +97,18 @@ internal sealed class LocalAsrSession : IDictationSession
     private bool _hasSpeechSinceLastPreview;
 
     private RecognitionBuffer? _buffer;
+    /// <summary><see cref="_buffer"/> 所用的引擎，松键时用它中止仍在跑的预览。</summary>
+    private IAsrEngine? _engine;
+    /// <summary>上一次预览开始时 buffer 里的样本数，用于 <see cref="MinPreviewGrowthSamples"/>。</summary>
+    private int _samplesAtLastPreview;
+    /// <summary>占空比限制：上一次预览结束后再等其耗时的一半才允许开始下一次（推理线程占用 ≤ 2/3）。
+    /// <see cref="Stopwatch"/> tick。</summary>
+    private long _previewNotBefore;
+    /// <summary>
+    /// 已请求终稿。预览闭包在推理线程上据此短路——排队中尚未开始的预览不必再跑（终稿会整段重来）。
+    /// <c>volatile</c>：UI 线程写、推理线程读。
+    /// </summary>
+    private volatile bool _finalizeRequested;
     /// <summary>引擎尚未加载完成时，音频先攒在这里；引擎就绪后的第一次 SendAudio 会把它们一并灌入 buffer。</summary>
     private readonly List<float> _pendingAudio = new();
 
@@ -214,8 +236,15 @@ internal sealed class LocalAsrSession : IDictationSession
     {
         if (_closed || _isFinalizing) return;
         _isFinalizing = true;
+        _finalizeRequested = true;
         Timings.FinalizeStartedAt = Stopwatch.GetTimestamp();
         _finalizeWatchdogCts?.Cancel();
+        if (_previewInFlight)
+        {
+            // 终稿要整段重跑，正在跑的预览结果已经没人要了：中止它，终稿不必排在它后面等（final_wait）。
+            Timings.PreviewAborted = true;
+            _engine?.Abort();
+        }
 
         if (timeout > TimeSpan.Zero)
         {
@@ -233,6 +262,7 @@ internal sealed class LocalAsrSession : IDictationSession
             WaitForEngineThenFinalize();
             return;
         }
+        Timings.TailSpeech = ContainsSpeech(_buffer.CopyTail(TailProbeSamples));
         RunFinalize(_buffer);
     }
 
@@ -275,6 +305,7 @@ internal sealed class LocalAsrSession : IDictationSession
         var engine = _engineAccessor();
         if (engine is null) return;
 
+        _engine = engine;
         var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: InitialBufferSamples);
         if (_pendingAudio.Count > 0)
         {
@@ -292,6 +323,12 @@ internal sealed class LocalAsrSession : IDictationSession
         _buffer = newBuffer;
     }
 
+    /// <summary>
+    /// 事件驱动的预览调度，触发点是每次 <see cref="SendAudio"/>（录音中每 200ms 一次）。条件全部满足才开始：
+    /// 无预览在跑、自上次预览以来出现过语音、累计了足够的新音频、占空比间隔已过。
+    /// 不需要定时器：录音期间下一个采集块最迟 200ms 后到达，会再检查一次；
+    /// 预览完成时不立即补查，是因为占空比间隔（上一次耗时的一半）此刻必然还没过。
+    /// </summary>
     private void SchedulePreview()
     {
         if (_isFinalizing || _previewInFlight || _buffer is null) return;
@@ -301,13 +338,21 @@ internal sealed class LocalAsrSession : IDictationSession
             Timings.PreviewSkipped++;
             return;
         }
+        var scheduledAt = Stopwatch.GetTimestamp();
+        if (scheduledAt < _previewNotBefore) return;
+        var sampleCount = _buffer.SampleCount;
+        if (sampleCount - _samplesAtLastPreview < MinPreviewGrowthSamples) return;
+
         _hasSpeechSinceLastPreview = false;
+        _samplesAtLastPreview = sampleCount;
         _previewInFlight = true;
         var buffer = _buffer;
+        var engine = _engine;
 
         _pump.Post(() =>
         {
-            if (_cancelled) return;
+            if (_cancelled || _finalizeRequested) return;
+            engine?.ResetAbort();
             string? text = null;
             Exception? error = null;
             var startedAt = Stopwatch.GetTimestamp();
@@ -318,8 +363,11 @@ internal sealed class LocalAsrSession : IDictationSession
             UiDispatcher.Post(() =>
             {
                 _previewInFlight = false;
+                var deliveredAt = Stopwatch.GetTimestamp();
                 Timings.PreviewRuns++;
                 Timings.PreviewMaxTicks = Math.Max(Timings.PreviewMaxTicks, elapsed);
+                Timings.PreviewTotalTicks += deliveredAt - scheduledAt;
+                _previewNotBefore = deliveredAt + elapsed / 2;
                 if (_closed || _isFinalizing) return;
 
                 if (error is not null)
@@ -399,6 +447,9 @@ internal sealed class LocalAsrSession : IDictationSession
         _pump.Post(() =>
         {
             if (_cancelled) return;
+            // 松键时可能中止过一次预览（终止标志此时仍置位），终稿开跑前必须清掉。
+            _engine?.ResetAbort();
+            Timings.FinalizeRunStartedAt = Stopwatch.GetTimestamp();
             string? text = null;
             Exception? error = null;
             try { text = buffer.Finalize(); }

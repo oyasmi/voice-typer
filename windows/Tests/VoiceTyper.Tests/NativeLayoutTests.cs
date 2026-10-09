@@ -50,4 +50,18 @@ public class NativeLayoutTests
         Assert.False(CaretLocator.IsUsable(new NativeMethods.RECT { Left = 10, Top = 20, Right = 12, Bottom = 20 }));
         Assert.True(CaretLocator.IsUsable(new NativeMethods.RECT { Left = 10, Top = 20, Right = 12, Bottom = 38 }));
     }
+
+    [Fact]
+    public void Msg_MatchesNativeSize()
+    {
+        // 原生 MSG：HWND、UINT(+填充)、WPARAM、LPARAM、DWORD、POINT(8)；x64/arm64 为 48，x86 为 28。
+        Assert.Equal(IntPtr.Size == 8 ? 48 : 28, Marshal.SizeOf<NativeMethods.MSG>());
+        Assert.Equal(IntPtr.Size == 8 ? 16 : 8, (int)Marshal.OffsetOf<NativeMethods.MSG>(nameof(NativeMethods.MSG.wParam)));
+    }
+
+    [Fact]
+    public void ProcessPowerThrottlingState_IsThreeDwords()
+    {
+        Assert.Equal(12, Marshal.SizeOf<NativeMethods.PROCESS_POWER_THROTTLING_STATE>());
+    }
 }

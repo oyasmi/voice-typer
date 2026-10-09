@@ -20,11 +20,22 @@ internal interface ISenseVoiceRecognizing
 /// <summary>
 /// <see cref="AsrService"/> 持有的引擎抽象：识别 + 语言热更新 + 释放。生产实现是
 /// <see cref="SenseVoiceEngine"/>；生命周期测试用假实现替身，避免加载真实 ONNX 模型。
-/// 所有成员只应在 <see cref="AsrPump"/> 线程上调用。
+/// 除 <see cref="Abort"/> 外，所有成员只应在 <see cref="AsrPump"/> 线程上调用。
 /// </summary>
 internal interface IAsrEngine : ISenseVoiceRecognizing, IDisposable
 {
     void SetLanguage(AsrLanguage language);
+
+    /// <summary>
+    /// 请求中止正在进行的 <see cref="ISenseVoiceRecognizing.Recognize"/>（被中止的那次调用抛异常）。
+    /// <b>唯一可以跨线程调用的成员</b>，用于松键时让终稿不必等一次已经没人要的预览。
+    /// 终止标志一直保持到 <see cref="ResetAbort"/>，所以每个推理任务开始前必须先调用后者。
+    /// 默认空实现：测试替身不需要。
+    /// </summary>
+    void Abort() { }
+
+    /// <summary>清除 <see cref="Abort"/> 置位的终止标志。在推理线程上、新一轮推理开始前调用。</summary>
+    void ResetAbort() { }
 }
 
 /// <summary>
@@ -59,7 +70,10 @@ internal sealed class SenseVoiceEngine : IAsrEngine
     private readonly int _lfrM;
     private readonly int _lfrN;
     private int _languageId;
-    private bool _disposed;
+    private volatile bool _disposed;
+    /// <summary>每次推理共用的运行选项；唯一用途是让 <see cref="Abort"/> 能从别的线程设置终止标志。
+    /// 构造函数末尾才创建：前面的契约校验失败时没有原生资源需要释放。</summary>
+    private readonly RunOptions _runOptions;
 
     /// <summary>
     /// 侧载模型（<c>asr.model_dir</c>）的 config.yaml / am.mvn 相互独立，解析失败时各自静默
@@ -145,6 +159,7 @@ internal sealed class SenseVoiceEngine : IAsrEngine
             session?.Dispose();
         }
 
+        _runOptions = new RunOptions();
         _frontend = frontend;
         _cmvn = parsedCmvn;
         _tokens = parsedTokens;
@@ -156,6 +171,19 @@ internal sealed class SenseVoiceEngine : IAsrEngine
     public void SetLanguage(AsrLanguage language)
     {
         _languageId = language.TokenId();
+    }
+
+    public void Abort()
+    {
+        // 释放与中止可能交错（重载模型时旧引擎被释放）：此时推理早已结束，忽略即可。
+        try { if (!_disposed) _runOptions.Terminate = true; }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void ResetAbort()
+    {
+        try { if (!_disposed) _runOptions.Terminate = false; }
+        catch (ObjectDisposedException) { }
     }
 
     /// <param name="samples">16kHz / mono / float32，范围 [-1, 1]。</param>
@@ -182,7 +210,7 @@ internal sealed class SenseVoiceEngine : IAsrEngine
             NamedOnnxValue.CreateFromTensor("textnorm", textnormTensor),
         };
 
-        using var results = _session.Run(inputs, new[] { "ctc_logits", "encoder_out_lens" });
+        using var results = _session.Run(inputs, new[] { "ctc_logits", "encoder_out_lens" }, _runOptions);
         var logitsResult = results.FirstOrDefault(r => r.Name == "ctc_logits");
         var lensResult = results.FirstOrDefault(r => r.Name == "encoder_out_lens");
         // 输出缺失是模型契约错误，不是合法静音——用 throw 让两者可区分（R2-09）。
@@ -231,5 +259,6 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         if (_disposed) return;
         _disposed = true;
         _session.Dispose();
+        _runOptions.Dispose();
     }
 }

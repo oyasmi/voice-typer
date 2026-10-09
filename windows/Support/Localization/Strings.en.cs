@@ -72,9 +72,9 @@ internal static partial class L10n
         ["下载连接中断，请检查网络后重试。"] = "The download connection was interrupted. Check the network and retry.",
         ["下载诊断详情"] = "Download diagnostics",
         ["限制纠错回复的长度。"] = "Limit the length of the correction response.",
-        ["修改时立即预览；撤销后恢复。"] = "Preview changes immediately; discard to restore the saved value.",
+        ["修改时立即预览并弹出示例；撤销后恢复。"] = "Preview changes immediately with a sample overlay; discard to restore the saved value.",
         ["选择输入方式，按下快捷键即可开始说话。"] = "Choose your input preferences and press the shortcut to start speaking.",
-        ["选择听写反馈在屏幕上的位置。"] = "Choose where dictation feedback appears on screen.",
+        ["选择听写反馈在屏幕上的位置；修改时会弹出示例。"] = "Choose where dictation feedback appears on screen; a sample overlay appears when you change it.",
         ["已下载 {0:F1} / {1:F1} MB · {2}%"] = "Downloaded {0:F1} / {1:F1} MB · {2}%",
         ["应用"] = "Application",
         ["有未保存的更改"] = "Unsaved changes",
@@ -396,6 +396,27 @@ internal static partial class L10n
         ["复制失败"] = "Copy failed",
         ["复制到剪贴板失败，请重试。"] = "Copying to the clipboard failed. Please try again.",
         ["正在听写，请等这一段结束后再复制"] = "Dictation in progress. Wait for it to finish before copying.",
+
+        // ── 2026-10 跟嘴 · 跟手 · 稳健批次 ─────────────────────
+        ["读取剪贴板超时，未自动粘贴。可在托盘菜单中复制上一次识别结果。"] =
+            "Reading the clipboard timed out, so nothing was pasted. Use \"Copy last transcription\" in the tray menu to get the result.",
+        ["上一段识别结果未能自动粘贴，已复制到剪贴板"] =
+            "The previous result could not be pasted automatically and was copied to the clipboard.",
+        ["上一段识别结果未能自动粘贴，且复制到剪贴板失败"] =
+            "The previous result could not be pasted automatically, and copying it to the clipboard also failed.",
+        ["热键监听线程已退出"] = "The hotkey listener thread has exited.",
+        ["热键监听线程没有响应"] = "The hotkey listener thread is not responding.",
+        ["纠错中… 再按 {0} 跳过"] = "Correcting… press {0} again to skip",
+        ["录音将在 {0} 秒后自动结束"] = "Recording ends automatically in {0} s",
+        ["浮窗预览"] = "Overlay preview",
+        ["听写时，识别出的文字会实时显示在这里。"] = "While you dictate, the recognized text appears here in real time.",
+        ["最近听写"] = "Recent dictations",
+        ["最近 20 次的耗时（毫秒），不含任何识别内容。ready = 按下到可开口，done = 松键到完成，asr = 终稿识别，wait = 终稿排队，preview = 预览平均。"] =
+            "Timings of the last 20 dictations in milliseconds; no recognized text is included. ready = key press to speak-ready, done = key release to finished, asr = final recognition, wait = final queueing, preview = average preview latency.",
+        ["（还没有听写记录）"] = "(No dictations yet)",
+        ["复制诊断信息"] = "Copy diagnostics",
+        ["诊断信息已复制到剪贴板。"] = "Diagnostics copied to the clipboard.",
+        ["复制失败，请重试。"] = "Copy failed. Please try again.",
 
         // ── LLM 探测 ────────────────────────────────────────
         ["该服务不支持关闭深度思考的参数，已自动改为不带该参数请求。"] =

@@ -63,7 +63,7 @@ internal sealed class AudioStartTimings
 }
 
 /// <summary>
-/// 流式录音服务。录音期间每凑满 600ms（9600 个 16kHz float32 样本）通过 <see cref="OnChunk"/> 发出；
+/// 流式录音服务。录音期间每凑满 200ms（3200 个 16kHz float32 样本）通过 <see cref="OnChunk"/> 发出；
 /// 停止时将剩余尾音通过 <see cref="OnTailChunk"/> 发出。
 ///
 /// <b>控制线程</b>：解析输入端点、创建 <see cref="WasapiCapture"/>、<c>StartRecording</c>（内部是

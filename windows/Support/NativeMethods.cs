@@ -251,4 +251,63 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetTokenInformation(IntPtr TokenHandle, int TokenInformationClass,
         out uint TokenInformation, uint TokenInformationLength, out uint ReturnLength);
+
+    // ─── 退出 EcoQoS 执行速度节流（Win10 1709+ / Win11）────────────
+    /// <summary>PROCESS_INFORMATION_CLASS.ProcessPowerThrottling。</summary>
+    public const int ProcessPowerThrottling = 4;
+    public const uint PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;
+    public const uint PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_POWER_THROTTLING_STATE
+    {
+        public uint Version;
+        public uint ControlMask;
+        public uint StateMask;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetProcessInformation(IntPtr hProcess, int processInformationClass,
+        ref PROCESS_POWER_THROTTLING_STATE information, uint informationSize);
+
+    // ─── 钩子线程的消息循环（HotkeyService 的专用线程）────────────
+    public const uint WM_QUIT = 0x0012;
+    public const uint WM_TIMER = 0x0113;
+    /// <summary>应用自定义消息起点；钩子线程用它表示"队列里有待执行的动作"。</summary>
+    public const uint WM_APP = 0x8000;
+    public const uint PM_NOREMOVE = 0x0000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public UIntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessageW(uint idThread, uint msg, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    /// <summary>线程定时器（hWnd 为 0）：到点向调用线程的消息队列投递 WM_TIMER，wParam 是定时器 id。</summary>
+    [DllImport("user32.dll")]
+    public static extern UIntPtr SetTimer(IntPtr hWnd, UIntPtr nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool KillTimer(IntPtr hWnd, UIntPtr uIDEvent);
 }

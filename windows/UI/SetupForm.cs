@@ -42,7 +42,12 @@ internal sealed partial class SetupForm : Form
     public Action? OnRetryMicProbe;
     /// <summary>权限页轮询触发的自动探测；与手动检测分开，协调器可在听写中跳过它。</summary>
     public Action? OnPollMicProbe;
+    /// <summary>改动不透明度（实时预览；撤销 / 隐藏窗口时用已保存的值恢复）。协调器据此调整浮窗并弹一个示例。</summary>
     public Action<double>? OnPreviewHudOpacity;
+    /// <summary>改动浮窗位置时的预览：协调器在新位置弹一个示例浮窗。恢复由 <see cref="OnPreviewHudOpacity"/> 的恢复调用带上。</summary>
+    public Action<HudPlacement>? OnPreviewHudPlacement;
+    /// <summary>生成「复制诊断信息」的正文（环境事实 + 最近听写耗时，不含识别文本）。</summary>
+    public Func<string>? OnBuildDiagnostics;
     public Action? OnUserClosedWindow;
     /// <summary>开始录制热键前暂停全局热键监听（否则按下当前热键会触发听写，而不是被录进来）。
     /// 返回 false 表示拒绝（例如正在听写）。</summary>
@@ -550,6 +555,31 @@ internal sealed partial class SetupForm : Form
         _micDeviceCombo.EndUpdate();
     }
 
+    /// <summary>刷新「诊断与帮助」里的最近听写耗时（从新到旧）。</summary>
+    public void UpdateRecentDictations(IReadOnlyList<string> newestFirst)
+    {
+        _recentDictationsBox.Text = newestFirst.Count == 0
+            ? L10n.T("（还没有听写记录）")
+            : string.Join(Environment.NewLine, newestFirst);
+    }
+
+    private void CopyDiagnostics()
+    {
+        var report = OnBuildDiagnostics?.Invoke();
+        if (string.IsNullOrEmpty(report)) return;
+        try
+        {
+            Clipboard.SetText(report);
+            SetMessage(_generalMessage, L10n.T("诊断信息已复制到剪贴板。"), Color.SeaGreen);
+        }
+        catch (Exception error)
+        {
+            // 剪贴板被别的进程占着：让用户重试，不吞异常。
+            AppLog.Warn("ui", $"复制诊断信息失败：{error.GetType().Name}");
+            SetMessage(_generalMessage, L10n.T("复制失败，请重试。"), Color.Firebrick);
+        }
+    }
+
     private static void SetMessage(Label label, string text, Color color)
     {
         label.Text = text;
@@ -575,6 +605,7 @@ internal sealed partial class SetupForm : Form
         {
             _permissionPollTimer.Stop();
             _permissionPollTimer.Dispose();
+            _monoFont?.Dispose();
         }
         base.Dispose(disposing);
     }

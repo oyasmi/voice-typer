@@ -17,7 +17,12 @@ internal static class AppConstants
     public const string LegacyConfigDirectoryName = "voice_typer";
 
     public const int TargetSampleRate = 16_000;
-    public const int ChunkSamples = 9_600; // 600ms @ 16kHz
+    /// <summary>采集块 200ms @ 16kHz。块越小，预览越"跟嘴"（最坏多等一块）；每块是一次 UI 线程投递，
+    /// 每秒 5 次的 3200 样本拷贝与 RMS 可以忽略。</summary>
+    public const int ChunkSamples = 3_200;
+
+    /// <summary>单段听写的时长上限（秒）。会话与浮窗倒计时共用同一个数。</summary>
+    public const int MaxSessionSeconds = 120;
 
     /// <summary>低于此线性 RMS 视为"基本没有采到声音"（约 -48 dBFS）。两处共用同一个门限，语义才一致：
     /// <c>LocalAsrSession</c> 用它跳过"这一轮全是静音"的预览（省 CPU）；控制器用它判断"录了一会儿

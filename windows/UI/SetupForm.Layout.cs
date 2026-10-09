@@ -22,6 +22,9 @@ internal sealed partial class SetupForm
     private bool _saving;
     private bool _dirty;
     private bool _loadedStartup;
+    private readonly TextBox _recentDictationsBox = new();
+    private Font? _monoFont;
+    private readonly Button _copyDiagnosticsButton = new();
     private string _downloadDetails = "";
 
     private void BuildSettingsLayout()
@@ -237,10 +240,14 @@ internal sealed partial class SetupForm
         var page = Page(SetupTab.General, L10n.T("外观与通用"), L10n.T("调整浮窗显示和应用启动方式。"));
         var appearance = Card(page, L10n.T("听写浮窗"));
         ConfigureCombo(_hudPositionCombo, Enum.GetValues<HudPlacement>(), value => ((HudPlacement)value).DisplayName());
-        AddField(appearance, L10n.T("浮窗位置"), L10n.T("选择听写反馈在屏幕上的位置。"), _hudPositionCombo);
+        AddField(appearance, L10n.T("浮窗位置"), L10n.T("选择听写反馈在屏幕上的位置；修改时会弹出示例。"), _hudPositionCombo);
         ConfigureNumber(_opacityField, (decimal)ConfigLimits.OpacityMin, (decimal)ConfigLimits.OpacityMax, 2, 0.05m);
-        AddField(appearance, L10n.T("不透明度"), L10n.T("修改时立即预览；撤销后恢复。"), _opacityField);
+        AddField(appearance, L10n.T("不透明度"), L10n.T("修改时立即预览并弹出示例；撤销后恢复。"), _opacityField);
         _opacityField.ValueChanged += (_, _) => { if (!_loading) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value); };
+        _hudPositionCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_loading && _hudPositionCombo.SelectedItem is HudPlacement placement) OnPreviewHudPlacement?.Invoke(placement);
+        };
         var general = Card(page, L10n.T("应用"));
         _startupCheck.Text = L10n.T("开机自启"); _startupCheck.AutoSize = true;
         Add(general, _startupCheck);
@@ -259,6 +266,20 @@ internal sealed partial class SetupForm
         _micOpenSettingsButton.Click += (_, _) => OpenMicrophonePrivacySettings();
         Add(microphone, ButtonRow(_micRetryButton, _micOpenSettingsButton));
         Add(microphone, TextLabel(L10n.T("如果无法向以管理员身份运行的应用输入文字，请让两个应用以相同权限运行。"), 9, false, Muted));
+        var recent = Card(page, L10n.T("最近听写"));
+        Add(recent, TextLabel(
+            L10n.T("最近 20 次的耗时（毫秒），不含任何识别内容。ready = 按下到可开口，done = 松键到完成，asr = 终稿识别，wait = 终稿排队，preview = 预览平均。"),
+            9, false, Muted));
+        _recentDictationsBox.Multiline = true; _recentDictationsBox.ReadOnly = true; _recentDictationsBox.WordWrap = false;
+        _recentDictationsBox.ScrollBars = ScrollBars.Both; _recentDictationsBox.Height = 150;
+        _recentDictationsBox.Dock = DockStyle.Top; _recentDictationsBox.BackColor = Color.White;
+        _monoFont = new Font("Consolas", 8.5f); // 等宽字体让各行的数字对齐；窗体持有并在 Dispose 时释放
+        _recentDictationsBox.Font = _monoFont;
+        _recentDictationsBox.Text = L10n.T("（还没有听写记录）");
+        Add(recent, _recentDictationsBox);
+        StyleButton(_copyDiagnosticsButton, L10n.T("复制诊断信息"));
+        _copyDiagnosticsButton.Click += (_, _) => CopyDiagnostics();
+        Add(recent, ButtonRow(_copyDiagnosticsButton));
         var help = Card(page, L10n.T("帮助与诊断"));
         var logs = new Button(); StyleButton(logs, L10n.T("打开日志目录"));
         logs.Click += (_, _) => OpenLocalFolder(AppConstants.LogDirectory);
@@ -424,7 +445,7 @@ internal sealed partial class SetupForm
         {
             switch (control)
             {
-                case TextBox text: text.TextChanged += (_, _) => RefreshDirtyState(); break;
+                case TextBox text when !text.ReadOnly: text.TextChanged += (_, _) => RefreshDirtyState(); break;
                 case ComboBox combo: combo.SelectedIndexChanged += (_, _) => RefreshDirtyState(); break;
                 case CheckBox check: check.CheckedChanged += (_, _) => RefreshDirtyState(); break;
                 case NumericUpDown number: number.ValueChanged += (_, _) => RefreshDirtyState(); break;

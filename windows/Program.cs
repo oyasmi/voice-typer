@@ -40,6 +40,8 @@ internal static class Program
             Console.Error.WriteLine($"[VoiceTyper] AppLog.Initialize 失败: {ex.Message}");
         }
 
+        PowerThrottling.TryOptOut();
+
         try
         {
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);

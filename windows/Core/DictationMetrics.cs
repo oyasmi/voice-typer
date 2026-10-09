@@ -28,6 +28,14 @@ internal sealed class AsrSessionTimings
     public int PreviewRuns;
     public int PreviewSkipped;
     public long PreviewMaxTicks;
+    /// <summary>各次预览从发起到文字送达 UI 线程的耗时之和（含排队），除以 <see cref="PreviewRuns"/> 即平均。</summary>
+    public long PreviewTotalTicks;
+    /// <summary>松键时是否中止了一次仍在跑的预览。</summary>
+    public bool PreviewAborted;
+    /// <summary>终稿推理真正开始的时刻；与 <see cref="FinalizeStartedAt"/> 的差是终稿排队等待的时间。</summary>
+    public long? FinalizeRunStartedAt;
+    /// <summary>松键前最后 100ms 是否仍有语音能量；缓冲区尚未建立（引擎未就绪）时为 null。</summary>
+    public bool? TailSpeech;
 }
 
 internal enum DictationOutcome
@@ -85,11 +93,15 @@ internal sealed class DictationMetrics
     public long? InsertTicks;
     /// <summary>识别完成后因 Alt/Shift/Win 仍被按住而推迟插入所等待的时长（Stopwatch tick）；没有等待为 0。</summary>
     public long ModifierWaitTicks;
+    /// <summary>插入时剪贴板备份尚未就绪、轮询等待的时长（Stopwatch tick）；没有等待为 0。</summary>
+    public long BackupWaitTicks;
     public AsrSessionTimings Timings = new();
 
     /// <summary>实际使用的输入设备类型；<see cref="InputSwitchedByAuto"/> 表示由「自动」策略从系统默认输入切换而来。</summary>
     public AudioTransport? InputTransport;
     public bool InputSwitchedByAuto;
+    /// <summary>本进程是否已成功退出 EcoQoS 节流（见 <see cref="Support.PowerThrottling"/>）。</summary>
+    public bool? EcoQosOptedOut;
 
     private static long? Interval(long? from, long? to) => from is { } f && to is { } t && t >= f ? t - f : null;
 
@@ -110,6 +122,26 @@ internal sealed class DictationMetrics
         DictationOutcome.NotReady => "not_ready",
         _ => "failed",
     };
+
+    /// <summary>
+    /// 诊断页用的精简一行：只留最能说明"跟不跟手"的几个数。含义同 <see cref="SummaryLine"/> 的同名字段
+    /// （<c>ready</c> = <c>hud_ready</c>，<c>done</c> = <c>release_to_done</c>，<c>wait</c> = <c>final_wait</c>，
+    /// <c>preview</c> = <c>preview_avg</c>）。同样只含数字与枚举。
+    /// </summary>
+    public string BriefLine()
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var asr = Interval(Timings.FinalizeStartedAt, Timings.AsrCompletedAt);
+        var preview = Timings.PreviewRuns == 0 ? "-" : Ms(Timings.PreviewTotalTicks / Timings.PreviewRuns);
+        return string.Join(" ",
+            OutcomeName(Outcome).PadRight(14),
+            "audio=" + (Timings.ReceivedSamples / 16000.0).ToString("F1", inv) + "s",
+            "ready=" + Ms(Interval(PressedAt, HudReadyAt)),
+            "done=" + Ms(Interval(ReleasedAt, DoneAt)),
+            "asr=" + Ms(asr),
+            "wait=" + Ms(Interval(Timings.FinalizeStartedAt, Timings.FinalizeRunStartedAt)),
+            "preview=" + preview);
+    }
 
     /// <summary>单行摘要：字段顺序固定，缺失值输出 <c>-</c>。</summary>
     public string SummaryLine()
@@ -149,16 +181,22 @@ internal sealed class DictationMetrics
             ("audio", audioSeconds + "s"),
             ("release_to_finalize", Ms(Interval(ReleasedAt, FinalizeCalledAt))),
             ("engine_wait", Ms(Timings.FinalizeStartedAt is null ? null : Timings.EngineWaitTicks)),
+            ("final_wait", Ms(Interval(Timings.FinalizeStartedAt, Timings.FinalizeRunStartedAt))),
             ("asr", Ms(asr)),
             ("llm", Ms(llm)),
             ("llm_result", llmResult),
             ("llm_retry", Timings.LlmResult is null ? "-" : (Timings.LlmRetriedWithoutThinking ? "1" : "0")),
             ("insert", Ms(InsertTicks)),
             ("mod_wait", Ms(ModifierWaitTicks)),
+            ("backup_wait", Ms(BackupWaitTicks)),
             ("release_to_done", Ms(Interval(ReleasedAt, DoneAt))),
             ("previews", Timings.PreviewRuns.ToString(inv)),
             ("previews_skipped", Timings.PreviewSkipped.ToString(inv)),
             ("preview_max", Timings.PreviewRuns == 0 ? "-" : Ms(Timings.PreviewMaxTicks)),
+            ("preview_avg", Timings.PreviewRuns == 0 ? "-" : Ms(Timings.PreviewTotalTicks / Timings.PreviewRuns)),
+            ("preview_abort", Timings.PreviewAborted ? "1" : "0"),
+            ("tail_speech", Timings.TailSpeech is { } tail ? (tail ? "1" : "0") : "-"),
+            ("qos", EcoQosOptedOut is { } qos ? (qos ? "1" : "0") : "-"),
             ("cold", Timings.ColdAtStart ? "1" : "0"),
         };
         return "dictation " + string.Join(" ", fields.ConvertAll(f => f.Key + "=" + f.Value));

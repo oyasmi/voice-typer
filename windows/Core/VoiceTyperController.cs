@@ -46,7 +46,8 @@ internal sealed class VoiceTyperController : IDisposable
     /// 识别完成但 Alt/Shift/Win 还按着：这时粘贴会变成别的快捷键。短句识别很快，用户的手往往还没离开修饰键，
     /// 直接降级成"只复制到剪贴板"体验很差，所以先等一小会儿再试，超时才降级。
     /// </summary>
-    private sealed record PendingInsert(string Text, ForegroundTarget Target, DictationMetrics Metrics, long FirstAttemptAt, int Attempt);
+    private sealed record PendingInsert(string Text, ForegroundTarget Target, DictationMetrics Metrics, long FirstAttemptAt,
+        int Attempt, int BackupAttempt = 0, long? BackupWaitStartedAt = null, bool WaitingForBackup = false);
 
     private abstract record Outcome
     {
@@ -73,6 +74,13 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>修饰键未松开时重试插入的间隔与最大次数（合计约 0.4s）。</summary>
     internal static readonly TimeSpan ModifierReleasePollInterval = TimeSpan.FromMilliseconds(50);
     internal const int ModifierReleaseMaxRetries = 8;
+
+    /// <summary>
+    /// 剪贴板备份还没读完时重试插入的间隔与最大次数（合计 5s）。等待期间 UI 线程是空闲的，
+    /// 全局键盘钩子照常响应；超时只会发生在剪贴板来源应用长时间不交出数据的极端情况。
+    /// </summary>
+    internal static readonly TimeSpan BackupPollInterval = TimeSpan.FromMilliseconds(25);
+    internal const int BackupMaxRetries = 200;
 
     /// <summary>
     /// 录音开始后的两次"是不是根本没采到声音"探测时刻。1.5s 足以越过设备启动延迟和用户按下热键后的
@@ -521,6 +529,7 @@ internal sealed class VoiceTyperController : IDisposable
             Mode = _config.Hotkey.ModeValue,
             Hotkey = _config.Hotkey.IsModifierOnly ? HotkeyKind.Modifier : HotkeyKind.Combo,
             PressedAt = pressedAt,
+            EcoQosOptedOut = PowerThrottling.OptedOut,
         };
         // 钩子与本方法同在 UI 线程，LastTrigger 就是触发这次听写的按键；时间顺序不对（理论上不会）就不报。
         if (_hotkey.LastTrigger is { } trigger && trigger.HookTimestamp <= pressedAt
@@ -802,17 +811,37 @@ internal sealed class VoiceTyperController : IDisposable
         var result = _text.Insert(trimmed, target);
         metrics.InsertTicks = (metrics.InsertTicks ?? 0) + (_now() - insertStartedAt);
 
+        if (result == TextInsertionResult.BackupPending && attempt.BackupAttempt < BackupMaxRetries)
+        {
+            _pendingInsert = attempt with
+            {
+                BackupAttempt = attempt.BackupAttempt + 1,
+                BackupWaitStartedAt = attempt.BackupWaitStartedAt ?? insertStartedAt,
+                WaitingForBackup = true,
+            };
+            _pendingInsertTimer = _schedule(BackupPollInterval, RetryPendingInsert);
+            return null;
+        }
         if (result == TextInsertionResult.ModifiersHeld && attempt.Attempt < ModifierReleaseMaxRetries)
         {
-            var next = attempt with { Attempt = attempt.Attempt + 1 };
-            _pendingInsert = next;
+            _pendingInsert = attempt with { Attempt = attempt.Attempt + 1, WaitingForBackup = false };
             _pendingInsertTimer = _schedule(ModifierReleasePollInterval, RetryPendingInsert);
             return null;
         }
-        metrics.ModifierWaitTicks = _now() - attempt.FirstAttemptAt;
+        var finishedAt = _now();
+        // 两种等待分开记：备份等待从第一次返回 BackupPending 算起，其余（修饰键）才是 mod_wait。
+        metrics.BackupWaitTicks = attempt.BackupWaitStartedAt is { } backupSince ? finishedAt - backupSince : 0;
+        metrics.ModifierWaitTicks = Math.Max(0, finishedAt - attempt.FirstAttemptAt - metrics.BackupWaitTicks);
 
         switch (result)
         {
+            case TextInsertionResult.BackupPending:
+                // 备份始终读不出来：不碰剪贴板（用户原内容还在），结果仍可从托盘菜单找回。
+                _text.DiscardPreparedBackup();
+                AppLog.Error("controller", "剪贴板备份等待超时，未自动粘贴");
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(L10n.T("读取剪贴板超时，未自动粘贴。可在托盘菜单中复制上一次识别结果。")));
+                return DictationOutcome.InsertFailed;
+
             case TextInsertionResult.Inserted:
                 RecognizedText?.Invoke(trimmed);
                 if (metrics.Timings.LlmResult == AsrSessionTimings.LlmOutcome.FellBack) InsertedWithCorrectionFallback?.Invoke();
@@ -889,6 +918,14 @@ internal sealed class VoiceTyperController : IDisposable
     {
         var copied = _text.CopyToClipboard(pending.Text);
         AppLog.Warn("controller", copied ? "推迟的插入被打断，结果已复制到剪贴板" : "推迟的插入被打断，且复制到剪贴板失败");
+        if (pending.WaitingForBackup)
+        {
+            PreviewWarning?.Invoke(copied
+                ? L10n.T("上一段识别结果未能自动粘贴，已复制到剪贴板")
+                : L10n.T("上一段识别结果未能自动粘贴，且复制到剪贴板失败"));
+            CompleteMetrics(pending.Metrics, DictationOutcome.InsertFailed);
+            return;
+        }
         PreviewWarning?.Invoke(copied
             ? L10n.T("检测到有修饰键按住，未自动粘贴，结果已复制到剪贴板")
             : L10n.T("检测到有修饰键按住，且复制到剪贴板失败，请重新听写"));

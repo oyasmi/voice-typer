@@ -689,6 +689,80 @@ public class VoiceTyperControllerTests
         Assert.False(h.Controller.HasActiveDictation);
     }
 
+    // ─── 剪贴板备份未就绪：UI 线程不等，轮询重试（B1）──────────────────
+
+    [Fact]
+    public void BackupPending_ThenReady_InsertsOnRetry_WithoutTouchingClipboard()
+    {
+        var h = Started();
+        h.Text.Script.Enqueue(TextInsertionResult.BackupPending);
+        h.Text.Script.Enqueue(TextInsertionResult.BackupPending);
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+
+        // 备份没读完：推迟，不复制、不上报、仍视为听写进行中，HUD 状态保持"插入中"。
+        Assert.Single(h.Text.Inserted);
+        Assert.Empty(h.Text.Copied);
+        Assert.Empty(h.Metrics);
+        Assert.Equal(AppState.Inserting, h.States.Last().State);
+        Assert.True(h.Controller.HasActiveDictation);
+
+        h.Advance(25);
+        PendingProbe(h).Action();
+        Assert.Equal(2, h.Text.Inserted.Count);
+        h.Advance(25);
+        PendingProbe(h).Action(); // 第三次：备份已就绪
+        Assert.Equal(3, h.Text.Inserted.Count);
+
+        Assert.Empty(h.Text.Copied);
+        Assert.Equal(new[] { "结果" }, h.Recognized);
+        Assert.Equal(AppState.Idle, h.States.Last().State);
+        var metrics = Assert.Single(h.Metrics);
+        Assert.Equal(DictationOutcome.Inserted, metrics.Outcome);
+        Assert.True(metrics.BackupWaitTicks > 0);
+        Assert.Contains("backup_wait=", metrics.SummaryLine());
+    }
+
+    [Fact]
+    public void BackupPending_NeverReady_GivesUpWithoutOverwritingClipboard()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.BackupPending;
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+
+        for (int i = 0; i < VoiceTyperController.BackupMaxRetries; i++)
+        {
+            Assert.Empty(h.Metrics);
+            PendingProbe(h).Action();
+        }
+
+        Assert.Equal(VoiceTyperController.BackupMaxRetries + 1, h.Text.Inserted.Count);
+        Assert.Empty(h.Text.Copied); // 用户原剪贴板始终没被动过
+        Assert.True(h.Text.DiscardCount >= 1);
+        Assert.Equal(AppState.Error, h.States.Last().State);
+        Assert.Equal(DictationOutcome.InsertFailed, Assert.Single(h.Metrics).Outcome);
+        Assert.Equal(new[] { "结果" }, h.FinalTexts); // 结果仍可从托盘找回
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void BackupPending_StopWhilePending_CopiesAndReportsInsertFailed()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.BackupPending;
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+        var pending = PendingProbe(h);
+
+        h.Controller.Stop();
+
+        Assert.True(pending.Disposed);
+        Assert.Equal(new[] { "结果" }, h.Text.Copied);
+        Assert.Equal(DictationOutcome.InsertFailed, Assert.Single(h.Metrics).Outcome);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
     // ─── 等纠错时再按热键 / 引擎等待提示 ─────────────────────────────
 
     [Fact]

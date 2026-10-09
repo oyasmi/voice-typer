@@ -287,7 +287,7 @@ public class AsrServiceLifecycleTests
     {
         using var rig = new Rig();
         await rig.Service.PreloadAsync();
-        await WaitUntil(() => rig.Engines[0].RecognizeCalls == 1); // 首次校准
+        await WaitUntil(() => rig.Engines[0].RecognizeCalls == 2); // 首次校准（预热 + 测量各一次）
         await Task.Delay(100); // 结果在续体里写回字段，等它落定
 
         await rig.Service.ReloadAsync(); // 同一模型、同一线程数：复用结果
@@ -297,6 +297,6 @@ public class AsrServiceLifecycleTests
 
         rig.Service.UpdateConfig(new AsrConfig { Threads = 2 }); // 线程数变化触发重载并作废缓存
         await WaitUntil(() => rig.BuildCount == 3 && rig.Service.State == AsrState.Ready);
-        await WaitUntil(() => rig.Engines[2].RecognizeCalls == 1);
+        await WaitUntil(() => rig.Engines[2].RecognizeCalls == 2);
     }
 }

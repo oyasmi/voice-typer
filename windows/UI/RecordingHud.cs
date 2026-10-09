@@ -70,6 +70,23 @@ internal sealed class RecordingHud : Form
     private long _lastLevelTimestamp; // 0 = 尚未收到过电平
 
     private HudPlacement _placement = HudPlacement.BottomCenter;
+    /// <summary>用户配置的不透明度（<see cref="Form.Opacity"/> 在淡入淡出期间会临时偏离它）。</summary>
+    private double _userOpacity;
+    private readonly System.Windows.Forms.Timer _fadeTimer;
+    private double _fadeTarget;
+    /// <summary>淡出到 0 之后隐藏窗口。</summary>
+    private bool _hideAfterFade;
+    private const int FadeIntervalMs = 16;
+    /// <summary>淡入 / 淡出各约 100ms。</summary>
+    private const int FadeSteps = 6;
+
+    /// <summary>最近一次预览相对上一次变化的字符数（尾部）。这部分文字在 <see cref="StableAfterMs"/> 内以较暗的亮度显示，
+    /// 让用户一眼分清"刚出来、可能还会被修正"与"已稳定"。</summary>
+    private int _changedChars;
+    private long _previewChangedAt;
+    private const int StableAfterMs = 300;
+    /// <summary>录音还剩这么多秒时，状态行改为倒计时（见 <see cref="CurrentStatusText"/>）。</summary>
+    private const int CountdownSeconds = 15;
     /// <summary>底部落点时，展开 / 收起保持底边不动、向上生长；跟随光标时保持上边中点不动。</summary>
     private Point _anchor;
     /// <summary>"跟随光标"的参照：水平中心 X，放下方时的上边 Y，放上方（下方放不下时翻转）时的下边 Y。
@@ -102,7 +119,8 @@ internal sealed class RecordingHud : Form
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
         TopMost = true;
-        Opacity = Math.Clamp(uiConfig.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        _userOpacity = Math.Clamp(uiConfig.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        Opacity = _userOpacity;
         _placement = uiConfig.HudPositionValue;
         BackColor = Color.FromArgb(20, 20, 22);
         DoubleBuffered = true;
@@ -117,6 +135,9 @@ internal sealed class RecordingHud : Form
 
         HandleCreated += (_, _) => RefreshCornerStrategy();
         Resize += (_, _) => ApplyRoundedRegionIfNeeded();
+
+        _fadeTimer = new System.Windows.Forms.Timer { Interval = FadeIntervalMs };
+        _fadeTimer.Tick += (_, _) => FadeTick();
 
         _animationTimer = new System.Windows.Forms.Timer { Interval = 33 };
         _animationTimer.Tick += (_, _) =>
@@ -135,7 +156,10 @@ internal sealed class RecordingHud : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            // WS_EX_TRANSPARENT 与分层窗口（Opacity < 1）合用才是真正的点击穿透：浮窗跟随插入点时就在输入行下面，
+            // 不能挡住用户的点击。不透明度 100% 时窗口不分层，该位不产生穿透（非分层窗口的 HTTRANSPARENT
+            // 也穿不过进程边界），行为与此前一致。
+            cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
             return cp;
         }
     }
@@ -217,12 +241,16 @@ internal sealed class RecordingHud : Form
     /// 而纠错要走网络、最长可以等到 <c>llm.timeout</c>；两者都显示"识别中"的话，用户既不知道
     /// 该不该继续等，也无从判断慢在哪。
     /// </summary>
-    public void SetCorrecting()
+    /// <param name="skipHotkey">热键的显示名；给出时在状态行提示"再按一次可跳过纠错"。
+    /// 此前用户不知道有这个操作，等不及时按 Esc 会把整段结果取消掉。</param>
+    public void SetCorrecting(string? skipHotkey = null)
     {
         if (SuppressesProgress || _phase != Phase.Recognizing) return;
         CancelWarningRestore();
         _isCorrecting = true;
-        _recognizingStatusText = L10n.T("纠错中…");
+        _recognizingStatusText = string.IsNullOrEmpty(skipHotkey)
+            ? L10n.T("纠错中…")
+            : L10n.F("纠错中… 再按 {0} 跳过", skipHotkey);
         SetStatus(_recognizingStatusText);
         _accent = Color.FromArgb(70, 140, 255);
         Invalidate();
@@ -248,8 +276,24 @@ internal sealed class RecordingHud : Form
         _phase = Phase.Hidden;
         _isCorrecting = false;
         _pendingPaintReady = null;
+        if (Visible && CanFade)
+        {
+            // 逻辑状态立即收尾，只是窗口再用约 100ms 淡出（内容保持不变，不在淡出时露出清空后的样子）；
+            // 淡出期间再次 Present 会反向淡回。
+            _hideAfterFade = true;
+            StartFade(0);
+            return;
+        }
+        HideNow();
+    }
+
+    private void HideNow()
+    {
+        _fadeTimer.Stop();
+        _hideAfterFade = false;
         SetPreviewSource("");
         if (Visible) Hide();
+        Opacity = _userOpacity;
     }
 
     /// <summary>显示流式 partial 文本。本地识别引擎给出的是<b>全量</b>预览，这里整体替换而非追加。</summary>
@@ -276,8 +320,22 @@ internal sealed class RecordingHud : Form
         }
 
         CancelCollapse();
+        var previous = _lastPreviewSource;
         SetPreviewSource(accumulated);
+        if (!string.Equals(previous, accumulated, StringComparison.Ordinal))
+        {
+            _changedChars = accumulated.Length - CommonPrefixLength(previous, accumulated);
+            _previewChangedAt = Stopwatch.GetTimestamp();
+        }
         Relayout();
+    }
+
+    private static int CommonPrefixLength(string a, string b)
+    {
+        var n = Math.Min(a.Length, b.Length);
+        var i = 0;
+        while (i < n && a[i] == b[i]) i++;
+        return i;
     }
 
     /// <summary>实时音量电平（线性 RMS），驱动波形。仅录音阶段生效，内部节流。</summary>
@@ -365,9 +423,7 @@ internal sealed class RecordingHud : Form
     /// <summary>应用已保存的 UI 配置。就地生效，不重建 HUD 实例（VW-15）。</summary>
     public void ApplyConfig(UIConfig config)
     {
-        Opacity = Math.Clamp(config.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
-        // 透明度变化会改变窗口是否分层（WS_EX_LAYERED），圆角策略必须跟着换。
-        RefreshCornerStrategy();
+        ApplyOpacity(config.Opacity);
         _placement = config.HudPositionValue;
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
         if (SuppressesProgress && (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)) HideHud();
@@ -376,8 +432,29 @@ internal sealed class RecordingHud : Form
     /// <summary>透明度是设置页可实时预览的外观项。</summary>
     public void ApplyOpacity(double opacity)
     {
-        Opacity = Math.Clamp(opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        _fadeTimer.Stop();
+        _userOpacity = Math.Clamp(opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
+        Opacity = _userOpacity;
+        // 透明度变化会改变窗口是否分层（WS_EX_LAYERED），圆角策略必须跟着换。
         RefreshCornerStrategy();
+        if (_hideAfterFade) HideNow();
+    }
+
+    /// <summary>
+    /// 设置页改浮窗位置时的示例：在新位置显示一条约 2 秒的示例浮窗，让用户看到效果。
+    /// 听写进行中不打扰；位置只是预览，保存或撤销后由 <see cref="ApplyConfig"/> 恢复为已保存的设置。
+    /// </summary>
+    public void ShowSample(HudPlacement? placement = null)
+    {
+        if (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing) return;
+        if (placement is { } preview) _placement = preview;
+        if (SuppressesProgress)
+        {
+            HideHud();
+            return;
+        }
+        ShowTransient(L10n.T("浮窗预览"), L10n.T("听写时，识别出的文字会实时显示在这里。"),
+            Glyph.Check, Color.FromArgb(60, 190, 90), TimeSpan.FromSeconds(2));
     }
 
     // ─── 内部状态 ─────────────────────────────────────────────────
@@ -391,6 +468,7 @@ internal sealed class RecordingHud : Form
     private void SetPreviewSource(string text)
     {
         _lastPreviewSource = text;
+        _changedChars = 0;
         if (string.IsNullOrEmpty(text)) _previewLines = Array.Empty<string>();
     }
 
@@ -462,8 +540,49 @@ internal sealed class RecordingHud : Form
         _targetScreen = ResolveTargetScreen();
         if (anchorToScreen) ComputeAnchor(_targetScreen);
         Relayout();
-        if (!Visible) Show();
+        if (!Visible)
+        {
+            if (CanFade)
+            {
+                Opacity = 0;
+                Show();
+                StartFade(_userOpacity);
+            }
+            else
+            {
+                Show();
+            }
+        }
+        else if (_hideAfterFade)
+        {
+            // 淡出到一半又有新内容：反向淡回，不隐藏。
+            _hideAfterFade = false;
+            StartFade(_userOpacity);
+        }
         Invalidate();
+    }
+
+    // ─── 淡入淡出 ─────────────────────────────────────────────────
+
+    /// <summary>只在窗口已分层（<c>Opacity &lt; 1</c>）且系统开着动画时淡入淡出：不透明度 100% 时为了动画而临时进入
+    /// 分层会重走 DWM 圆角那条路径（DESIGN §21），得不偿失。</summary>
+    private bool CanFade => MotionEnabled && _userOpacity < 1.0 && IsHandleCreated;
+
+    private void StartFade(double target)
+    {
+        _fadeTarget = target;
+        if (!_fadeTimer.Enabled) _fadeTimer.Start();
+    }
+
+    private void FadeTick()
+    {
+        var step = _userOpacity / FadeSteps;
+        var next = Opacity < _fadeTarget ? Math.Min(_fadeTarget, Opacity + step) : Math.Max(_fadeTarget, Opacity - step);
+        Opacity = next;
+        if (Math.Abs(next - _fadeTarget) > 1e-6) return;
+
+        _fadeTimer.Stop();
+        if (_hideAfterFade) HideNow();
     }
 
     private Screen ResolveTargetScreen()
@@ -714,22 +833,42 @@ internal sealed class RecordingHud : Form
         int statusAlpha = 165;
         if (_isCorrecting && MotionEnabled) statusAlpha = (int)(150 + 90 * (0.5 + 0.5 * Math.Sin(_pulsePhase)));
         var statusColor = _statusWarning ? Color.FromArgb(255, 250, 190, 40) : Color.FromArgb(statusAlpha, 255, 255, 255);
+        var statusText = CurrentStatusText(out var countingDown);
+        if (countingDown && !_statusWarning) statusColor = Color.FromArgb(255, 250, 190, 40);
         using (var statusBrush = new SolidBrush(statusColor))
         {
             var statusRect = new RectangleF(x, 0, Math.Max(0, rightEdge - x), S(CompactHeight));
-            g.DrawString(_statusText, _statusFont, statusBrush, statusRect, _statusFormat);
+            g.DrawString(statusText, _statusFont, statusBrush, statusRect, _statusFormat);
         }
 
         // 预览 / 提示正文
         if (_previewLines.Length > 0)
         {
             using var previewBrush = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            using var freshBrush = new SolidBrush(Color.FromArgb(140, 255, 255, 255));
             var lineHeight = PreviewLineHeight();
             var y = (float)(S(CompactHeight) + S(PreviewPadTop));
             var format = _previewFormat;
-            foreach (var line in _previewLines)
+            // 最后 dimRemaining 个字符属于"刚变化"的部分；显示行是原文的尾部，所以从最后一行往前数。
+            var dimRemaining = FreshCharCount();
+            var dimPerLine = new int[_previewLines.Length];
+            for (int i = _previewLines.Length - 1; i >= 0 && dimRemaining > 0; i--)
             {
-                g.DrawString(line, _previewFont, previewBrush, inset, y, format);
+                dimPerLine[i] = Math.Min(dimRemaining, _previewLines[i].Length);
+                dimRemaining -= dimPerLine[i];
+            }
+            for (int i = 0; i < _previewLines.Length; i++)
+            {
+                var line = _previewLines[i];
+                var stable = line[..(line.Length - dimPerLine[i])];
+                var fresh = line[stable.Length..];
+                float lineX = inset;
+                if (stable.Length > 0)
+                {
+                    g.DrawString(stable, _previewFont, previewBrush, lineX, y, format);
+                    if (fresh.Length > 0) lineX += g.MeasureString(stable, _previewFont, PointF.Empty, format).Width;
+                }
+                if (fresh.Length > 0) g.DrawString(fresh, _previewFont, freshBrush, lineX, y, format);
                 y += lineHeight;
             }
         }
@@ -742,6 +881,25 @@ internal sealed class RecordingHud : Form
     }
 
     private double _frozenElapsedSeconds;
+
+    /// <summary>仍处于"刚变化"着色期的尾部字符数；非录音 / 识别阶段、系统关闭动画、已过 <see cref="StableAfterMs"/> 时为 0。</summary>
+    private int FreshCharCount()
+    {
+        if (_changedChars <= 0 || !MotionEnabled || _phase is not (Phase.Recording or Phase.Recognizing)) return 0;
+        return Stopwatch.GetElapsedTime(_previewChangedAt).TotalMilliseconds < StableAfterMs ? _changedChars : 0;
+    }
+
+    /// <summary>状态行文字。录音接近单段上限时改为倒计时——到点会自动结束并上屏，用户需要知道还能说多久。
+    /// 闪现中的警告优先，不被覆盖。</summary>
+    private string CurrentStatusText(out bool countingDown)
+    {
+        countingDown = false;
+        if (_phase != Phase.Recording || _statusWarning) return _statusText;
+        var remaining = AppConstants.MaxSessionSeconds - (int)ElapsedRecordingSeconds();
+        if (remaining > CountdownSeconds) return _statusText;
+        countingDown = true;
+        return L10n.F("录音将在 {0} 秒后自动结束", Math.Max(remaining, 0));
+    }
 
     private double ElapsedRecordingSeconds() => Stopwatch.GetElapsedTime(_startedTimestamp).TotalSeconds;
 
@@ -836,6 +994,7 @@ internal sealed class RecordingHud : Form
         if (disposing)
         {
             _animationTimer.Dispose();
+            _fadeTimer.Dispose();
             _transientHideTimer?.Dispose();
             _warningRestoreTimer?.Dispose();
             _collapseTimer?.Dispose();

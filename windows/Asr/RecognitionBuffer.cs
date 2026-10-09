@@ -15,7 +15,7 @@ namespace VoiceTyper.Asr;
 /// 访问；<see cref="Append"/> 允许从任意线程调用（内部用 <c>lock</c> 保护）。
 ///
 /// 单条持续增长的扁平缓冲：旧实现是 <c>List&lt;float[]&gt; _chunks</c> + <c>_joined</c> 缓存，
-/// <c>Append</c> 每次都会让 <c>_joined</c> 失效——预览节奏固定在约 600ms 一次，但每次都要把
+/// <c>Append</c> 每次都会让 <c>_joined</c> 失效——预览节奏约为每 200~600ms 一次，但每次都要把
 /// <b>全部</b>已累积音频重新拼接一遍，开销与总录音时长成正比（R3-08）。改成单条只增不改的
 /// 扁平数组后，<see cref="Append"/> 退化成均摊 O(chunk 大小) 的操作；读取只需要在锁内快照
 /// <c>(_buffer 引用, _count)</c> 这一对值——扩容只会替换 <c>_buffer</c> 字段指向一个新数组，
@@ -69,6 +69,14 @@ internal sealed class RecognitionBuffer
             Array.Copy(chunk, 0, _buffer, _count, chunk.Length);
             _count += chunk.Length;
         }
+    }
+
+    /// <summary>最近 <paramref name="samples"/> 个样本的副本（不足则全部），供判断松键前是否还有语音。</summary>
+    public float[] CopyTail(int samples)
+    {
+        var (buffer, count) = Snapshot();
+        var n = Math.Min(samples, count);
+        return n <= 0 ? Array.Empty<float>() : buffer.AsSpan(count - n, n).ToArray();
     }
 
     /// <summary>返回全量预览文本 = 已固化前缀 + 当前窗口的识别结果。只应在 AsrPump 线程上调用。</summary>

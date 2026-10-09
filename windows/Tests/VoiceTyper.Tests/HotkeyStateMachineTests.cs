@@ -182,4 +182,96 @@ public class HotkeyStateMachineTests
         var (a2, c2) = sm.OnKey(VK_LCONTROL, isDown: false);
         Assert.False(c2);
     }
+
+    // ─── 卡键看门狗（B3）─────────────────────────────────────────
+
+    private static void EngageCtrlF2(HotkeyStateMachine sm)
+    {
+        sm.OnKey(VK_LCONTROL, isDown: true);
+        Assert.Equal(HotkeyAction.Press, sm.OnKey(F2, isDown: true).action);
+    }
+
+    [Fact]
+    public void Watchdog_ComboWithModifierPhysicallyUp_ReleasesAfterTwoObservations()
+    {
+        var sm = CtrlF2();
+        EngageCtrlF2(sm);
+
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false)); // 第一次只是怀疑
+        Assert.True(sm.IsEngaged);
+        Assert.Equal(HotkeyAction.Release, sm.ResetIfReleased(_ => false));
+        Assert.False(sm.IsEngaged);
+
+        // 复位之后是干净的：重新按下 Ctrl + F2 能再次触发，不会被过期的修饰键记录挡住。
+        sm.OnKey(VK_LCONTROL, isDown: true);
+        Assert.Equal(HotkeyAction.Press, sm.OnKey(F2, isDown: true).action);
+    }
+
+    [Fact]
+    public void Watchdog_ComboWithModifierStillDown_NeverFires_EvenThoughMainKeyReadsUp()
+    {
+        // 主键事件被钩子消费，GetAsyncKeyState 对它永远是"未按下"，所以看门狗不能看主键。
+        var sm = CtrlF2();
+        EngageCtrlF2(sm);
+        for (int i = 0; i < 10; i++)
+        {
+            Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(vk => vk == VK_LCONTROL));
+        }
+        Assert.True(sm.IsEngaged);
+    }
+
+    [Fact]
+    public void Watchdog_NeedsConsecutiveObservations()
+    {
+        var sm = CtrlF2();
+        EngageCtrlF2(sm);
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(vk => vk == VK_LCONTROL)); // 又读到按下：计数清零
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+        Assert.True(sm.IsEngaged);
+    }
+
+    [Fact]
+    public void Watchdog_IdleMachine_DoesNothing()
+    {
+        var sm = CtrlF2();
+        for (int i = 0; i < 5; i++) Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+    }
+
+    [Fact]
+    public void Watchdog_AwaitingFullRelease_IsNotTreatedAsStuck()
+    {
+        // 先松修饰键、主键仍按住：状态机在吞主键的 auto-repeat，防止"取消即重启"，不能被看门狗清掉。
+        var sm = CtrlF2();
+        EngageCtrlF2(sm);
+        Assert.Equal(HotkeyAction.Release, sm.OnKey(VK_LCONTROL, isDown: false).action);
+        for (int i = 0; i < 5; i++) Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+        Assert.True(sm.IsEngaged);
+        Assert.True(sm.OnKey(F2, isDown: true).consume); // auto-repeat 仍被吞
+    }
+
+    [Fact]
+    public void Watchdog_ModifierOnly_ReleasesWhenTargetPhysicallyUp()
+    {
+        var sm = HotkeyStateMachine.ForModifierOnly(VK_RCONTROL);
+        Assert.Equal(HotkeyAction.Press, sm.OnKey(VK_RCONTROL, isDown: true).action);
+
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(vk => vk == VK_RCONTROL)); // 仍按着
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+        Assert.Equal(HotkeyAction.Release, sm.ResetIfReleased(_ => false));
+        Assert.False(sm.IsEngaged);
+        Assert.Equal(HotkeyAction.Press, sm.OnKey(VK_RCONTROL, isDown: true).action);
+    }
+
+    [Fact]
+    public void Watchdog_ModifierOnly_InvalidatedGesture_ResetsSilently()
+    {
+        var sm = HotkeyStateMachine.ForModifierOnly(VK_RCONTROL);
+        sm.OnKey(VK_RCONTROL, isDown: true);
+        Assert.Equal(HotkeyAction.GestureCancel, sm.OnKey(0x43, isDown: true).action);
+
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
+        Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false)); // 已作废：回到空闲但不再发松键
+        Assert.False(sm.IsEngaged);
+    }
 }

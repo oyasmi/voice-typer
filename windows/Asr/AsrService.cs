@@ -104,6 +104,24 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
             ? _config.PreviewWindowSeconds * AppConstants.TargetSampleRate
             : _calibratedWindowSamples ?? 15 * AppConstants.TargetSampleRate;
 
+    /// <summary>当前生效的预览窗口（秒），诊断信息用。</summary>
+    public int PreviewWindowSecondsInUse => EffectivePreviewWindowSamples / AppConstants.TargetSampleRate;
+
+    /// <summary>最近一次自校准测得的实时率（推理耗时 ÷ 音频时长）；尚未校准为 null。诊断信息用。</summary>
+    public double? CalibratedRtf { get; private set; }
+
+    /// <summary>一次满窗预览允许占用的推理时间。窗口越大预览越贴近整段识别，但每次预览越慢、文字出得越晚；
+    /// 浮窗只显示最后两行，缩短窗口几乎看不出区别，终稿则始终整段重跑。</summary>
+    internal const double PreviewBudgetSeconds = 0.3;
+    internal const int PreviewWindowMinSeconds = 6;
+    internal const int PreviewWindowMaxSeconds = 15;
+
+    /// <summary>按实时率选预览窗口：<c>预算 ÷ RTF</c>，限制在 6–15 秒。测不出（RTF ≤ 0）取上限。</summary>
+    internal static int ChoosePreviewWindowSeconds(double rtf) =>
+        rtf > 0
+            ? Math.Clamp((int)(PreviewBudgetSeconds / rtf + 1e-6), PreviewWindowMinSeconds, PreviewWindowMaxSeconds)
+            : PreviewWindowMaxSeconds;
+
     /// <summary>配置变化时调用：语言变化直接热更新引擎；模型目录/线程数变化触发重新加载。</summary>
     public void UpdateConfig(AsrConfig newConfig)
     {
@@ -364,8 +382,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     }
 
     /// <summary>
-    /// 用 5 秒静音张量测一次本机 RTF，据此把预览窗口自动选到 15/10/6 秒之一——
+    /// 用 5 秒静音张量测本机 RTF，据此按耗时预算选预览窗口（<see cref="ChoosePreviewWindowSeconds"/>）——
     /// 不改识别算法，只是调一个服务端本来就有的参数（<c>asr.preview_window</c>）。
+    /// 跑两次、取第二次：第一次推理要分配内存池并触发各种惰性初始化，测出来的是冷启动而不是稳态。
     /// 用户显式指定了非 0 值时不需要校准（见 <see cref="EffectivePreviewWindowSamples"/>）；
     /// 模型文件与线程数没变时复用上次结果，空闲卸载后的冷恢复不再多跑一次。
     /// 推理在 <see cref="AsrPump"/> 上，结果在 UI 线程续体里写回字段。
@@ -381,13 +400,15 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
             var rtf = await _pump.PostAsync(() =>
             {
                 var silence = new float[5 * AppConstants.TargetSampleRate];
+                engine.Recognize(silence); // 预热
                 var sw = Stopwatch.StartNew();
                 engine.Recognize(silence);
                 sw.Stop();
                 return sw.Elapsed.TotalSeconds / 5.0;
             }).ConfigureAwait(true);
 
-            int seconds = rtf <= 0.05 ? 15 : rtf <= 0.15 ? 10 : 6;
+            CalibratedRtf = rtf;
+            int seconds = ChoosePreviewWindowSeconds(rtf);
             samples = seconds * AppConstants.TargetSampleRate;
             AppLog.Info("asr", $"预览窗口自校准: RTF={rtf:F3} → preview_window={seconds}s");
         }
