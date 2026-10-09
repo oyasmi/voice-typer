@@ -191,14 +191,17 @@ profile follows the login, and stuffing a 240MB model into it would make domain 
 Recordings shorter than **0.3 seconds** are treated as accidental taps and discarded. Before inserting,
 the app checks that the foreground window is still the one recording started in; if you switched
 windows in the meantime, the result is only written to the clipboard and never inserted into an
-unexpected window. Pressing the hotkey again while the previous dictation is still recognizing or
-correcting shows “A dictation is still in progress” instead of stacking a new session.
+unexpected window. Pressing the hotkey again while the previous dictation is still recognizing
+shows “A dictation is still in progress” instead of stacking a new session; while it is waiting for AI correction,
+pressing it again gives up waiting and inserts the raw recognition. If the hotkey includes Alt / Shift / Win and it is
+still held when recognition finishes, the app waits up to about 0.4 s before pasting, and only then falls back to
+copying to the clipboard.
 
 Tray icon states:
 
 | State | Meaning |
 | --- | --- |
-| Ready (microphone icon, no dot) | Waiting for the hotkey |
+| Ready (app icon, no dot) | Waiting for the hotkey |
 | Red dot | Recording |
 | Yellow dot | Key released, waiting for the local engine / inserting text |
 | Orange dot | The speech model needs to be, or is being, downloaded |

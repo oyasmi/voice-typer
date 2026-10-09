@@ -94,7 +94,7 @@ internal sealed class RecordingHud : Form
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
         TopMost = true;
-        Opacity = Math.Clamp(uiConfig.Opacity, 0.4, 1.0);
+        Opacity = Math.Clamp(uiConfig.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
         _placement = uiConfig.HudPositionValue;
         BackColor = Color.FromArgb(20, 20, 22);
         DoubleBuffered = true;
@@ -223,6 +223,19 @@ internal sealed class RecordingHud : Form
         Invalidate();
     }
 
+    /// <summary>
+    /// 松键后识别引擎仍在加载（空闲卸载后的冷恢复，可能要数秒）：把"识别中"改成加载说明，
+    /// 让用户知道在等的是模型而不是卡住了；等待结束后恢复。不影响纠错阶段的文案。
+    /// </summary>
+    public void SetEngineWait(bool waiting)
+    {
+        if (SuppressesProgress || _phase != Phase.Recognizing || _isCorrecting) return;
+        CancelWarningRestore();
+        _recognizingStatusText = waiting ? L10n.T("正在加载识别模型…") : L10n.T("识别中");
+        SetStatus(_recognizingStatusText);
+        Invalidate();
+    }
+
     public void HideHud()
     {
         _animationTimer.Stop();
@@ -342,14 +355,14 @@ internal sealed class RecordingHud : Form
     /// <summary>应用已保存的 UI 配置。就地生效，不重建 HUD 实例（VW-15）。</summary>
     public void ApplyConfig(UIConfig config)
     {
-        Opacity = Math.Clamp(config.Opacity, 0.4, 1.0);
+        Opacity = Math.Clamp(config.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
         _placement = config.HudPositionValue;
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
         if (SuppressesProgress && (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)) HideHud();
     }
 
     /// <summary>透明度是设置页可实时预览的外观项。</summary>
-    public void ApplyOpacity(double opacity) => Opacity = Math.Clamp(opacity, 0.4, 1.0);
+    public void ApplyOpacity(double opacity) => Opacity = Math.Clamp(opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax);
 
     // ─── 内部状态 ─────────────────────────────────────────────────
 

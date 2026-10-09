@@ -83,6 +83,8 @@ public class VoiceTyperControllerTests
     private sealed class FakeText : ITextInserting
     {
         public TextInsertionResult Result = TextInsertionResult.Inserted;
+        /// <summary>非空时优先按顺序消费，耗尽后回到 <see cref="Result"/>。</summary>
+        public readonly Queue<TextInsertionResult> Script = new();
         public bool CopySucceeds = true;
         public ForegroundElevation Elevation = ForegroundElevation.NotElevated;
         public readonly List<string> Inserted = new();
@@ -93,7 +95,7 @@ public class VoiceTyperControllerTests
         public TextInsertionResult Insert(string text, ForegroundTarget expected)
         {
             Inserted.Add(text);
-            return Result;
+            return Script.Count > 0 ? Script.Dequeue() : Result;
         }
 
         public bool CopyToClipboard(string text)
@@ -113,10 +115,13 @@ public class VoiceTyperControllerTests
         public Action<string>? OnError { get; set; }
         public Action? OnSessionCapped { get; set; }
         public Action? OnCorrectionStarted { get; set; }
+        public Action<bool>? OnEngineWait { get; set; }
         public AsrSessionTimings Timings { get; } = new();
         public readonly List<int> Sent = new();
-        public int FinalizeCount;
+        public int FinalizeCount, SkipCount;
         public bool Closed;
+
+        public void SkipCorrection() => SkipCount++;
 
         public void SendAudio(byte[] data) => Sent.Add(data.Length);
         public void FinalizeStream(TimeSpan timeout) => FinalizeCount++;
@@ -524,6 +529,151 @@ public class VoiceTyperControllerTests
         Assert.Equal(AppState.Error, h.States.Last().State);
         Assert.Empty(h.Recognized);
         Assert.Equal(DictationOutcome.FocusChanged, Assert.Single(h.Metrics).Outcome);
+    }
+
+    // ─── 修饰键仍按住时推迟插入 ────────────────────────────────────
+
+    private static Probe PendingProbe(Harness h)
+    {
+        var probe = h.Probes.Last();
+        Assert.False(probe.Disposed);
+        return probe;
+    }
+
+    [Fact]
+    public void ModifiersHeld_ThenReleased_InsertsOnRetry_WithoutClipboardFallback()
+    {
+        var h = Started();
+        h.Text.Script.Enqueue(TextInsertionResult.ModifiersHeld);
+        h.Text.Script.Enqueue(TextInsertionResult.ModifiersHeld);
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+
+        // 第一次尝试被修饰键挡住：推迟，不降级、不上报、仍视为听写进行中。
+        Assert.Single(h.Text.Inserted);
+        Assert.Empty(h.Text.Copied);
+        Assert.Empty(h.Metrics);
+        Assert.Equal(AppState.Inserting, h.States.Last().State);
+        Assert.True(h.Controller.HasActiveDictation);
+
+        PendingProbe(h).Action();
+        Assert.Equal(2, h.Text.Inserted.Count);
+        Assert.Empty(h.Metrics);
+
+        PendingProbe(h).Action(); // 第三次：修饰键已松开
+        Assert.Equal(3, h.Text.Inserted.Count);
+        Assert.Empty(h.Text.Copied);
+        Assert.Equal(new[] { "结果" }, h.Recognized);
+        Assert.Equal(AppState.Idle, h.States.Last().State);
+        Assert.False(h.Controller.HasActiveDictation);
+        var metrics = Assert.Single(h.Metrics);
+        Assert.Equal(DictationOutcome.Inserted, metrics.Outcome);
+        Assert.Contains("mod_wait=", metrics.SummaryLine());
+    }
+
+    [Fact]
+    public void ModifiersHeld_StillHeldAfterAllRetries_FallsBackToClipboard()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.ModifiersHeld;
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+
+        for (int i = 0; i < VoiceTyperController.ModifierReleaseMaxRetries; i++)
+        {
+            Assert.Empty(h.Metrics);
+            PendingProbe(h).Action();
+        }
+
+        Assert.Equal(VoiceTyperController.ModifierReleaseMaxRetries + 1, h.Text.Inserted.Count);
+        Assert.Equal(new[] { "结果" }, h.Text.Copied);
+        Assert.Equal(AppState.Error, h.States.Last().State);
+        Assert.Equal(DictationOutcome.ModifiersHeld, Assert.Single(h.Metrics).Outcome);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void ModifiersHeld_NewDictationStartsMeanwhile_CopiesInsteadOfInserting()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.ModifiersHeld;
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+        var pending = PendingProbe(h);
+
+        h.Hotkey.OnPress!(); // 用户已经开始下一段
+        Assert.Equal(AppState.Recording, h.States.Last().State);
+        pending.Action();
+
+        Assert.Single(h.Text.Inserted); // 没有再次插入
+        Assert.Equal(new[] { "结果" }, h.Text.Copied);
+        Assert.Equal(DictationOutcome.ModifiersHeld, Assert.Single(h.Metrics).Outcome);
+        Assert.Equal(AppState.Recording, h.States.Last().State); // 新听写的状态没被覆盖
+    }
+
+    [Fact]
+    public void ModifiersHeld_StopWhilePending_CopiesAndCancelsTimer()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.ModifiersHeld;
+        h.HoldFor(600);
+        h.Session.OnFinal!("结果");
+        var pending = PendingProbe(h);
+
+        h.Controller.Stop();
+
+        Assert.True(pending.Disposed);
+        Assert.Equal(new[] { "结果" }, h.Text.Copied);
+        Assert.Equal(DictationOutcome.ModifiersHeld, Assert.Single(h.Metrics).Outcome);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    // ─── 等纠错时再按热键 / 引擎等待提示 ─────────────────────────────
+
+    [Fact]
+    public void PressWhileCorrecting_SkipsCorrection_InsteadOfRejecting()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.OnCorrectionStarted!();
+        var sessionCount = h.Factory.Sessions.Count;
+
+        h.Hotkey.OnPress!();
+
+        Assert.Equal(1, h.Session.SkipCount);
+        Assert.Equal(sessionCount, h.Factory.Sessions.Count); // 没有开始新录音
+        Assert.Equal("已跳过纠错，使用识别原文", h.Warnings.Last());
+        Assert.NotEqual(AppState.Recording, h.States.Last().State);
+    }
+
+    [Fact]
+    public void PressWhileRecognizing_NotCorrecting_StillRejects()
+    {
+        var h = Started();
+        h.HoldFor(600);
+
+        h.Hotkey.OnPress!();
+
+        Assert.Equal(0, h.Session.SkipCount);
+        Assert.Equal("上一段听写尚未完成，请稍候再试", h.Warnings.Last());
+    }
+
+    [Fact]
+    public void EngineWait_IsForwardedForCurrentSessionOnly()
+    {
+        var h = Started();
+        var seen = new List<bool>();
+        h.Controller.EngineWait = seen.Add;
+        h.HoldFor(600);
+        var first = h.Session;
+
+        first.OnEngineWait!(true);
+        first.OnEngineWait!(false);
+        Assert.Equal(new[] { true, false }, seen);
+
+        first.OnFinal!("好");
+        first.OnEngineWait!(true); // 会话已收尾：迟到的通知忽略
+        Assert.Equal(2, seen.Count);
     }
 
     [Fact]

@@ -122,12 +122,16 @@ internal sealed class AppCoordinator : IDisposable
         _asrService.UpdateConfig(_config.Asr);
 
         // 首启引导：没走完就先带用户走完，否则热键第一次"按了没反应"时用户无从判断缺了什么。
-        if (!OnboardingRecord.IsCompleted()) PresentOnboarding();
+        var onboardingCompleted = OnboardingRecord.IsCompleted();
+        if (!onboardingCompleted) PresentOnboarding();
 
         // 权限与模型是两条互不依赖的准备线：麦克风探测要听半秒钟，模型准备不必等它。
         PrepareEngineForLaunch();
         _ = ReevaluateReadinessAsync();
-        ProbeMicrophone(isFirstProbe: true);
+        // 探测要真的打开一次麦克风：系统托盘的"麦克风使用中"指示会闪一下，"隐私 → 麦克风"里也会留下记录。
+        // 引导已走完的老用户每次开机都来这一下没有必要（真正听写时的失败有明确提示），改为在用户打开设置页
+        // 或引导页时按需探测（见 ProbeMicrophoneIfUnknown）。
+        if (!onboardingCompleted) ProbeMicrophone(isFirstProbe: true);
     }
 
     public void Dispose()
@@ -303,6 +307,12 @@ internal sealed class AppCoordinator : IDisposable
                 UpdateTray();
             });
         });
+    }
+
+    /// <summary>尚无探测结果时才探测：打开设置页 / 引导页时用，让诊断页有内容可显示，又不在每次开机时打扰用户。</summary>
+    private void ProbeMicrophoneIfUnknown()
+    {
+        if (_micProbe == MicProbeResult.Unknown && !IsDictating) ProbeMicrophone(isFirstProbe: false);
     }
 
     // ─── 就绪状态机 ────────────────────────────────────────────
@@ -551,6 +561,7 @@ internal sealed class AppCoordinator : IDisposable
         controller.PreviewUpdate = preview => _hud?.ShowPreview(preview);
         controller.PreviewWarning = message => _hud?.FlashWarning(message);
         controller.CorrectionStarted = () => _hud?.SetCorrecting();
+        controller.EngineWait = waiting => _hud?.SetEngineWait(waiting);
         controller.AudioLevel = level =>
         {
             _hud?.UpdateLevel(level);
@@ -898,6 +909,7 @@ internal sealed class AppCoordinator : IDisposable
     {
         EnsureSetupForm();
         _setupForm!.LoadEditableContent(_config);
+        ProbeMicrophoneIfUnknown();
         SyncSetupWindow();
         if (preferredTab is { } tab) _setupForm.SelectTab(tab);
         _setupForm.Present();
@@ -982,7 +994,8 @@ internal sealed class AppCoordinator : IDisposable
             hotkeyDisplay: _config.Hotkey.DisplayString,
             engineStatus: EngineStatusText(),
             downloadError: _modelDownloadError,
-            downloadDetails: _modelDownloadDetails
+            downloadDetails: _modelDownloadDetails,
+            modelDirectory: _asrService.ModelDirectory
         );
         SyncOnboarding();
     }
@@ -1019,6 +1032,7 @@ internal sealed class AppCoordinator : IDisposable
         };
         _onboarding = model;
         _onboardingForm = form;
+        ProbeMicrophoneIfUnknown();
         // 引导窗口出现时，设置窗口不该同时抢在它前面。
         if (_setupForm is { Visible: true } && !_userOpenedSetup) _setupForm.Hide();
         SyncOnboarding();

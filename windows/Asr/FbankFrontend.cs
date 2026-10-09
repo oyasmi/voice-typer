@@ -134,9 +134,6 @@ internal sealed class FbankFrontend
         int n = waveform.Length;
         if (n < FrameLength) return Array.Empty<float[]>();
 
-        var scaled = new float[n];
-        for (int i = 0; i < n; i++) scaled[i] = waveform[i] * 32768.0f;
-
         int numFrames = (n - FrameLength) / FrameShift + 1;
         var result = new float[numFrames][];
 
@@ -146,7 +143,8 @@ internal sealed class FbankFrontend
         for (int f = 0; f < numFrames; f++)
         {
             int start = f * FrameShift;
-            for (int i = 0; i < FrameLength; i++) real[i] = scaled[start + i];
+            // knf 约定的 int16 量级缩放，逐帧就地完成（不再整段复制一份放大后的波形）。
+            for (int i = 0; i < FrameLength; i++) real[i] = waveform[start + i] * 32768.0f;
             for (int i = FrameLength; i < _fftSize; i++) real[i] = 0f;
             Array.Clear(imag, 0, _fftSize);
 

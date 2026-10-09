@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading;
+using System.Threading.Tasks;
+using VoiceTyper.Core;
+using VoiceTyper.Llm;
 using VoiceTyper.Asr;
 using VoiceTyper.Support;
 using Xunit;
@@ -103,6 +107,80 @@ public class LocalAsrSessionBehaviorTests
             session.Close();
             session.Close();
             Assert.Equal(1, released);
+        }
+        finally { pump.Dispose(); }
+    }
+
+    /// <summary>永不返回的 LLM 服务，只在请求被取消时结束。</summary>
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
+    private static LlmCorrector HangingCorrector() => new(new LlmCorrector.Config
+    {
+        ChatCompletionsUrl = new Uri("https://example.invalid/v1/chat/completions"),
+        ApiKey = "k", Model = "m", Temperature = 0, MaxTokens = 800, Timeout = 60,
+    }, new HttpClient(new HangingHandler()));
+
+    [Fact]
+    public async Task SkipCorrection_FinishesWithRawText_AndMarksSkipped()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.SkipPump");
+        try
+        {
+            using var corrector = HangingCorrector();
+            var session = new LocalAsrSession(pump, () => null, corrector, 16_000);
+            var final = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            session.OnFinal = text => final.TrySetResult(text);
+            var started = 0;
+            session.OnCorrectionStarted = () => started++;
+
+            session.CompleteWithAsrText("原始识别文本");
+            Assert.Equal(1, started);
+            Assert.False(final.Task.IsCompleted); // 纠错请求挂着，还没有结果
+
+            session.SkipCorrection();
+            Assert.Equal("原始识别文本", await final.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(AsrSessionTimings.LlmOutcome.Skipped, session.Timings.LlmResult);
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
+    [Fact]
+    public async Task CloseDuringCorrection_DiscardsResult_AndSkipAfterwardsIsNoOp()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.CloseCorrectionPump");
+        try
+        {
+            using var corrector = HangingCorrector();
+            var session = new LocalAsrSession(pump, () => null, corrector, 16_000);
+            var finals = 0;
+            session.OnFinal = _ => Interlocked.Increment(ref finals);
+
+            session.CompleteWithAsrText("原始识别文本");
+            session.Close();
+            session.SkipCorrection(); // 已关闭：不应再产生结果
+            await Task.Delay(200);
+            Assert.Equal(0, Volatile.Read(ref finals));
+        }
+        finally { pump.Dispose(); }
+    }
+
+    [Fact]
+    public void SkipCorrection_WithoutCorrectionInFlight_DoesNothing()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.NoSkipPump");
+        try
+        {
+            var session = new LocalAsrSession(pump, () => null, null, 16_000);
+            session.SkipCorrection();
+            Assert.Null(session.Timings.LlmResult);
         }
         finally { pump.Dispose(); }
     }

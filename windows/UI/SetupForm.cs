@@ -50,6 +50,15 @@ internal sealed partial class SetupForm : Form
     public Action? OnEndHotkeyRecording;
 
     private AppConfig _loadedConfig = new();
+    /// <summary>已载入配置的序列化结果，供脏检查比较；随 <see cref="_loadedConfig"/> 一起更新（见 <see cref="SetLoadedConfig"/>）。
+    /// 脏检查在每次按键、每个控件变化时都会运行，已载入的一侧不必每次重新序列化。</summary>
+    private string? _loadedConfigJson;
+
+    private void SetLoadedConfig(AppConfig config)
+    {
+        _loadedConfig = config;
+        _loadedConfigJson = null;
+    }
     private AsrState _lastAsrState = AsrState.Unloaded;
     private bool _lastIsDownloading;
     private MicProbeResult _lastMicProbe = MicProbeResult.Unknown;
@@ -126,7 +135,7 @@ internal sealed partial class SetupForm : Form
         ClientSize = new Size(1080, 800);
         MinimumSize = new Size(860, 640);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
+        Font = UiFonts.Get(9f);
         BackColor = Color.FromArgb(247, 248, 250);
         BuildSettingsLayout();
         WireDraftEvents(this);
@@ -143,6 +152,19 @@ internal sealed partial class SetupForm : Form
         Deactivate += (_, _) => StopHotkeyRecording();
         _permissionPollTimer.Tick += (_, _) => OnPollMicProbe?.Invoke();
     }
+    /// <summary>首次显示前按所在屏幕的可用区域收紧窗口：设计尺寸按逻辑像素写死，
+    /// 缩放后在常见笔记本屏幕上会超出可用区域（标题栏或保存按钮落到屏幕外）。</summary>
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var (size, minimum) = WindowFit.Fit(Size, MinimumSize, workingArea);
+        if (size == Size && minimum == MinimumSize) return;
+        MinimumSize = minimum; // 先降最小尺寸，否则缩小尺寸会被抬回去
+        Size = size;
+        Location = WindowFit.Center(size, workingArea);
+    }
+
     /// <summary>
     /// 权限页可见且权限未齐时启动 2–5s 轮询（对齐 macOS bb25282 权限页轮询、5ac5aab R4-14
     /// 的抢焦点修复）；离开权限页/窗口隐藏/权限已齐时停掉。真开一次 WASAPI 采集才能探测
@@ -173,7 +195,7 @@ internal sealed partial class SetupForm : Form
     {
         if (_dirty && !_saving) return; // 后台状态刷新或重复打开不能覆盖用户的草稿。
         _loading = true;
-        _loadedConfig = config.Clone();
+        SetLoadedConfig(config.Clone());
 
         _languageCombo.SelectedItem = config.Asr.LanguageValue;
 
@@ -234,7 +256,8 @@ internal sealed partial class SetupForm : Form
         double? downloadProgress,
         string hotkeyDisplay,
         string engineStatus,
-        string? downloadError = null, string? downloadDetails = null)
+        string? downloadError = null, string? downloadDetails = null,
+        string? modelDirectory = null)
     {
         // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
@@ -263,7 +286,10 @@ internal sealed partial class SetupForm : Form
         _lastAsrState = asrState;
         _lastIsDownloading = isDownloading;
         _modelStatusLabel.Text = ModelStatusText(asrState, isDownloading, asrFailureMessage);
-        _modelPathLabel.Text = asrState == AsrState.Ready ? L10n.F("模型目录：{0}", ModelLocator.DownloadDestination) : "";
+        // 显示模型实际所在的目录（可能来自 ModelScope 缓存或手动指定的 model_dir），而不是一律显示下载目录。
+        _modelPathLabel.Text = (asrState is AsrState.Ready or AsrState.SuspendedForIdle) && !string.IsNullOrEmpty(modelDirectory)
+            ? L10n.F("模型目录：{0}", modelDirectory)
+            : "";
         _modelErrorLabel.Text = downloadError ?? "";
         _downloadDetails = downloadDetails ?? "";
         _modelDetailsButton.Visible = !string.IsNullOrEmpty(_downloadDetails);

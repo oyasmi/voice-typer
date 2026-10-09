@@ -40,6 +40,8 @@ internal sealed class LocalAsrSession : IDictationSession
     /// <summary>ASR 已出结果、开始等待 LLM 纠错时触发一次。没有这个信号时 HUD 会一直停在"识别中"，
     /// 用户分不清自己在等本地推理还是在等网络（后者可能长达 <c>llm.timeout</c> 秒）。</summary>
     public Action? OnCorrectionStarted { get; set; }
+    /// <summary>引擎仍在加载、松键后的识别在等它。见 <see cref="IDictationSession.OnEngineWait"/>。</summary>
+    public Action<bool>? OnEngineWait { get; set; }
 
     /// <summary>
     /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
@@ -47,6 +49,12 @@ internal sealed class LocalAsrSession : IDictationSession
     /// 与 finalize 耗时实测（F-07b）。
     /// </summary>
     private const int MaxSessionSamples = 120 * AppConstants.TargetSampleRate;
+
+    /// <summary>
+    /// 会话缓冲区的初始预留。多数听写在半分钟以内，按上限（约 7.7MB）预留既浪费又每次都进大对象堆；
+    /// 超过后按倍数扩容（一次几 MB 的 memcpy，约一毫秒，只发生在少数长听写的 30s、60s 处）。
+    /// </summary>
+    private const int InitialBufferSamples = 30 * AppConstants.TargetSampleRate;
 
     private readonly AsrPump _pump;
     private readonly Func<IAsrEngine?> _engineAccessor;
@@ -65,6 +73,10 @@ internal sealed class LocalAsrSession : IDictationSession
     public AsrSessionTimings Timings { get; } = new();
     private bool _hasReceivedAudio;
     private long? _engineWaitStartedAt;
+    /// <summary>已经通知过"在等引擎"（<see cref="OnEngineWait"/>(true)），就绪时需要对应地通知结束。</summary>
+    private bool _engineWaitNotified;
+    /// <summary>等引擎超过这么多次轮询（每次 100ms）才通知用户；多数冷恢复在几百毫秒内就绪，不值得闪一下提示。</summary>
+    private const int EngineWaitNoticeAttempts = 3;
 
     /// <summary>
     /// 自上一次预览以来，是否收到过能量高于静音阈值的音频。SenseVoice 非流式，预览靠"对已累积
@@ -92,6 +104,10 @@ internal sealed class LocalAsrSession : IDictationSession
     private CancellationTokenSource? _finalizeWatchdogCts;
     /// <summary>会话级取消源：Close 时取消，传给 LLM 纠错请求，取消后的迟到结果被静默丢弃（R2-4）。</summary>
     private readonly CancellationTokenSource _sessionCts = new();
+    /// <summary>仅覆盖"等 LLM 纠错"这一段，是 <see cref="_sessionCts"/> 的子令牌：<see cref="SkipCorrection"/>
+    /// 只取消它，会话本身继续并以识别原文收尾。只在 UI 线程读写。</summary>
+    private CancellationTokenSource? _correctionCts;
+    private bool _correctionSkipped;
 
     public LocalAsrSession(AsrPump pump, Func<IAsrEngine?> engineAccessor, LlmCorrector? llmCorrector,
         int previewWindowSamples, Func<string?>? engineLoadError = null, Action? onClosed = null)
@@ -259,7 +275,7 @@ internal sealed class LocalAsrSession : IDictationSession
         var engine = _engineAccessor();
         if (engine is null) return;
 
-        var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: MaxSessionSamples);
+        var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: InitialBufferSamples);
         if (_pendingAudio.Count > 0)
         {
             // 缓存期间收到的音频没有走过 SendAudio 的语音判定；补上，否则引擎就绪后用户恰好停顿时
@@ -344,6 +360,12 @@ internal sealed class LocalAsrSession : IDictationSession
             return;
         }
 
+        if (attempt >= EngineWaitNoticeAttempts && !_engineWaitNotified)
+        {
+            _engineWaitNotified = true;
+            OnEngineWait?.Invoke(true);
+        }
+
         _ = Task.Run(async () =>
         {
             await Task.Delay(100).ConfigureAwait(false);
@@ -356,6 +378,11 @@ internal sealed class LocalAsrSession : IDictationSession
                     if (_engineWaitStartedAt is { } waitStart)
                     {
                         Timings.EngineWaitTicks = Stopwatch.GetTimestamp() - waitStart;
+                    }
+                    if (_engineWaitNotified)
+                    {
+                        _engineWaitNotified = false;
+                        OnEngineWait?.Invoke(false);
                     }
                     RunFinalize(_buffer);
                 }
@@ -400,7 +427,7 @@ internal sealed class LocalAsrSession : IDictationSession
     /// 结果，纠错中不会像"卡住"），再异步纠错，最终以纠错结果调用 OnFinal。这一步在跨进程架构下
     /// 没有意义（要多一次网络往返），进程内是免费的。
     /// </summary>
-    private void CompleteWithAsrText(string text)
+    internal void CompleteWithAsrText(string text)
     {
         if (_llmCorrector is null || string.IsNullOrWhiteSpace(text))
         {
@@ -415,16 +442,38 @@ internal sealed class LocalAsrSession : IDictationSession
         _ = CorrectAndFinishAsync(text);
     }
 
+    /// <summary>
+    /// 放弃等待 LLM 纠错：取消在飞的请求并以识别原文收尾。用户等纠错时最想要的往往就是"别等了，
+    /// 直接用原文"；没有在纠错（尚未开始、已结束、会话已关闭）时什么也不做。
+    /// </summary>
+    public void SkipCorrection()
+    {
+        if (_closed || _correctionSkipped || _correctionCts is not { } cts) return;
+        _correctionSkipped = true;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
     private async Task CorrectAndFinishAsync(string text)
     {
         LlmCorrector.CorrectionReport report;
+        var correctionCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
+        _correctionCts = correctionCts;
         try
         {
-            report = await _llmCorrector!.CorrectWithReportAsync(text, _sessionCts.Token).ConfigureAwait(true);
+            report = await _llmCorrector!.CorrectWithReportAsync(text, correctionCts.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
-            return; // 会话已取消：丢弃迟到的纠错结果。
+            if (!_correctionSkipped || _closed) return; // 会话已取消：丢弃迟到的纠错结果。
+            Timings.LlmCompletedAt = Stopwatch.GetTimestamp();
+            Timings.LlmResult = AsrSessionTimings.LlmOutcome.Skipped;
+            OnFinal?.Invoke(text);
+            return;
+        }
+        finally
+        {
+            _correctionCts = null;
+            correctionCts.Dispose();
         }
         if (_closed) return;
         Timings.LlmCompletedAt = Stopwatch.GetTimestamp();
@@ -432,8 +481,8 @@ internal sealed class LocalAsrSession : IDictationSession
         if (report.Outcome.DidFallBack)
         {
             Timings.LlmResult = AsrSessionTimings.LlmOutcome.FellBack;
-            // DESIGN.md 约定：纠错失败回落原文时要给用户一个非致命提示。这条 warning 可能
-            // 在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，不引入额外的 UI 调度。
+            // 控制器据此在成功提示上附带"已使用识别原文"的说明（InsertedWithCorrectionFallback）；
+            // 这条 warning 本身会被随后的成功提示覆盖，只作即时反馈。
             OnWarning?.Invoke(L10n.T("智能纠错未成功，已使用识别原文"));
         }
         else

@@ -326,7 +326,7 @@ internal sealed partial class SetupForm
     {
         label.AutoSize = true; label.Dock = DockStyle.Top;
         label.Margin = new Padding(0, 3, 0, 6);
-        label.Font = new Font("Microsoft YaHei UI", size, bold ? FontStyle.Bold : FontStyle.Regular);
+        label.Font = UiFonts.Get(size, bold);
         label.ForeColor = color;
         // 包括错误和长设备说明在内，所有文本随实际可用宽度换行，不依赖固定高度。
         label.ParentChanged += (_, _) =>
@@ -462,7 +462,8 @@ internal sealed partial class SetupForm
     private void RefreshDirtyState()
     {
         if (_loading || _saving) return;
-        _dirty = JsonSerializer.Serialize(BuildDraft()) != JsonSerializer.Serialize(_loadedConfig)
+        _loadedConfigJson ??= JsonSerializer.Serialize(_loadedConfig);
+        _dirty = JsonSerializer.Serialize(BuildDraft()) != _loadedConfigJson
             || _llmApiKeyField.Text != _loadedApiKey || _startupCheck.Checked != _loadedStartup;
         _saveRecognitionButton.Enabled = _discardButton.Enabled = _dirty;
         _generalMessage.Text = _dirty ? L10n.T("有未保存的更改") : L10n.T("所有更改已保存");
@@ -500,7 +501,7 @@ internal sealed partial class SetupForm
         try
         {
             await OnSaveRecognition(draft, newKey).ConfigureAwait(true);
-            _loadedConfig = draft.Clone(); _loadedApiKey = apiKey;
+            SetLoadedConfig(draft.Clone()); _loadedApiKey = apiKey;
             // 先保存并应用配置，之后才改变自启；拒绝保存不会偷偷改变注册表。
             var startupOk = !startupChanged || StartupRegistration.SetEnabled(startup);
             _loadedStartup = StartupRegistration.IsEnabled;

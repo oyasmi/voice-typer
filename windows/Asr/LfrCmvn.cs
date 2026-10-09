@@ -116,4 +116,44 @@ internal static class LfrCmvn
         }
         return outArr;
     }
+
+    /// <summary>
+    /// <see cref="ApplyLfr"/> 与 <see cref="ApplyCmvn"/> 合并，直接产出行主序展平的 <c>[frames, rowDim]</c> 缓冲区，
+    /// 即 ONNX 输入张量的内存布局。逐元素运算与两步实现完全相同（<c>(x + mean) * var</c>），结果逐位一致；
+    /// 省掉的是每帧各两次的行数组分配和一次整体拷贝（预览约每 600ms 跑一次，长听写时是几 MB 的大对象堆分配）。
+    /// </summary>
+    public static float[] ApplyLfrCmvnFlat(float[][] feats, int m, int n, CmvnStats stats, out int frames, out int rowDim)
+    {
+        frames = 0;
+        rowDim = 0;
+        if (feats.Length == 0) return Array.Empty<float>();
+
+        int leftPad = (m - 1) / 2;
+        int originalT = feats.Length;
+        int paddedT = originalT + leftPad;
+        int dim = feats[0].Length;
+        frames = (int)Math.Ceiling((double)originalT / n);
+        rowDim = m * dim;
+
+        var flat = new float[frames * rowDim];
+        var means = stats.Means;
+        var vars = stats.Vars;
+        for (int i = 0; i < frames; i++)
+        {
+            int start = i * n;
+            int rowOffset = i * rowDim;
+            for (int k = 0; k < m; k++)
+            {
+                // 左侧用第一帧补齐 leftPad 份；超出尾部时重复最后一帧（与 ApplyLfr 一致）。
+                int padded = Math.Min(start + k, paddedT - 1);
+                var frame = padded < leftPad ? feats[0] : feats[padded - leftPad];
+                int column = k * dim;
+                for (int j = 0; j < dim; j++)
+                {
+                    flat[rowOffset + column + j] = (frame[j] + means[column + j]) * vars[column + j];
+                }
+            }
+        }
+        return flat;
+    }
 }

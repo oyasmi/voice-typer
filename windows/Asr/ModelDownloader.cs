@@ -584,7 +584,6 @@ internal sealed class ModelDownloader : IDisposable
     /// </summary>
     private sealed class ProgressReporter
     {
-        private const double MinDelta = 0.005;
         private const long MinIntervalMs = 200;
 
         private readonly Action<double> _report;
@@ -598,7 +597,8 @@ internal sealed class ModelDownloader : IDisposable
         {
             lock (_lock)
             {
-                if (!force && _last >= 0 && fraction - _last < MinDelta && _clock.ElapsedMilliseconds < MinIntervalMs) return;
+                // 只按时间节流：快网络下按进度增量节流仍会每秒刷新几十次界面（0.5% ≈ 1MB），慢网络下则几十秒不动。
+                if (!force && _last >= 0 && _clock.ElapsedMilliseconds < MinIntervalMs) return;
                 _last = fraction;
                 _clock.Restart();
                 _report(fraction);

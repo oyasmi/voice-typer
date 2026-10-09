@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Text;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
@@ -66,6 +65,9 @@ internal sealed class TrayController : IDisposable
                 _startupItem.Checked = StartupRegistration.IsEnabled;
             }
         };
+
+        // 自启状态可能在别处（设置页）被改过：每次展开菜单时以注册表为准，而不是沿用构造时读到的值。
+        _menu.Opening += (_, _) => _startupItem.Checked = StartupRegistration.IsEnabled;
 
         var onboardingItem = new ToolStripMenuItem(L10n.T("使用引导..."));
         onboardingItem.Click += (_, _) => OnOpenOnboarding?.Invoke();
@@ -156,7 +158,16 @@ internal sealed class TrayController : IDisposable
     {
         try
         {
-            var icon = RenderStateIcon(state);
+            // 空闲态直接用品牌图标；其余状态在品牌图标右下角叠一个状态点。
+            // 不再整体换成自绘的浅色麦克风：浅色任务栏上它几乎看不见，品牌图标也就此消失。
+            if (BadgeColor(state) is not { } badge)
+            {
+                _notifyIcon.Icon = _appIcon;
+                _currentIcon?.Dispose();
+                _currentIcon = null;
+                return;
+            }
+            var icon = RenderBadgedIcon(_appIcon, badge);
             _notifyIcon.Icon = icon;
             _currentIcon?.Dispose();
             _currentIcon = icon;
@@ -168,17 +179,65 @@ internal sealed class TrayController : IDisposable
         }
     }
 
-    private static Icon RenderStateIcon(AppState state)
+    /// <summary>状态点颜色；null 表示该状态不画状态点（空闲）。</summary>
+    internal static Color? BadgeColor(AppState state) => state switch
+    {
+        AppState.Recording => Color.FromArgb(255, 230, 64, 60),
+        AppState.Recognizing => Color.FromArgb(255, 240, 180, 30),
+        AppState.Inserting => Color.FromArgb(255, 240, 130, 30),
+        AppState.Error => Color.FromArgb(255, 220, 50, 50),
+        AppState.SetupRequired => Color.FromArgb(255, 240, 170, 0),
+        AppState.ModelMissing or AppState.DownloadingModel => Color.FromArgb(255, 230, 140, 30),
+        AppState.ModelLoading or AppState.Booting => Color.FromArgb(255, 160, 160, 160),
+        AppState.Paused => Color.FromArgb(255, 150, 150, 155),
+        _ => null,
+    };
+
+    /// <summary>以系统托盘图标尺寸重绘品牌图标并叠加状态点。返回的 <see cref="Icon"/> 归调用方释放。</summary>
+    private static Icon RenderBadgedIcon(Icon baseIcon, Color badge)
+    {
+        var size = SystemInformation.SmallIconSize;
+        using var sized = new Icon(baseIcon, size);
+        using var bmp = new Bitmap(size.Width, size.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            g.DrawIcon(sized, new Rectangle(Point.Empty, size));
+
+            var diameter = Math.Max(7f, size.Width * 0.5f);
+            var dotRect = new RectangleF(size.Width - diameter - 0.5f, size.Height - diameter - 0.5f, diameter, diameter);
+            using var dotBrush = new SolidBrush(badge);
+            using var dotPen = new Pen(Color.FromArgb(220, 30, 30, 32), Math.Max(1f, size.Width / 16f));
+            g.FillEllipse(dotBrush, dotRect);
+            g.DrawEllipse(dotPen, dotRect);
+        }
+        return IconFromBitmap(bmp);
+    }
+
+    private static Icon IconFromBitmap(Bitmap bmp)
+    {
+        IntPtr hIcon = bmp.GetHicon();
+        try
+        {
+            return (Icon)Icon.FromHandle(hIcon).Clone();
+        }
+        finally
+        {
+            NativeIconCleanup.DestroyIcon(hIcon);
+        }
+    }
+
+    /// <summary>找不到 icon.ico 时的兜底图标：简化的麦克风，不带状态点。</summary>
+    private static Icon RenderFallbackIcon()
     {
         const int size = 32;
         using var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             g.Clear(Color.Transparent);
 
-            // 简化的麦克风：矩形话筒 + 底座
             using var micBrush = new SolidBrush(Color.FromArgb(220, 235, 235, 240));
             using var stand = new Pen(Color.FromArgb(220, 235, 235, 240), 2.4f);
 
@@ -187,43 +246,8 @@ internal sealed class TrayController : IDisposable
             g.DrawLine(stand, 16f, 20f, 16f, 25f);
             g.DrawLine(stand, 11f, 25f, 21f, 25f);
             g.DrawArc(stand, 7f, 11f, 18f, 14f, 0, 180);
-
-            // 状态色点（右下角）
-            var statusColor = state switch
-            {
-                AppState.Recording => Color.FromArgb(255, 230, 64, 60),
-                AppState.Recognizing => Color.FromArgb(255, 240, 180, 30),
-                AppState.Inserting => Color.FromArgb(255, 240, 130, 30),
-                AppState.Error => Color.FromArgb(255, 220, 50, 50),
-                AppState.SetupRequired => Color.FromArgb(255, 240, 170, 0),
-                AppState.ModelMissing or AppState.DownloadingModel => Color.FromArgb(255, 230, 140, 30),
-                AppState.ModelLoading => Color.FromArgb(255, 160, 160, 160),
-                AppState.Booting => Color.FromArgb(255, 160, 160, 160),
-                AppState.Paused => Color.FromArgb(255, 150, 150, 155),
-                AppState.Idle => Color.FromArgb(0, 0, 0, 0), // 透明，不画
-                _ => Color.FromArgb(0, 0, 0, 0),
-            };
-
-            if (statusColor.A > 0)
-            {
-                using var dotBrush = new SolidBrush(statusColor);
-                using var dotPen = new Pen(Color.FromArgb(240, 30, 30, 32), 1.2f);
-                var dotRect = new RectangleF(19f, 19f, 10f, 10f);
-                g.FillEllipse(dotBrush, dotRect);
-                g.DrawEllipse(dotPen, dotRect);
-            }
         }
-
-        IntPtr hIcon = bmp.GetHicon();
-        try
-        {
-            var icon = (Icon)Icon.FromHandle(hIcon).Clone();
-            return icon;
-        }
-        finally
-        {
-            NativeIconCleanup.DestroyIcon(hIcon);
-        }
+        return IconFromBitmap(bmp);
     }
 
     private static Icon LoadAppIcon()
@@ -239,7 +263,7 @@ internal sealed class TrayController : IDisposable
         }
         catch { }
 
-        return RenderStateIcon(AppState.Idle);
+        return RenderFallbackIcon();
     }
 }
 

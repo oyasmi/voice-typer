@@ -244,6 +244,8 @@ internal static partial class L10n
         ["识别引擎加载超时，请稍后重试"] = "Loading the speech engine timed out; please try again shortly",
         ["已使用识别原文（纠错未成功）"] = "Used the raw recognition (correction did not succeed)",
         ["智能纠错未成功，已使用识别原文"] = "AI correction did not succeed; the raw recognition was used",
+        ["已跳过纠错，使用识别原文"] = "Correction skipped; the raw recognition is being used",
+        ["正在加载识别模型…"] = "Loading the recognition model…",
         ["LLM 请求超时"] = "The LLM request timed out",
         ["LLM 服务连接失败: {0}"] = "Could not connect to the LLM service: {0}",
         ["LLM API 错误 ({0})"] = "LLM API error ({0})",

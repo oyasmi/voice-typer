@@ -166,17 +166,8 @@ internal sealed class SenseVoiceEngine : IAsrEngine
 
         var feats = _frontend.Compute(samples);
         if (feats.Length == 0) return "";
-        var lfr = LfrCmvn.ApplyLfr(feats, _lfrM, _lfrN);
-        var normalized = LfrCmvn.ApplyCmvn(lfr, _cmvn);
-        if (normalized.Length == 0) return "";
-
-        int featsLen = normalized.Length;
-        int dim = normalized[0].Length;
-        var flatFeats = new float[featsLen * dim];
-        for (int t = 0; t < featsLen; t++)
-        {
-            Array.Copy(normalized[t], 0, flatFeats, t * dim, dim);
-        }
+        var flatFeats = LfrCmvn.ApplyLfrCmvnFlat(feats, _lfrM, _lfrN, _cmvn, out int featsLen, out int dim);
+        if (featsLen == 0) return "";
 
         var speechTensor = new DenseTensor<float>(flatFeats, new[] { 1, featsLen, dim });
         var lengthTensor = new DenseTensor<int>(new[] { featsLen }, new[] { 1 });

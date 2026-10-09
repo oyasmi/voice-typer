@@ -9,7 +9,8 @@ namespace VoiceTyper.Core;
 /// <summary><see cref="Asr.LocalAsrSession"/> 侧的分阶段打点，会话收尾时由控制器并入 <see cref="DictationMetrics"/>。</summary>
 internal sealed class AsrSessionTimings
 {
-    public enum LlmOutcome { Off, Corrected, FellBack }
+    /// <summary>Skipped：用户在等待纠错时再次按下热键，放弃等待、直接使用识别原文（不算纠错失败）。</summary>
+    public enum LlmOutcome { Off, Corrected, FellBack, Skipped }
 
     /// <summary>会话实际接受的样本数（16kHz 单声道）。</summary>
     public int ReceivedSamples;
@@ -82,6 +83,8 @@ internal sealed class DictationMetrics
     public long? DoneAt;
 
     public long? InsertTicks;
+    /// <summary>识别完成后因 Alt/Shift/Win 仍被按住而推迟插入所等待的时长（Stopwatch tick）；没有等待为 0。</summary>
+    public long ModifierWaitTicks;
     public AsrSessionTimings Timings = new();
 
     /// <summary>实际使用的输入设备类型；<see cref="InputSwitchedByAuto"/> 表示由「自动」策略从系统默认输入切换而来。</summary>
@@ -120,6 +123,7 @@ internal sealed class DictationMetrics
         {
             AsrSessionTimings.LlmOutcome.Corrected => "corrected",
             AsrSessionTimings.LlmOutcome.FellBack => "fell_back",
+            AsrSessionTimings.LlmOutcome.Skipped => "skipped",
             AsrSessionTimings.LlmOutcome.Off => "off",
             _ => "-",
         };
@@ -150,6 +154,7 @@ internal sealed class DictationMetrics
             ("llm_result", llmResult),
             ("llm_retry", Timings.LlmResult is null ? "-" : (Timings.LlmRetriedWithoutThinking ? "1" : "0")),
             ("insert", Ms(InsertTicks)),
+            ("mod_wait", Ms(ModifierWaitTicks)),
             ("release_to_done", Ms(Interval(ReleasedAt, DoneAt))),
             ("previews", Timings.PreviewRuns.ToString(inv)),
             ("previews_skipped", Timings.PreviewSkipped.ToString(inv)),

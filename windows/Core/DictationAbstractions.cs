@@ -77,9 +77,14 @@ internal interface IDictationSession
     Action? OnSessionCapped { get; set; }
     /// <summary>ASR 已出结果、开始等待 LLM 纠错时触发一次。</summary>
     Action? OnCorrectionStarted { get; set; }
+    /// <summary>松键后引擎仍在加载、会话在等它：true = 开始等待（已等了一小会儿，值得告诉用户），
+    /// false = 等待结束、识别开始。每次等待最多各触发一次，只在触发过 true 之后才会触发 false。</summary>
+    Action<bool>? OnEngineWait { get; set; }
     /// <summary>分阶段打点；收尾时由控制器并入 <see cref="DictationMetrics"/>。</summary>
     AsrSessionTimings Timings { get; }
     void SendAudio(byte[] data);
+    /// <summary>正在等 LLM 纠错时放弃等待，直接以识别原文收尾；其他阶段无效果。</summary>
+    void SkipCorrection();
     void FinalizeStream(TimeSpan timeout);
     void Close();
 }

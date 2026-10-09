@@ -50,7 +50,7 @@ internal sealed class OnboardingForm : Form
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(600, 440);
-        Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
+        Font = UiFonts.Get(9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96f, 96f);
 
@@ -62,7 +62,7 @@ internal sealed class OnboardingForm : Form
         _titleLabel.SetBounds(28, 42, 544, 36);
         _titleLabel.AutoSize = false;
         _titleLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _titleLabel.Font = new Font(Font.FontFamily, 16f, FontStyle.Bold);
+        _titleLabel.Font = UiFonts.Get(16f, bold: true);
 
         _content.SetBounds(28, 90, 544, 270);
 
@@ -79,7 +79,7 @@ internal sealed class OnboardingForm : Form
         _statusLabel.SetBounds(0, 0, 544, 26);
         _statusLabel.AutoSize = false;
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _statusLabel.Font = new Font(Font.FontFamily, 11f, FontStyle.Bold);
+        _statusLabel.Font = UiFonts.Get(11f, bold: true);
         _detailLabel.SetBounds(0, 0, 544, 90);
         _detailLabel.AutoSize = false;
         _detailLabel.TextAlign = ContentAlignment.TopLeft;
@@ -190,6 +190,31 @@ internal sealed class OnboardingForm : Form
         control.Visible = true;
     }
 
+    /// <summary>
+    /// 按当前文本把标签撑到刚好放得下（宽度不变）。引导页是绝对坐标布局，写死的高度只够中文文案，
+    /// 英文通常长出一到两行，会被截断；文本为空时高度为 0。返回新高度，调用方据此排下面的控件。
+    /// <paramref name="maxHeight"/> 是内容区剩余的像素高度，超出时截到它（宁可截尾也不让控件落出内容区）。
+    /// </summary>
+    private int FitHeight(Label label, int maxHeight = int.MaxValue)
+    {
+        if (string.IsNullOrEmpty(label.Text))
+        {
+            label.Height = 0;
+            return 0;
+        }
+        var measured = TextRenderer.MeasureText(label.Text, label.Font, new Size(label.Width, int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height;
+        label.Height = Math.Max(0, Math.Min(maxHeight, measured + S(6)));
+        return label.Height;
+    }
+
+    /// <summary>放在 <paramref name="above"/> 下方 <paramref name="gap"/>（逻辑像素）处。</summary>
+    private void PlaceBelow(Control control, Control above, int gap)
+    {
+        control.Location = new Point(0, above.Bottom + S(gap));
+        control.Visible = true;
+    }
+
     private string HotkeyInstruction() => _model.HotkeyMode == HotkeyMode.Hold
         ? L10n.F("按住 {0} 说话，松开后识别结果会出现在光标所在的位置。", _model.HotkeyDisplay)
         : L10n.F("按一次 {0} 开始说话，再按一次结束，识别结果会出现在光标所在的位置。", _model.HotkeyDisplay);
@@ -202,6 +227,7 @@ internal sealed class OnboardingForm : Form
             + "\n\n" + L10n.T("接下来用两分钟确认麦克风、语音模型都准备好，并亲自试说一句话。")
             + "\n" + L10n.T("引导之后也可以从托盘菜单的「使用引导...」再次打开。");
         Place(_bodyLabel, 0);
+        FitHeight(_bodyLabel, _content.Height);
     }
 
     private void LayoutMicrophone()
@@ -230,8 +256,9 @@ internal sealed class OnboardingForm : Form
         _secondaryButton.Text = L10n.T("打开麦克风设置");
         Place(_statusLabel, 0);
         Place(_detailLabel, 34);
-        Place(_actionButton, 130);
-        _secondaryButton.Location = new Point(_actionButton.Right + S(12), S(130));
+        FitHeight(_detailLabel, _content.Height - _detailLabel.Top - _actionButton.Height - S(12));
+        PlaceBelow(_actionButton, _detailLabel, 12);
+        _secondaryButton.Location = new Point(_actionButton.Right + S(12), _actionButton.Top);
         _secondaryButton.Visible = true;
     }
 
@@ -282,16 +309,17 @@ internal sealed class OnboardingForm : Form
         _detailLabel.Text = detail;
         Place(_statusLabel, 0);
         Place(_detailLabel, downloading ? 62 : 34);
+        FitHeight(_detailLabel, _content.Height - _detailLabel.Top - _actionButton.Height - S(12));
 
         if (downloading)
         {
             _actionButton.Text = L10n.T("取消下载");
-            Place(_actionButton, 150);
+            PlaceBelow(_actionButton, _detailLabel, 12);
         }
         else if (_model.AsrState is AsrState.ModelMissing or AsrState.Failed)
         {
             _actionButton.Text = !string.IsNullOrEmpty(_model.DownloadError) ? L10n.T("重试下载") : L10n.T("开始下载模型");
-            Place(_actionButton, 150);
+            PlaceBelow(_actionButton, _detailLabel, 12);
         }
     }
 
@@ -300,11 +328,11 @@ internal sealed class OnboardingForm : Form
         _bodyLabel.Text = _model.CanRunTrial
             ? L10n.T("点一下下面的输入框，然后试说一句话：") + "\n" + HotkeyInstruction()
             : (_model.TrialBlockingHint ?? "");
-        _bodyLabel.Height = S(56);
         Place(_bodyLabel, 0);
+        FitHeight(_bodyLabel, S(110));
 
         _trialBox.Enabled = _model.CanRunTrial;
-        Place(_trialBox, 62);
+        PlaceBelow(_trialBox, _bodyLabel, 6);
 
         if (_model.TrialSummary is { } summary)
         {
@@ -318,9 +346,9 @@ internal sealed class OnboardingForm : Form
                 _ => Color.DimGray,
             };
             _detailLabel.Text = summary.Detail;
-            _detailLabel.Height = S(70);
-            Place(_statusLabel, 162);
-            Place(_detailLabel, 190);
+            PlaceBelow(_statusLabel, _trialBox, 8);
+            PlaceBelow(_detailLabel, _statusLabel, 2);
+            FitHeight(_detailLabel, _content.Height - _detailLabel.Top);
         }
         if (_model.CanRunTrial && _trialBox.CanFocus && !_trialBox.Focused) _trialBox.Focus();
     }

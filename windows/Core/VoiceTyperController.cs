@@ -38,7 +38,15 @@ internal sealed class VoiceTyperController : IDisposable
         public required DictationMetrics Metrics { get; init; }
         public Phase Phase { get; set; } = Phase.Starting;
         public bool ReadyAnnounced { get; set; }
+        /// <summary>识别已出结果、正在等 LLM 纠错（可被再次按下热键跳过）。</summary>
+        public bool Correcting { get; set; }
     }
+
+    /// <summary>
+    /// 识别完成但 Alt/Shift/Win 还按着：这时粘贴会变成别的快捷键。短句识别很快，用户的手往往还没离开修饰键，
+    /// 直接降级成"只复制到剪贴板"体验很差，所以先等一小会儿再试，超时才降级。
+    /// </summary>
+    private sealed record PendingInsert(string Text, ForegroundTarget Target, DictationMetrics Metrics, long FirstAttemptAt, int Attempt);
 
     private abstract record Outcome
     {
@@ -61,6 +69,10 @@ internal sealed class VoiceTyperController : IDisposable
     /// （见 client-server/PROTOCOL.md §5.1 的历史出处）。
     /// </summary>
     private static readonly TimeSpan MinimumRecordingDuration = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>修饰键未松开时重试插入的间隔与最大次数（合计约 0.4s）。</summary>
+    internal static readonly TimeSpan ModifierReleasePollInterval = TimeSpan.FromMilliseconds(50);
+    internal const int ModifierReleaseMaxRetries = 8;
 
     /// <summary>
     /// 录音开始后的两次"是不是根本没采到声音"探测时刻。1.5s 足以越过设备启动延迟和用户按下热键后的
@@ -85,6 +97,8 @@ internal sealed class VoiceTyperController : IDisposable
     public Action<string>? BlockedAttempt;
     /// <summary>ASR 已出结果、开始等待 LLM 纠错。UI 据此把"识别中"改成"纠错中"。</summary>
     public Action? CorrectionStarted;
+    /// <summary>松键后引擎仍在加载：true = 值得告诉用户"在等模型加载"，false = 等待结束。</summary>
+    public Action<bool>? EngineWait;
     /// <summary>文本已成功插入，但智能纠错失败、插入的是识别原文。在回到 Idle 之前触发，
     /// 让 UI 的成功提示能带上这条说明（否则回落警告会被"已输入"覆盖，用户无从得知）。</summary>
     public Action? InsertedWithCorrectionFallback;
@@ -114,6 +128,8 @@ internal sealed class VoiceTyperController : IDisposable
     private float _recordingPeakLevel;
     private readonly List<IDisposable> _silenceProbes = new();
     private string? _blockedReason;
+    private PendingInsert? _pendingInsert;
+    private IDisposable? _pendingInsertTimer;
 
     /// <summary>
     /// 非 null 表示"热键监听已启动，但现在还不能听写"，字符串是给用户看的原因（模型还在下载…）。
@@ -135,7 +151,7 @@ internal sealed class VoiceTyperController : IDisposable
 
     /// <summary>是否有一次听写正在进行（录音 / 识别 / 纠错 / 插入）。这是破坏性操作（重载模型、
     /// 重建控制器、暂停热键）的门禁依据——比协调器的显示状态可靠：显示状态会被错误提示等覆盖。</summary>
-    public bool HasActiveDictation => _active is not null;
+    public bool HasActiveDictation => _active is not null || _pendingInsert is not null;
 
     /// <summary>派生自 <see cref="_active"/>，不是独立事实源。</summary>
     private bool IsRecording => _active?.Phase == Phase.Recording;
@@ -290,6 +306,7 @@ internal sealed class VoiceTyperController : IDisposable
         _hotkey.Stop();
         _audio.StopWithoutResult();
         if (_active is not null) Finish(new Outcome.Shutdown());
+        AbandonPendingInsert();
         _isRunning = false;
         AppLog.Info("controller", "Controller stopped");
     }
@@ -426,6 +443,14 @@ internal sealed class VoiceTyperController : IDisposable
     private void BeginRecording(long pressedAt)
     {
         if (!_isRunning) return;
+        if (_active is { Correcting: true } correcting)
+        {
+            // 等纠错时再按热键：用户不想等了。不直接开始新录音（上一段还没上屏），而是放弃纠错、
+            // 让识别原文立刻上屏，并说明发生了什么。
+            correcting.Session.SkipCorrection();
+            PreviewWarning?.Invoke(L10n.T("已跳过纠错，使用识别原文"));
+            return;
+        }
         if (_active is not null)
         {
             // 上一段听写仍在识别 / 插入：拒绝新会话并给出可见反馈（R3-1）。
@@ -540,7 +565,13 @@ internal sealed class VoiceTyperController : IDisposable
         };
         session.OnCorrectionStarted = () =>
         {
-            if (IsCurrent()) CorrectionStarted?.Invoke();
+            if (!IsCurrent()) return;
+            utterance.Correcting = true;
+            CorrectionStarted?.Invoke();
+        };
+        session.OnEngineWait = waiting =>
+        {
+            if (IsCurrent()) EngineWait?.Invoke(waiting);
         };
 
         _audio.OnChunk = data => _post(() =>
@@ -677,7 +708,9 @@ internal sealed class VoiceTyperController : IDisposable
         switch (outcome)
         {
             case Outcome.Text text:
-                result = HandleFinalText(text.Value, utterance.Target, metrics);
+                // null = 修饰键仍被按住，插入已推迟；耗时摘要由推迟的流程在最终结局确定后上报。
+                if (HandleFinalText(text.Value, utterance.Target, metrics) is not { } inserted) return;
+                result = inserted;
                 break;
             case Outcome.Failed failed:
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(failed.Message));
@@ -717,13 +750,19 @@ internal sealed class VoiceTyperController : IDisposable
                 return;
         }
 
+        CompleteMetrics(metrics, result);
+    }
+
+    private void CompleteMetrics(DictationMetrics metrics, DictationOutcome result)
+    {
         metrics.Outcome = result;
         metrics.DoneAt = _now();
         MetricsReported?.Invoke(metrics);
     }
 
-    /// <summary>插入最终文本并更新状态，返回本次听写的结局。调用方（<see cref="Finish"/>）负责在调用前完成会话拆解。</summary>
-    private DictationOutcome HandleFinalText(string text, ForegroundTarget target, DictationMetrics metrics)
+    /// <summary>插入最终文本并更新状态，返回本次听写的结局；返回 null 表示插入推迟了（见 <see cref="PendingInsert"/>）。
+    /// 调用方（<see cref="Finish"/>）负责在调用前完成会话拆解。</summary>
+    private DictationOutcome? HandleFinalText(string text, ForegroundTarget target, DictationMetrics metrics)
     {
         var trimmed = (text ?? "").Trim();
 
@@ -741,9 +780,25 @@ internal sealed class VoiceTyperController : IDisposable
         if (!_isRunning) return DictationOutcome.Discarded;
 
         StateChanged?.Invoke(AppStateInfo.Inserting);
+        return TryInsertFinalText(new PendingInsert(trimmed, target, metrics, _now(), Attempt: 0));
+    }
+
+    /// <summary>一次插入尝试。修饰键仍被按住且还有重试额度时登记 <see cref="_pendingInsert"/> 并返回 null。</summary>
+    private DictationOutcome? TryInsertFinalText(PendingInsert attempt)
+    {
+        var (trimmed, target, metrics) = (attempt.Text, attempt.Target, attempt.Metrics);
         var insertStartedAt = _now();
         var result = _text.Insert(trimmed, target);
-        metrics.InsertTicks = _now() - insertStartedAt;
+        metrics.InsertTicks = (metrics.InsertTicks ?? 0) + (_now() - insertStartedAt);
+
+        if (result == TextInsertionResult.ModifiersHeld && attempt.Attempt < ModifierReleaseMaxRetries)
+        {
+            var next = attempt with { Attempt = attempt.Attempt + 1 };
+            _pendingInsert = next;
+            _pendingInsertTimer = _schedule(ModifierReleasePollInterval, RetryPendingInsert);
+            return null;
+        }
+        metrics.ModifierWaitTicks = _now() - attempt.FirstAttemptAt;
 
         switch (result)
         {
@@ -790,5 +845,42 @@ internal sealed class VoiceTyperController : IDisposable
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(reason));
                 return DictationOutcome.InsertFailed;
         }
+    }
+
+    /// <summary>计时器到点（UI 线程）：再试一次插入。期间用户已经开始新的听写或控制器已停止时不再等。</summary>
+    private void RetryPendingInsert()
+    {
+        if (_pendingInsert is not { } pending) return;
+        _pendingInsertTimer?.Dispose();
+        _pendingInsertTimer = null;
+        _pendingInsert = null;
+
+        if (!_isRunning || _active is not null)
+        {
+            // 继续等下去会和新的听写抢状态与剪贴板：改为只复制，结果不丢。
+            FinishPendingByClipboard(pending);
+            return;
+        }
+        if (TryInsertFinalText(pending) is { } outcome) CompleteMetrics(pending.Metrics, outcome);
+    }
+
+    /// <summary>停止控制器时仍有推迟的插入：把识别结果复制到剪贴板，不让已经说出口的内容凭空消失。</summary>
+    private void AbandonPendingInsert()
+    {
+        if (_pendingInsert is not { } pending) return;
+        _pendingInsertTimer?.Dispose();
+        _pendingInsertTimer = null;
+        _pendingInsert = null;
+        FinishPendingByClipboard(pending);
+    }
+
+    private void FinishPendingByClipboard(PendingInsert pending)
+    {
+        var copied = _text.CopyToClipboard(pending.Text);
+        AppLog.Warn("controller", copied ? "推迟的插入被打断，结果已复制到剪贴板" : "推迟的插入被打断，且复制到剪贴板失败");
+        PreviewWarning?.Invoke(copied
+            ? L10n.T("检测到有修饰键按住，未自动粘贴，结果已复制到剪贴板")
+            : L10n.T("检测到有修饰键按住，且复制到剪贴板失败，请重新听写"));
+        CompleteMetrics(pending.Metrics, DictationOutcome.ModifiersHeld);
     }
 }

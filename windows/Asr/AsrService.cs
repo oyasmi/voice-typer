@@ -33,6 +33,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
 {
     public AsrState State { get; private set; } = AsrState.Unloaded;
     public string? FailureMessage { get; private set; }
+    /// <summary>最近一次定位到的模型所在目录（可能是下载目录、ModelScope 缓存或手动指定的 <c>model_dir</c>）；
+    /// 找不到模型时为 null。设置页据此显示真实路径，而不是一律显示下载目录。</summary>
+    public string? ModelDirectory { get; private set; }
     public Action<AsrState>? OnStateChange;
 
     private readonly AsrPump _pump;
@@ -150,7 +153,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         if (_inFlightLoad is not null) return;
         // 引擎已经在内存里就别往回降级。
         if (CurrentEngine() is not null) return;
-        var target = _locate(_config.ModelDir) is null ? AsrState.ModelMissing : AsrState.SuspendedForIdle;
+        var bundle = _locate(_config.ModelDir);
+        ModelDirectory = bundle?.ModelDir;
+        var target = bundle is null ? AsrState.ModelMissing : AsrState.SuspendedForIdle;
         if (State != target) SetState(target);
     }
 
@@ -271,6 +276,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         var generation = _loadGeneration;
 
         var bundle = _locate(_config.ModelDir);
+        ModelDirectory = bundle?.ModelDir;
         if (bundle is null)
         {
             SetState(AsrState.ModelMissing);

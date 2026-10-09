@@ -391,15 +391,24 @@ internal sealed class TextInsertionService : ITextInserting
         }
     }
 
+    /// <summary>
+    /// 粘贴所需的按键序列。物理 Ctrl 已按住（热键含 Ctrl 且用户还没松手）时只发 V：
+    /// 此时再注入 Ctrl 抬起，目标应用会认为 Ctrl 已松开，粘贴变成单独的 V，
+    /// 之后用户真正松开 Ctrl 时又多出一次抬起事件。
+    /// </summary>
+    internal static (ushort Vk, bool KeyUp)[] BuildPasteSequence(bool ctrlAlreadyDown) =>
+        ctrlAlreadyDown
+            ? new[] { ((ushort)VK_V, false), ((ushort)VK_V, true) }
+            : new[]
+            {
+                ((ushort)VK_CONTROL, false), ((ushort)VK_V, false), ((ushort)VK_V, true), ((ushort)VK_CONTROL, true),
+            };
+
     private static bool SendCtrlV()
     {
-        // 序列：CTRL down, V down, V up, CTRL up
-        var inputs = new INPUT[4];
-
-        inputs[0] = MakeKeyInput((ushort)VK_CONTROL, keyUp: false);
-        inputs[1] = MakeKeyInput((ushort)VK_V, keyUp: false);
-        inputs[2] = MakeKeyInput((ushort)VK_V, keyUp: true);
-        inputs[3] = MakeKeyInput((ushort)VK_CONTROL, keyUp: true);
+        var sequence = BuildPasteSequence(ctrlAlreadyDown: (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+        var inputs = new INPUT[sequence.Length];
+        for (int i = 0; i < sequence.Length; i++) inputs[i] = MakeKeyInput(sequence[i].Vk, sequence[i].KeyUp);
 
         var sent = SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
         return sent == inputs.Length;
