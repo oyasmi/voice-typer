@@ -418,6 +418,25 @@ internal static partial class L10n
         ["诊断信息已复制到剪贴板。"] = "Diagnostics copied to the clipboard.",
         ["复制失败，请重试。"] = "Copy failed. Please try again.",
 
+        // ── 2026-10 第三批：锁屏恢复 / 下载进度 / 麦克风测试 ─────────
+        ["超过 1 小时"] = "more than 1 hour",
+        ["{0} 秒"] = "{0} s",
+        ["{0} 分 {1} 秒"] = "{0} min {1} s",
+        ["{0:F1} MB/s，约剩 {1}"] = "{0:F1} MB/s, about {1} left",
+        ["语音模型正在后台下载：{0}%"] = "The speech model is downloading in the background: {0}%",
+        ["麦克风设备："] = "Microphone:",
+        ["测试麦克风"] = "Test microphone",
+        ["停止测试"] = "Stop test",
+        ["请对着麦克风说话，条形应随声音跳动。"] = "Speak into the microphone; the bar should move with your voice.",
+        ["能听到声音了，这支麦克风可以用。"] = "Sound detected. This microphone works.",
+        ["没有检测到声音。请确认麦克风未静音、选中的设备正确，再对着它说话。"] =
+            "No sound detected. Make sure the microphone is not muted and the right device is selected, then speak into it.",
+        ["测试已停止。"] = "Test stopped.",
+        ["测试已自动停止。"] = "The test stopped automatically.",
+        ["输入设备已变化，测试已停止。"] = "The input device changed, so the test stopped.",
+        ["正在听写，请等这一段结束后再测试麦克风。"] = "Dictation is in progress. Wait for it to finish before testing the microphone.",
+        ["保存失败"] = "Save failed",
+
         // ── LLM 探测 ────────────────────────────────────────
         ["该服务不支持关闭深度思考的参数，已自动改为不带该参数请求。"] =
             "This service does not accept the parameter that turns off deep thinking; requests now omit it automatically.",

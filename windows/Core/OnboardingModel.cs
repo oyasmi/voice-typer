@@ -89,7 +89,11 @@ internal sealed class OnboardingModel
     public string? MicDetail { get; set; }
     public AsrState AsrState { get; set; } = AsrState.Unloaded;
     public double? DownloadProgress { get; set; }
+    /// <summary>下载进度的文字（已下载 / 速度 / 剩余时间），下载中才有。</summary>
+    public string? DownloadStatus { get; set; }
     public string? DownloadError { get; set; }
+    /// <summary>当前保存的输入设备配置值（<c>audio.input_device</c>），引导页的设备下拉框据此选中。</summary>
+    public string InputDevice { get; set; } = AudioConfig.Auto;
     public string HotkeyDisplay { get; set; } = "Ctrl+F2";
     public HotkeyMode HotkeyMode { get; set; } = HotkeyMode.Hold;
     public OnboardingTrialState Trial { get; private set; } = OnboardingTrialState.Idle;

@@ -25,6 +25,11 @@ internal interface IHotkeyListening : IDisposable
     HotkeyTriggerStamp? LastTrigger { get; }
     void Start(HotkeyConfig hotkey);
     void Stop();
+    /// <summary>
+    /// 重装钩子并复位按键状态机。睡眠唤醒、解锁、远程会话重连之后调用：钩子可能已被系统摘掉，
+    /// 等健康检查发现要约 2 分钟，期间热键是死的。未在监听时无效果。默认空实现（测试替身不需要）。
+    /// </summary>
+    void Reinstall() { }
 }
 
 /// <param name="HookTimestamp">钩子回调收到按键时的 <see cref="System.Diagnostics.Stopwatch"/> 时间戳。</param>
@@ -51,6 +56,9 @@ internal interface IAudioCapturing : IDisposable
     void BeginStart(AudioInputPolicy policy, Action<AudioStartResult> completed);
     void Stop();
     void StopWithoutResult();
+    /// <summary>作废输入端点缓存并在后台重新解析。睡眠唤醒后端点通知不一定会补发，缓存可能指向已失效的设备。
+    /// 默认空实现。</summary>
+    void InvalidateInput() { }
 }
 
 /// <summary>录音开始时的前台窗口；插入前据此判断焦点是否已变化（F-10）。

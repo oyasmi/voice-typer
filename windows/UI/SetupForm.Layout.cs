@@ -22,6 +22,7 @@ internal sealed partial class SetupForm
     private bool _saving;
     private bool _dirty;
     private bool _loadedStartup;
+    private readonly MicTestPanel _micTest = new();
     private readonly TextBox _recentDictationsBox = new();
     private Font? _monoFont;
     private readonly Button _copyDiagnosticsButton = new();
@@ -101,6 +102,7 @@ internal sealed partial class SetupForm
     {
         if (!_pages.ContainsKey(tab)) return;
         StopHotkeyRecording();
+        _micTest.Stop(); // 离开页面就关掉麦克风，不让指示灯一直亮着
         _selectedTab = tab;
         foreach (var (key, page) in _pages) page.Visible = key == tab;
         foreach (var (key, button) in _navigation)
@@ -167,6 +169,13 @@ internal sealed partial class SetupForm
         var input = Card(page, L10n.T("语音输入"));
         _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo);
+        // 测试的是下拉框里当前选中的设备（含尚未保存的草稿）；换设备就结束上一次测试，免得电平条对应的是旧设备。
+        _micTest.DeviceValue = () => (_micDeviceCombo.SelectedItem as MicChoice)?.Value ?? AudioConfig.Auto;
+        _micTest.StartRequested = value => OnStartMicTest?.Invoke(value);
+        _micTest.StopRequested = () => OnStopMicTest?.Invoke();
+        StyleButton(_micTest.ToggleButton, L10n.T("测试麦克风"));
+        _micDeviceCombo.SelectedIndexChanged += (_, _) => _micTest.Stop();
+        Add(input, _micTest);
         ConfigureCombo(_languageCombo, Enum.GetValues<AsrLanguage>(), value => ((AsrLanguage)value).DisplayName());
         AddField(input, L10n.T("识别语言"), L10n.T("通常使用自动识别，也可以指定语言。"), _languageCombo);
     }

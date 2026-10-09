@@ -26,9 +26,10 @@ public class VoiceTyperControllerTests
         public Action<bool>? OnHealthChanged { get; set; }
         public bool AcceptsCancelWhenInactive { get; set; }
         public HotkeyTriggerStamp? LastTrigger { get; set; }
-        public int StartCount, StopCount;
+        public int StartCount, StopCount, ReinstallCount;
         public void Start(HotkeyConfig hotkey) => StartCount++;
         public void Stop() => StopCount++;
+        public void Reinstall() => ReinstallCount++;
         public void Dispose() { }
     }
 
@@ -42,7 +43,7 @@ public class VoiceTyperControllerTests
         public AudioStartException? StartError;
         public AudioInputPolicy? LastPolicy;
         public AudioInputPolicy? PreparedPolicy;
-        public int StartCount, StopCount, StopWithoutResultCount, PrepareCount;
+        public int StartCount, StopCount, StopWithoutResultCount, PrepareCount, InvalidateCount;
         /// <summary>true 时启动挂起，由测试调用 <see cref="CompleteStart"/> 完成——模拟真实的异步打开麦克风。</summary>
         public bool DeferStart;
         public Action<AudioStartResult>? PendingStart;
@@ -77,6 +78,7 @@ public class VoiceTyperControllerTests
         }
 
         public void StopWithoutResult() => StopWithoutResultCount++;
+        public void InvalidateInput() => InvalidateCount++;
         public void Dispose() { }
     }
 
@@ -687,6 +689,67 @@ public class VoiceTyperControllerTests
         Assert.Equal(new[] { "结果" }, h.Text.Copied);
         Assert.Equal(DictationOutcome.ModifiersHeld, Assert.Single(h.Metrics).Outcome);
         Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    // ─── 锁屏 / 睡眠 / 唤醒（B4）─────────────────────────────────────
+
+    [Fact]
+    public void SystemInterruption_WhileRecording_DiscardsSilently()
+    {
+        var h = Started();
+        h.Hotkey.OnPress!();
+        h.Advance(800);
+
+        h.Controller.HandleSystemInterruption();
+
+        Assert.Equal(1, h.Audio.StopWithoutResultCount);
+        Assert.Equal(AppState.Idle, h.States.Last().State);
+        Assert.Equal(0, h.CancelledCount); // 静默：不弹"已取消"
+        Assert.Empty(h.Text.Inserted);
+        Assert.True(h.Session.Closed);
+        Assert.Equal(DictationOutcome.GestureCancelled, Assert.Single(h.Metrics).Outcome);
+        Assert.False(h.Controller.HasActiveDictation);
+    }
+
+    [Fact]
+    public void SystemInterruption_WhileRecognizing_LeavesTheDictationAlone()
+    {
+        var h = Started();
+        h.HoldFor(600); // 已松键，识别中
+        Assert.True(h.Controller.HasActiveDictation);
+
+        h.Controller.HandleSystemInterruption();
+
+        Assert.True(h.Controller.HasActiveDictation);
+        Assert.Empty(h.Metrics);
+    }
+
+    [Fact]
+    public void SystemInterruption_WhenIdle_DoesNothing()
+    {
+        var h = Started();
+        h.Controller.HandleSystemInterruption();
+        Assert.Equal(0, h.Audio.StopWithoutResultCount);
+        Assert.Empty(h.Metrics);
+    }
+
+    [Fact]
+    public void SystemResumed_ReinstallsHookAndInvalidatesInputCache()
+    {
+        var h = Started();
+        h.Controller.HandleSystemResumed();
+        Assert.Equal(1, h.Hotkey.ReinstallCount);
+        Assert.Equal(1, h.Audio.InvalidateCount);
+    }
+
+    [Fact]
+    public void SystemResumed_AfterStop_DoesNothing()
+    {
+        var h = Started();
+        h.Controller.Stop();
+        h.Controller.HandleSystemResumed();
+        Assert.Equal(0, h.Hotkey.ReinstallCount);
+        Assert.Equal(0, h.Audio.InvalidateCount);
     }
 
     // ─── 剪贴板备份未就绪：UI 线程不等，轮询重试（B1）──────────────────

@@ -39,8 +39,12 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
 - **Four-step first-run guide** (welcome → microphone → speech model → try it): the last step runs a
   real dictation inside the guide window, verifying the whole chain "hotkey → microphone → recognition
   → text insertion" and pointing at the exact link that fails
+  (The microphone step lets you pick the input device and press "Test microphone" for a live level meter.)
 - One-time model download on first launch (~240MB; the large file downloads in four parallel segments,
-  resumes, and retries automatically with backoff), then works fully offline
+  resumes, and retries automatically with backoff; progress shows downloaded size, speed and time
+  remaining), then works fully offline
+- After lock, sleep/resume or a remote-session reconnect the keyboard hook is reinstalled and the input
+  device refreshed right away, without waiting for the self-heal check
 - Hold the hotkey (`Ctrl+F2` by default) to record; release to recognize and insert the text. You can
   also switch to "press once to start, again to stop", or use the **Right Ctrl** or **Right Alt** key
   alone as the hotkey (only a clean tap triggers it; holding it while pressing another key or clicking
@@ -227,7 +231,7 @@ The settings window has five sidebar pages. Edits remain in a shared draft until
 
 | Page | Contents |
 | --- | --- |
-| **Dictation** | Record a shortcut (recording a common one such as Ctrl+C / Ctrl+V, Alt+F4 or Ctrl+Space shows a conflict warning, but is not blocked), Right Ctrl / Right Alt, activation mode, microphone and recognition language; manual shortcut editing is collapsed |
+| **Dictation** | Record a shortcut (recording a common one such as Ctrl+C / Ctrl+V, Alt+F4 or Ctrl+Space shows a conflict warning, but is not blocked), Right Ctrl / Right Alt, activation mode, microphone with "Test microphone" (live level meter, 20 seconds at most, no audio is kept) and recognition language; manual shortcut editing is collapsed |
 | **Speech Model** | Download, retry, cancel, reload, per-source diagnostics, preload and idle unload; preview tuning is collapsed |
 | **Text correction** | Enable, service URL, encrypted API key, model name and test; advanced parameters are collapsed |
 | **Appearance and general** | Overlay position and opacity, startup registration and interface language |

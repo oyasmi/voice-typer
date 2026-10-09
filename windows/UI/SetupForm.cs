@@ -19,6 +19,26 @@ internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General =
 internal sealed record MicChoice(string Value, string Label)
 {
     public override string ToString() => Label;
+
+    /// <summary>下拉框的全部选项：自动 / 跟随系统 / 当前所有输入设备；已保存的设备不在线时保留一项。
+    /// 设置页与首启引导共用，两处的选项与文案必须一致。</summary>
+    public static System.Collections.Generic.List<MicChoice> Build(string selectedValue)
+    {
+        var choices = new System.Collections.Generic.List<MicChoice>
+        {
+            new(AudioConfig.Auto, L10n.T("自动（戴蓝牙耳机时改用内置麦克风）")),
+            new(AudioConfig.System, L10n.T("跟随系统默认输入")),
+        };
+        foreach (var device in AudioDeviceCatalog.ListCaptureDevices())
+        {
+            choices.Add(new MicChoice(device.Id, device.Name));
+        }
+        if (choices.All(c => c.Value != selectedValue))
+        {
+            choices.Add(new MicChoice(selectedValue, L10n.T("（已保存的设备，当前未连接）")));
+        }
+        return choices;
+    }
 }
 
 /// <summary>
@@ -49,6 +69,10 @@ internal sealed partial class SetupForm : Form
     /// <summary>生成「复制诊断信息」的正文（环境事实 + 最近听写耗时，不含识别文本）。</summary>
     public Func<string>? OnBuildDiagnostics;
     public Action? OnUserClosedWindow;
+    /// <summary>「测试麦克风」：参数是要测的输入设备（配置值，含尚未保存的草稿）。协调器打开采集，
+    /// 电平经 <see cref="MicTestLevel"/> 回来；结束或失败经 <see cref="MicTestStopped"/>。</summary>
+    public Action<string>? OnStartMicTest;
+    public Action? OnStopMicTest;
     /// <summary>开始录制热键前暂停全局热键监听（否则按下当前热键会触发听写，而不是被录进来）。
     /// 返回 false 表示拒绝（例如正在听写）。</summary>
     public Func<bool>? OnBeginHotkeyRecording;
@@ -150,6 +174,7 @@ internal sealed partial class SetupForm : Form
             if (!Visible)
             {
                 StopHotkeyRecording();
+                _micTest.Stop();
                 OnPreviewHudOpacity?.Invoke(_loadedConfig.UI.Opacity);
             }
             else if (_dirty) OnPreviewHudOpacity?.Invoke((double)_opacityField.Value);
@@ -262,7 +287,7 @@ internal sealed partial class SetupForm : Form
         string hotkeyDisplay,
         string engineStatus,
         string? downloadError = null, string? downloadDetails = null,
-        string? modelDirectory = null, string? micProbeDetail = null)
+        string? modelDirectory = null, string? micProbeDetail = null, string? downloadStatus = null)
     {
         // 下载态不是 AsrState 的成员——下载是 AppCoordinator 的职责，用 downloadProgress
         // 是否非空判定，与 macOS syncSetupWindow(downloadProgress:) 结构一致（W-00）。
@@ -309,8 +334,7 @@ internal sealed partial class SetupForm : Form
         _modelProgressBar.Visible = isDownloading;
         _modelProgressBar.Value = Math.Clamp((int)(progress * 100), 0, 100);
         _modelProgressText.Visible = isDownloading;
-        _modelProgressText.Text = L10n.F("已下载 {0:F1} / {1:F1} MB · {2}%", progress * ModelDownloader.TotalBytes / 1_000_000d,
-            ModelDownloader.TotalBytes / 1_000_000d, (int)(progress * 100));
+        _modelProgressText.Text = downloadStatus ?? DownloadStatusText.Format(progress, ModelDownloader.TotalBytes, null);
 
         (_modelActionButton.Text, _modelActionButton.Enabled) = isDownloading
             ? (L10n.T("取消下载"), true)
@@ -534,26 +558,18 @@ internal sealed partial class SetupForm : Form
     /// 免得保存别的设置时把它悄悄改回"自动"。</summary>
     private void RefreshMicChoices(string selectedValue)
     {
-        var choices = new System.Collections.Generic.List<MicChoice>
-        {
-            new(AudioConfig.Auto, L10n.T("自动（戴蓝牙耳机时改用内置麦克风）")),
-            new(AudioConfig.System, L10n.T("跟随系统默认输入")),
-        };
-        foreach (var device in AudioDeviceCatalog.ListCaptureDevices())
-        {
-            choices.Add(new MicChoice(device.Id, device.Name));
-        }
-        if (choices.All(c => c.Value != selectedValue))
-        {
-            choices.Add(new MicChoice(selectedValue, L10n.T("（已保存的设备，当前未连接）")));
-        }
-
+        var choices = MicChoice.Build(selectedValue);
         _micDeviceCombo.BeginUpdate();
         _micDeviceCombo.Items.Clear();
         foreach (var choice in choices) _micDeviceCombo.Items.Add(choice);
         _micDeviceCombo.SelectedItem = choices.First(c => c.Value == selectedValue);
         _micDeviceCombo.EndUpdate();
     }
+
+    public void MicTestLevel(float rms) => _micTest.ReportLevel(rms);
+
+    /// <summary>麦克风测试已结束；<paramref name="reason"/> 非空时是失败 / 被打断的原因。</summary>
+    public void MicTestStopped(string? reason) => _micTest.ReportStopped(reason);
 
     /// <summary>刷新「诊断与帮助」里的最近听写耗时（从新到旧）。</summary>
     public void UpdateRecentDictations(IReadOnlyList<string> newestFirst)

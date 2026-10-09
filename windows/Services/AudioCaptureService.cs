@@ -464,6 +464,9 @@ internal sealed class AudioCaptureService : IAudioCapturing
         return enumerator;
     }
 
+    /// <inheritdoc cref="IAudioCapturing.InvalidateInput"/>
+    public void InvalidateInput() => OnDeviceTopologyChanged();
+
     /// <summary>端点通知回调（任意 COM 线程）：作废缓存，并合并成一次后台重新预解析。</summary>
     private void OnDeviceTopologyChanged()
     {

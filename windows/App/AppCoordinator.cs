@@ -33,6 +33,8 @@ internal sealed class AppCoordinator : IDisposable
     /// <summary>应用级唯一的剪贴板插入服务：控制器重建时只是借用它，剪贴板恢复状态不随控制器丢失。</summary>
     private readonly TextInsertionService _textInsertion = new();
 
+    /// <summary>设置页 / 引导页的「测试麦克风」。懒创建；听写开始、锁屏 / 睡眠、退出时都会停掉。</summary>
+    private MicLevelTest? _micTest;
     private RecordingHud? _hud;
     private SetupForm? _setupForm;
     private OnboardingForm? _onboardingForm;
@@ -69,6 +71,12 @@ internal sealed class AppCoordinator : IDisposable
     private ModelDownloader? _modelDownloader;
     private bool _isDownloadingModel;
     private double _downloadProgress;
+    private readonly DownloadSpeedTracker _downloadSpeed = new();
+    /// <summary>下载进度的文字（已下载 / 速度 / 剩余时间）；不在下载时为 null。</summary>
+    private string? DownloadStatusLine => _isDownloadingModel
+        ? DownloadStatusText.Format(_downloadProgress, ModelDownloader.TotalBytes,
+            _downloadSpeed.BytesPerSecond(ModelDownloader.TotalBytes))
+        : null;
     /// <summary>最近一次下载失败的说明（含自动重试进度），成功或重新开始时清空。展示在设置页与引导页。</summary>
     private string? _modelDownloadError;
     private string? _modelDownloadDetails;
@@ -108,6 +116,39 @@ internal sealed class AppCoordinator : IDisposable
         _asrService.OnStateChange = OnAsrStateChanged;
     }
 
+    // ─── 锁屏 / 睡眠 / 会话切换 ───────────────────────────────
+
+    private void OnSessionSwitch(object? sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        switch (e.Reason)
+        {
+            case Microsoft.Win32.SessionSwitchReason.SessionLock:
+            case Microsoft.Win32.SessionSwitchReason.ConsoleDisconnect:
+            case Microsoft.Win32.SessionSwitchReason.RemoteDisconnect:
+                UiDispatcher.PostAsync(HandleSystemInterruption);
+                break;
+            case Microsoft.Win32.SessionSwitchReason.SessionUnlock:
+            case Microsoft.Win32.SessionSwitchReason.ConsoleConnect:
+            case Microsoft.Win32.SessionSwitchReason.RemoteConnect:
+                UiDispatcher.PostAsync(HandleSystemResumed);
+                break;
+        }
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Suspend) UiDispatcher.PostAsync(HandleSystemInterruption);
+        else if (e.Mode == Microsoft.Win32.PowerModes.Resume) UiDispatcher.PostAsync(HandleSystemResumed);
+    }
+
+    private void HandleSystemInterruption()
+    {
+        StopMicTest();
+        _controller?.HandleSystemInterruption();
+    }
+
+    private void HandleSystemResumed() => _controller?.HandleSystemResumed();
+
     /// <summary>ASR 状态变化的统一入口：具名方法避免 lambda 形参名为 `_` 时把 Task 误赋给 AsrState（R0-1）。</summary>
     private void OnAsrStateChanged(AsrState state) => _ = ReevaluateReadinessAsync();
 
@@ -128,6 +169,10 @@ internal sealed class AppCoordinator : IDisposable
         UpdateTray();
         _asrService.UpdateConfig(_config.Asr);
 
+        // 订阅在 Start 里、退订在 Dispose 里；这两个事件由系统在专用线程上触发，处理一律转回 UI 线程。
+        Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
         // 首启引导：没走完就先带用户走完，否则热键第一次"按了没反应"时用户无从判断缺了什么。
         var onboardingCompleted = OnboardingRecord.IsCompleted();
         if (!onboardingCompleted) PresentOnboarding();
@@ -147,6 +192,9 @@ internal sealed class AppCoordinator : IDisposable
         _dictationErrorRecoveryTimer?.Dispose();
         _downloadRetryTimer?.Stop();
         _downloadRetryTimer?.Dispose();
+        Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        _micTest?.Dispose();
         _hudShowTimer?.Stop();
         _hudShowTimer?.Dispose();
         _modelDownloader?.Dispose();
@@ -550,6 +598,7 @@ internal sealed class AppCoordinator : IDisposable
             switch (state.State)
             {
                 case AppState.Recording:
+                    StopMicTest(); // 两路采集同时开没有意义，测试让位给真正的听写
                     CancelDictationErrorRecovery();
                     _microphoneReady = false;
                     ShowRecordingHud(controller);
@@ -726,6 +775,7 @@ internal sealed class AppCoordinator : IDisposable
         if (!isAutomaticRetry) _downloadRetryAttempt = 0;
         _isDownloadingModel = true;
         _downloadProgress = 0;
+        _downloadSpeed.Reset();
         _modelDownloadError = null;
         _modelDownloadDetails = null;
         if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(0);
@@ -746,6 +796,7 @@ internal sealed class AppCoordinator : IDisposable
                     {
                         if (!_isDownloadingModel || !ReferenceEquals(_modelDownloader, downloader)) return;
                         _downloadProgress = progress;
+                        _downloadSpeed.Add(System.Diagnostics.Stopwatch.GetTimestamp(), progress);
                         if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(progress);
                         UpdateTray();
                         SyncSetupWindow();
@@ -998,6 +1049,8 @@ internal sealed class AppCoordinator : IDisposable
             if (!IsDictating) _hud?.ShowSample(placement);
         };
         form.OnBuildDiagnostics = BuildDiagnosticsReport;
+        form.OnStartMicTest = StartMicTest;
+        form.OnStopMicTest = StopMicTest;
         form.UpdateRecentDictations(_history.NewestFirst());
         form.OnUserClosedWindow = () => _userOpenedSetup = false;
         form.OnBeginHotkeyRecording = BeginHotkeyRecording;
@@ -1019,6 +1072,59 @@ internal sealed class AppCoordinator : IDisposable
         }
         _hud.ApplyOpacity(opacity);
         if (!IsDictating) _hud.ShowSample();
+    }
+
+    // ─── 测试麦克风 / 引导页换设备 ──────────────────────────────
+
+    /// <summary>设置页 / 引导页点「测试麦克风」。听写进行中拒绝（两路采集同时开没有意义，还会让电平条对不上）。</summary>
+    private void StartMicTest(string deviceValue)
+    {
+        if (IsDictating)
+        {
+            ReportMicTestStopped(L10n.T("正在听写，请等这一段结束后再测试麦克风。"));
+            return;
+        }
+        _micTest ??= new MicLevelTest();
+        _micTest.Start(AudioInputPolicy.FromConfigValue(deviceValue), level =>
+        {
+            _setupForm?.MicTestLevel(level);
+            _onboardingForm?.MicTestLevel(level);
+        }, ReportMicTestStopped);
+    }
+
+    private void StopMicTest()
+    {
+        if (_micTest is not { IsRunning: true }) return;
+        _micTest.Stop();
+        ReportMicTestStopped(null);
+    }
+
+    private void ReportMicTestStopped(string? reason)
+    {
+        _setupForm?.MicTestStopped(reason);
+        _onboardingForm?.MicTestStopped(reason);
+    }
+
+    /// <summary>引导页换输入设备：与设置页保存走同一条事务（换设备会重建控制器并重新探测麦克风）。</summary>
+    private void SelectInputDevice(string value)
+    {
+        if (IsDictating || string.Equals(value, _config.Audio.InputDevice, StringComparison.Ordinal)) return;
+        var draft = _config.Clone();
+        draft.Audio.InputDevice = value;
+        _ = SaveInputDeviceAsync(draft);
+    }
+
+    private async Task SaveInputDeviceAsync(AppConfig draft)
+    {
+        try
+        {
+            await SaveRecognitionAsync(draft, null).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("coordinator", $"引导页保存输入设备失败：{ex.GetType().Name}");
+            _hud?.ShowNotice(L10n.T("保存失败"), ex.Message);
+        }
     }
 
     /// <summary>「复制诊断信息」的正文。只放数字、布尔与枚举名：不含识别文本、设备名、路径与密钥。</summary>
@@ -1088,7 +1194,8 @@ internal sealed class AppCoordinator : IDisposable
             downloadError: _modelDownloadError,
             downloadDetails: _modelDownloadDetails,
             modelDirectory: _asrService.ModelDirectory,
-            micProbeDetail: _micProbeDetail
+            micProbeDetail: _micProbeDetail,
+            downloadStatus: DownloadStatusLine
         );
         SyncOnboarding();
     }
@@ -1114,6 +1221,9 @@ internal sealed class AppCoordinator : IDisposable
             OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false),
             OnStartModelDownload = () => StartModelDownload(),
             OnCancelModelDownload = CancelModelDownload,
+            OnSelectInputDevice = SelectInputDevice,
+            OnStartMicTest = StartMicTest,
+            OnStopMicTest = StopMicTest,
         };
         model.OnRefreshStatus = () => ProbeMicrophone(isFirstProbe: false);
         model.OnFinish = () => form.Close();
@@ -1139,9 +1249,11 @@ internal sealed class AppCoordinator : IDisposable
         model.MicDetail = _micProbeDetail;
         model.AsrState = _asrService.State;
         model.DownloadProgress = _isDownloadingModel ? _downloadProgress : null;
+        model.DownloadStatus = DownloadStatusLine;
         model.DownloadError = _modelDownloadError;
         model.HotkeyDisplay = _config.Hotkey.DisplayString;
         model.HotkeyMode = _config.Hotkey.ModeValue;
+        model.InputDevice = _config.Audio.InputDevice;
         form.RefreshFromModel();
     }
 

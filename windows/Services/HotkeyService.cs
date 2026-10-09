@@ -264,7 +264,15 @@ internal sealed class HotkeyService : IHotkeyListening
         _lastRecoveryAttemptTick = Environment.TickCount;
 
         AppLog.Warn("hotkey", hookMissing ? "键盘钩子句柄已丢失，尝试重新安装" : "键盘钩子长时间无回调，尝试重新安装");
+        ReinstallOnHookThread(hotkey, vk);
+    }
 
+    /// <summary>
+    /// 重装钩子（新状态机，按键状态归零）。自愈与系统恢复（<see cref="Reinstall"/>）共用。失败不抛：
+    /// 记日志、累计失败次数并把不可用状态报给上层，由健康检查按退避继续重试。只在钩子线程上调用。
+    /// </summary>
+    private void ReinstallOnHookThread(HotkeyConfig hotkey, int vk)
+    {
         bool wasEngaged = _stateMachine?.IsEngaged ?? false;
         try
         {
@@ -285,6 +293,28 @@ internal sealed class HotkeyService : IHotkeyListening
             _recoveryFailures++;
             AppLog.Error("hotkey", $"重新安装全局键盘钩子失败（第 {_recoveryFailures} 次）", ex);
             ReportHealth(false);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void Reinstall()
+    {
+        var thread = _thread;
+        if (thread is null) return;
+        try
+        {
+            thread.Invoke(() =>
+            {
+                if (_hotkey is not { } hotkey) return; // 监听已停止（例如录制热键期间暂停），不要偷偷重新装上
+                var vk = MapKeyToVk(hotkey.Key);
+                if (vk == 0) return;
+                AppLog.Info("hotkey", "系统锁屏 / 睡眠 / 会话切换之后，主动重新安装键盘钩子");
+                ReinstallOnHookThread(hotkey, vk);
+            });
+        }
+        catch (HotkeyServiceException ex)
+        {
+            AppLog.Error("hotkey", "重新安装热键钩子时钩子线程无响应", ex);
         }
     }
 

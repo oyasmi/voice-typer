@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using VoiceTyper.Asr;
 using VoiceTyper.Core;
@@ -20,6 +21,11 @@ internal sealed class OnboardingForm : Form
     public Action? OnRetryMicProbe;
     public Action? OnStartModelDownload;
     public Action? OnCancelModelDownload;
+    /// <summary>用户在下拉框里换了输入设备：协调器把它存进配置（与设置页保存同一条路径）。</summary>
+    public Action<string>? OnSelectInputDevice;
+    /// <summary>「测试麦克风」，语义同 <see cref="SetupForm.OnStartMicTest"/>。</summary>
+    public Action<string>? OnStartMicTest;
+    public Action? OnStopMicTest;
 
     private readonly OnboardingModel _model;
 
@@ -37,6 +43,12 @@ internal sealed class OnboardingForm : Form
     private readonly Button _actionButton = new();
     private readonly Button _secondaryButton = new();
     private readonly TextBox _trialBox = new();
+    private readonly Label _deviceCaption = new();
+    private readonly ComboBox _deviceCombo = new();
+    private readonly MicTestPanel _micTest = new();
+    /// <summary>设备下拉框已为本次进入麦克风步骤填充过。填充一次后不再随每次刷新重置，免得打断用户的选择。</summary>
+    private bool _deviceListLoaded;
+    private bool _populatingDevices;
     private float _layoutScale = 1f;
 
     public OnboardingForm(OnboardingModel model)
@@ -95,7 +107,25 @@ internal sealed class OnboardingForm : Form
         _trialBox.SetBounds(0, 0, 544, 90);
         _trialBox.ScrollBars = ScrollBars.Vertical;
 
-        _content.Controls.AddRange(new Control[] { _bodyLabel, _statusLabel, _detailLabel, _progress, _actionButton, _secondaryButton, _trialBox });
+        _deviceCaption.AutoSize = true;
+        _deviceCaption.Text = L10n.T("麦克风设备：");
+        _deviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _deviceCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_populatingDevices || _deviceCombo.SelectedItem is not MicChoice choice) return;
+            _micTest.Stop();
+            OnSelectInputDevice?.Invoke(choice.Value);
+        };
+        _micTest.DeviceValue = () => (_deviceCombo.SelectedItem as MicChoice)?.Value ?? _model.InputDevice;
+        _micTest.StartRequested = value => OnStartMicTest?.Invoke(value);
+        _micTest.StopRequested = () => OnStopMicTest?.Invoke();
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible) _micTest.Stop();
+        };
+
+        _content.Controls.AddRange(new Control[] { _bodyLabel, _statusLabel, _detailLabel, _progress, _actionButton, _secondaryButton, _trialBox,
+            _deviceCaption, _deviceCombo, _micTest });
         Controls.AddRange(new Control[] { _stepLabel, _titleLabel, _content, _backButton, _primaryButton });
 
         // 引导本身可被随时关掉（右上角 ×）：不算"完成"，下次启动还会出现。
@@ -136,6 +166,7 @@ internal sealed class OnboardingForm : Form
             _detailLabel.SetBounds(0, 0, S(544), S(90));
             _progress.SetBounds(0, 0, S(400), S(18));
             _trialBox.SetBounds(0, 0, S(544), S(90));
+            _micTest.ApplyScale(S(200), S(14), S(520));
             _actionButton.Padding = new Padding(S(10), S(3), S(10), S(3));
             _secondaryButton.Padding = new Padding(S(10), S(3), S(10), S(3));
 
@@ -174,6 +205,12 @@ internal sealed class OnboardingForm : Form
         _primaryButton.Text = _model.PrimaryActionTitle;
 
         foreach (Control control in _content.Controls) control.Visible = false;
+        if (step != OnboardingStep.Microphone)
+        {
+            // 离开麦克风步骤：关掉测试（指示灯不能一直亮着），下次进来重新列设备。
+            _micTest.Stop();
+            _deviceListLoaded = false;
+        }
 
         switch (step)
         {
@@ -221,11 +258,17 @@ internal sealed class OnboardingForm : Form
 
     private void LayoutWelcome()
     {
-        _bodyLabel.Text =
+        var body =
             L10n.T("VoiceTyper 是一个离线语音输入工具：识别完全在这台电脑上完成，音频不会上传。")
             + "\n\n" + HotkeyInstruction()
             + "\n\n" + L10n.T("接下来用两分钟确认麦克风、语音模型都准备好，并亲自试说一句话。")
             + "\n" + L10n.T("引导之后也可以从托盘菜单的「使用引导...」再次打开。");
+        // 模型在首次启动时就已经开始在后台下载：欢迎页就告诉用户，别让他以为还没开始。
+        if (_model.DownloadProgress is { } background)
+        {
+            body += "\n\n" + L10n.F("语音模型正在后台下载：{0}%", (int)(background * 100));
+        }
+        _bodyLabel.Text = body;
         Place(_bodyLabel, 0);
         FitHeight(_bodyLabel, _content.Height);
     }
@@ -256,11 +299,45 @@ internal sealed class OnboardingForm : Form
         _secondaryButton.Text = L10n.T("打开麦克风设置");
         Place(_statusLabel, 0);
         Place(_detailLabel, 34);
-        FitHeight(_detailLabel, _content.Height - _detailLabel.Top - _actionButton.Height - S(12));
-        PlaceBelow(_actionButton, _detailLabel, 12);
+        // 下半部分留给设备选择与测试，说明文字最多占 84：宁可截尾，也不让控件互相压住。
+        FitHeight(_detailLabel, S(84));
+        PlaceBelow(_actionButton, _detailLabel, 8);
         _secondaryButton.Location = new Point(_actionButton.Right + S(12), _actionButton.Top);
         _secondaryButton.Visible = true;
+
+        PopulateDevicesIfNeeded();
+        _deviceCaption.Location = new Point(0, S(174));
+        _deviceCaption.Visible = true;
+        _deviceCombo.SetBounds(S(110), S(170), S(434), S(28));
+        _deviceCombo.Visible = true;
+        _micTest.Location = new Point(0, S(204));
+        _micTest.Visible = true;
     }
+
+    /// <summary>进入麦克风步骤（或点「重新检测」）时列一次输入设备，选中当前保存的那个。</summary>
+    private void PopulateDevicesIfNeeded()
+    {
+        if (_deviceListLoaded) return;
+        _deviceListLoaded = true;
+        _populatingDevices = true;
+        try
+        {
+            var choices = MicChoice.Build(_model.InputDevice);
+            _deviceCombo.BeginUpdate();
+            _deviceCombo.Items.Clear();
+            foreach (var choice in choices) _deviceCombo.Items.Add(choice);
+            _deviceCombo.SelectedItem = choices.First(c => c.Value == _model.InputDevice);
+            _deviceCombo.EndUpdate();
+        }
+        finally
+        {
+            _populatingDevices = false;
+        }
+    }
+
+    public void MicTestLevel(float rms) => _micTest.ReportLevel(rms);
+
+    public void MicTestStopped(string? reason) => _micTest.ReportStopped(reason);
 
     /// <summary>「被独占」只是按分类的猜测；探测拿到的真实原因（HRESULT、声道数）拼在后面，便于对照日志反馈。</summary>
     private static string AppendMicDetail(string message, string? detail) =>
@@ -277,7 +354,9 @@ internal sealed class OnboardingForm : Form
         {
             status = L10n.F("正在下载模型 {0}%", (int)((_model.DownloadProgress ?? 0) * 100));
             color = Color.DimGray;
-            detail = L10n.T("模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。");
+            // 第一行是已下载 / 速度 / 剩余时间，让用户知道在动、还要等多久；其后是固定说明。
+            detail = (string.IsNullOrEmpty(_model.DownloadStatus) ? "" : _model.DownloadStatus + "\n")
+                + L10n.T("模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。");
             _progress.Value = Math.Clamp((int)((_model.DownloadProgress ?? 0) * 100), 0, 100);
             Place(_progress, 34);
         }
@@ -362,6 +441,7 @@ internal sealed class OnboardingForm : Form
         switch (_model.Step)
         {
             case OnboardingStep.Microphone:
+                _deviceListLoaded = false; // 用户可能刚插上了麦克风：重新列设备
                 OnRetryMicProbe?.Invoke();
                 break;
             case OnboardingStep.Model:

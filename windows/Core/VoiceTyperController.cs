@@ -353,6 +353,29 @@ internal sealed class VoiceTyperController : IDisposable
         }
     }
 
+    /// <summary>
+    /// 系统锁屏 / 睡眠 / 会话断开：正在录音的这一段不可能再有意义（锁屏后的键盘和麦克风不属于用户的当前输入），
+    /// 静默丢弃。识别阶段不动——结果插入时的焦点检查会兜底（焦点变了就只复制）。
+    /// </summary>
+    public void HandleSystemInterruption()
+    {
+        if (!_isRunning || !IsCapturing) return;
+        AppLog.Info("controller", "系统锁屏或睡眠，丢弃进行中的录音");
+        _audio.StopWithoutResult();
+        Finish(new Outcome.GestureDiscarded());
+    }
+
+    /// <summary>
+    /// 睡眠唤醒 / 解锁 / 会话重连：钩子可能已被系统摘掉、输入端点缓存可能已失效，立即处理，
+    /// 不等健康检查（最长约 2 分钟）与端点通知（唤醒后不一定补发）。
+    /// </summary>
+    public void HandleSystemResumed()
+    {
+        if (!_isRunning) return;
+        _hotkey.Reinstall();
+        _audio.InvalidateInput();
+    }
+
     public void Dispose()
     {
         Stop();
