@@ -50,6 +50,9 @@ internal sealed class OnboardingForm : Form
     private bool _deviceListLoaded;
     private bool _populatingDevices;
     private float _layoutScale = 1f;
+    /// <summary>本次重排要显示的控件集合（<see cref="Place"/> 系列填入）。重排结束统一做可见性 diff：
+    /// 先全部隐藏再逐个显示会在下载进度每 200ms 刷一次时产生可见的闪烁（REVIEW_UX U-01）。</summary>
+    private readonly HashSet<Control> _shown = new();
 
     public OnboardingForm(OnboardingModel model)
     {
@@ -180,14 +183,20 @@ internal sealed class OnboardingForm : Form
 
     public void Present()
     {
-        if (!Visible) Show();
+        if (!Visible)
+        {
+            // 协调器在窗口不可见时只更新模型、不做整体重排；显示前补一次，保证内容是最新的。
+            RefreshFromModel();
+            Show();
+        }
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         BringToFront();
         Activate();
         if (_model.Step == OnboardingStep.Trial) _trialBox.Focus();
     }
 
-    /// <summary>按当前模型状态重排整个内容区。步骤内容很简单，整体重排比逐控件增量更新更不容易出错。</summary>
+    /// <summary>按当前模型状态重排整个内容区。步骤内容很简单，整体重排比逐控件增量更新更不容易出错；
+    /// 可见性只在重排结束时按 <see cref="_shown"/> 做 diff（见其注释）。</summary>
     public void RefreshFromModel()
     {
         if (IsDisposed) return;
@@ -204,7 +213,7 @@ internal sealed class OnboardingForm : Form
         _backButton.Enabled = _model.CanGoBack;
         _primaryButton.Text = _model.PrimaryActionTitle;
 
-        foreach (Control control in _content.Controls) control.Visible = false;
+        _shown.Clear();
         if (step != OnboardingStep.Microphone)
         {
             // 离开麦克风步骤：关掉测试（指示灯不能一直亮着），下次进来重新列设备。
@@ -212,19 +221,35 @@ internal sealed class OnboardingForm : Form
             _deviceListLoaded = false;
         }
 
-        switch (step)
+        SuspendLayout();
+        _content.SuspendLayout();
+        try
         {
-            case OnboardingStep.Welcome: LayoutWelcome(); break;
-            case OnboardingStep.Microphone: LayoutMicrophone(); break;
-            case OnboardingStep.Model: LayoutModel(); break;
-            default: LayoutTrial(); break;
+            switch (step)
+            {
+                case OnboardingStep.Welcome: LayoutWelcome(); break;
+                case OnboardingStep.Microphone: LayoutMicrophone(); break;
+                case OnboardingStep.Model: LayoutModel(); break;
+                default: LayoutTrial(); break;
+            }
+        }
+        finally
+        {
+            _content.ResumeLayout(performLayout: true);
+            ResumeLayout(performLayout: true);
+        }
+
+        foreach (Control control in _content.Controls)
+        {
+            var want = _shown.Contains(control);
+            if (control.Visible != want) control.Visible = want;
         }
     }
 
     private void Place(Control control, int y)
     {
         control.Location = new Point(0, S(y));
-        control.Visible = true;
+        _shown.Add(control);
     }
 
     /// <summary>
@@ -249,7 +274,7 @@ internal sealed class OnboardingForm : Form
     private void PlaceBelow(Control control, Control above, int gap)
     {
         control.Location = new Point(0, above.Bottom + S(gap));
-        control.Visible = true;
+        _shown.Add(control);
     }
 
     private string HotkeyInstruction() => _model.HotkeyMode == HotkeyMode.Hold
@@ -303,15 +328,15 @@ internal sealed class OnboardingForm : Form
         FitHeight(_detailLabel, S(84));
         PlaceBelow(_actionButton, _detailLabel, 8);
         _secondaryButton.Location = new Point(_actionButton.Right + S(12), _actionButton.Top);
-        _secondaryButton.Visible = true;
+        _shown.Add(_secondaryButton);
 
         PopulateDevicesIfNeeded();
         _deviceCaption.Location = new Point(0, S(174));
-        _deviceCaption.Visible = true;
+        _shown.Add(_deviceCaption);
         _deviceCombo.SetBounds(S(110), S(170), S(434), S(28));
-        _deviceCombo.Visible = true;
+        _shown.Add(_deviceCombo);
         _micTest.Location = new Point(0, S(204));
-        _micTest.Visible = true;
+        _shown.Add(_micTest);
     }
 
     /// <summary>进入麦克风步骤（或点「重新检测」）时列一次输入设备，选中当前保存的那个。</summary>

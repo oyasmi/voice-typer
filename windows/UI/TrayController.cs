@@ -38,6 +38,8 @@ internal sealed class TrayController : IDisposable
     private Icon? _currentIcon;
     private AppState _lastState = AppState.Booting;
     private readonly Icon _appIcon;
+    /// <summary>最近一次气泡的点击动作；气泡是低频通知，点击后即清空，不区分多个气泡的竞态。</summary>
+    private Action? _balloonClickAction;
 
     public TrayController()
     {
@@ -114,18 +116,41 @@ internal sealed class TrayController : IDisposable
             ContextMenuStrip = _menu,
         };
         _notifyIcon.MouseClick += OnTrayClick;
+        _notifyIcon.BalloonTipClicked += (_, _) =>
+        {
+            var action = _balloonClickAction;
+            _balloonClickAction = null;
+            action?.Invoke();
+        };
     }
 
     /// <summary>是否已有可复制的识别结果（菜单项可用状态）。</summary>
     public void SetLastResultAvailable(bool available) => _copyLastItem.Enabled = available;
 
+    /// <summary>
+    /// 短暂气泡通知（模型下载完成 / 放弃自动重试这类用户在别处看不到结果的事件）。
+    /// 受系统「通知设置」约束：被禁用时静默无效果，调用方不需要补救。
+    /// <paramref name="onClick"/>：用户点击气泡时执行（例如打开设置页的对应页面），随后自动清空。
+    /// </summary>
+    public void ShowBalloonTip(string title, string message, ToolTipIcon icon, Action? onClick = null)
+    {
+        _balloonClickAction = onClick;
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = message;
+        _notifyIcon.BalloonTipIcon = icon;
+        _notifyIcon.ShowBalloonTip(4000);
+    }
+
     public void Update(AppStateInfo info, string hotkeyDisplay, string engineStatus)
     {
-        _statusItem.Text = info.MenuTitle;
-        _hotkeyItem.Text = L10n.F("热键：{0}", hotkeyDisplay);
-        _engineItem.Text = L10n.F("引擎：{0}", engineStatus);
-        _pauseItem.Text = info.State == AppState.Paused ? L10n.T("恢复听写") : L10n.T("暂停听写");
-        _pauseItem.Enabled = info.State is not (AppState.Booting or AppState.SetupRequired);
+        // 下载期间本方法每 200ms 被调一次：文本有变化才真正赋值——ToolStripItem.Text 与
+        // NotifyIcon.Text 的 setter 不保证短路相同值，NotifyIcon 每次赋值更是一次系统调用。
+        SetTextIfChanged(_statusItem, info.MenuTitle);
+        SetTextIfChanged(_hotkeyItem, L10n.F("热键：{0}", hotkeyDisplay));
+        SetTextIfChanged(_engineItem, L10n.F("引擎：{0}", engineStatus));
+        SetTextIfChanged(_pauseItem, info.State == AppState.Paused ? L10n.T("恢复听写") : L10n.T("暂停听写"));
+        var pauseEnabled = info.State is not (AppState.Booting or AppState.SetupRequired);
+        if (_pauseItem.Enabled != pauseEnabled) _pauseItem.Enabled = pauseEnabled;
 
         if (info.State != _lastState)
         {
@@ -135,7 +160,12 @@ internal sealed class TrayController : IDisposable
 
         var tooltip = $"VoiceTyper · {info.MenuTitle} · {hotkeyDisplay}";
         if (tooltip.Length > 63) tooltip = tooltip.Substring(0, 63);
-        _notifyIcon.Text = tooltip;
+        if (_notifyIcon.Text != tooltip) _notifyIcon.Text = tooltip;
+    }
+
+    private static void SetTextIfChanged(ToolStripItem item, string text)
+    {
+        if (item.Text != text) item.Text = text;
     }
 
     public void Dispose()

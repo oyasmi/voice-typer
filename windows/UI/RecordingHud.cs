@@ -25,7 +25,7 @@ namespace VoiceTyper.UI;
 internal sealed class RecordingHud : Form
 {
     /// <summary>Preparing：已按下热键、麦克风还在打开，此时说的话录不进去，必须和 Recording 一眼可分。</summary>
-    private enum Phase { Hidden, Preparing, Recording, Recognizing, Transient }
+    private enum Phase { Hidden, Preparing, Recording, Recognizing, Inserting, Transient }
     private enum Glyph { None, Check, Cross, Exclaim }
 
     // ─── 几何常量（96 DPI 下的像素，绘制与布局时经 S() 缩放）───────────
@@ -67,7 +67,9 @@ internal sealed class RecordingHud : Form
     private bool _isCorrecting;
     private bool _useDwmRoundCorners;
     private readonly float[] _bars = new float[BarCount];
-    private long _lastLevelTimestamp; // 0 = 尚未收到过电平
+    /// <summary>进入"识别中"的时刻；Recognizing 与其后的 Inserting 共用这一只等待计时器
+    /// （见 <see cref="CurrentStatusText"/>），插入是识别收尾的一部分，等待感是连续的。</summary>
+    private long _recognizingStartedAt;
 
     private HudPlacement _placement = HudPlacement.BottomCenter;
     /// <summary>用户配置的不透明度（<see cref="Form.Opacity"/> 在淡入淡出期间会临时偏离它）。</summary>
@@ -226,6 +228,7 @@ internal sealed class RecordingHud : Form
         CancelWarningRestore();
         _isCorrecting = false;
         _phase = Phase.Recognizing;
+        _recognizingStartedAt = Stopwatch.GetTimestamp();
         _recognizingStatusText = L10n.T("识别中");
         SetStatus(_recognizingStatusText);
         _accent = Color.FromArgb(250, 190, 40);
@@ -233,6 +236,18 @@ internal sealed class RecordingHud : Form
         // 松键后冻结计时（保留最后时长）；动画继续，用于"处理中"的呼吸。
         _frozenElapsedSeconds = ElapsedRecordingSeconds();
         if (!_animationTimer.Enabled) _animationTimer.Start();
+        Invalidate();
+    }
+
+    /// <summary>识别已出结果、正在等修饰键松开 / 剪贴板备份 / 粘贴生效。这段时间最长可到 5s（备份等待），
+    /// 继续显示"识别中"会让用户以为还在推理；与 Recognizing 共用等待计时器（见 <see cref="CurrentStatusText"/>）。</summary>
+    public void SetInserting()
+    {
+        if (SuppressesProgress || _phase is not (Phase.Recognizing or Phase.Inserting)) return;
+        CancelWarningRestore();
+        _isCorrecting = false;
+        _phase = Phase.Inserting;
+        SetStatus(L10n.T("正在输入…"));
         Invalidate();
     }
 
@@ -257,16 +272,27 @@ internal sealed class RecordingHud : Form
     }
 
     /// <summary>
-    /// 松键后识别引擎仍在加载（空闲卸载后的冷恢复，可能要数秒）：把"识别中"改成加载说明，
-    /// 让用户知道在等的是模型而不是卡住了；等待结束后恢复。不影响纠错阶段的文案。
+    /// 识别引擎仍在加载（空闲卸载后的冷恢复、或关预加载后的首次按键，可能要数秒）：把状态行改成
+    /// 加载说明，让用户知道在等的是模型而不是卡住了；等待结束后恢复。录音与识别两个阶段都受理——
+    /// 录音阶段预览会一直空白，用户更需要知道原因（REVIEW_UX F-02）。不影响纠错阶段的文案。
     /// </summary>
     public void SetEngineWait(bool waiting)
     {
-        if (SuppressesProgress || _phase != Phase.Recognizing || _isCorrecting) return;
+        if (SuppressesProgress || _isCorrecting) return;
         CancelWarningRestore();
-        _recognizingStatusText = waiting ? L10n.T("正在加载识别模型…") : L10n.T("识别中");
-        SetStatus(_recognizingStatusText);
-        Invalidate();
+        switch (_phase)
+        {
+            case Phase.Recognizing:
+                _recognizingStatusText = waiting ? L10n.T("正在加载识别模型…") : L10n.T("识别中");
+                SetStatus(_recognizingStatusText);
+                Invalidate();
+                break;
+            case Phase.Recording:
+                // 等待期间不显示设备名：状态行的空间有限，"在等模型"比设备名紧要。
+                SetStatus(waiting ? L10n.T("录音中 · 模型加载中…") : _recordingStatusText);
+                Invalidate();
+                break;
+        }
     }
 
     public void HideHud()
@@ -338,13 +364,11 @@ internal sealed class RecordingHud : Form
         return i;
     }
 
-    /// <summary>实时音量电平（线性 RMS），驱动波形。仅录音阶段生效，内部节流。</summary>
+    /// <summary>实时音量电平（线性 RMS），驱动波形。仅录音阶段生效。节流只做一层：采集服务已在
+    /// 音频线程上按约 30ms 节流过，这里再节流会把有效帧率叠减到设计值的一半以下（REVIEW_UX P-03）。</summary>
     public void UpdateLevel(float level)
     {
         if (_phase != Phase.Recording) return;
-        var now = Stopwatch.GetTimestamp();
-        if (_lastLevelTimestamp != 0 && Stopwatch.GetElapsedTime(_lastLevelTimestamp, now).TotalMilliseconds < 30) return;
-        _lastLevelTimestamp = now;
 
         // 条形向左滚动，新电平进右侧：波形呈现"最近一小段时间的音量轮廓"。
         Array.Copy(_bars, 1, _bars, 0, _bars.Length - 1);
@@ -394,7 +418,7 @@ internal sealed class RecordingHud : Form
     /// </summary>
     public void FlashWarning(string message)
     {
-        if (_phase is not (Phase.Preparing or Phase.Recording or Phase.Recognizing)) return;
+        if (_phase is not (Phase.Preparing or Phase.Recording or Phase.Recognizing or Phase.Inserting)) return;
 
         CancelWarningRestore();
         _statusText = string.IsNullOrEmpty(message) ? L10n.T("识别提示") : message;
@@ -805,8 +829,8 @@ internal sealed class RecordingHud : Form
         DrawIndicator(g, dotRect);
         x += dot + S(10f);
 
-        // 波形（启动中、录音与识别阶段；启动中是平直的暗条，表示还没在听）
-        if (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing)
+        // 波形（启动中、录音、识别与输入阶段；启动中是平直的暗条，表示还没在听）
+        if (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing or Phase.Inserting)
         {
             var waveWidth = S(40f);
             DrawWaveform(g, new RectangleF(x, rowCenterY - S(11f), waveWidth, S(22f)));
@@ -815,7 +839,7 @@ internal sealed class RecordingHud : Form
 
         // 计时（右对齐）；首秒不显示，避免 "0s"→"1s" 的无谓跳变。
         float rightEdge = Width - inset;
-        if (_phase is Phase.Recording or Phase.Recognizing)
+        if (_phase is Phase.Recording or Phase.Recognizing or Phase.Inserting)
         {
             var elapsed = (int)(_phase == Phase.Recording ? ElapsedRecordingSeconds() : _frozenElapsedSeconds);
             if (elapsed > 0)
@@ -882,23 +906,33 @@ internal sealed class RecordingHud : Form
 
     private double _frozenElapsedSeconds;
 
-    /// <summary>仍处于"刚变化"着色期的尾部字符数；非录音 / 识别阶段、系统关闭动画、已过 <see cref="StableAfterMs"/> 时为 0。</summary>
+    /// <summary>仍处于"刚变化"着色期的尾部字符数；非录音 / 识别 / 输入阶段、系统关闭动画、已过 <see cref="StableAfterMs"/> 时为 0。</summary>
     private int FreshCharCount()
     {
-        if (_changedChars <= 0 || !MotionEnabled || _phase is not (Phase.Recording or Phase.Recognizing)) return 0;
+        if (_changedChars <= 0 || !MotionEnabled || _phase is not (Phase.Recording or Phase.Recognizing or Phase.Inserting)) return 0;
         return Stopwatch.GetElapsedTime(_previewChangedAt).TotalMilliseconds < StableAfterMs ? _changedChars : 0;
     }
 
     /// <summary>状态行文字。录音接近单段上限时改为倒计时——到点会自动结束并上屏，用户需要知道还能说多久。
-    /// 闪现中的警告优先，不被覆盖。</summary>
+    /// 识别 / 输入超过 2 秒后在文案后追加等待秒数：整段重跑的长听写要等十几秒，递进的数字是
+    /// "还在算、没有死"的唯一信号（REVIEW_UX F-03）。闪现中的警告优先，不被覆盖。</summary>
     private string CurrentStatusText(out bool countingDown)
     {
         countingDown = false;
-        if (_phase != Phase.Recording || _statusWarning) return _statusText;
-        var remaining = AppConstants.MaxSessionSeconds - (int)ElapsedRecordingSeconds();
-        if (remaining > CountdownSeconds) return _statusText;
-        countingDown = true;
-        return L10n.F("录音将在 {0} 秒后自动结束", Math.Max(remaining, 0));
+        if (_statusWarning) return _statusText;
+        if (_phase == Phase.Recording)
+        {
+            var remaining = AppConstants.MaxSessionSeconds - (int)ElapsedRecordingSeconds();
+            if (remaining > CountdownSeconds) return _statusText;
+            countingDown = true;
+            return L10n.F("录音将在 {0} 秒后自动结束", Math.Max(remaining, 0));
+        }
+        if (_phase is Phase.Recognizing or Phase.Inserting)
+        {
+            var waited = (int)Stopwatch.GetElapsedTime(_recognizingStartedAt).TotalSeconds;
+            if (waited > 2) return L10n.F("{0} · {1}s", _statusText, waited);
+        }
+        return _statusText;
     }
 
     private double ElapsedRecordingSeconds() => Stopwatch.GetElapsedTime(_startedTimestamp).TotalSeconds;
@@ -952,9 +986,9 @@ internal sealed class RecordingHud : Form
         for (int i = 0; i < BarCount; i++)
         {
             float level = _bars[i];
-            if (_phase == Phase.Recognizing)
+            if (_phase is Phase.Recognizing or Phase.Inserting)
             {
-                // 识别阶段：条形依次起伏，表示"在处理"，而不是停在录音时的最后形状。
+                // 识别 / 输入阶段：条形依次起伏，表示"在处理"，而不是停在录音时的最后形状。
                 level = MotionEnabled ? 0.18f + 0.14f * (float)Math.Sin(_pulsePhase * 1.5 + i * 0.7) : 0.2f;
             }
             var barHeight = Math.Max(S(3f), level * area.Height);

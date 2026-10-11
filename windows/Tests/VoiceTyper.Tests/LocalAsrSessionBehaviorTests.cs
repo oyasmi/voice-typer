@@ -185,6 +185,94 @@ public class LocalAsrSessionBehaviorTests
         finally { pump.Dispose(); }
     }
 
+    // ─── 录音阶段的"在等模型"提示（REVIEW_UX F-02）──────────────
+
+    [Fact]
+    public void EngineWaitDuringRecording_NotifiedAfterOneSecondOfPendingAudio()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.RecordingWaitPump");
+        try
+        {
+            IAsrEngine? engine = null;
+            var session = new LocalAsrSession(pump, () => engine, null, 15 * AppConstants.TargetSampleRate);
+            var waits = new List<bool>();
+            session.OnEngineWait = waiting => waits.Add(waiting);
+
+            // 攒了 0.6 秒：还不到提示阈值（多数冷恢复几百毫秒内就绪，不值得闪一下）。
+            session.SendAudio(ToBytes(Constant(AppConstants.TargetSampleRate * 6 / 10, 0.1f)));
+            Assert.Empty(waits);
+
+            session.SendAudio(ToBytes(Constant(AppConstants.TargetSampleRate * 6 / 10, 0.1f))); // 累计 1.2s
+            Assert.Equal(new[] { true }, waits);
+
+            var fake = new FakeAsrEngine();
+            engine = fake;
+            session.SendAudio(ToBytes(Constant(3200, 0.1f))); // 引擎就绪：配对地通知结束
+            Assert.Equal(new[] { true, false }, waits);
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
+    [Fact]
+    public void EngineWaitDuringRecording_NotNotifiedWhenEngineReadyAtOnce()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.NoWaitPump");
+        try
+        {
+            var fake = new FakeAsrEngine();
+            var session = new LocalAsrSession(pump, () => fake, null, 16_000);
+            var waits = new List<bool>();
+            session.OnEngineWait = waiting => waits.Add(waiting);
+
+            session.SendAudio(ToBytes(Constant(AppConstants.TargetSampleRate * 2, 0.1f)));
+            Assert.Empty(waits); // 引擎一直在：录音中不该出现"在等模型"
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
+    // ─── 纠错结果在上屏前经 OnPartial 预览（REVIEW_UX F-06）──────
+
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) => _responder = responder;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(_responder(request));
+    }
+
+    [Fact]
+    public async Task CorrectionSuccess_PreviewsCorrectedText_BeforeFinal()
+    {
+        var pump = new AsrPump("VoiceTyper.Test.CorrectPreviewPump");
+        try
+        {
+            using var corrector = new LlmCorrector(new LlmCorrector.Config
+            {
+                ChatCompletionsUrl = new Uri("https://example.invalid/v1/chat/completions"),
+                ApiKey = "k", Model = "m", Temperature = 0, MaxTokens = 800, Timeout = 5,
+            }, new HttpClient(new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"choices":[{"message":{"content":"修正后的文本"},"finish_reason":"stop"}]}"""),
+            })));
+            var session = new LocalAsrSession(pump, () => null, corrector, 16_000);
+            var partials = new List<string>();
+            var final = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            session.OnPartial = t => partials.Add(t);
+            session.OnFinal = t => final.TrySetResult(t);
+
+            session.CompleteWithAsrText("原始识别文本");
+            Assert.Equal("修正后的文本", await final.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            // 先看到 ASR 原文、再看到纠错后的文本：插入被推迟 / 降级为复制时，这是用户校对的唯一窗口。
+            Assert.Equal(new[] { "原始识别文本", "修正后的文本" }, partials);
+            session.Close();
+        }
+        finally { pump.Dispose(); }
+    }
+
     private static byte[] ToBytes(float[] samples)
     {
         var bytes = new byte[samples.Length * 4];

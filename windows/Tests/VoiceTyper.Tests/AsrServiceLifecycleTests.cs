@@ -299,4 +299,43 @@ public class AsrServiceLifecycleTests
         await WaitUntil(() => rig.BuildCount == 3 && rig.Service.State == AsrState.Ready);
         await WaitUntil(() => rig.Engines[2].RecognizeCalls == 2);
     }
+
+    // ─── 校准让位（REVIEW_UX P-01）──────────────────────────────
+
+    [Fact]
+    public async Task Calibration_DefersWhileSessionActive_AndRunsAfterSessionEnded()
+    {
+        using var rig = new Rig();
+        var session = rig.Service.MakeSession(null); // 冷恢复：加载与录音并行，会话租约已占用
+        await WaitUntil(() => rig.Service.State == AsrState.Ready);
+        await WaitUntil(() => rig.Service.HasPendingCalibration); // 校准任务已跑过检查并让位
+
+        // 有会话在用：两遍合成基准推理（各 5 秒音频）不得插进用户的第一次预览/终稿前面。
+        Assert.Equal(0, rig.Engines[0].RecognizeCalls);
+
+        session.Close();
+        rig.Service.SessionEnded();
+        await WaitUntil(() => rig.Engines[0].RecognizeCalls == 2); // 会话结束后补跑
+    }
+
+    [Fact]
+    public async Task DeferredCalibration_IsDiscarded_WhenEngineWasReplaced()
+    {
+        using var rig = new Rig();
+        var session = rig.Service.MakeSession(null);
+        await WaitUntil(() => rig.Service.State == AsrState.Ready);
+        await WaitUntil(() => rig.Service.HasPendingCalibration);
+        Assert.Equal(0, rig.Engines[0].RecognizeCalls);
+
+        session.Close();
+        await rig.Service.ReloadAsync(); // 引擎被换掉：推迟的校准必须作废（新引擎加载完成会自己发起）
+        await rig.DrainAsync();
+        await WaitUntil(() => rig.Engines[1].RecognizeCalls == 2);
+        rig.Service.SessionEnded();
+        await rig.DrainAsync();
+
+        // 旧引擎从头到尾没被校准过；新引擎自己发起的校准已在加载完成时跑掉。
+        Assert.Equal(0, rig.Engines[0].RecognizeCalls);
+        Assert.Equal(2, rig.Engines[1].RecognizeCalls);
+    }
 }

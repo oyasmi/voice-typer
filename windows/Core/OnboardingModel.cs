@@ -17,7 +17,12 @@ internal static class OnboardingRecord
     /// 把这个数字加一即可让所有人再走一次，而不需要另造一个开关。</summary>
     public const int CurrentFlowVersion = 1;
 
+    /// <summary>× 关闭引导达到这么多次后视为"别再弹了"，此后不再自动出现（托盘菜单仍可手动打开）。</summary>
+    public const int AutoCompleteAfterDismissals = 3;
+
     public static string DefaultPath => Path.Combine(AppConstants.LocalDataDirectory, "onboarding.txt");
+    /// <summary>× 关闭次数的落点；与完成标记分开放，完成/重置时一并清掉。</summary>
+    public static string DismissalPath => Path.Combine(AppConstants.LocalDataDirectory, "onboarding-dismissed.txt");
 
     public static bool IsCompleted(string? path = null)
     {
@@ -44,6 +49,53 @@ internal static class OnboardingRecord
         catch (Exception ex)
         {
             AppLog.Warn("onboarding", $"记录引导完成状态失败（下次启动会再次出现）: {ex.Message}");
+        }
+    }
+
+    /// <summary>记录一次 × 关闭（窗口被关掉且没有走完），返回累计次数。读不出旧值按 0 计。</summary>
+    public static int MarkDismissed(string? path = null)
+    {
+        var count = CountDismissals(path) + 1;
+        try
+        {
+            path ??= DismissalPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, count.ToString());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("onboarding", $"记录引导关闭次数失败: {ex.Message}");
+        }
+        return count;
+    }
+
+    public static int CountDismissals(string? path = null)
+    {
+        try
+        {
+            path ??= DismissalPath;
+            return File.Exists(path) && int.TryParse(File.ReadAllText(path).Trim(), out var count) && count > 0
+                ? count
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>引导走完（或自动视为完成）时清掉关闭计数：将来 <see cref="CurrentFlowVersion"/> 提升、
+    /// 引导再次出现时，从零开始数，不会拿几年前的旧关闭次数直接把新流程跳掉。</summary>
+    public static void ResetDismissals(string? path = null)
+    {
+        try
+        {
+            path ??= DismissalPath;
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("onboarding", $"清除引导关闭计数失败（不影响功能）: {ex.Message}");
         }
     }
 }

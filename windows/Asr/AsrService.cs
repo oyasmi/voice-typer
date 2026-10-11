@@ -59,6 +59,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     private int? _calibratedWindowSamples;
     /// <summary>校准结果对应的 (模型文件, 线程数)；二者不变时重载/冷恢复复用结果，不再重测。</summary>
     private string? _calibrationKey;
+    /// <summary>校准因「有会话正在用推理线程」而让位时记在这里，SessionEnded 后再跑。
+    /// 引擎引用同时保存：重跑前核对它仍是当前引擎，被重载/卸载换掉的就作废。只在 UI 线程读写。</summary>
+    private (IAsrEngine Engine, string Key)? _pendingCalibration;
     /// <summary>当前在飞的加载任务（占位在工作开始前发布）。<see cref="PreloadAsync"/>
     /// （EnsureLoaded 语义）在有它时直接共享、绝不追加新加载；只有 <see cref="ReloadAsync"/>
     /// （配置版本变化 / 用户点重载）才会在它非空时记一次 <see cref="_pendingReload"/>。
@@ -109,6 +112,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
 
     /// <summary>最近一次自校准测得的实时率（推理耗时 ÷ 音频时长）；尚未校准为 null。诊断信息用。</summary>
     public double? CalibratedRtf { get; private set; }
+
+    /// <summary>是否有校准因「会话在用推理线程」而推迟。测试用来确定性地等待让位发生（时序敏感）。</summary>
+    internal bool HasPendingCalibration => _pendingCalibration is not null;
 
     /// <summary>一次满窗预览允许占用的推理时间。窗口越大预览越贴近整段识别，但每次预览越慢、文字出得越晚；
     /// 浮窗只显示最后两行，缩短窗口几乎看不出区别，终稿则始终整段重跑。</summary>
@@ -286,7 +292,25 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector) => MakeSession(corrector);
 
     /// <summary>录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。</summary>
-    public void SessionEnded() => ScheduleIdleUnloadIfNeeded();
+    public void SessionEnded()
+    {
+        ScheduleIdleUnloadIfNeeded();
+        TryRunPendingCalibration();
+    }
+
+    /// <summary>有推迟的校准时补跑。仍有会话在用就继续等；引擎已被换掉就作废（新引擎加载完成时会自己发起）。</summary>
+    private void TryRunPendingCalibration()
+    {
+        if (_pendingCalibration is not { } pending) return;
+        if (Volatile.Read(ref _activeSessions) > 0) return;
+        if (!ReferenceEquals(CurrentEngine(), pending.Engine))
+        {
+            _pendingCalibration = null;
+            return;
+        }
+        _pendingCalibration = null;
+        _ = CalibratePreviewWindowIfNeededAsync(pending.Engine, pending.Key);
+    }
 
     private async Task LoadAsync()
     {
@@ -388,17 +412,24 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// 用户显式指定了非 0 值时不需要校准（见 <see cref="EffectivePreviewWindowSamples"/>）；
     /// 模型文件与线程数没变时复用上次结果，空闲卸载后的冷恢复不再多跑一次。
     /// 推理在 <see cref="AsrPump"/> 上，结果在 UI 线程续体里写回字段。
+    /// <b>让位规则</b>（REVIEW_UX P-01）：校准任务在 pump 任务真正开跑的那一刻检查有没有活跃会话——
+    /// 有就把本次校准记入 <see cref="_pendingCalibration"/> 并立即返回，等 <see cref="SessionEnded"/>
+    /// 后再补跑。串行队列没有优先级，两遍合成基准推理（1–3s）排在前面的话，恰好撞上
+    /// 「引擎刚加载完就按热键」的用户的第一次预览与终稿。
     /// </summary>
     private async Task CalibratePreviewWindowIfNeededAsync(IAsrEngine engine, string key)
     {
         if (_config.PreviewWindowSeconds > 0) return;
         if (_calibratedWindowSamples is not null && _calibrationKey == key) return;
 
-        int samples;
+        // NaN 作为「让位」哨兵：实测 RTF 不可能是 NaN（Elapsed.TotalSeconds ≥ 0）。
+        const double deferred = double.NaN;
+        double rtf;
         try
         {
-            var rtf = await _pump.PostAsync(() =>
+            rtf = await _pump.PostAsync(() =>
             {
+                if (Volatile.Read(ref _activeSessions) > 0) return deferred;
                 var silence = new float[5 * AppConstants.TargetSampleRate];
                 engine.Recognize(silence); // 预热
                 var sw = Stopwatch.StartNew();
@@ -406,19 +437,30 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
                 sw.Stop();
                 return sw.Elapsed.TotalSeconds / 5.0;
             }).ConfigureAwait(true);
-
-            CalibratedRtf = rtf;
-            int seconds = ChoosePreviewWindowSeconds(rtf);
-            samples = seconds * AppConstants.TargetSampleRate;
-            AppLog.Info("asr", $"预览窗口自校准: RTF={rtf:F3} → preview_window={seconds}s");
         }
         catch (Exception ex)
         {
-            AppLog.Warn("asr", $"预览窗口自校准失败，使用默认 15s: {ex.Message}");
-            samples = 15 * AppConstants.TargetSampleRate;
+            // 最可能的来源：推迟期间引擎已被空闲卸载/重载掉。已有校准就保留（换引擎后 key 会变、
+            // 自然重测），没有才落默认值，避免一次性的 ObjectDisposedException 把好结果冲掉。
+            AppLog.Warn("asr", $"预览窗口自校准失败: {ex.Message}");
+            if (_calibratedWindowSamples is null)
+            {
+                _calibratedWindowSamples = 15 * AppConstants.TargetSampleRate;
+                _calibrationKey = key;
+            }
+            return;
         }
+        if (double.IsNaN(rtf))
+        {
+            _pendingCalibration = (engine, key);
+            return;
+        }
+
+        CalibratedRtf = rtf;
+        var seconds = ChoosePreviewWindowSeconds(rtf);
+        AppLog.Info("asr", $"预览窗口自校准: RTF={rtf:F3} → preview_window={seconds}s");
         if (_disposed) return;
-        _calibratedWindowSamples = samples;
+        _calibratedWindowSamples = seconds * AppConstants.TargetSampleRate;
         _calibrationKey = key;
     }
 

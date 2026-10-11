@@ -484,6 +484,8 @@ internal sealed class AppCoordinator : IDisposable
     /// <summary>
     /// 未就绪的原因文案：具体说出缺什么，而不是笼统的"无法使用"。热键照常监听，
     /// 按下时把这句话交给用户，而不是让他对着一个毫无反应的热键猜。
+    /// 下载失败后的退避等待期：优先给"将在 N 秒后自动重试"，而不是让他以为要自己去处理
+    /// （重试文案里已带原因与进度，REVIEW_UX F-04）。
     /// </summary>
     private string? CurrentBlockedReason()
     {
@@ -493,7 +495,9 @@ internal sealed class AppCoordinator : IDisposable
         }
         return _asrService.State switch
         {
-            AsrState.ModelMissing => L10n.T("语音模型还没有下载，无法开始听写。"),
+            AsrState.ModelMissing => _modelDownloadError is { } downloadError
+                ? downloadError
+                : L10n.T("语音模型还没有下载，无法开始听写。"),
             AsrState.Failed => L10n.F("语音模型加载失败：{0}", _asrService.FailureMessage ?? L10n.T("未知错误")),
             AsrState.Loading or AsrState.Unloaded => L10n.T("识别引擎正在加载，请稍候再试。"),
             _ => null,
@@ -598,7 +602,7 @@ internal sealed class AppCoordinator : IDisposable
             switch (state.State)
             {
                 case AppState.Recording:
-                    StopMicTest(); // 两路采集同时开没有意义，测试让位给真正的听写
+                    StopMicTest(L10n.T("已开始听写，测试已停止。")); // 两路采集同时开没有意义，测试让位给真正的听写
                     CancelDictationErrorRecovery();
                     _microphoneReady = false;
                     ShowRecordingHud(controller);
@@ -608,6 +612,8 @@ internal sealed class AppCoordinator : IDisposable
                     ForwardToOnboarding(new OnboardingDictationEvent.Recognizing());
                     break;
                 case AppState.Inserting:
+                    // 插入可能等修饰键松开（约 0.4s）或剪贴板备份（最长 5s），继续显示"识别中"会误导。
+                    _hud?.SetInserting();
                     break;
                 case AppState.Error:
                     _hud?.ShowError(state.Message ?? "");
@@ -852,6 +858,10 @@ internal sealed class AppCoordinator : IDisposable
             _modelDownloadError = DownloadFailure.CanRetry(error)
                 ? L10n.F("{0} 已自动重试 {1} 次仍未成功，请检查网络后手动重试。", reason, DownloadRetryDelaysSeconds.Length)
                 : reason + "\n" + L10n.T("请处理上述问题后手动重试。");
+            // 自动重试到头了，此后不会再有任何主动信号：给一条气泡兜底。第一次失败时的强制设置窗
+            // 在同一未就绪期内已被去重（PresentBlockingGuidance），用户关掉它之后就只剩这条通知了。
+            _tray.ShowBalloonTip(L10n.T("模型下载失败"), _modelDownloadError, ToolTipIcon.Error,
+                () => PresentSetupForced(SetupTab.Recognition));
         }
 
         if (!_isPaused) _currentState = AppStateInfo.ErrorWith(L10n.F("模型下载失败: {0}", reason));
@@ -904,6 +914,13 @@ internal sealed class AppCoordinator : IDisposable
             if (_config.Asr.PreloadOnLaunch) await _asrService.ReloadAsync().ConfigureAwait(true);
             else _asrService.PrepareWithoutLoading();
             await ReevaluateReadinessAsync().ConfigureAwait(true);
+            // 下载是首启时最长的等待，用户多半切去干别的了：完成时给一条气泡（此前只有托盘
+            // 图标变色，用户毫不知情，REVIEW_UX F-01）。被系统通知设置禁用时静默降级。
+            if (_asrService.State is AsrState.Ready or AsrState.SuspendedForIdle)
+            {
+                _tray.ShowBalloonTip(L10n.T("语音模型已就绪"),
+                    L10n.F("按 {0} 即可开始听写。", _config.Hotkey.DisplayString), ToolTipIcon.Info);
+            }
         }
         catch (Exception ex)
         {
@@ -1000,15 +1017,17 @@ internal sealed class AppCoordinator : IDisposable
     /// 强制把设置窗口摆到用户面前，但**不**把它标记为"用户主动打开"——与 <see cref="OpenSetup"/>
     /// 的区别在于 <see cref="_userOpenedSetup"/>：这里的调用方（未就绪时的引导弹窗）不应该让
     /// <see cref="HideSetupWindowIfVisible"/> 从此永久失效，就绪后仍要能自动收起窗口（VW-11）。
+    /// 先 <see cref="SetupForm.Present"/> 再同步状态：窗口不可见时 <see cref="SyncSetupWindow"/> 会跳过，
+    /// 顺序反了首次显示就拿到旧状态（REVIEW_UX U-02）。
     /// </summary>
     private void PresentSetupForced(SetupTab? preferredTab)
     {
         EnsureSetupForm();
         _setupForm!.LoadEditableContent(_config);
         ProbeMicrophoneIfUnknown();
-        SyncSetupWindow();
         if (preferredTab is { } tab) _setupForm.SelectTab(tab);
         _setupForm.Present();
+        SyncSetupWindow();
     }
 
     /// <summary>未就绪时的强制弹窗：同一个理由在一次未就绪期内只抢一次焦点（VW-11，对齐
@@ -1050,7 +1069,7 @@ internal sealed class AppCoordinator : IDisposable
         };
         form.OnBuildDiagnostics = BuildDiagnosticsReport;
         form.OnStartMicTest = StartMicTest;
-        form.OnStopMicTest = StopMicTest;
+        form.OnStopMicTest = () => StopMicTest();
         form.UpdateRecentDictations(_history.NewestFirst());
         form.OnUserClosedWindow = () => _userOpenedSetup = false;
         form.OnBeginHotkeyRecording = BeginHotkeyRecording;
@@ -1092,11 +1111,13 @@ internal sealed class AppCoordinator : IDisposable
         }, ReportMicTestStopped);
     }
 
-    private void StopMicTest()
+    /// <summary>结束麦克风测试。<paramref name="reason"/> 非空时展示给用户（听写开始等强制停止的场景，
+    /// 此前面板会静默变回初始状态，用户不知道测试为什么自己停了，REVIEW_UX U-03）。</summary>
+    private void StopMicTest(string? reason = null)
     {
         if (_micTest is not { IsRunning: true }) return;
         _micTest.Stop();
-        ReportMicTestStopped(null);
+        ReportMicTestStopped(reason);
     }
 
     private void ReportMicTestStopped(string? reason)
@@ -1184,19 +1205,24 @@ internal sealed class AppCoordinator : IDisposable
 
     private void SyncSetupWindow()
     {
-        _setupForm?.UpdateStatus(
-            micProbe: _micProbe,
-            asrState: _asrService.State,
-            asrFailureMessage: _asrService.FailureMessage,
-            downloadProgress: _isDownloadingModel ? _downloadProgress : null,
-            hotkeyDisplay: _config.Hotkey.DisplayString,
-            engineStatus: EngineStatusText(),
-            downloadError: _modelDownloadError,
-            downloadDetails: _modelDownloadDetails,
-            modelDirectory: _asrService.ModelDirectory,
-            micProbeDetail: _micProbeDetail,
-            downloadStatus: DownloadStatusLine
-        );
+        // 隐藏状态的设置窗不刷（下载进度每 200ms 来一次，隐藏窗的全量控件赋值纯属浪费）；
+        // 每条显示路径都经过 PresentSetupForced，显示后一定会补一次同步。
+        if (_setupForm is { IsDisposed: false, Visible: true })
+        {
+            _setupForm.UpdateStatus(
+                micProbe: _micProbe,
+                asrState: _asrService.State,
+                asrFailureMessage: _asrService.FailureMessage,
+                downloadProgress: _isDownloadingModel ? _downloadProgress : null,
+                hotkeyDisplay: _config.Hotkey.DisplayString,
+                engineStatus: EngineStatusText(),
+                downloadError: _modelDownloadError,
+                downloadDetails: _modelDownloadDetails,
+                modelDirectory: _asrService.ModelDirectory,
+                micProbeDetail: _micProbeDetail,
+                downloadStatus: DownloadStatusLine
+            );
+        }
         SyncOnboarding();
     }
 
@@ -1223,13 +1249,21 @@ internal sealed class AppCoordinator : IDisposable
             OnCancelModelDownload = CancelModelDownload,
             OnSelectInputDevice = SelectInputDevice,
             OnStartMicTest = StartMicTest,
-            OnStopMicTest = StopMicTest,
+            OnStopMicTest = () => StopMicTest(),
         };
         model.OnRefreshStatus = () => ProbeMicrophone(isFirstProbe: false);
         model.OnFinish = () => form.Close();
         form.FormClosed += (_, _) =>
         {
             if (ReferenceEquals(_onboardingForm, form)) { _onboardingForm = null; _onboarding = null; }
+            if (!OnboardingRecord.IsCompleted()
+                && OnboardingRecord.MarkDismissed() >= OnboardingRecord.AutoCompleteAfterDismissals)
+            {
+                // 连续关掉引导三次 = 明确的"别再弹了"。托盘菜单「使用引导…」仍是随时可用的回头路
+                //（REVIEW_UX W-02：此前 × 关闭不算完成，每次启动都重新弹一个抢焦点的窗口）。
+                OnboardingRecord.MarkCompleted();
+                OnboardingRecord.ResetDismissals();
+            }
             // 引导期间被压住的"未就绪"引导（缺模型等）在引导结束后恢复。
             _ = ReevaluateReadinessAsync();
         };
@@ -1254,7 +1288,9 @@ internal sealed class AppCoordinator : IDisposable
         model.HotkeyDisplay = _config.Hotkey.DisplayString;
         model.HotkeyMode = _config.Hotkey.ModeValue;
         model.InputDevice = _config.Audio.InputDevice;
-        form.RefreshFromModel();
+        // 模型字段总是更新（下次 Present 会用到）；整体重排只在窗口可见时做，
+        // 否则下载期间每 200ms 一次的全量重排都在白做（REVIEW_UX U-01/U-02）。
+        if (form.Visible) form.RefreshFromModel();
     }
 
     private void ForwardToOnboarding(OnboardingDictationEvent dictationEvent)

@@ -117,11 +117,15 @@ internal static partial class L10n
         // ── HUD 浮窗 ────────────────────────────────────────
         ["录音中"] = "Recording",
         ["识别中"] = "Recognizing",
+        ["正在输入…"] = "Typing…",
+        ["{0} · {1}s"] = "{0} · {1}s",
+        ["录音中 · 模型加载中…"] = "Recording · loading the model…",
         ["已输入"] = "Inserted",
         ["错误"] = "Error",
         ["服务异常"] = "Service error",
         ["已取消"] = "Canceled",
         ["识别提示"] = "Recognition notice",
+        ["识别超时，已把已识别的部分复制到剪贴板"] = "Recognition timed out; the recognized part was copied to the clipboard",
 
         // ── 设置窗口：通用 ──────────────────────────────────
         ["{0} 设置"] = "{0} Settings",
@@ -299,6 +303,8 @@ internal static partial class L10n
         ["模型约 230 MB，只需下载一次，之后完全离线使用。可以先点「下一步」，下载在后台继续。"] =
             "The model is about 230 MB and only needs to be downloaded once; afterwards everything works offline. You can click \"Next\" now and the download continues in the background.",
         ["语音模型已就绪"] = "Speech model is ready",
+        ["按 {0} 即可开始听写。"] = "Press {0} to start dictating.",
+        ["模型下载失败"] = "Model download failed",
         ["可以到设置 → 语音模型中重新加载，或重新下载模型。"] = "Reload it in Settings → Speech Model, or download the model again.",
         ["重试下载"] = "Retry Download",
         ["点一下下面的输入框，然后试说一句话："] = "Click the box below, then try speaking a sentence:",
@@ -433,6 +439,7 @@ internal static partial class L10n
             "No sound detected. Make sure the microphone is not muted and the right device is selected, then speak into it.",
         ["测试已停止。"] = "Test stopped.",
         ["测试已自动停止。"] = "The test stopped automatically.",
+        ["已开始听写，测试已停止。"] = "Dictation started, so the microphone test was stopped.",
         ["输入设备已变化，测试已停止。"] = "The input device changed, so the test stopped.",
         ["正在听写，请等这一段结束后再测试麦克风。"] = "Dictation is in progress. Wait for it to finish before testing the microphone.",
         ["保存失败"] = "Save failed",

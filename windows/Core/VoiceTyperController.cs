@@ -89,6 +89,17 @@ internal sealed class VoiceTyperController : IDisposable
     /// </summary>
     internal static readonly TimeSpan[] SilenceProbeDelays = { TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(4.5) };
 
+    /// <summary>
+    /// 终稿看门狗：finalize 对整段音频重跑，耗时约等于 <c>音频时长 × RTF</c>，慢机器上两分钟的长听写
+    /// 可能要跑半分钟以上——固定 30s 会在识别中途把整段结果判死（REVIEW_UX W-01）。按音频时长放大
+    /// （覆盖 RTF 到 5×），下限 30s 保证真正的卡死仍能被发现，上限 5 分钟避免极端挂死让 HUD 永远停在"识别中"。
+    /// </summary>
+    internal static TimeSpan FinalizeWatchdogTimeout(double audioSeconds)
+    {
+        var seconds = Math.Clamp(audioSeconds * 5, 30, 300);
+        return TimeSpan.FromSeconds(seconds);
+    }
+
     // ─── 事件（均在 UI 线程触发）─────────────────────────────────
 
     public Action<AppStateInfo>? StateChanged;
@@ -629,8 +640,9 @@ internal sealed class VoiceTyperController : IDisposable
             _hotkey.AcceptsCancelWhenInactive = true;
             // 识别（以及可能的纠错）本来就要等一会儿：趁这段时间在后台把用户的剪贴板备份好。
             _text.PrepareForInsert();
-            // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
-            session.FinalizeStream(TimeSpan.FromSeconds(30));
+            // 看门狗按音频时长缩放：长听写在慢机器上的整段重跑要远超 30 秒（见 FinalizeWatchdogTimeout）。
+            session.FinalizeStream(FinalizeWatchdogTimeout(utterance.Session.Timings.ReceivedSamples
+                / (double)AppConstants.TargetSampleRate));
             StateChanged?.Invoke(AppStateInfo.Recognizing);
         });
 
@@ -742,6 +754,7 @@ internal sealed class VoiceTyperController : IDisposable
         _sessions.SessionEnded();
         _audio.OnChunk = null;
         _audio.OnTailChunk = null;
+        var lastPreview = _previewText; // 清空前留一份：finalize 超时的兜底复制要用（见 Outcome.Failed）
         _previewText = "";
         PreviewUpdate?.Invoke("");
 
@@ -754,6 +767,14 @@ internal sealed class VoiceTyperController : IDisposable
                 result = inserted;
                 break;
             case Outcome.Failed failed:
+                // 终稿推理看门狗超时：预览里已经固化了大部分文字，复制到剪贴板兜底，
+                // 不让用户说了很久的话一个字都找不回来（REVIEW_UX W-01 的第二层防护）。
+                if (metrics.Timings.FinalizeTimedOut && !string.IsNullOrWhiteSpace(lastPreview))
+                {
+                    var salvaged = _text.CopyToClipboard(lastPreview);
+                    if (salvaged) failed = new Outcome.Failed(
+                        L10n.T("识别超时，已把已识别的部分复制到剪贴板"));
+                }
                 StateChanged?.Invoke(AppStateInfo.ErrorWith(failed.Message));
                 result = DictationOutcome.Failed;
                 break;

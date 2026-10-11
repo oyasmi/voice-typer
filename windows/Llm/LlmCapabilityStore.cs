@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using VoiceTyper.Support;
@@ -35,6 +34,8 @@ internal static class LlmCapabilityFingerprint
 /// 文件版实现，落在 <c>%LOCALAPPDATA%\VoiceTyper\llm_capabilities.txt</c>：每行一个指纹。
 /// 这是应用状态，不是用户配置，所以不进 <c>config.yaml</c>（也不随域漫游）；控制器每次保存配置都会
 /// 重建 <see cref="LlmCorrector"/>，因此缓存不能只放在实例里。
+/// 首次访问后在内存里持有整个列表（保留文件顺序，供 <see cref="MaxEntries"/> 淘汰最旧的），
+/// 之后读不再碰文件——查询发生在每次纠错请求发出前的 UI 线程同步段（REVIEW_UX P-02）。
 /// </summary>
 internal sealed class FileLlmCapabilityStore : ILlmCapabilityStore
 {
@@ -46,19 +47,21 @@ internal sealed class FileLlmCapabilityStore : ILlmCapabilityStore
 
     private readonly string _path;
     private readonly object _lock = new();
+    private List<string>? _entries;
 
     public FileLlmCapabilityStore(string path) => _path = path;
 
     public bool IsThinkingParameterUnsupported(string fingerprint)
     {
-        lock (_lock) return Read().Contains(fingerprint);
+        lock (_lock) return EnsureLoaded().Contains(fingerprint);
     }
 
     public void SetThinkingParameterUnsupported(bool unsupported, string fingerprint)
     {
         lock (_lock)
         {
-            var entries = Read().Where(e => e != fingerprint).ToList();
+            var entries = EnsureLoaded();
+            entries.RemoveAll(e => e == fingerprint);
             if (unsupported)
             {
                 entries.Add(fingerprint);
@@ -77,18 +80,28 @@ internal sealed class FileLlmCapabilityStore : ILlmCapabilityStore
         }
     }
 
-    private List<string> Read()
+    /// <summary>懒加载一次；文件读不出来按空列表处理（等于没有缓存，不影响功能）。须持有 <see cref="_lock"/> 调用。</summary>
+    private List<string> EnsureLoaded()
     {
+        if (_entries is not null) return _entries;
+        var loaded = new List<string>();
         try
         {
-            return File.Exists(_path)
-                ? File.ReadAllLines(_path).Select(l => l.Trim()).Where(l => l.Length > 0).ToList()
-                : new List<string>();
+            if (File.Exists(_path))
+            {
+                foreach (var line in File.ReadAllLines(_path))
+                {
+                    var trimmed = line.Trim();
+                    if (trimmed.Length > 0 && !loaded.Contains(trimmed)) loaded.Add(trimmed);
+                }
+            }
         }
         catch
         {
-            return new List<string>();
+            // 读不出来就当没有缓存。
         }
+        _entries = loaded;
+        return loaded;
     }
 }
 

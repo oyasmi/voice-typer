@@ -336,7 +336,7 @@ internal sealed partial class SetupForm : Form
         _modelProgressText.Visible = isDownloading;
         _modelProgressText.Text = downloadStatus ?? DownloadStatusText.Format(progress, ModelDownloader.TotalBytes, null);
 
-        (_modelActionButton.Text, _modelActionButton.Enabled) = isDownloading
+        var (actionText, actionEnabled) = isDownloading
             ? (L10n.T("取消下载"), true)
             : asrState switch
             {
@@ -348,6 +348,9 @@ internal sealed partial class SetupForm : Form
                 AsrState.Unloaded => (L10n.T("重新加载模型"), true),
                 _ => (L10n.T("重新加载模型"), true),
             };
+        // 下载期间本方法每 200ms 来一次；AutoSize 按钮的 Text 赋值会触发布局，值没变就别动它。
+        if (_modelActionButton.Text != actionText) _modelActionButton.Text = actionText;
+        if (_modelActionButton.Enabled != actionEnabled) _modelActionButton.Enabled = actionEnabled;
 
         (_micStatusLabel.Text, _micStatusLabel.ForeColor) = micProbe switch
         {
@@ -565,6 +568,10 @@ internal sealed partial class SetupForm : Form
         _micDeviceCombo.SelectedItem = choices.First(c => c.Value == selectedValue);
         _micDeviceCombo.EndUpdate();
     }
+
+    /// <summary>下拉框当前选中的设备（配置值）；没有选中项时回落到已保存值。</summary>
+    private string CurrentMicDraftValue() =>
+        (_micDeviceCombo.SelectedItem as MicChoice)?.Value ?? _loadedConfig.Audio.InputDevice;
 
     public void MicTestLevel(float rms) => _micTest.ReportLevel(rms);
 

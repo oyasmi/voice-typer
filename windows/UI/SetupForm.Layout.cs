@@ -169,6 +169,9 @@ internal sealed partial class SetupForm
         var input = Card(page, L10n.T("语音输入"));
         _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo);
+        // 展开时重新列设备：插拔麦克风后不必关窗重开（REVIEW_UX U-04）。保留当前选择
+        //（含尚未保存的草稿与"已保存但当前未连接"的占位项），选中值不变就不会误触发脏检查。
+        _micDeviceCombo.DropDown += (_, _) => RefreshMicChoices(CurrentMicDraftValue());
         // 测试的是下拉框里当前选中的设备（含尚未保存的草稿）；换设备就结束上一次测试，免得电平条对应的是旧设备。
         _micTest.DeviceValue = () => (_micDeviceCombo.SelectedItem as MicChoice)?.Value ?? AudioConfig.Auto;
         _micTest.StartRequested = value => OnStartMicTest?.Invoke(value);

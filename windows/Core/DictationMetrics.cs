@@ -34,6 +34,9 @@ internal sealed class AsrSessionTimings
     public bool PreviewAborted;
     /// <summary>终稿推理真正开始的时刻；与 <see cref="FinalizeStartedAt"/> 的差是终稿排队等待的时间。</summary>
     public long? FinalizeRunStartedAt;
+    /// <summary>终稿推理是否触发了看门狗超时。控制器据此在报错的同时把已识别的预览文本兜底复制到剪贴板，
+    /// 不让说了很久的话一个字都找不回来。</summary>
+    public bool FinalizeTimedOut;
     /// <summary>松键前最后 100ms 是否仍有语音能量；缓冲区尚未建立（引擎未就绪）时为 null。</summary>
     public bool? TailSpeech;
 }

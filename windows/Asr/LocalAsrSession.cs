@@ -83,8 +83,12 @@ internal sealed class LocalAsrSession : IDictationSession
     public AsrSessionTimings Timings { get; } = new();
     private bool _hasReceivedAudio;
     private long? _engineWaitStartedAt;
-    /// <summary>已经通知过"在等引擎"（<see cref="OnEngineWait"/>(true)），就绪时需要对应地通知结束。</summary>
+    /// <summary>已经通知过"在等引擎"（<see cref="OnEngineWait"/>(true)），就绪时需要对应地通知结束。
+    /// 录音阶段（音频还在往 <see cref="_pendingAudio"/> 里攒）与 finalize 阶段共用这一个标志；
+    /// <see cref="FinalizeStream"/> 会复位它，让松键后的等待重新走一遍"超过阈值才提示"的节奏。</summary>
     private bool _engineWaitNotified;
+    /// <summary>录音开始后攒了多少音频还没有引擎可用；超过 1 秒值得告诉用户"在等模型加载"。</summary>
+    private const int EngineWaitNoticePendingSamples = AppConstants.TargetSampleRate;
     /// <summary>等引擎超过这么多次轮询（每次 100ms）才通知用户；多数冷恢复在几百毫秒内就绪，不值得闪一下提示。</summary>
     private const int EngineWaitNoticeAttempts = 3;
 
@@ -124,6 +128,9 @@ internal sealed class LocalAsrSession : IDictationSession
     private volatile bool _cancelled;
     private string _lastPreview = "";
     private CancellationTokenSource? _finalizeWatchdogCts;
+    /// <summary>由 <see cref="FinalizeStream"/> 记下、<see cref="RunFinalize"/> 在推理真正开始时才启用的
+    /// 看门狗时长；null 表示不设。引擎等待阶段有自己的轮询上限，不该占用这个看门狗的预算。</summary>
+    private TimeSpan? _finalizeWatchdog;
     /// <summary>会话级取消源：Close 时取消，传给 LLM 纠错请求，取消后的迟到结果被静默丢弃（R2-4）。</summary>
     private readonly CancellationTokenSource _sessionCts = new();
     /// <summary>仅覆盖"等 LLM 纠错"这一段，是 <see cref="_sessionCts"/> 的子令牌：<see cref="SkipCorrection"/>
@@ -169,6 +176,13 @@ internal sealed class LocalAsrSession : IDictationSession
             var pending = AcceptWithinCap(samples, _pendingAudio.Count);
             _pendingAudio.AddRange(pending);
             Timings.ReceivedSamples += pending.Length;
+            // 攒了超过 1 秒还没有引擎可用：告诉用户在等模型而不是识别坏了（对齐松键后
+            // WaitForEngineThenFinalize 的提示；HUD 在录音阶段会显示"录音中 · 模型加载中…"）。
+            if (!_engineWaitNotified && _pendingAudio.Count >= EngineWaitNoticePendingSamples)
+            {
+                _engineWaitNotified = true;
+                OnEngineWait?.Invoke(true);
+            }
             return;
         }
 
@@ -229,7 +243,8 @@ internal sealed class LocalAsrSession : IDictationSession
     }
 
     /// <param name="timeout">
-    /// 等待识别完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的看门狗。
+    /// 终稿<b>推理</b>完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的看门狗，
+    /// 由 <see cref="RunFinalize"/> 在推理真正开始时启动（等引擎加载不算在内，那段有自己的轮询上限）。
     /// 传 <see cref="TimeSpan.Zero"/> 或负值表示不设超时。
     /// </param>
     public void FinalizeStream(TimeSpan timeout)
@@ -239,18 +254,14 @@ internal sealed class LocalAsrSession : IDictationSession
         _finalizeRequested = true;
         Timings.FinalizeStartedAt = Stopwatch.GetTimestamp();
         _finalizeWatchdogCts?.Cancel();
+        _finalizeWatchdog = timeout > TimeSpan.Zero ? timeout : null;
+        // 录音阶段的"在等模型"提示到此为止：HUD 已切到"识别中"，下面的等待重新按自己的阈值提示。
+        _engineWaitNotified = false;
         if (_previewInFlight)
         {
             // 终稿要整段重跑，正在跑的预览结果已经没人要了：中止它，终稿不必排在它后面等（final_wait）。
             Timings.PreviewAborted = true;
             _engine?.Abort();
-        }
-
-        if (timeout > TimeSpan.Zero)
-        {
-            var cts = new CancellationTokenSource();
-            _finalizeWatchdogCts = cts;
-            _ = RunFinalizeWatchdogAsync(timeout, cts);
         }
 
         EnsureBufferIfPossible();
@@ -294,6 +305,7 @@ internal sealed class LocalAsrSession : IDictationSession
         UiDispatcher.Post(() =>
         {
             if (_closed) return;
+            Timings.FinalizeTimedOut = true;
             AppLog.Error("asr", $"finalize 超时（{timeout.TotalSeconds}s）");
             OnError?.Invoke(L10n.T("识别超时"));
         });
@@ -307,6 +319,12 @@ internal sealed class LocalAsrSession : IDictationSession
 
         _engine = engine;
         var newBuffer = new RecognitionBuffer(engine, _previewWindowSamples, reservedSampleCapacity: InitialBufferSamples);
+        // 引擎在录音中途就绪：此前若提示过"在等模型"，现在配对地通知结束。
+        if (_engineWaitNotified)
+        {
+            _engineWaitNotified = false;
+            OnEngineWait?.Invoke(false);
+        }
         if (_pendingAudio.Count > 0)
         {
             // 缓存期间收到的音频没有走过 SendAudio 的语音判定；补上，否则引擎就绪后用户恰好停顿时
@@ -385,8 +403,9 @@ internal sealed class LocalAsrSession : IDictationSession
         });
     }
 
-    // 冷启动加载真实模型可能耗时十几秒；每 100ms 探测一次，最多等 20s。
-    private const int MaxEngineWaitAttempts = 200;
+    // 冷启动加载真实模型可能耗时十几秒（冷盘 / 慢机上更久）；每 100ms 探测一次，最多等 60s。
+    // 此前是 20s：关闭预加载 + 冷盘首次按键的场景会在这条线上放弃，录音全丢（REVIEW_UX W-01 附带）。
+    private const int MaxEngineWaitAttempts = 600;
 
     private void WaitForEngineThenFinalize(int attempt = 0)
     {
@@ -444,6 +463,14 @@ internal sealed class LocalAsrSession : IDictationSession
 
     private void RunFinalize(RecognitionBuffer buffer)
     {
+        // 看门狗从这里（推理真正开始）才计时：等引擎加载的那段时间不受它管，也就不必为了
+        // 覆盖加载时长而放大推理超时（此前在 FinalizeStream 一进来就计时，两个预算互相挤占）。
+        if (_finalizeWatchdog is { } timeout)
+        {
+            var cts = new CancellationTokenSource();
+            _finalizeWatchdogCts = cts;
+            _ = RunFinalizeWatchdogAsync(timeout, cts);
+        }
         _pump.Post(() =>
         {
             if (_cancelled) return;
@@ -539,6 +566,9 @@ internal sealed class LocalAsrSession : IDictationSession
         else
         {
             Timings.LlmResult = AsrSessionTimings.LlmOutcome.Corrected;
+            // 上屏前把纠错后的文本经 OnPartial 顶到 HUD：正常情况下插入很快、一闪而过；插入被推迟
+            // 或降级为复制时，这正是用户校对"纠错改了什么"的唯一窗口（此前只能看到 ASR 原文）。
+            OnPartial?.Invoke(report.Outcome.Text);
         }
         OnFinal?.Invoke(report.Outcome.Text);
     }

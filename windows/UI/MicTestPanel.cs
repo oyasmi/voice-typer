@@ -171,11 +171,18 @@ internal sealed class MicTestPanel : FlowLayoutPanel
         }
     }
 
-    /// <summary>协调器通知测试已结束：<paramref name="reason"/> 为 null 表示正常（只是被停掉）。</summary>
+    /// <summary>协调器通知测试已结束：<paramref name="reason"/> 为 null 表示正常停止（显示中性的"测试已停止"）。
+    /// 非空的 reason 可能是启动失败 / 设备变化 / 听写开始等；除失败外多数只是告知性的，
+    /// 用暗金色而不是告警红（REVIEW_UX U-03）。</summary>
     public void ReportStopped(string? reason)
     {
         if (!_running && reason is null) return;
-        Reset(reason ?? "", Color.Firebrick);
+        if (reason is null)
+        {
+            Reset(L10n.T("测试已停止。"), Color.FromArgb(99, 110, 128));
+            return;
+        }
+        Reset(reason, Color.DarkGoldenrod);
     }
 
     private void OnTimer()

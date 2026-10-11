@@ -166,6 +166,36 @@ public class OnboardingModelTests
             try { Directory.Delete(Path.GetDirectoryName(path)!, true); } catch { }
         }
     }
+
+    // ─── × 关闭计数：连续关掉三次视为"别再弹"（REVIEW_UX W-02）──
+
+    [Fact]
+    public void Dismissal_CountsRoundTrips_AndResets()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"voicetyper-onb-{Guid.NewGuid():N}");
+        var dismissalPath = Path.Combine(dir, "onboarding-dismissed.txt");
+        try
+        {
+            Assert.Equal(0, OnboardingRecord.CountDismissals(dismissalPath));
+
+            Assert.Equal(1, OnboardingRecord.MarkDismissed(dismissalPath));
+            Assert.Equal(2, OnboardingRecord.MarkDismissed(dismissalPath));
+            Assert.Equal(2, OnboardingRecord.CountDismissals(dismissalPath));
+            Assert.True(OnboardingRecord.MarkDismissed(dismissalPath) >= OnboardingRecord.AutoCompleteAfterDismissals);
+
+            OnboardingRecord.ResetDismissals(dismissalPath);
+            Assert.Equal(0, OnboardingRecord.CountDismissals(dismissalPath));
+
+            // 损坏 / 垃圾内容按 0 计，不抛异常。
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(dismissalPath, "garbage");
+            Assert.Equal(0, OnboardingRecord.CountDismissals(dismissalPath));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
 }
 
 public class MicPermissionProbeTests

@@ -580,6 +580,59 @@ public class VoiceTyperControllerTests
         Assert.False(h.Hotkey.AcceptsCancelWhenInactive);
     }
 
+    // ─── 终稿看门狗（REVIEW_UX W-01）────────────────────────────
+
+    [Theory]
+    [InlineData(0, 30)]     // 下限：短音频也要能抓到真卡死
+    [InlineData(5, 30)]
+    [InlineData(30, 150)]   // 5 × 音频时长，覆盖 RTF 到 0.2
+    [InlineData(60, 300)]
+    [InlineData(120, 300)]  // 上限 5 分钟：极端挂死不能让 HUD 永远停在"识别中"
+    public void FinalizeWatchdogTimeout_ScalesWithAudioLength(double audioSeconds, double expectedSeconds)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), VoiceTyperController.FinalizeWatchdogTimeout(audioSeconds));
+    }
+
+    [Fact]
+    public void FinalizeTimeout_WithPreviewText_SalvagesPreviewToClipboard()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.OnPartial!("已经识别出的部分");
+        h.Session.Timings.FinalizeTimedOut = true;
+        h.Session.OnError!("识别超时");
+
+        // 说了很久的话不能一个字都找不回来：预览文本进剪贴板，错误提示说明去向。
+        Assert.Equal(new[] { "已经识别出的部分" }, h.Text.Copied);
+        Assert.Contains("剪贴板", h.States.Last().Message);
+        Assert.Equal(DictationOutcome.Failed, Assert.Single(h.Metrics).Outcome);
+    }
+
+    [Fact]
+    public void RecognitionError_WithoutTimeoutMarker_DoesNotTouchClipboard()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.OnPartial!("已经识别出的部分");
+        h.Session.OnError!("识别超时");
+
+        // 普通识别失败（引擎异常等）不把可能残缺的预览塞给用户、覆盖他的剪贴板。
+        Assert.Empty(h.Text.Copied);
+        Assert.Equal("识别超时", h.States.Last().Message);
+    }
+
+    [Fact]
+    public void FinalizeTimeout_WithoutPreviewText_KeepsOriginalMessage()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.Timings.FinalizeTimedOut = true;
+        h.Session.OnError!("识别超时");
+
+        Assert.Empty(h.Text.Copied); // 没有可兜底的预览文本
+        Assert.Equal("识别超时", h.States.Last().Message);
+    }
+
     [Fact]
     public void FocusChanged_CopiesToClipboardAndReportsError()
     {
