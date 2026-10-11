@@ -1,14 +1,14 @@
 # Changelog
 
 Windows 一体化应用（`windows/`）的版本变更记录。macOS 侧见 [`../macos/CHANGELOG.md`](../macos/CHANGELOG.md)；
-此前的修复批次（R0–R4、第二轮审查）见 [`REPAIR_DELIVERY.md`](REPAIR_DELIVERY.md) 与
-[`REVIEW_2026-09-14.md`](REVIEW_2026-09-14.md)。
+历轮评审、编号对照与遗留项汇总见 [`docs/REVIEW_HISTORY.md`](docs/REVIEW_HISTORY.md)，
+真机验证清单见 [`docs/VERIFICATION.md`](docs/VERIFICATION.md)。
 
 ## 未发布
 
 ### 用户体验评审修复批次（2026-10-11）
 
-来源是一轮对 `windows/` 的全量代码评审（发现清单见 [`REVIEW_UX_2026-10-11.md`](REVIEW_UX_2026-10-11.md)），
+来源是一轮对 `windows/` 的全量代码评审（发现清单见 [`docs/REVIEW_HISTORY.md`](docs/REVIEW_HISTORY.md) §2.5），
 按其第一批 + 第二批实施 15 项。设计与取舍见 `DESIGN.md` §25。**本批首次在真实 Windows 机器上完成
 `dotnet build`（0 错误）与 `dotnet test`（475 项：473 过 / 2 跳过 / 0 失败——含此前在 macOS 主机上
 无法运行的 8 个 STA 测试）；涉及热键、剪贴板、气泡通知与浮窗观感的行为仍未做真机手工验证（步骤见 DESIGN §25.4）。**
@@ -216,7 +216,8 @@ Windows 真机验证。**
 
 ### 审查分诊修复批次（2026-10-02）
 
-依据 [TRIAGE_2026-10-02.md](TRIAGE_2026-10-02.md) 实施。**本批次在没有 .NET SDK 的 Linux 环境完成，没有编译、
+依据 2026-10-02 审查分诊工单（T1–T2）实施，编号对照见
+[docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md) §2.3。**本批次在没有 .NET SDK 的 Linux 环境完成，没有编译、
 没有运行测试、没有真机验证**，状态见 [DESIGN.md §17](DESIGN.md#17-2026-10-02-审查分诊修复批次)。
 
 - 修复：首次启动没有模型时，下载完成后模型不会自动加载，设置页「重新加载模型」也永远无效，只能重启应用
@@ -245,7 +246,7 @@ Windows 真机验证。**
 - Windows 默认分发改为依赖电脑上已安装的 .NET 10 Desktop Runtime，不再打包 .NET 与 WinForms
   共享运行时。关闭 ReadyToRun，缩小 NAudio 引用范围，并排除调试符号与原生导入库。
   构建和 CI 增加发布验收；安装程序检查对应架构的桌面运行时。体积与验证记录见
-  [PACKAGE_SIZE_AUDIT.md](PACKAGE_SIZE_AUDIT.md)。
+  [docs/PACKAGING.md](docs/PACKAGING.md)。
 - 设置窗口重做为「听写 / 语音模型 / 智能纠错 / 外观与通用 / 诊断与帮助」侧栏导航，统一保存与撤销，
   跨页及关闭后保留草稿；高级参数折叠，透明度预览在撤销或隐藏时恢复。
 - 下载兼容 ModelScope 的 `200 + Content-Range` 响应，严格验证起止位置、总长与正文长度。

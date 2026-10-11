@@ -1,7 +1,10 @@
 # Windows 分发体积检查与瘦身记录
 
-日期：2026-09-30。用户明确选择使用电脑上已安装的 .NET 10 Desktop Runtime，不将共享运行时
-打包到 VoiceTyper 中。下面的体积均不包含语音识别模型；MiB = 1,048,576 字节。
+[← Windows 目录](../README.md) · [架构设计](../DESIGN.md) · [评审历史与遗留项](REVIEW_HISTORY.md) · [真机验证清单](VERIFICATION.md)
+
+日期：2026-09-30（发布规则与验证证据随版本更新）。用户明确选择使用电脑上已安装的
+.NET 10 Desktop Runtime，不将共享运行时打包到 VoiceTyper 中。下面的体积均不包含语音识别
+模型；MiB = 1,048,576 字节。
 
 ## 原产物为什么有 135 MiB
 

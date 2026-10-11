@@ -1,8 +1,8 @@
 name: Windows build & test
 
 # 仅覆盖 windows/ 应用；macOS 与 client-server 由各自的验证方式负责，不在此工作流范围内。
-# 背景见 windows/REVIEW_2026-09-14.md VW-22：本仓库此前从未有任何自动化构建，
-# windows/REPAIR_DELIVERY.md 里几乎每一条都停留在"代码完成，待 dotnet build 确认"。
+# 背景见 windows/docs/REVIEW_HISTORY.md §2.2 VW-22：本仓库此前从未有任何自动化构建，
+# 早期修复交付里几乎每一条都停留在"代码完成，待 dotnet build 确认"。
 # 这个工作流把"能不能编译、测试能不能跑绿、能不能发布"这三件事变成每次改动自动验证，
 # 而不是继续依赖人工在真机上手动确认。
 

@@ -71,5 +71,9 @@ Windows 实现尚未完成真实 Windows 硬件验证。涉及发布、性能或
 - 根 `README.md` 描述当前一体化产品与仓库入口。
 - `macos/README.md`、`windows/README.md` 面向各平台用户和开发者。
 - `macos/DESIGN.md`、`windows/DESIGN.md` 记录架构决策、验证证据与待办风险。
+- `windows/docs/` 保存历轮代码评审的沉淀：`REVIEW_HISTORY.md`（评审轮次索引、WR/VW/WT 等编号
+  对照、未完成遗留项与已否决方案）、`VERIFICATION.md`（真机验证清单与性能测量方法）、
+  `PACKAGING.md`（分发体积记录）。改 Windows 代码前先核对遗留项与否决项，不要重复提案；
+  代码注释里的评审编号在 `REVIEW_HISTORY.md` 反查。历轮评审的原文已删除，需要时从 git 历史找回。
 - `client-server/README.md` 和 `client-server/PROTOCOL.md` 只描述旧客户端—服务端架构；协议文件不
   约束 `macos/` 或 `windows/` 的进程内接口。

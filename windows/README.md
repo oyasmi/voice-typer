@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [变更记录](CHANGELOG.md) · [审查与修复计划](REVIEW_AND_REPAIR_PLAN.md) · [分体式客户端](../client-server/client_windows_native/README.md)
+[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [变更记录](CHANGELOG.md) · [评审历史与验证](docs/REVIEW_HISTORY.md) · [分体式客户端](../client-server/client_windows_native/README.md)
 
 单进程 Windows 桌面应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 C# 重写并
 内联进客户端，安装即用，**不需要**单独部署 Python 服务端。当前版本 **3.5.1**（功能与 macOS 3.5.1 对等，见[变更记录](CHANGELOG.md)），应用名 **VoiceTyper**。
@@ -306,7 +306,7 @@ VoiceTyper-<版本>-win-arm64-portable.zip
 两种架构均为依赖系统框架的目录式发布（`--self-contained false`），启用 ReadyToRun（预编译，减少首次使用前的 JIT）、不做 IL 裁剪，
 只引用 WASAPI 音频模块；调试符号与原生链接用 `.lib` 不随包分发。
 构建与 CI 使用 `scripts/verify_publish.ps1` 检查必需文件，并拒绝包含 .NET 运行时、模型或测试程序集的产物。
-实测体积与手工验收步骤见 [分发体积检查](PACKAGE_SIZE_AUDIT.md)。
+实测体积与手工验收步骤见 [分发体积检查](docs/PACKAGING.md)。
 
 模型不随构建产物打包，首次启动时应用会引导下载。如需离线预置模型用于测试或跳过下载引导：
 

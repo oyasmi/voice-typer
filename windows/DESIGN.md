@@ -5,12 +5,12 @@
 > 详情见本文 §16。下方「仍未在真实 Windows 设备上运行」属于历史状态，不再作为当前事实。
 > 性能、arm64 真机、实际系统 DPI 跨屏切换与长期稳定性仍需验证。
 
-> **2026-09-06 审查补充**：[Windows 审查与修复计划](REVIEW_AND_REPAIR_PLAN.md)记录了当前实现的
+> **2026-09-06 审查补充**：[第一轮审查](docs/REVIEW_HISTORY.md)记录了当前实现的
 > 构建、音频、输入注入和生命周期缺陷，并给出严重程度、修复难度、任务依赖与验收标准。
 > 修复工作以该清单核对当前代码；下文历史性的“已对齐”“代码审查通过”不代表这些缺陷已经修复。
 >
 > **2026-09-06 修复进度**：R0–R4 全部工单已完成代码与静态验证（见
-> [REPAIR_DELIVERY.md](REPAIR_DELIVERY.md)），**尚未在带 .NET SDK 的环境编译、未在 Windows 真机
+> [docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md) §2.1），**尚未在带 .NET SDK 的环境编译、未在 Windows 真机
 > 验证**。合入后第一步是 `dotnet build` / `dotnet test` 跑绿并处理清单外的编译错误。
 
 > **2026-09-29 状态更新（3.5.0）**：Windows 已对齐 macOS 3.5.0 的行为基线，并**首次在带 .NET SDK 的环境里被
@@ -18,7 +18,8 @@
 > 详见 [CHANGELOG.md](CHANGELOG.md) 与本文 §15。**仍未在真实 Windows 设备上运行过**——凡涉及热键钩子、麦克风、
 > 剪贴板、浮窗观感、DPI、性能的结论都只是「代码审查通过」，真机验证清单见
 > [CHANGELOG.md](CHANGELOG.md#真机验证清单)。下文与此状态矛盾的旧表述（"从未编译""待跑 dotnet build"等）
-> 以本段为准；[Windows 审查与修复计划](REVIEW_AND_REPAIR_PLAN.md)与其后续文档保留为历史记录。
+> 以本段为准；历轮审查与修复的过程文档已归并为 [docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md)
+>（遗留项与待验证清单见 [docs/VERIFICATION.md](docs/VERIFICATION.md)）。
 
 > 目标产物：`windows/` 下一个**前后端一体**的 Windows 桌面应用，安装即用，不需要单独跑 Python 服务端。
 > 它以 `client-server/client_windows_native/` 为蓝本，把 `macos/` 已经验证过的 SenseVoice 推理链路从 Swift 直译为 C#。
@@ -675,9 +676,9 @@ Booting ──┬─→ SetupRequired（麦克风不可用）──────�
 | 产物 | 形态 | 体积证据 | 说明 |
 | --- | --- | ---: | --- |
 | `VoiceTyper-<ver>-win-x64-setup.exe` | Inno Setup 安装包（**主推**） | 尚未实测安装器压缩体积 | 装到 `%LOCALAPPDATA%\Programs\VoiceTyper`；安装前检查目标架构的 .NET 10 Desktop Runtime |
-| `VoiceTyper-<ver>-win-x64-portable.zip` | 依赖框架的目录式发布 | 见 [体积实测](PACKAGE_SIZE_AUDIT.md) | 解压后使用系统安装的 .NET 10 Desktop Runtime |
+| `VoiceTyper-<ver>-win-x64-portable.zip` | 依赖框架的目录式发布 | 见 [体积实测](docs/PACKAGING.md) | 解压后使用系统安装的 .NET 10 Desktop Runtime |
 | `VoiceTyper-<ver>-win-arm64-setup.exe` | 同上，arm64 | 尚未实测安装器压缩体积 | Snapdragon X 笔记本；需要 arm64 桌面运行时 |
-| `VoiceTyper-<ver>-win-arm64-portable.zip` | 同上，arm64 | 见 [体积实测](PACKAGE_SIZE_AUDIT.md) | arm64 发布成功不代表 arm64 真机运行通过 |
+| `VoiceTyper-<ver>-win-arm64-portable.zip` | 同上，arm64 | 见 [体积实测](docs/PACKAGING.md) | arm64 发布成功不代表 arm64 真机运行通过 |
 
 **关键决策：放弃 `PublishSingleFile` + `IncludeNativeLibrariesForSelfExtract`。**
 
@@ -822,7 +823,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 | D6 | FFT 实现 | ✅ **自写 512 点 radix-2**，不引数学库 | 固定尺寸、算法确定、有金标准兜底；比 macOS 的 vDSP 打包方案更简单 |
 | D7 | 目录布局 | ✅ **配置 `%APPDATA%\VoiceTyper\`，模型 `%LOCALAPPDATA%\VoiceTyper\models\`** | 配置（KB 级）该漫游，模型（240MB）绝不能漫游。这是 Windows 特有的正确做法，不能照抄 macOS 单目录方案 |
 | D8 | 密钥存储 | ✅ **DPAPI 文件** | 40 行 vs 凭据管理器的 120 行互操作，底层同样是 DPAPI，安全性无差别 |
-| D9 | 分发形态 | ✅ **依赖系统 .NET 10 Desktop Runtime 的目录式 + Inno Setup**，放弃单文件自解压 | 不重复分发共享运行时；启动时不解压原生库；体积实测见 [PACKAGE_SIZE_AUDIT.md](PACKAGE_SIZE_AUDIT.md) |
+| D9 | 分发形态 | ✅ **依赖系统 .NET 10 Desktop Runtime 的目录式 + Inno Setup**，放弃单文件自解压 | 不重复分发共享运行时；启动时不解压原生库；体积实测见 [docs/PACKAGING.md](docs/PACKAGING.md) |
 | D10 | 架构覆盖 | ✅ **x64 + arm64** | ORT 两个 RID 原生库齐备，没有 macOS 侧"放弃 Intel"那种被迫取舍 |
 | D11 | 文本插入 | ✅ **维持剪贴板 + SendInput** | Windows 没有 macOS AX 直写的可靠对等物（UIA `TextPattern` 只读、`ValuePattern` 整体替换语义错误） |
 | D12 | Windows 版本下限 | 待定，暂按 **Win10 1809+** | 若接受只支持 Win11 24H2+，Windows ML/NPU 路线才成立。取决于目标用户构成，P0 前定即可 |
@@ -1089,8 +1090,7 @@ macOS 的问题是蓝牙耳机进入通话模式；Windows 的对应问题在于
 
 ## 17. 2026-10-02 审查分诊修复批次
 
-依据 [TRIAGE_2026-10-02.md](TRIAGE_2026-10-02.md) 的工单实施，原始审查见
-[REVIEW_2026-10-02.md](REVIEW_2026-10-02.md)。
+工单与原始审查的编号对照见 [docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md) §2.3。
 
 ### 17.1 当前不变量与所有权
 
@@ -1653,8 +1653,8 @@ D2 的恢复判据是「预览值等于已保存的不透明度」（`AppCoordin
 
 ## 25. 2026-10-11 用户体验评审修复批次
 
-来源是对 `windows/` 的全量代码评审（发现清单、优先级与去重对照见
-[REVIEW_UX_2026-10-11.md](REVIEW_UX_2026-10-11.md)），按其第一批 + 第二批实施 15 项；
+来源是对 `windows/` 的全量代码评审（发现清单与编号对照见
+[docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md) §2.5），按其第一批 + 第二批实施 15 项；
 第三批（W-03 会话上限在 Starting 阶段不收尾、W-05 恢复延迟、U-05 设备枚举后台化、F-07 识别中
 Esc 的兜底）留待后续。变更清单见 [CHANGELOG.md](CHANGELOG.md)，本节记录有设计取舍的部分。
 

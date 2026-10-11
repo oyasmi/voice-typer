@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | **English**
 
-[← Back to the project](../README.en.md) · [Design](DESIGN.md) · [Changelog](CHANGELOG.md) · [Review and repair plan](REVIEW_AND_REPAIR_PLAN.md) · [Split client](../client-server/client_windows_native/README.md)
+[← Back to the project](../README.en.md) · [Design](DESIGN.md) · [Changelog](CHANGELOG.md) · [Review history & verification](docs/REVIEW_HISTORY.md) · [Split client](../client-server/client_windows_native/README.md)
 
 A single-process Windows desktop app: the SenseVoice recognition pipeline from
 [`client-server/server/`](../client-server/server/README.md) rewritten in C# and inlined into the
@@ -356,7 +356,7 @@ Both architectures publish framework-dependent directories (`--self-contained fa
 ReadyToRun enabled (precompiled code, less JIT before first use) and IL trimming disabled. Only the WASAPI audio modules are included; debug symbols
 and native import libraries are excluded. Builds and CI run `scripts/verify_publish.ps1` to ensure
 required files are present and reject bundled .NET runtimes, models, and test assemblies.
-See the [package size audit](PACKAGE_SIZE_AUDIT.md) (Chinese) for measured sizes and manual checks.
+See the [package size audit](docs/PACKAGING.md) (Chinese) for measured sizes and manual checks.
 
 The model is not bundled with the build; the app guides you through downloading it on first launch. To
 stage it offline for testing or to skip the download guide:
