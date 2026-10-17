@@ -1,3 +1,4 @@
+import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
@@ -80,10 +81,11 @@ final class HotkeyService: @unchecked Sendable {
     private var runLoopSource: CFRunLoopSource?
     private var runLoop: CFRunLoop?
     private var workerThread: Thread?
-    private var hotkey: HotkeyConfig?
-    private var isActive = false
-    /// 热键为单独修饰键时的手势识别器；只在事件 tap 的 worker 线程上读写。
-    private var modifierRecognizer: ModifierTapRecognizer?
+    /// 「事件 → 动作」状态机；只在事件 tap 的 worker 线程上读写（start 时在 worker 启动前赋值）。
+    private var filter: HotkeyEventFilter?
+    /// 当前 tap 是否为可吞事件的主动 tap（`.defaultTap`）。有辅助功能权限时才用，否则退回
+    /// `.listenOnly`、行为与 3.5 相同。只在 worker 线程写（tap 启用之前）、读（回调里）。
+    private var tapIsActive = false
     private var isRunning = false
     /// 当前 worker 对应的生命周期句柄；`stop()` 会把它清空。
     private var workerLifecycle: WorkerLifecycle?
@@ -106,8 +108,7 @@ final class HotkeyService: @unchecked Sendable {
             throw HotkeyServiceError.unsupportedKey(hotkey.key)
         }
 
-        self.hotkey = hotkey
-        self.modifierRecognizer = ModifierHotkey(rawValue: hotkey.key.lowercased()).map(ModifierTapRecognizer.init)
+        self.filter = HotkeyEventFilter(hotkey: hotkey)
         let context = TapContext(self)
         let startupBox = StartupResultBox()
         let lifecycle = WorkerLifecycle()
@@ -162,9 +163,7 @@ final class HotkeyService: @unchecked Sendable {
         self.runLoop = nil
         workerThread = nil
         workerLifecycle = nil
-        hotkey = nil
-        modifierRecognizer = nil
-        isActive = false
+        filter = nil
         isRunning = false
         // 防御性复位：正常路径由 VoiceTyperController 在收尾时关掉，但 stop() 也可能
         // 在听写进行中被调用（整体停止 / 挂起监听），不能把取消窗口遗留给下一次 start()。
@@ -176,7 +175,7 @@ final class HotkeyService: @unchecked Sendable {
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
             (1 << CGEventType.flagsChanged.rawValue) |
-            // 鼠标按下只用于让"单独修饰键 + 点击"（如 ⌘ + 点链接）作废本次手势；仍是 listenOnly，不吞事件。
+            // 鼠标按下只用于让"单独修饰键 + 点击"（如 ⌘ + 点链接）作废本次手势；永不吞鼠标事件。
             (1 << CGEventType.leftMouseDown.rawValue) |
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.otherMouseDown.rawValue)
@@ -184,27 +183,48 @@ final class HotkeyService: @unchecked Sendable {
         // 使用 passRetained 确保 context 在事件 tap 存活期间不会被释放
         let contextPtr = Unmanaged.passRetained(context).toOpaque()
 
-        let tap = CGEvent.tapCreate(
+        // 回调里只允许 O(1) 计算与 `DispatchQueue.main.async`：主动 tap 的回调延迟会拖慢全系统输入，
+        // 不得加锁竞争、不得 sync 到主线程（R8-B1）。
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
+            guard let userInfo else {
+                return Unmanaged.passUnretained(event)
+            }
+            let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
+            // 系统在回调超时等情况下会禁用 tap；若不重新启用，全局热键会静默失效
+            // 直到重启应用。这里检测到禁用事件立即恢复。
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                ctx.service?.reenableTap()
+                return Unmanaged.passUnretained(event)
+            }
+            if ctx.service?.handle(eventType: type, event: event) == true {
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        // 有辅助功能权限（本应用必需权限之一）时用主动 tap，才能吞掉被我们消费的按键；
+        // 创建失败或没有权限则退回 listenOnly，行为与之前一致。
+        var tapOptions: CGEventTapOptions = AXIsProcessTrusted() ? .defaultTap : .listenOnly
+        var tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: tapOptions,
             eventsOfInterest: CGEventMask(mask),
-            callback: { _, type, event, userInfo in
-                guard let userInfo else {
-                    return Unmanaged.passUnretained(event)
-                }
-                let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                // 系统在回调超时等情况下会禁用 tap；若不重新启用，全局热键会静默失效
-                // 直到重启应用。这里检测到禁用事件立即恢复。
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    ctx.service?.reenableTap()
-                    return Unmanaged.passUnretained(event)
-                }
-                ctx.service?.handle(eventType: type, event: event)
-                return Unmanaged.passUnretained(event)
-            },
+            callback: callback,
             userInfo: contextPtr
         )
+        if tap == nil, tapOptions == .defaultTap {
+            AppLog.hotkey.warning("主动事件监听创建失败，退回只监听模式")
+            tapOptions = .listenOnly
+            tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: tapOptions,
+                eventsOfInterest: CGEventMask(mask),
+                callback: callback,
+                userInfo: contextPtr
+            )
+        }
 
         guard let tap else {
             AppLog.hotkey.error("无法创建事件监听，通常意味着输入监控权限缺失")
@@ -227,6 +247,8 @@ final class HotkeyService: @unchecked Sendable {
             return
         }
 
+        self.tapIsActive = (tapOptions == .defaultTap)
+        AppLog.hotkey.info("热键监听模式: \(self.tapIsActive ? "主动（吞掉被消费的按键）" : "只监听", privacy: .public)")
         self.eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         guard let source else {
@@ -271,132 +293,46 @@ final class HotkeyService: @unchecked Sendable {
         CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
-    private func handle(eventType: CGEventType, event: CGEvent) {
-        guard let hotkey else {
-            return
-        }
+    /// 把 `CGEvent` 交给状态机，并把动作派发到主线程。运行在 tap 回调线程（worker 线程）。
+    /// 返回是否应该吞掉该事件（只在主动 tap 下才可能为 true）。
+    private func handle(eventType: CGEventType, event: CGEvent) -> Bool {
+        guard filter != nil else { return false }
 
-        // 按 Esc → 取消本次听写。两种情况下生效：
-        // (a) 热键仍处于激活态（录音中）；
-        // (b) 已松开但控制器打开了 `acceptsCancelWhenInactive`（识别中，结果尚未上屏）。
-        // 放在热键分支之前，Fn 与组合键两种模式都能触发。tap 为 listenOnly，
-        // 不吞事件，Esc 仍会照常传递给前台应用。
-        // 单独修饰键模式下"按住中"以识别器为准（含已作废但尚未抬起的阶段）。
-        let isHolding = modifierRecognizer?.isHolding ?? isActive
-        if isHolding || acceptsCancelWhenInactive,
-           eventType == .keyDown,
-           event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Escape) {
-            // 这个 Esc 同样要喂给识别器使手势作废，否则松开修饰键时会多发一个 `.ended`，
-            // toggle 模式下会被误当成一次"单击"而开始新录音。
-            _ = feedModifierRecognizer(.keyDown)
-            DispatchQueue.main.async { [weak self] in
-                self?.onCancel?()
-            }
-            return
-        }
-
-        if modifierRecognizer != nil {
-            handleModifier(eventType: eventType, event: event)
-            return
-        }
-
-        if hotkey.key.lowercased() == "fn" {
-            handleFn(eventType: eventType, event: event)
-            return
-        }
-
-        guard let targetKeyCode = Self.keyCode(for: hotkey.key) else {
-            return
-        }
-
+        let input: HotkeyEventFilter.Input
         switch eventType {
         case .keyDown:
-            let matchesModifiers = modifiersMatch(
-                expected: hotkey.modifiers,
-                flags: event.flags
+            input = .keyDown(
+                keyCode: event.getIntegerValueField(.keyboardEventKeycode),
+                flags: event.flags.rawValue,
+                isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
             )
-            let matchesKey = event.getIntegerValueField(.keyboardEventKeycode) == Int64(targetKeyCode)
-
-            if matchesModifiers && matchesKey && !isActive {
-                isActive = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.onPress?()
-                }
-            }
         case .keyUp:
-            let matchesKey = event.getIntegerValueField(.keyboardEventKeycode) == Int64(targetKeyCode)
-            if matchesKey && isActive {
-                isActive = false
-                DispatchQueue.main.async { [weak self] in
-                    self?.onRelease?()
-                }
-            }
-        default:
-            break
-        }
-    }
-
-    /// 把事件转成识别器输入并派发结果：`.began → onPress`、`.ended → onRelease`、
-    /// `.cancelled → onGestureCancelled`。"toggle 模式只有干净单击才算"由控制器处理。
-    private func handleModifier(eventType: CGEventType, event: CGEvent) {
-        let input: ModifierTapRecognizer.Input
-        switch eventType {
+            input = .keyUp(keyCode: event.getIntegerValueField(.keyboardEventKeycode))
         case .flagsChanged:
             input = .flagsChanged(
                 keyCode: event.getIntegerValueField(.keyboardEventKeycode),
                 flags: event.flags.rawValue
             )
-        case .keyDown:
-            input = .keyDown
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             input = .mouseDown
         default:
-            return
+            return false
         }
-        guard let output = feedModifierRecognizer(input) else { return }
+
+        let decision = filter?.handle(input, acceptsCancelWhenInactive: acceptsCancelWhenInactive)
+            ?? HotkeyEventFilter.Decision()
+        guard !decision.actions.isEmpty else { return decision.consume && tapIsActive }
         DispatchQueue.main.async { [weak self] in
-            switch output {
-            case .began: self?.onPress?()
-            case .ended: self?.onRelease?()
-            case .cancelled: self?.onGestureCancelled?()
+            for action in decision.actions {
+                switch action {
+                case .press: self?.onPress?()
+                case .release: self?.onRelease?()
+                case .cancel: self?.onCancel?()
+                case .gestureCancelled: self?.onGestureCancelled?()
+                }
             }
         }
-    }
-
-    private func feedModifierRecognizer(_ input: ModifierTapRecognizer.Input) -> ModifierTapRecognizer.Output? {
-        modifierRecognizer?.handle(input)
-    }
-
-    private func handleFn(eventType: CGEventType, event: CGEvent) {
-        guard eventType == .flagsChanged else {
-            return
-        }
-
-        let isFnPressed = event.flags.contains(.maskSecondaryFn)
-        if isFnPressed && !isActive {
-            isActive = true
-            DispatchQueue.main.async { [weak self] in
-                self?.onPress?()
-            }
-        } else if !isFnPressed && isActive {
-            isActive = false
-            DispatchQueue.main.async { [weak self] in
-                self?.onRelease?()
-            }
-        }
-    }
-
-    private func modifiersMatch(expected: [String], flags: CGEventFlags) -> Bool {
-        let normalized = Set(expected.map { $0.lowercased() })
-        let expectedCommand = normalized.contains("cmd") || normalized.contains("command")
-        let expectedControl = normalized.contains("ctrl") || normalized.contains("control")
-        let expectedOption = normalized.contains("alt") || normalized.contains("option")
-        let expectedShift = normalized.contains("shift")
-
-        return expectedCommand == flags.contains(.maskCommand) &&
-            expectedControl == flags.contains(.maskControl) &&
-            expectedOption == flags.contains(.maskAlternate) &&
-            expectedShift == flags.contains(.maskShift)
+        return decision.consume && tapIsActive
     }
 
     /// 支持作为热键主键的键名 → 虚拟键码。"fn" 不在此表中，走独立的
@@ -424,6 +360,11 @@ final class HotkeyService: @unchecked Sendable {
 
     private static func keyCode(for key: String) -> CGKeyCode? {
         keyCodeMap[key.lowercased()]
+    }
+
+    /// 供 `HotkeyEventFilter` 取目标键码（`Int64`，与 `CGEvent` 字段同型）。
+    static func keyCodeValue(for key: String) -> Int64? {
+        keyCode(for: key).map { Int64($0) }
     }
 
     /// 虚拟键码 → 支持的热键主键名（供设置界面的按键录制器反查）。

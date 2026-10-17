@@ -306,7 +306,7 @@ struct OnboardingView: View {
                     if let secureInputWarning = vm.secureInputWarning {
                         troubleshooting(secureInputWarning)
                     }
-                    troubleshooting(L("热键被别的应用抢走了（如 Spotlight ⌘Space、输入法切换 ⌃Space）；可以在「设置 → 通用」里换一个热键。"))
+                    troubleshooting(L("热键与系统快捷键冲突（如 Spotlight 的 ⌘Space、切换输入法的 ⌃Space）；可以在「设置 → 通用」里换一个热键。"))
                     troubleshooting(L("刚更新过版本：本机签名的构建在更新后可能需要重新授权，先到「系统设置 → 隐私与安全性」把 VoiceTyper 移除再重新添加。"))
                 }
                 .padding(.top, 6)

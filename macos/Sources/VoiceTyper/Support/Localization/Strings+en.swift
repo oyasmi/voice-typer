@@ -298,8 +298,8 @@ extension L10n {
         "按下热键完全没反应？": "Nothing happens when you press the hotkey?",
         "「输入监控」权限没给全——回到上一步确认三项都是绿色。":
             "Input Monitoring is not fully granted — go back a step and check that all three are green.",
-        "热键被别的应用抢走了（如 Spotlight ⌘Space、输入法切换 ⌃Space）；可以在「设置 → 通用」里换一个热键。":
-            "Another app has taken the hotkey (Spotlight ⌘Space, input-source switching ⌃Space, and so on); pick a different hotkey in Settings → General.",
+        "热键与系统快捷键冲突（如 Spotlight 的 ⌘Space、切换输入法的 ⌃Space）；可以在「设置 → 通用」里换一个热键。":
+            "The hotkey conflicts with a system shortcut (such as Spotlight's ⌘Space or the input-source switch ⌃Space); pick a different hotkey in Settings → General.",
         "刚更新过版本：本机签名的构建在更新后可能需要重新授权，先到「系统设置 → 隐私与安全性」把 VoiceTyper 移除再重新添加。":
             "You just updated: ad-hoc signed builds may need permissions again after an update. In System Settings → Privacy & Security, remove VoiceTyper and add it back.",
         "再试一次": "Try Again",

@@ -41,6 +41,11 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
   switch to “press once to start, press again to stop”
 - `Esc` cancels during recording *and* during recognition (after releasing, before the result lands),
   and nothing gets inserted
+- Hotkey and Esc no longer “leak through”: with a key combination such as `⌥Space`, the key itself is
+  no longer delivered to the front app (no stray space typed), and the `Esc` used to cancel does not
+  also trigger the front app's Esc (leaving full screen, closing a dialog…). `Esc` outside dictation
+  still reaches the front app. This needs the Accessibility permission; without it the app falls back to
+  listen-only and behaves as before
 - What you said can be recovered: results that were cancelled, not inserted (focus changed or insertion
   failed) or cut short by a recognition timeout go into **Recent Results** in the menu bar (up to 10,
   kept in memory only, cleared on quit, and clearable from the menu). One click copies a result to the
@@ -224,8 +229,8 @@ Recordings shorter than **0.3 seconds** are treated as accidental taps and disca
 
 ### Fn and conflicting system behaviour
 
-The default hotkey is `Fn`🌐, and VoiceTyper's event tap **does not swallow events** (swallowing them
-would break normal typing). So if System Settings → Keyboard → “Press 🌐 key to” is not set to “Do
+The default hotkey is `Fn`🌐, and VoiceTyper **never swallows Fn or modifier-only events** (swallowing
+modifier changes would corrupt the system's modifier state). So if System Settings → Keyboard → “Press 🌐 key to” is not set to “Do
 Nothing”, holding Fn to speak also triggers the system's own Fn action the moment you let go — the
 emoji panel pops up, or your input source switches. The guide page and Settings → General detect this
 and offer a button that opens the relevant system settings.
