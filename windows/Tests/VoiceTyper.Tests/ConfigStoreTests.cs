@@ -23,7 +23,7 @@ public class ConfigStoreTests
         clone.Asr.Language = "zh";
         clone.UI.Opacity = 0.5;
 
-        Assert.Equal(new[] { "ctrl" }, original.Hotkey.Modifiers);
+        Assert.Empty(original.Hotkey.Modifiers);
         Assert.Equal("auto", original.Asr.Language);
         Assert.Equal(0.85, original.UI.Opacity);
     }

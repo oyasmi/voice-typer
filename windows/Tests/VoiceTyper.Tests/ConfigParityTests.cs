@@ -95,7 +95,7 @@ public class ConfigParityTests
         var config = new AppConfig();
         config.Hotkey = new HotkeyConfig { Modifiers = new() { "ctrl" }, Key = "nonsense", ModeValue = HotkeyMode.Toggle };
         var validated = config.Validated().Hotkey;
-        Assert.Equal("f2", validated.Key);
+        Assert.Equal(ModifierHotkeys.RightCtrl, validated.Key);
         Assert.Equal(HotkeyMode.Toggle, validated.ModeValue); // 模式是独立的用户选择，不被非法键名连坐
     }
 

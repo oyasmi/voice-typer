@@ -146,7 +146,7 @@ internal sealed class OnboardingModel
     public string? DownloadError { get; set; }
     /// <summary>当前保存的输入设备配置值（<c>audio.input_device</c>），引导页的设备下拉框据此选中。</summary>
     public string InputDevice { get; set; } = AudioConfig.Auto;
-    public string HotkeyDisplay { get; set; } = "Ctrl+F2";
+    public string HotkeyDisplay { get; set; } = new HotkeyConfig().DisplayString;
     public HotkeyMode HotkeyMode { get; set; } = HotkeyMode.Hold;
     public OnboardingTrialState Trial { get; private set; } = OnboardingTrialState.Idle;
 

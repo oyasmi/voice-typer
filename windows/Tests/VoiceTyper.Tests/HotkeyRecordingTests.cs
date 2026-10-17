@@ -91,7 +91,7 @@ public class HotkeyRecordingTests
     }
 
     [Theory]
-    [InlineData("f2", "ctrl")]        // 默认热键
+    [InlineData("f2", "ctrl")]        // 旧版默认热键
     [InlineData("space", "ctrl", "shift")]  // 修饰键集合不同：Ctrl+Shift+Space 不在冲突表里
     [InlineData("q", "ctrl")]
     public void UncommonCombinations_HaveNoNote(string key, params string[] modifiers)

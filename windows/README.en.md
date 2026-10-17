@@ -4,8 +4,8 @@
 
 [← Project home](../README.en.md) · [Download](https://github.com/oyasmi/voice-typer/releases) · [Changelog](CHANGELOG.md) · [Development](DEVELOPMENT.md)
 
-VoiceTyper is a system tray app: hold `Ctrl + F2` in any app and speak, release it, and the text appears
-at the cursor. Speech recognition runs entirely on your PC; recordings are never uploaded.
+VoiceTyper is a system tray app: hold the right-hand `Ctrl` key in any app and speak, release it, and the
+text appears at the cursor. Speech recognition runs entirely on your PC; recordings are never uploaded.
 
 > **Status**: the Windows app has feature parity with macOS, and dictation and model download have been
 > run on real Windows hardware. Systematic real-device testing — especially arm64 devices, long-running
@@ -55,9 +55,14 @@ the “^” arrow; drag it out to keep it visible.
 ## Everyday use
 
 1. Put the cursor where you want the text.
-2. Hold `Ctrl + F2`. The overlay first shows a grey “Starting microphone…”; **start speaking once it
+2. Hold **Right Ctrl**. The overlay first shows a grey “Starting microphone…”; **start speaking once it
    turns red**. The overlay shows live results and corrects earlier words as you keep talking.
-3. Release the hotkey. The final, punctuated text is written into the current app.
+3. Release Right Ctrl. The final, punctuated text is written into the current app.
+
+Right Ctrl only starts dictation when held on its own; holding it while pressing another key (such as
+Right Ctrl + C) is still a normal shortcut, and that recording is silently discarded. If your keyboard has
+no Right Ctrl (many new laptops replace it with a Copilot key), switch to Right Alt or any key combination
+in Settings.
 
 Useful details:
 
@@ -87,10 +92,9 @@ Everything is configurable in the Settings window; there is no config file to ed
 | Appearance and general | Overlay position and opacity, launch at login, interface language |
 | Diagnostics and help | Microphone check, timings of the last 20 dictations, log and config folders |
 
-- **Hotkey**: click “Record Hotkey” and press the combination you want; you'll be warned if it collides
-  with a common shortcut such as `Ctrl + C` or `Alt + Tab`. A lone **Right Ctrl** or **Right Alt** also
-  works: it triggers only when pressed on its own, and holding it while pressing another key is still a
-  normal shortcut.
+- **Hotkey**: a lone **Right Ctrl** by default. You can switch to **Right Alt**, or click “Record Hotkey”
+  and press any combination you want (such as `Ctrl + F2`); you'll be warned if it collides with a common
+  shortcut such as `Ctrl + C` or `Alt + Tab`.
 - **Microphone**: “Auto” by default — when both the default input and output are Bluetooth headphones,
   the built-in microphone is used instead, so the headphones don't drop into low-quality call mode. You can
   also pin a specific device or follow the system default.
@@ -146,8 +150,9 @@ Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotn
 Runtime**, matching your PC's architecture.
 
 **Can it coexist with the older split client?**
-Yes, but both default to `Ctrl + F2` and will fight over the hotkey if run together, so keep only one.
-When migrating, your hotkey and overlay opacity carry over automatically.
+Yes, but keeping only one is recommended. When migrating, your hotkey (the old default was `Ctrl + F2`)
+and overlay opacity carry over automatically; if both use the same hotkey, they will fight over it when run
+together.
 
 **Known limitations**
 CPU inference only; only the SenseVoice-Small model, with no model switching or hotwords; Left Alt, Win

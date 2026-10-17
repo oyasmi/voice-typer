@@ -842,7 +842,7 @@ Windows 没有 Bundle ID / TCC，改名**不需要用户重新授权任何东西
 
 | 项 | macOS | Windows | 理由 |
 | --- | --- | --- | --- |
-| 默认热键 | `fn` | `Ctrl+F2` | fn 由键盘固件处理，不产生扫描码，Windows 拿不到 |
+| 默认热键 | `fn` | 单独的右 Ctrl（2026-10-17 起，此前 `Ctrl+F2`，见 §27） | fn 由键盘固件处理，不产生扫描码，Windows 拿不到 |
 | 文本插入路径 | Accessibility（`kAXSelectedTextAttribute`/`kAXValue`）+ 剪贴板兜底 | 只有剪贴板 + SendInput | UI Automation 的 `TextPattern`/`ValuePattern` 在 Electron/Chromium/Qt 类应用上覆盖率远低于 macOS AX，`ValuePattern.SetValue` 还会整字段重建（丢 undo、丢富文本）；剪贴板 + SendInput 已是 Windows 上最可靠的通路 |
 | 权限模型 | TCC 强制门（辅助功能/输入监控），未授权直接阻断热键监听 | 无对应机制；`WH_KEYBOARD_LL`/`SendInput` 不需要授权，只受 UIPI 提权边界限制 | Windows 无 TCC 概念；已由 `TextInsertionService.IsForegroundWindowElevated` 覆盖等价场景 |
 | 状态栏视觉 | SF Symbol 动效 | 自绘状态色点 | 无直接对应物，色点已表达同等信息量 |
@@ -1781,3 +1781,30 @@ ASCII 都在 BMP 内，二者等价，代理项对（如 U+20000）两边都当�
   3. 听写中浮窗预览里的中英文之间同样有空格；
   4. 构造终稿超时（可临时调小看门狗），剪贴板里兜底的预览带空格。
 
+
+## 27. 2026-10-17 默认热键改为单独的右 Ctrl
+
+### 27.1 改了什么
+
+`HotkeyConfig` 的默认值从 `modifiers: ["ctrl"]` + `key: "f2"` 改为 `modifiers: []` + `key: "right_ctrl"`；配置校验
+回落（不支持的主键、组合键缺有效修饰键）随之回落到右 Ctrl。右 Ctrl 单独热键的语义沿用 §15 / §15.2：单独按住才开始，
+期间出现其他键、修饰键或鼠标按下即作废并静默丢弃，浮窗延迟 150ms 出现。
+
+理由：`Ctrl+F2` 需要两只手或别扭的指法，且不少笔记本的 F 键默认是媒体键，需要再加 Fn；右 Ctrl 单手即可按住，
+与 macOS 默认 `Fn` 的「按住一个键说话」体验一致。
+
+兼容性：首次启动时 `ConfigStore` 就把默认配置写入 `config.yaml`，因此**已有配置文件的用户沿用原热键**，只有新安装
+（或删除配置后）才是右 Ctrl。旧客户端迁移（`ConfigMigrator`）继续继承旧配置里的热键，缺失主键时仍按旧客户端默认 `f2`。
+
+已知代价：不少新笔记本把右 Ctrl 换成了 Copilot 键，这类键盘需要在设置里改用右 Alt 或组合键（README 已说明）。
+
+### 27.2 验证状态
+
+- 自动化：新增 `AppConfigValidationTests.DefaultHotkey_IsRightCtrl_AndSurvivesValidation`，回落用例改为断言右 Ctrl；
+  `VoiceTyperControllerTests` 的基线配置显式使用 `Ctrl+F2`，保持原有组合键用例的意图，单独修饰键语义继续由
+  `UseModifierOnly` 覆盖。macOS 主机交叉编译并运行全套：**370 项，362 过 / 1 跳过 / 7 失败**（固定基线：
+  `HudCornerStrategyTests` ×2、`SetupFormTests` ×5）。`SetupFormTests` 会以默认配置载入设置页，需在 Windows 上确认仍通过。
+- 真机：**未验证**。手工步骤：
+  1. 删除（或改名）`%APPDATA%\VoiceTyper\config.yaml` 后启动，引导页与设置页显示热键为「右 Ctrl」；
+  2. 单独按住右 Ctrl 说话、松开上屏；右 Ctrl + C 等快捷键照常可用且不留下浮窗残影；
+  3. 保留旧配置文件启动，热键仍是 `Ctrl+F2`。

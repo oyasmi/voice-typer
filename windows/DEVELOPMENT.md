@@ -120,8 +120,8 @@ llm:
   max_tokens: 800
   timeout: 5
 hotkey:
-  modifiers: ["ctrl"]
-  key: "f2"                  # 或 right_ctrl / right_alt（单独修饰键，modifiers 留空）
+  modifiers: []
+  key: "right_ctrl"          # 默认单独的右 Ctrl；或 right_alt，或组合键如 modifiers: ["ctrl"] + key: "f2"
   mode: "hold"               # hold = 按住说话；toggle = 按一次开始、再按一次结束
 audio:
   input_device: "auto"       # auto / system / 音频端点 ID

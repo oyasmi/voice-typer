@@ -176,7 +176,8 @@ public class VoiceTyperControllerTests
 
         public Harness(Action<AppConfig>? configure = null)
         {
-            var config = new AppConfig();
+            // 基线用组合键热键（Ctrl+F2）；默认的单独右 Ctrl 语义由 UseModifierOnly 显式选用。
+            var config = new AppConfig { Hotkey = new HotkeyConfig { Modifiers = new() { "ctrl" }, Key = "f2" } };
             configure?.Invoke(config);
             Config = config;
             Controller = new VoiceTyperController(config, Factory, Hotkey, Audio, Text, llmCorrector: null,

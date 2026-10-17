@@ -64,7 +64,7 @@ internal sealed class AppConfig
     /// 但用户仍可能直接编辑配置文件。不经 UI 直接写一个 <c>key: "d"</c> 且不带修饰键的配置完全可达：
     /// <see cref="Services.HotkeyService"/> 只检查键名是否受支持，不要求修饰键非空，
     /// 结果是在任何应用里正常打字敲字母 d 都会触发一次录音（R4-05）。这里补上手改配置文件
-    /// 绕过 UI 校验的第二道防线，越界回落到默认热键 Ctrl+F2，不静默接受。
+    /// 绕过 UI 校验的第二道防线，越界回落到默认热键（单独的右 Ctrl），不静默接受。
     /// </summary>
     private static HotkeyConfig ValidatedHotkey(HotkeyConfig hotkey)
     {
@@ -74,7 +74,7 @@ internal sealed class AppConfig
         var key = (hotkey.Key ?? "").Trim().ToLowerInvariant();
         if (!HotkeyService.IsSupportedKey(key))
         {
-            AppLog.Warn("config", $"配置字段 hotkey.key 不支持({hotkey.Key})，已回落为默认热键 Ctrl+F2");
+            AppLog.Warn("config", $"配置字段 hotkey.key 不支持({hotkey.Key})，已回落为默认热键右 Ctrl");
             return new HotkeyConfig { ModeValue = mode };
         }
         // 单独修饰键（右 Ctrl / 右 Alt）本身就是完整热键；手改配置里多写的 modifiers 会让识别器永远
@@ -91,7 +91,7 @@ internal sealed class AppConfig
         if (modifiers.Count == 0)
         {
             // 含"写了修饰键但全是未知值"：HotkeyService 会忽略未知值，放行就会退化成裸主键全局热键。
-            AppLog.Warn("config", $"配置字段 hotkey 未搭配有效修饰键({hotkey.Key})，已回落为默认热键 Ctrl+F2");
+            AppLog.Warn("config", $"配置字段 hotkey 未搭配有效修饰键({hotkey.Key})，已回落为默认热键右 Ctrl");
             return new HotkeyConfig { ModeValue = mode };
         }
         return new HotkeyConfig { Modifiers = modifiers, Key = key, ModeValue = mode };
@@ -328,11 +328,13 @@ internal static class HotkeyModeExtensions
 
 internal sealed class HotkeyConfig
 {
+    // 默认热键是单独的右 Ctrl：一只手就能按住，且不会像 Ctrl+F2 那样被笔记本的 Fn 锁定行为干扰。
+    // 已保存过配置的用户沿用文件里的热键，不受默认值变化影响。
     [YamlMember(Alias = "modifiers")]
-    public List<string> Modifiers { get; set; } = new() { "ctrl" };
+    public List<string> Modifiers { get; set; } = new();
 
     [YamlMember(Alias = "key")]
-    public string Key { get; set; } = "f2";
+    public string Key { get; set; } = ModifierHotkeys.RightCtrl;
 
     [YamlMember(Alias = "mode")]
     public string Mode { get; set; } = "hold";

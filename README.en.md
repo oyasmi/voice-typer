@@ -19,7 +19,7 @@ can type.
 | Platform | Requirements | Default hotkey | |
 | --- | --- | --- | --- |
 | **macOS** | Apple Silicon, macOS 14+ | `Fn` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](macos/README.en.md) |
-| **Windows** | Windows 10 (1809+) / 11, x64 or arm64, [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) | `Ctrl + F2` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](windows/README.en.md) |
+| **Windows** | Windows 10 (1809+) / 11, x64 or arm64, [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) | Right `Ctrl` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](windows/README.en.md) |
 | Linux / Intel Mac | No standalone app yet | — | Use the [client–server version](client-server/README.md) |
 
 ## Highlights

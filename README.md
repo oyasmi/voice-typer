@@ -17,7 +17,7 @@ VoiceTyper 安静地待在菜单栏或系统托盘里。回消息、写文档、
 | 平台 | 系统要求 | 默认热键 | |
 | --- | --- | --- | --- |
 | **macOS** | Apple Silicon，macOS 14+ | `Fn` | [下载](https://github.com/oyasmi/voice-typer/releases) · [使用说明](macos/README.md) |
-| **Windows** | Windows 10 (1809+) / 11，x64 或 arm64，需 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | `Ctrl + F2` | [下载](https://github.com/oyasmi/voice-typer/releases) · [使用说明](windows/README.md) |
+| **Windows** | Windows 10 (1809+) / 11，x64 或 arm64，需 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | 右 `Ctrl` | [下载](https://github.com/oyasmi/voice-typer/releases) · [使用说明](windows/README.md) |
 | Linux / Intel Mac | 暂无一体化版本 | — | 可使用[客户端—服务端版本](client-server/README.md) |
 
 ## 特点

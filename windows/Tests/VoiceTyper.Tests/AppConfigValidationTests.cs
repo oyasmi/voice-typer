@@ -1,4 +1,5 @@
 using VoiceTyper.Core;
+using VoiceTyper.Services;
 using Xunit;
 
 namespace VoiceTyper.Tests;
@@ -29,6 +30,15 @@ public class AppConfigValidationTests
         Assert.Equal(0.1, config.Validated().UI.Opacity);
     }
 
+    [Fact]
+    public void DefaultHotkey_IsRightCtrl_AndSurvivesValidation()
+    {
+        var validated = new AppConfig().Validated().Hotkey;
+        Assert.Equal(ModifierHotkeys.RightCtrl, validated.Key);
+        Assert.Empty(validated.Modifiers);
+        Assert.True(validated.IsModifierOnly);
+    }
+
     /// <summary>R4-05：不支持的主键必须回落默认热键，而不是原样进入运行态。</summary>
     [Fact]
     public void FallsBackToDefaultHotkey_WhenKeyUnsupported()
@@ -37,8 +47,8 @@ public class AppConfigValidationTests
         config.Hotkey = new HotkeyConfig { Modifiers = new() { "ctrl" }, Key = "not-a-real-key" };
 
         var validated = config.Validated().Hotkey;
-        Assert.Equal("f2", validated.Key);
-        Assert.Contains("ctrl", validated.Modifiers);
+        Assert.Equal(ModifierHotkeys.RightCtrl, validated.Key);
+        Assert.Empty(validated.Modifiers);
     }
 
     /// <summary>
@@ -53,8 +63,8 @@ public class AppConfigValidationTests
         config.Hotkey = new HotkeyConfig { Modifiers = new(), Key = "d" };
 
         var validated = config.Validated().Hotkey;
-        Assert.Equal("f2", validated.Key);
-        Assert.NotEmpty(validated.Modifiers);
+        Assert.Equal(ModifierHotkeys.RightCtrl, validated.Key);
+        Assert.Empty(validated.Modifiers);
     }
 
     [Fact]
@@ -87,8 +97,8 @@ public class AppConfigValidationTests
         config.Hotkey = new HotkeyConfig { Modifiers = new() { "foo" }, Key = "d" };
 
         var validated = config.Validated().Hotkey;
-        Assert.Equal("f2", validated.Key);
-        Assert.NotEmpty(validated.Modifiers);
+        Assert.Equal(ModifierHotkeys.RightCtrl, validated.Key);
+        Assert.Empty(validated.Modifiers);
     }
 
     // ─── ConfigLimits 与 Validated() 一致 ──────────────────────
