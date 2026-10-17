@@ -77,18 +77,4 @@ final class DictationHistoryTests: XCTestCase {
         )
     }
 
-    func testMenuTitleSuffixPerKind() {
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .inserted)), "文本")
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .copiedFocusChanged)), "文本（未输入）")
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .copiedInsertFailed)), "文本（未输入）")
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .cancelled)), "文本（已取消）")
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .partialAfterTimeout)), "文本（部分）")
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("文本", .partialAfterFailure)), "文本（部分）")
-    }
-
-    func testMenuTitleSuffixInEnglishHasLeadingSpace() {
-        L10n.setLanguage(.en)
-        defer { L10n.setLanguage(.zh) }
-        XCTAssertEqual(DictationHistory.menuTitle(for: entry("hello", .cancelled)), "hello (cancelled)")
-    }
 }

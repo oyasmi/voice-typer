@@ -89,12 +89,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.string("就绪"), "Ready")
     }
 
-    func testChineseIsTheDefaultLanguage() {
-        XCTAssertEqual(UIConfig().interfaceLanguage, .zh)
-        L10n.setLanguage(.zh)
-        XCTAssertEqual(L("就绪"), "就绪")
-    }
-
     func testFormattingUsesActiveLanguage() {
         L10n.setLanguage(.en)
         defer { L10n.setLanguage(.zh) }

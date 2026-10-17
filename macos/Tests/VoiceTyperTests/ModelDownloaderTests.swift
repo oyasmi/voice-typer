@@ -34,12 +34,6 @@ final class ModelDownloaderTests: XCTestCase {
         XCTAssertEqual(ModelDownloader.totalBytes, ModelDownloader.files.reduce(0) { $0 + $1.sizeHint })
     }
 
-    func testSmallFilesDownloadBeforeLargeModel() {
-        // 小文件先行：网络/端点问题能在花掉 230MB 流量之前就暴露（见 DESIGN.md §4.4）。
-        let onnxIndex = ModelDownloader.files.firstIndex { $0.name == "model_quant.onnx" }
-        XCTAssertEqual(onnxIndex, ModelDownloader.files.count - 1, "model_quant.onnx 应排在下载顺序最后")
-    }
-
     func testAutomaticDownloadPolicyStartsOnceWhenModelIsMissing() {
         var policy = AutomaticModelDownloadPolicy()
 

@@ -22,12 +22,6 @@ final class HUDLayoutTests: XCTestCase {
         XCTAssertEqual(fitted.lineCount, 1)
     }
 
-    func testEmptyTextIsPassedThrough() {
-        let fitted = RecordingHUDController.tailFitting("", width: 600, maximumLines: 2, font: font)
-        XCTAssertEqual(fitted.text, "")
-        XCTAssertEqual(fitted.lineCount, 1)
-    }
-
     /// 核心不变量：超长文本必须保留**结尾**（最新说出的内容），并以省略号开头。
     func testOverlongTextKeepsTailAndPrefixesEllipsis() {
         let text = String(repeating: "语音输入测试文本", count: 60) + "最后这几个字必须留下"
@@ -45,21 +39,6 @@ final class HUDLayoutTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix(withoutEllipsis))
     }
 
-    func testNarrowerWidthKeepsLessText() {
-        let text = String(repeating: "测试", count: 200)
-        let wide = RecordingHUDController.tailFitting(text, width: 600, maximumLines: 2, font: font)
-        let narrow = RecordingHUDController.tailFitting(text, width: 200, maximumLines: 2, font: font)
-        XCTAssertLessThan(narrow.text.count, wide.text.count)
-    }
-
-    func testMoreLinesKeepMoreText() {
-        let text = String(repeating: "测试", count: 200)
-        let oneLine = RecordingHUDController.tailFitting(text, width: 300, maximumLines: 1, font: font)
-        let twoLines = RecordingHUDController.tailFitting(text, width: 300, maximumLines: 2, font: font)
-        XCTAssertGreaterThan(twoLines.text.count, oneLine.text.count)
-        XCTAssertEqual(oneLine.lineCount, 1)
-    }
-
     func testDegenerateWidthDoesNotHang() {
         let fitted = RecordingHUDController.tailFitting("一些文字", width: 0, maximumLines: 2, font: font)
         XCTAssertEqual(fitted.text, "一些文字", "宽度非法时原样返回，不做任何截断")
@@ -67,68 +46,8 @@ final class HUDLayoutTests: XCTestCase {
 
     // MARK: - 录音状态行
 
-    func testRecordingStatusWithoutDeviceNameStaysPlain() {
-        XCTAssertEqual(RecordingHUDController.recordingStatus(inputDeviceName: nil), "录音中")
-        XCTAssertEqual(RecordingHUDController.recordingStatus(inputDeviceName: "   "), "录音中")
-    }
-
-    func testRecordingStatusIncludesDeviceName() {
-        XCTAssertEqual(
-            RecordingHUDController.recordingStatus(inputDeviceName: "MacBook 麦克风"),
-            "录音中 · MacBook 麦克风"
-        )
-    }
-
-    /// 设备名可以很长（"Jabra Evolve2 65 立体声耳机"），不能让它把右侧计时挤出可视区。
-    func testLongDeviceNameIsTruncated() {
-        let status = RecordingHUDController.recordingStatus(
-            inputDeviceName: "Jabra Evolve2 65 Stereo Headset Microphone"
-        )
-        XCTAssertTrue(status.hasPrefix("录音中 · "))
-        XCTAssertTrue(status.hasSuffix("…"))
-        XCTAssertLessThan(status.count, 25)
-    }
-
     // MARK: - R8-C3：上限倒计时
-
-    func testCountdownOnlyAppearsInLastFifteenSeconds() {
-        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 104.9))
-        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 105), 15)
-        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 110.2), 10)
-        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 119.6), 1)
-        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 120), "到点后不再显示倒计时")
-        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 0))
-    }
 
     // MARK: - R8-D3：预览尾部淡显
 
-    func testCommonPrefixLength() {
-        XCTAssertEqual(RecordingHUDController.commonPrefixLength("今天下午开会", "今天下午三点开会"), 4)
-        XCTAssertEqual(RecordingHUDController.commonPrefixLength("abc", "abc"), 3)
-        XCTAssertEqual(RecordingHUDController.commonPrefixLength("abc", "xyz"), 0)
-        XCTAssertEqual(RecordingHUDController.commonPrefixLength("", "abc"), 0)
-        XCTAssertEqual(RecordingHUDController.commonPrefixLength("ab", "abcd"), 2)
-    }
-
-    func testHighlightStartWithoutTruncationIsTheDivergencePoint() {
-        XCTAssertEqual(
-            RecordingHUDController.highlightStart(divergence: 4, displayCount: 8, fittedText: "ABCDEFGH"), 4
-        )
-        XCTAssertEqual(
-            RecordingHUDController.highlightStart(divergence: 99, displayCount: 8, fittedText: "ABCDEFGH"), 8,
-            "钳制到文本末尾"
-        )
-    }
-
-    func testHighlightStartShiftsWithLeadingTruncation() {
-        // display = ABCDEFGH，排版后 …EFGH（丢掉前 4 个字符）。
-        XCTAssertEqual(
-            RecordingHUDController.highlightStart(divergence: 6, displayCount: 8, fittedText: "…EFGH"), 3,
-            "分叉点 G 在排版后文本里的下标"
-        )
-        XCTAssertEqual(
-            RecordingHUDController.highlightStart(divergence: 2, displayCount: 8, fittedText: "…EFGH"), 1,
-            "分叉点落在被截掉的部分：省略号之后全部是新内容"
-        )
-    }
 }

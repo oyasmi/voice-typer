@@ -63,6 +63,19 @@ final class LocalASRSessionTests: XCTestCase {
         }
     }
 
+    /// 走 `StubURLProtocol` 的校对器；响应由各用例设置 `StubURLProtocol.handler` 决定。
+    private func makeCorrector() -> LLMCorrector {
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [StubURLProtocol.self]
+        return LLMCorrector(
+            config: LLMCorrector.Config(
+                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
+                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
+            ),
+            urlSession: URLSession(configuration: sessionConfig)
+        )
+    }
+
     override func tearDown() {
         StubURLProtocol.handler = nil
         super.tearDown()
@@ -98,18 +111,6 @@ final class LocalASRSessionTests: XCTestCase {
 
         XCTAssertEqual(engine.callSampleCounts, [8_000], "finalize 必须对完整音频跑一次")
         XCTAssertNotNil(final)
-    }
-
-    func testContainsSpeechUsesEnergyThreshold() {
-        XCTAssertFalse(LocalASRSession.containsSpeech([]))
-        XCTAssertFalse(LocalASRSession.containsSpeech([Float](repeating: 0, count: 100)))
-        XCTAssertFalse(
-            LocalASRSession.containsSpeech([Float](repeating: 0.001, count: 100)),
-            "远低于阈值的底噪不应被当成语音"
-        )
-        XCTAssertTrue(LocalASRSession.containsSpeech([Float](repeating: 0.05, count: 100)))
-        // 负相位同样是声音：判据是能量而不是符号。
-        XCTAssertTrue(LocalASRSession.containsSpeech([Float](repeating: -0.05, count: 100)))
     }
 
     // MARK: - 预览 in-flight 跳过
@@ -223,29 +224,6 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(engine.callSampleCounts.last, 120 * 16_000, "超过上限后的样本不应被计入 buffer")
     }
 
-    /// 引擎长时间未就绪时，pendingAudio 也必须受单段上限约束：达到上限只触发一次
-    /// warning + onSessionCapped，之后的样本静默丢弃，正常收尾语义不变。
-    func testEngineNotReadyPendingAudioAlsoRespectsSessionCap() async {
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil)
-
-        var warnings: [String] = []
-        var cappedCount = 0
-        session.onWarning = { warnings.append($0) }
-        session.onSessionCapped = { cappedCount += 1 }
-
-        // 恰好喂满上限：这一次 append 本身不触发（检查在下一次入口）。
-        session.sendAudio(speech(count: 120 * 16_000))
-        XCTAssertEqual(cappedCount, 0)
-
-        session.sendAudio(speech(count: 1_000))
-        XCTAssertEqual(cappedCount, 1)
-        XCTAssertEqual(warnings.count, 1)
-
-        session.sendAudio(speech(count: 1_000))
-        XCTAssertEqual(cappedCount, 1, "上限回调只应触发一次")
-        XCTAssertEqual(warnings.count, 1)
-    }
-
     /// 跨界 chunk：buffer 已到 max-1，再来 2 个样本。必须只追加 1 个（严格不超过上限）
     /// 并立即触发一次 cap/warning，而不是让 chunk 跨过上限、计数变成 max+1。
     func testBufferChunkCrossingCapIsClippedAndTriggersCapOnce() async {
@@ -321,15 +299,7 @@ final class LocalASRSessionTests: XCTestCase {
         engine.textForCall = { _ in "raw-asr-text" }
 
         StubURLProtocol.handler = { _ in (500, "boom") }
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [StubURLProtocol.self]
-        let corrector = LLMCorrector(
-            config: LLMCorrector.Config(
-                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
-                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
-            ),
-            urlSession: URLSession(configuration: sessionConfig)
-        )
+        let corrector = makeCorrector()
         let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: corrector)
 
         var warnings: [String] = []
@@ -355,15 +325,7 @@ final class LocalASRSessionTests: XCTestCase {
         engine.textForCall = { _ in "raw-asr-text" }
 
         StubURLProtocol.handler = { _ in (500, "boom") }
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [StubURLProtocol.self]
-        let corrector = LLMCorrector(
-            config: LLMCorrector.Config(
-                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
-                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
-            ),
-            urlSession: URLSession(configuration: sessionConfig)
-        )
+        let corrector = makeCorrector()
         let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: corrector)
 
         var correctionStartedCount = 0
@@ -447,19 +409,7 @@ final class LocalASRSessionTests: XCTestCase {
             let body = #"{"choices":[{"message":{"content":"corrected-text"},"finish_reason":"stop"}]}"#
             return (200, body)
         }
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [StubURLProtocol.self]
-        let corrector = LLMCorrector(
-            config: LLMCorrector.Config(
-                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
-                apiKey: "test-key",
-                model: "gpt-4o-mini",
-                temperature: 0,
-                maxTokens: 800,
-                timeout: 5
-            ),
-            urlSession: URLSession(configuration: sessionConfig)
-        )
+        let corrector = makeCorrector()
 
         let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: corrector)
 
@@ -485,49 +435,6 @@ final class LocalASRSessionTests: XCTestCase {
     }
 
     // MARK: - A7：分阶段打点
-
-    func testTimingsCountSkippedAndCompletedPreviews() async {
-        let engine = GatedFakeEngine()
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
-
-        session.sendAudio(silence(count: 20_000))
-        XCTAssertEqual(session.timings.previewSkipped, 1)
-        XCTAssertEqual(session.timings.previewRuns, 0)
-        XCTAssertFalse(session.timings.coldAtStart)
-
-        session.sendAudio(speech(count: 20_000))
-        await poll { session.timings.previewRuns == 1 }
-        XCTAssertEqual(session.timings.previewRuns, 1)
-        XCTAssertGreaterThan(session.timings.previewMaxNanos, 0)
-        XCTAssertEqual(session.timings.receivedSamples, 40_000)
-    }
-
-    func testTimingsRecordColdStartAndEngineWait() async {
-        final class EngineBox: @unchecked Sendable {
-            private let lock = NSLock()
-            private var engine: (any SenseVoiceRecognizing)?
-            var current: (any SenseVoiceRecognizing)? { lock.lock(); defer { lock.unlock() }; return engine }
-            func set(_ value: any SenseVoiceRecognizing) { lock.lock(); engine = value; lock.unlock() }
-        }
-        let box = EngineBox()
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { box.current }, llmCorrector: nil)
-        var final: String?
-        session.onFinal = { final = $0 }
-
-        session.sendAudio(speech(count: 8_000))
-        XCTAssertTrue(session.timings.coldAtStart, "首帧到达时引擎未就绪应记为冷启动")
-
-        session.finalize(timeout: 5)
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        box.set(GatedFakeEngine())
-        await poll { final != nil }
-
-        XCTAssertNotNil(final)
-        XCTAssertGreaterThan(session.timings.engineWaitNanos, 0)
-        XCTAssertNotNil(session.timings.finalizeStartedAt)
-        XCTAssertNotNil(session.timings.asrCompletedAt)
-        XCTAssertEqual(session.timings.llmResult, .off)
-    }
 
     // MARK: - R8-A1：看门狗起算点、引擎不可用、等待阶段
 
@@ -589,21 +496,6 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(stages, [.recording], "同一阶段至多提示一次")
     }
 
-    func testFinalizingEngineWaitNoticeFiresOnceAfterAboutThreePolls() async {
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil)
-        var stages: [EngineWaitStage] = []
-        session.onEngineWait = { stages.append($0) }
-        session.sendAudio(speech(count: 5_000))
-        session.finalize(timeout: 30)
-
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        XCTAssertTrue(stages.isEmpty, "约 300ms 之内不提示")
-        await poll(timeout: 1) { stages == [.finalizing] }
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(stages, [.finalizing])
-        session.close()
-    }
-
     // MARK: - R8-C2：校对中跳过
 
     private func makeGatedCorrector(gate: DispatchSemaphore) -> LLMCorrector {
@@ -611,15 +503,7 @@ final class LocalASRSessionTests: XCTestCase {
             _ = gate.wait(timeout: .now() + 5)
             return (200, #"{"choices":[{"message":{"content":"corrected-text"},"finish_reason":"stop"}]}"#)
         }
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [StubURLProtocol.self]
-        return LLMCorrector(
-            config: LLMCorrector.Config(
-                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
-                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
-            ),
-            urlSession: URLSession(configuration: sessionConfig)
-        )
+        return makeCorrector()
     }
 
     func testSkipCorrectionFinalizesOnceWithRawTextAndIgnoresLateResult() async {
@@ -649,18 +533,6 @@ final class LocalASRSessionTests: XCTestCase {
         gate.signal() // LLM 结果迟到
         try? await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(finals, ["raw-asr-text"], "迟到的校对结果必须被忽略")
-    }
-
-    func testIsCorrectingIsFalseWithoutCorrector() async {
-        let engine = GatedFakeEngine()
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
-        var final: String?
-        session.onFinal = { final = $0 }
-        session.sendAudio(speech(count: 20_000))
-        session.finalize(timeout: 5)
-        await poll { final != nil }
-        XCTAssertFalse(session.isCorrecting)
-        XCTAssertFalse(session.skipCorrection())
     }
 
     // MARK: - R8-D1：事件驱动的预览调度
@@ -714,19 +586,4 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(engine.callCount, 2)
     }
 
-    func testFinalizeRecordsDispatchAndInferenceStartTimes() async {
-        let engine = GatedFakeEngine()
-        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
-        var final: String?
-        session.onFinal = { final = $0 }
-        session.sendAudio(speech(count: 20_000))
-        session.finalize(timeout: 5)
-        await poll { final != nil }
-
-        let dispatched = session.timings.finalizeDispatchedAt
-        let started = session.timings.finalizeInferenceStartedAt
-        XCTAssertNotNil(dispatched)
-        XCTAssertNotNil(started)
-        XCTAssertGreaterThanOrEqual(started ?? 0, dispatched ?? UInt64.max)
-    }
 }

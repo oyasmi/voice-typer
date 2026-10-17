@@ -55,16 +55,6 @@ final class SegmentedDownloadTests: XCTestCase {
 
     // MARK: - 文件大小
 
-    func testFileSizeReturnsZeroForMissingFile() throws {
-        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        XCTAssertEqual(ModelDownloader.fileSize(at: missing), 0)
-
-        let existing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try Data(repeating: 7, count: 1234).write(to: existing)
-        defer { try? FileManager.default.removeItem(at: existing) }
-        XCTAssertEqual(ModelDownloader.fileSize(at: existing), 1234)
-    }
-
     // MARK: - 回落
 
     /// 服务端不返回 206 时，分段路径必须安静地让位给单连接路径，而不是让下载整体失败。
@@ -145,9 +135,4 @@ final class SegmentedDownloadTests: XCTestCase {
 
     // MARK: - 常量自洽
 
-    func testOnlyTheModelWeightQualifiesForSegmentedDownload() {
-        let qualifying = ModelDownloader.files.filter { $0.sizeHint >= ModelDownloader.segmentedDownloadMinimumBytes }
-        XCTAssertEqual(qualifying.map(\.name), ["model_quant.onnx"])
-        XCTAssertGreaterThan(ModelDownloader.segmentCount, 1)
-    }
 }

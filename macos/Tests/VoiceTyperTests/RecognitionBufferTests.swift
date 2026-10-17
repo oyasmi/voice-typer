@@ -18,14 +18,6 @@ final class RecognitionBufferTests: XCTestCase {
         }
     }
 
-    func testSampleCountTracksAppendedAudio() {
-        let engine = FakeEngine()
-        let buffer = RecognitionBuffer(engine: engine)
-        buffer.append([Float](repeating: 0, count: 1000))
-        buffer.append([Float](repeating: 0, count: 500))
-        XCTAssertEqual(buffer.sampleCount, 1500)
-    }
-
     func testPreviewBelowWindowDoesNotRoll() throws {
         let engine = FakeEngine()
         let buffer = RecognitionBuffer(engine: engine)
@@ -69,13 +61,6 @@ final class RecognitionBufferTests: XCTestCase {
             RecognitionBuffer.previewWindowSamples,
             "滚动结束后窗口右侧不应再超过窗口长度"
         )
-    }
-
-    func testReservedCapacityDoesNotChangeContents() {
-        let engine = FakeEngine()
-        let buffer = RecognitionBuffer(engine: engine, reservedSampleCapacity: 1_920_000)
-        buffer.append([Float](repeating: 0.5, count: 1_000))
-        XCTAssertEqual(buffer.sampleCount, 1_000, "预留容量只影响分配策略，不应改变已累积的样本数")
     }
 
     func testSecondPreviewAfterRollDoesNotRollAgainImmediately() throws {

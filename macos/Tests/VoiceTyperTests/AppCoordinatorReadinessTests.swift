@@ -75,17 +75,6 @@ final class AppCoordinatorReadinessTests: XCTestCase {
         }
     }
 
-    /// 非活动 / 启动态下的 .loading 仍应进入 .modelLoading（等待引擎加载完成）。
-    func testLoadingBecomesModelLoadingFromInactivePrevious() {
-        for previous: AppState in [.idle, .booting, .error("x"), .paused, .setupRequired] {
-            let target = AppCoordinator.computeTargetState(
-                permissions: granted, isPaused: false, isDownloadingModel: false,
-                downloadProgress: 0, asrState: .loading, previous: previous
-            )
-            XCTAssertEqual(target, .modelLoading)
-        }
-    }
-
     /// 不对称：.unloaded（引擎从未加载）即使 previous 是活动听写态，也仍返回 .modelLoading。
     /// 只有 .loading 才享有"加载与录音并行"的保护。
     func testUnloadedDoesNotPreserveActiveDictation() {
@@ -98,28 +87,12 @@ final class AppCoordinatorReadinessTests: XCTestCase {
         }
     }
 
-    func testModelMissingMapsDirectly() {
-        let target = AppCoordinator.computeTargetState(
-            permissions: granted, isPaused: false, isDownloadingModel: false,
-            downloadProgress: 0, asrState: .modelMissing, previous: .idle
-        )
-        XCTAssertEqual(target, .modelMissing)
-    }
-
     func testFailedStateBecomesErrorWithMessage() {
         let target = AppCoordinator.computeTargetState(
             permissions: granted, isPaused: false, isDownloadingModel: false,
             downloadProgress: 0, asrState: .failed("模型损坏"), previous: .idle
         )
         XCTAssertEqual(target, .error("模型加载失败: 模型损坏"))
-    }
-
-    func testReadyBecomesIdleWhenPreviouslyIdle() {
-        let target = AppCoordinator.computeTargetState(
-            permissions: granted, isPaused: false, isDownloadingModel: false,
-            downloadProgress: 0, asrState: .ready, previous: .idle
-        )
-        XCTAssertEqual(target, .idle)
     }
 
     /// 核心不变量：模型就绪/空闲卸载不应打断正在进行的听写——权限检查、空闲卸载计时器

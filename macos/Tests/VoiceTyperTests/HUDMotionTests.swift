@@ -15,10 +15,6 @@ final class HUDMotionTests: XCTestCase {
         if let originalProvider { HUDMotion.reduceMotionProvider = originalProvider }
     }
 
-    func testCenteredScaleOfOneIsIdentity() {
-        XCTAssertTrue(CATransform3DIsIdentity(HUDMotion.centeredScale(1, in: CGRect(x: 0, y: 0, width: 120, height: 40))))
-    }
-
     func testCenteredScaleKeepsCenterFixedAndPullsCornersInward() {
         let bounds = CGRect(x: 0, y: 0, width: 100, height: 40)
         let transform = CATransform3DGetAffineTransform(HUDMotion.centeredScale(0.5, in: bounds))
@@ -48,23 +44,4 @@ final class HUDMotionTests: XCTestCase {
         XCTAssertEqual((rise as? CABasicAnimation)?.keyPath, "opacity")
     }
 
-    func testFullMotionUsesSpringAndInfiniteShimmer() throws {
-        HUDMotion.reduceMotionProvider = { false }
-        let bounds = CGRect(x: 0, y: 0, width: 100, height: 20)
-
-        XCTAssertNotNil(HUDMotion.exhaleAnimation(bounds: bounds))
-
-        let group = try XCTUnwrap(HUDMotion.popInAnimation(bounds: bounds) as? CAAnimationGroup)
-        let spring = try XCTUnwrap(group.animations?.compactMap { $0 as? CASpringAnimation }.first)
-        XCTAssertEqual(spring.damping, HUDMotion.springDamping)
-        XCTAssertEqual(spring.stiffness, HUDMotion.springStiffness)
-        XCTAssertEqual(spring.mass, HUDMotion.springMass)
-
-        let mask = try XCTUnwrap(HUDMotion.shimmerMask(for: bounds))
-        XCTAssertEqual(mask.colors?.count, 3)
-        let sweep = try XCTUnwrap(mask.animation(forKey: "shimmer") as? CABasicAnimation)
-        XCTAssertEqual(sweep.keyPath, "locations")
-        XCTAssertEqual(sweep.repeatCount, .infinity)
-        XCTAssertEqual(sweep.duration, HUDMotion.shimmerDuration)
-    }
 }

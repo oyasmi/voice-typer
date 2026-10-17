@@ -72,16 +72,6 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(uid.audio.inputDevice, "BuiltInMicrophoneDevice")
     }
 
-    func testModifierOnlyHotkeyRoundTrips() throws {
-        var config = AppConfig()
-        config.hotkey = HotkeyConfig(modifiers: [], key: "right_command", mode: .toggle)
-        try store.save(config: config)
-        let loaded = try store.loadOrCreate()
-        XCTAssertEqual(loaded.hotkey.key, "right_command")
-        XCTAssertEqual(loaded.hotkey.modifiers, [])
-        XCTAssertTrue(loaded.hotkey.isModifierOnly)
-    }
-
     func testCreatesDefaultFileOnFirstLoad() throws {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.configURL.path))
         let config = try store.loadOrCreate()

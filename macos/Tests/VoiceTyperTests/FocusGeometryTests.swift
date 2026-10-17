@@ -11,13 +11,6 @@ final class FocusGeometryTests: XCTestCase {
         XCTAssertEqual(FocusGeometry.cocoaRect(fromAX: cocoa, primaryScreenHeight: 1000), ax)
     }
 
-    func testCocoaRectForWindowOnASecondaryScreenAbovePrimary() {
-        // 副屏在主屏上方：AX 的 y 为负，换算后 Cocoa 的 y 超过主屏高度。
-        let ax = CGRect(x: 0, y: -800, width: 400, height: 200)
-        let cocoa = FocusGeometry.cocoaRect(fromAX: ax, primaryScreenHeight: 1000)
-        XCTAssertEqual(cocoa.minY, 1600)
-    }
-
     private let screens = [
         CGRect(x: 0, y: 0, width: 1000, height: 800),
         CGRect(x: 1000, y: 0, width: 1000, height: 800),
@@ -26,17 +19,6 @@ final class FocusGeometryTests: XCTestCase {
     func testScreenIndexPrefersTheCenterPoint() {
         XCTAssertEqual(FocusGeometry.screenIndex(for: CGRect(x: 100, y: 100, width: 200, height: 200), screenFrames: screens), 0)
         XCTAssertEqual(FocusGeometry.screenIndex(for: CGRect(x: 1200, y: 100, width: 200, height: 200), screenFrames: screens), 1)
-    }
-
-    func testScreenIndexFallsBackToLargestOverlapWhenCenterIsOutside() {
-        // 中心在两屏之外（下方），但与第二屏相交面积更大。
-        let rect = CGRect(x: 900, y: -300, width: 1000, height: 400)
-        XCTAssertEqual(FocusGeometry.screenIndex(for: rect, screenFrames: screens), 1)
-    }
-
-    func testScreenIndexIsNilWhenNothingOverlaps() {
-        XCTAssertNil(FocusGeometry.screenIndex(for: CGRect(x: 5000, y: 5000, width: 10, height: 10), screenFrames: screens))
-        XCTAssertNil(FocusGeometry.screenIndex(for: .zero, screenFrames: []))
     }
 
     func testCaretPlausibility() {

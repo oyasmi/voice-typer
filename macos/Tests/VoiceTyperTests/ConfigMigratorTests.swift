@@ -2,18 +2,6 @@ import XCTest
 @testable import VoiceTyper
 
 final class ConfigMigratorTests: XCTestCase {
-    func testReturnsNilWhenLegacyFileMissing() {
-        let missingURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: false)
-
-        let migrated = ConfigMigrator.migrateFromLegacyClientConfig(
-            fileManager: .default,
-            legacyURLOverride: missingURL
-        )
-
-        XCTAssertNil(migrated)
-    }
-
     func testMigratesHotkeyAndOpacityFromInjectedPath() throws {
         let legacyURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: false)

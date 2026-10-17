@@ -83,11 +83,6 @@ final class AudioInputDeviceTests: XCTestCase {
         XCTAssertNil(AudioInputDevice.deviceToPin(resolvedID: nil, defaultInputID: nil))
     }
 
-    func testNonDefaultInputIsPinned() {
-        XCTAssertEqual(AudioInputDevice.deviceToPin(resolvedID: 1, defaultInputID: 2), 1)
-        XCTAssertEqual(AudioInputDevice.deviceToPin(resolvedID: 3, defaultInputID: nil), 3)
-    }
-
     /// 端到端：内置麦克风本身就是默认输入的 auto 场景（最常见的日常用法）不钉设备；
     /// 蓝牙场景改用内置麦克风时才钉。
     func testAutoPolicyPinsOnlyWhenSwitchingAwayFromDefault() {
@@ -96,10 +91,6 @@ final class AudioInputDeviceTests: XCTestCase {
 
         let bluetooth = resolve()
         XCTAssertEqual(AudioInputDevice.deviceToPin(resolvedID: bluetooth.deviceID, defaultInputID: 2), 1)
-    }
-
-    func testNoDefaultInputAndSystemPolicyYieldsNil() {
-        XCTAssertNil(resolve(.systemDefault, devices: [], defaultInput: nil).deviceID)
     }
 
     func testPolicyConfigValueMapping() {

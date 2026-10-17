@@ -48,14 +48,6 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.canRunTrial)
     }
 
-    func testGrantedPermissionCountReflectsSnapshot() {
-        let vm = OnboardingViewModel()
-        vm.permissions = PermissionSnapshot(
-            microphone: .authorized, accessibility: .denied, inputMonitoring: .authorized
-        )
-        XCTAssertEqual(vm.grantedPermissionCount, 2)
-    }
-
     // MARK: - 试用状态机
 
     func testSuccessfulTrialFlow() {

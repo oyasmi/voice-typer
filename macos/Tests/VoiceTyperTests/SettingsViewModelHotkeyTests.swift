@@ -33,58 +33,27 @@ final class SettingsViewModelHotkeyTests: XCTestCase {
     }
 
     /// 回归钉子：录制器只知道"按了哪个键"，它构造的 `HotkeyConfig.mode` 永远是默认值。
-    /// 若直接落盘，用户每换一次热键就会被悄悄拽回「按住说话」。
-    func testRecordingNewHotkeyPreservesTriggerMode() async {
-        let (vm, recorder) = makeViewModel(
-            initialHotkey: HotkeyConfig(modifiers: [], key: "fn", mode: .toggle)
-        )
+    /// 若直接落盘，用户每换一次热键（录制 / 恢复为 Fn / 恢复为右 ⌘）就会被悄悄拽回「按住说话」。
+    func testChangingHotkeyNeverResetsTriggerMode() async {
+        let changes: [(String, (SettingsViewModel) -> Void, String, [String])] = [
+            ("录制组合键", { $0.applyRecordedHotkey(HotkeyConfig(modifiers: ["ctrl"], key: "f2")) }, "f2", ["ctrl"]),
+            ("录制单独修饰键", { $0.applyRecordedHotkey(HotkeyConfig(modifiers: [], key: "right_command")) }, "right_command", []),
+            ("恢复为 Fn", { $0.resetHotkeyToFn() }, "fn", []),
+            ("恢复为右 ⌘", { $0.resetHotkeyToRightCommand() }, "right_command", []),
+        ]
+        for (name, change, key, modifiers) in changes {
+            let (vm, recorder) = makeViewModel(
+                initialHotkey: HotkeyConfig(modifiers: ["alt"], key: "space", mode: .toggle)
+            )
+            change(vm)
+            await settle()
 
-        vm.applyRecordedHotkey(HotkeyConfig(modifiers: ["ctrl"], key: "f2"))
-        await settle()
-
-        XCTAssertEqual(recorder.callCount, 1)
-        XCTAssertEqual(recorder.saved?.hotkey.key, "f2")
-        XCTAssertEqual(recorder.saved?.hotkey.modifiers, ["ctrl"])
-        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle, "换热键不应把触发方式重置为默认值")
-    }
-
-    func testResetToFnPreservesTriggerMode() async {
-        let (vm, recorder) = makeViewModel(
-            initialHotkey: HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
-        )
-
-        vm.resetHotkeyToFn()
-        await settle()
-
-        XCTAssertEqual(recorder.saved?.hotkey.key, "fn")
-        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle)
-    }
-
-    func testModifierOnlyHotkeyIsAcceptedAndKeepsMode() async {
-        let (vm, recorder) = makeViewModel(
-            initialHotkey: HotkeyConfig(modifiers: [], key: "fn", mode: .toggle)
-        )
-
-        vm.applyRecordedHotkey(HotkeyConfig(modifiers: [], key: "right_command"))
-        await settle()
-
-        XCTAssertEqual(recorder.callCount, 1)
-        XCTAssertEqual(recorder.saved?.hotkey.key, "right_command")
-        XCTAssertEqual(recorder.saved?.hotkey.modifiers, [])
-        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle, "录制不应重置触发方式")
-        XCTAssertEqual(vm.hotkeyMessageKind, .success)
-    }
-
-    func testResetToRightCommandPreservesTriggerMode() async {
-        let (vm, recorder) = makeViewModel(
-            initialHotkey: HotkeyConfig(modifiers: ["ctrl"], key: "f2", mode: .toggle)
-        )
-
-        vm.resetHotkeyToRightCommand()
-        await settle()
-
-        XCTAssertEqual(recorder.saved?.hotkey.key, "right_command")
-        XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle)
+            XCTAssertEqual(recorder.callCount, 1, name)
+            XCTAssertEqual(recorder.saved?.hotkey.key, key, name)
+            XCTAssertEqual(recorder.saved?.hotkey.modifiers, modifiers, name)
+            XCTAssertEqual(recorder.saved?.hotkey.mode, .toggle, "\(name)：换热键不应把触发方式重置为默认值")
+            XCTAssertEqual(vm.hotkeyMessageKind, .success, name)
+        }
     }
 
     func testCommitAudioInputPolicyPersistsChoiceAndRevertsOnFailure() async {

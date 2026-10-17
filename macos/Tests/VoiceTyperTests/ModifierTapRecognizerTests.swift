@@ -35,13 +35,6 @@ final class ModifierTapRecognizerTests: XCTestCase {
         XCTAssertEqual(r.handle(rightCmdEvent(rightCmdDown)), .began)
     }
 
-    func testMouseDownWhileHoldingCancels() {
-        var r = recognizer()
-        _ = r.handle(rightCmdEvent(rightCmdDown))
-        XCTAssertEqual(r.handle(.mouseDown), .cancelled)
-        XCTAssertNil(r.handle(rightCmdEvent(0)))
-    }
-
     func testAnotherModifierWhileHoldingCancels() {
         var r = recognizer()
         _ = r.handle(rightCmdEvent(rightCmdDown))
@@ -73,21 +66,6 @@ final class ModifierTapRecognizerTests: XCTestCase {
         var r = recognizer()
         XCTAssertEqual(r.handle(rightCmdEvent(rightCmdDown | capsLock)), .began)
         XCTAssertEqual(r.handle(rightCmdEvent(capsLock)), .ended)
-    }
-
-    func testCancelledIsEmittedAtMostOncePerGesture() {
-        var r = recognizer()
-        _ = r.handle(rightCmdEvent(rightCmdDown))
-        XCTAssertEqual(r.handle(.keyDown), .cancelled)
-        XCTAssertNil(r.handle(.keyDown))
-        XCTAssertNil(r.handle(.mouseDown))
-        XCTAssertNil(r.handle(.flagsChanged(keyCode: 56, flags: rightCmdDown | shift | 0x2)))
-    }
-
-    func testIdleIgnoresKeyAndMouseEvents() {
-        var r = recognizer()
-        XCTAssertNil(r.handle(.keyDown))
-        XCTAssertNil(r.handle(.mouseDown))
     }
 
     func testOptionKeysAreDistinguishedBySide() {

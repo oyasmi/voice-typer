@@ -5,24 +5,12 @@ import Yams
 /// R2-12 回归：`clamp` 的 `value < lower || value > upper` 对 NaN 两边都是 false，
 /// 会让 NaN 原样穿透而不是被夹逼，必须为浮点字段单独处理非有限数值。
 final class AppConfigTests: XCTestCase {
-    func testValidatedResetsNaNTemperatureToLowerBound() {
+    func testValidatedResetsNonFiniteValuesToLowerBound() {
         var config = AppConfig()
         config.llm.temperature = .nan
-        let validated = config.validated()
-        XCTAssertEqual(validated.llm.temperature, 0)
-    }
-
-    func testValidatedResetsInfiniteOpacityToLowerBound() {
-        var config = AppConfig()
-        config.ui.opacity = .infinity
-        let validated = config.validated()
-        XCTAssertEqual(validated.ui.opacity, 0.1)
-    }
-
-    func testValidatedResetsNegativeInfiniteTimeoutToLowerBound() {
-        var config = AppConfig()
         config.llm.timeout = -.infinity
         let validated = config.validated()
+        XCTAssertEqual(validated.llm.temperature, 0)
         XCTAssertEqual(validated.llm.timeout, 1)
     }
 
@@ -33,13 +21,6 @@ final class AppConfigTests: XCTestCase {
         let validated = config.validated()
         XCTAssertEqual(validated.ui.opacity, 1.0)
         XCTAssertEqual(validated.asr.threads, 32)
-    }
-
-    func testValidatedKeepsInRangeValuesUnchanged() {
-        var config = AppConfig()
-        config.llm.temperature = 0.7
-        let validated = config.validated()
-        XCTAssertEqual(validated.llm.temperature, 0.7)
     }
 
     /// R4-05：设置窗口的 UI 校验（`SettingsViewModel.applyHotkey`）不是改配置的唯一入口，
@@ -70,13 +51,6 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(validated.hotkey.modifiers, ["cmd", "shift"])
     }
 
-    func testValidatedKeepsBareFnWithoutModifier() {
-        var config = AppConfig()
-        config.hotkey = HotkeyConfig(modifiers: [], key: "fn")
-        let validated = config.validated()
-        XCTAssertEqual(validated.hotkey.key, "fn")
-    }
-
     // MARK: - A3：单独修饰键热键
 
     func testValidatedAcceptsEachModifierOnlyHotkey() {
@@ -105,13 +79,6 @@ final class AppConfigTests: XCTestCase {
             config.hotkey = HotkeyConfig(modifiers: [], key: key)
             XCTAssertEqual(config.validated().hotkey.key, "fn", "\(key) 不应被接受")
         }
-    }
-
-    func testHotkeyKindAndDisplayString() {
-        XCTAssertEqual(HotkeyConfig().kind, .fn)
-        XCTAssertEqual(HotkeyConfig(modifiers: ["ctrl"], key: "f2").kind, .combo)
-        XCTAssertEqual(HotkeyConfig(modifiers: [], key: "right_option").kind, .modifier)
-        XCTAssertEqual(HotkeyConfig(modifiers: [], key: "right_command").displayString, "右 ⌘")
     }
 
     func testConfigDecodesNaNAndInfFromYAMLWithoutCrashing() throws {

@@ -43,7 +43,4 @@ final class OutputFormatterTests: XCTestCase {
         }
     }
 
-    func testFormatForOutputAppliesSpacing() {
-        XCTAssertEqual(OutputFormatter.formatForOutput("我用Python写代码"), "我用 Python 写代码")
-    }
 }

@@ -12,8 +12,5 @@ final class AppCoordinatorInsertionServiceTests: XCTestCase {
 
         XCTAssertTrue(first.textInsertionService === coordinator.textInsertionService)
         XCTAssertTrue(second.textInsertionService === coordinator.textInsertionService)
-        XCTAssertEqual(
-            ObjectIdentifier(first.textInsertionService), ObjectIdentifier(second.textInsertionService)
-        )
     }
 }

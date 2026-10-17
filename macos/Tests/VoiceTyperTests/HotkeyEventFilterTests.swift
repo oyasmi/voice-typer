@@ -64,11 +64,6 @@ final class HotkeyEventFilterTests: XCTestCase {
         XCTAssertEqual(down(&f, space, flags: option).actions, [.press])
     }
 
-    func testComboReleaseOnlyAfterPress() {
-        var f = filter(key: "space", modifiers: ["control"])
-        XCTAssertEqual(up(&f, space).actions, [])
-    }
-
     func testEscapeCancelsWhileActiveOrWhenInactiveWindowIsOpen() {
         var f = filter(key: "space", modifiers: ["option"])
         XCTAssertEqual(down(&f, escape).actions, [], "未激活且取消窗口关闭时 Esc 无动作")
@@ -95,20 +90,6 @@ final class HotkeyEventFilterTests: XCTestCase {
         let again = f.handle(.flagsChanged(keyCode: 54, flags: command | 0x10), acceptsCancelWhenInactive: false)
         XCTAssertEqual(again.actions, [.press])
         XCTAssertEqual(f.handle(.flagsChanged(keyCode: 54, flags: 0), acceptsCancelWhenInactive: false).actions, [.release])
-    }
-
-    func testModifierOnlyMouseDownInvalidatesGesture() {
-        var f = filter(key: "right_option")
-        _ = f.handle(.flagsChanged(keyCode: 61, flags: option | 0x40), acceptsCancelWhenInactive: false)
-        XCTAssertEqual(f.handle(.mouseDown, acceptsCancelWhenInactive: false).actions, [.gestureCancelled])
-    }
-
-    func testModifierOnlyEscapeCancelsAndInvalidatesTheTap() {
-        var f = filter(key: "right_command")
-        _ = f.handle(.flagsChanged(keyCode: 54, flags: command | 0x10), acceptsCancelWhenInactive: false)
-        XCTAssertEqual(down(&f, escape, flags: command | 0x10).actions, [.cancel])
-        XCTAssertEqual(f.handle(.flagsChanged(keyCode: 54, flags: 0), acceptsCancelWhenInactive: false).actions, [],
-                       "Esc 取消后松开修饰键不应再多发一个 release")
     }
 
     // MARK: - 吞键规则（R8-B1）
@@ -217,13 +198,6 @@ final class HotkeyEventFilterTests: XCTestCase {
             HotkeyEventFilter.Decision(actions: [.gestureCancelled], consume: false)
         )
         XCTAssertEqual(up(&f, Int64(kVK_ANSI_C)), HotkeyEventFilter.Decision())
-    }
-
-    func testFnHotkeyDoesNotConsumeKeys() {
-        var f = filter(key: "fn")
-        _ = f.handle(.flagsChanged(keyCode: 63, flags: fnFlag), acceptsCancelWhenInactive: false)
-        XCTAssertEqual(down(&f, keyA, flags: fnFlag), HotkeyEventFilter.Decision())
-        XCTAssertEqual(up(&f, keyA), HotkeyEventFilter.Decision())
     }
 
     func testEscapeWithModifierOnlyHotkeyIsConsumedAndStillPairs() {

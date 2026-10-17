@@ -93,6 +93,29 @@ final class LLMCorrectorTests: XCTestCase {
         return report.fallbackReason
     }
 
+    /// 所有失败路径都必须原样交回输入文本——绝不能因为校对失败丢掉已识别的文字。
+    private func assertOriginalKept(
+        status: Int, reason: LLMCorrector.FallbackReason, body: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        StubURLProtocol.handler = { _ in (status, body) }
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        assertFellBack(report.outcome, "原文", "HTTP \(status) \(body)", file: file, line: line)
+        XCTAssertEqual(report.fallbackReason, reason, file: file, line: line)
+    }
+
+    func testEveryFailureKeepsOriginalTextWithClassifiedReason() async {
+        await assertOriginalKept(status: 500, reason: .server, body: "internal error")
+        await assertOriginalKept(status: 200, reason: .server, body: "not json at all")
+        await assertOriginalKept(status: 200, reason: .emptyResult, body:
+            #"{"choices":[{"message":{"content":"半截"},"finish_reason":"length"}]}"#)
+        await assertOriginalKept(status: 200, reason: .emptyResult, body:
+            #"{"choices":[{"message":{"content":"   "},"finish_reason":"stop"}]}"#)
+        // R2-08：剥标签之后才变空的 tags-only 响应同样要回落，而不是返回空串把原文丢掉。
+        await assertOriginalKept(status: 200, reason: .emptyResult, body:
+            #"{"choices":[{"message":{"content":"<asr_text>\n  \n</asr_text>"},"finish_reason":"stop"}]}"#)
+    }
+
     func testFallbackReasonMapping() async {
         let authCodes = [401, 403]
         for code in authCodes {
@@ -105,8 +128,6 @@ final class LLMCorrectorTests: XCTestCase {
         XCTAssertEqual(server, .server)
         let other = await fallbackReason(forStatus: 404)
         XCTAssertEqual(other, .server, "其他 HTTP 错误归入「服务出错」")
-        let malformed = await fallbackReason(forStatus: 200, body: "not json")
-        XCTAssertEqual(malformed, .server, "响应无法解析归入「服务出错」")
     }
 
     func testFallbackReasonForTimeoutAndNetworkErrors() async {
@@ -117,26 +138,6 @@ final class LLMCorrectorTests: XCTestCase {
         StubURLProtocol.failure = URLError(.notConnectedToInternet)
         let offline = await makeCorrector(session: makeSession()).correctWithReport("原文")
         XCTAssertEqual(offline.fallbackReason, .network)
-    }
-
-    func testSemanticFallbacksReportEmptyResult() async {
-        StubURLProtocol.handler = { _ in
-            (200, #"{"choices":[{"message":{"content":"半截"},"finish_reason":"length"}]}"#)
-        }
-        let truncated = await makeCorrector(session: makeSession()).correctWithReport("原文")
-        XCTAssertEqual(truncated.fallbackReason, .emptyResult)
-
-        StubURLProtocol.handler = { _ in
-            (200, #"{"choices":[{"message":{"content":"  "},"finish_reason":"stop"}]}"#)
-        }
-        let blank = await makeCorrector(session: makeSession()).correctWithReport("原文")
-        XCTAssertEqual(blank.fallbackReason, .emptyResult)
-    }
-
-    func testSuccessfulCorrectionHasNoFallbackReason() async {
-        StubURLProtocol.handler = { _ in (200, Self.okBody) }
-        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
-        XCTAssertNil(report.fallbackReason)
     }
 
     private func assertFellBack(
@@ -159,57 +160,6 @@ final class LLMCorrectorTests: XCTestCase {
         XCTAssertEqual(text, expected, file: file, line: line)
     }
 
-    func testSuccessfulCorrectionReturnsCorrectedText() async {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"这个服务器的告警规则配置好了吗"},"finish_reason":"stop"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let result = await corrector.correct("这个服物器的告警规则配置好了吗")
-        guard case .corrected(let text) = result else {
-            return XCTFail("成功响应应返回 .corrected，实际: \(result)")
-        }
-        XCTAssertEqual(text, "这个服务器的告警规则配置好了吗")
-    }
-
-    func testTruncatedResponseFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"被截断的部分文本"},"finish_reason":"length"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "一段很长的听写内容"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "finish_reason=length 是语义回落，必须是 .fellBack")
-    }
-
-    func testHTTPErrorFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in (500, "internal error") }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "原始文本"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "HTTP 错误必须回落 .fellBack")
-    }
-
-    func testMalformedJSONFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in (200, "not json at all") }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "原始文本"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "解析异常必须回落 .fellBack")
-    }
-
-    func testEmptyContentFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"   "},"finish_reason":"stop"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "已识别的原文"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "2xx 空 content 是语义回落（F-03），必须是 .fellBack")
-    }
-
     func testEchoedTagsAreStripped() async {
         StubURLProtocol.handler = { _ in
             let body = #"{"choices":[{"message":{"content":"<asr_text>\n修正后的文本\n</asr_text>"},"finish_reason":"stop"}]}"#
@@ -220,41 +170,7 @@ final class LLMCorrectorTests: XCTestCase {
         assertCorrected(result, "修正后的文本")
     }
 
-    /// R2-08 回归：剥标签之后才变空的 tags-only 响应，此前会被当作"有效修正"返回空串，
-    /// 把已识别出的文本直接丢掉；必须和剥标签前就是空的情况一样回落原文。
-    func testTagsOnlyResponseFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"<asr_text>\n</asr_text>"},"finish_reason":"stop"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "已识别的原文"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "tags-only 响应是语义回落，必须是 .fellBack")
-    }
-
-    func testTagsWrappingOnlyWhitespaceFallsBackToOriginalText() async {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"<asr_text>\n   \n</asr_text>"},"finish_reason":"stop"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let original = "已识别的原文"
-        let result = await corrector.correct(original)
-        assertFellBack(result, original, "tags 内仅空白是语义回落，必须是 .fellBack")
-    }
-
     // MARK: - test()：契约不变（成功返回文本，失败抛出）
-
-    func testTestReturnsCorrectedTextOnSuccess() async throws {
-        StubURLProtocol.handler = { _ in
-            let body = #"{"choices":[{"message":{"content":"修正后的文本"},"finish_reason":"stop"}]}"#
-            return (200, body)
-        }
-        let corrector = makeCorrector(session: makeSession())
-        let result = try await corrector.test("原文")
-        XCTAssertEqual(result.text, "修正后的文本")
-    }
 
     func testTestThrowsOnHTTPError() async {
         StubURLProtocol.handler = { _ in (401, "unauthorized") }
@@ -278,6 +194,7 @@ final class LLMCorrectorTests: XCTestCase {
         let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
 
         assertCorrected(report.outcome, "修正后的文本")
+        XCTAssertNil(report.fallbackReason)
         XCTAssertEqual(report.thinkingParameter, .sent)
         let thinking = try XCTUnwrap(recorder.requests.first?["thinking"] as? [String: String])
         XCTAssertEqual(thinking, ["type": "disabled"])
