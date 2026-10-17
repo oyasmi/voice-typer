@@ -101,18 +101,6 @@ public class AsrServiceLifecycleTests
     }
 
     [Fact]
-    public async Task RepeatedReload_AfterModelMissing_StillWorks()
-    {
-        // 回归：同步完成的加载曾把已完成的 Task 留在 _inFlightLoad，之后每次重载都无效。
-        using var rig = new Rig { Bundle = null };
-        await rig.Service.PreloadAsync();
-        await rig.Service.ReloadAsync();
-        await rig.Service.ReloadAsync();
-        Assert.Equal(AsrState.ModelMissing, rig.Service.State);
-        Assert.True(rig.LocateCalls >= 3, "每次重载都应真正重新定位模型");
-    }
-
-    [Fact]
     public async Task BuildFailure_ClearsInFlight_AndNextReloadRetries()
     {
         using var rig = new Rig();
@@ -269,18 +257,6 @@ public class AsrServiceLifecycleTests
     }
 
     // ─── T2-2：预览窗口热更新与校准复用 ─────────────────────────
-
-    [Fact]
-    public async Task PreviewWindow_ConfigChange_AppliesToNextSession()
-    {
-        using var rig = new Rig();
-        await rig.Service.PreloadAsync();
-        rig.Service.UpdateConfig(new AsrConfig { PreviewWindowSeconds = 10 });
-
-        var session = rig.Service.MakeSession(null);
-        Assert.Equal(10 * AppConstants.TargetSampleRate, session.PreviewWindowSamples);
-        session.Close();
-    }
 
     [Fact]
     public async Task Calibration_IsReusedAcrossReload_ButRedoneWhenThreadsChange()

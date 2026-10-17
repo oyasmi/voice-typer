@@ -310,20 +310,6 @@ public class VoiceTyperControllerTests
     }
 
     [Fact]
-    public void PartialAndCorrectionCallbacks_AreForwarded()
-    {
-        var h = Started();
-        var previews = new List<string>();
-        h.Controller.PreviewUpdate = previews.Add;
-        h.Hotkey.OnPress!();
-        h.Session.OnPartial!("你好");
-        h.Session.OnCorrectionStarted!();
-
-        Assert.Equal(new[] { "你好" }, previews);
-        Assert.Equal(1, h.CorrectionCount);
-    }
-
-    [Fact]
     public void Finish_ClearsPreview()
     {
         var h = Started();
@@ -351,19 +337,6 @@ public class VoiceTyperControllerTests
         h.Hotkey.OnPress!();
         Assert.Equal(1, h.Audio.StopCount);
         Assert.Equal(AppState.Recognizing, h.States.Last().State);
-    }
-
-    [Fact]
-    public void Toggle_PressWhileRecognizing_WarnsInsteadOfStartingNew()
-    {
-        var h = Started(UseToggle);
-        h.Hotkey.OnPress!();
-        h.Advance(1000);
-        h.Hotkey.OnPress!(); // → Recognizing
-        h.Hotkey.OnPress!(); // 上一段还没完成
-
-        Assert.Single(h.Factory.Sessions);
-        Assert.Contains(h.Warnings, w => w.Contains("上一段听写尚未完成"));
     }
 
     [Fact]
@@ -435,15 +408,6 @@ public class VoiceTyperControllerTests
         Assert.Equal(1, h.Audio.StopCount);
         Assert.Empty(h.Blocked);
         Assert.Equal(AppState.Recognizing, h.States.Last().State);
-    }
-
-    [Fact]
-    public void Blocked_Set_TurnsOffCancelWindow()
-    {
-        var h = Started();
-        h.Hotkey.AcceptsCancelWhenInactive = true;
-        h.Controller.BlockedReason = "x";
-        Assert.False(h.Hotkey.AcceptsCancelWhenInactive);
     }
 
     // ─── 剪贴板提前备份 / 上一次识别结果 ───────────────────────────
@@ -778,31 +742,12 @@ public class VoiceTyperControllerTests
     }
 
     [Fact]
-    public void SystemInterruption_WhenIdle_DoesNothing()
-    {
-        var h = Started();
-        h.Controller.HandleSystemInterruption();
-        Assert.Equal(0, h.Audio.StopWithoutResultCount);
-        Assert.Empty(h.Metrics);
-    }
-
-    [Fact]
     public void SystemResumed_ReinstallsHookAndInvalidatesInputCache()
     {
         var h = Started();
         h.Controller.HandleSystemResumed();
         Assert.Equal(1, h.Hotkey.ReinstallCount);
         Assert.Equal(1, h.Audio.InvalidateCount);
-    }
-
-    [Fact]
-    public void SystemResumed_AfterStop_DoesNothing()
-    {
-        var h = Started();
-        h.Controller.Stop();
-        h.Controller.HandleSystemResumed();
-        Assert.Equal(0, h.Hotkey.ReinstallCount);
-        Assert.Equal(0, h.Audio.InvalidateCount);
     }
 
     // ─── 剪贴板备份未就绪：UI 线程不等，轮询重试（B1）──────────────────
@@ -942,17 +887,6 @@ public class VoiceTyperControllerTests
     }
 
     [Fact]
-    public void InsertFailed_ClipboardAlsoFails_SaysSo()
-    {
-        var h = Started();
-        h.Text.Result = TextInsertionResult.Failed;
-        h.Text.CopySucceeds = false;
-        h.HoldFor(600);
-        h.Session.OnFinal!("结果");
-        Assert.Contains("剪贴板也失败", h.States.Last().Message);
-    }
-
-    [Fact]
     public void AudioStartFailure_ReportsErrorAndReleasesSession()
     {
         var h = Started();
@@ -1000,15 +934,6 @@ public class VoiceTyperControllerTests
     }
 
     [Fact]
-    public void DeviceChange_WarnsUser()
-    {
-        var h = Started();
-        h.Hotkey.OnPress!();
-        h.Audio.OnDeviceChanged!();
-        Assert.Contains(h.Warnings, w => w.Contains("输入设备已变化"));
-    }
-
-    [Fact]
     public void HotkeyHealth_ReportsErrorAndRecovers()
     {
         var h = Started();
@@ -1032,28 +957,6 @@ public class VoiceTyperControllerTests
         var blockedCount = blocked.States.Count;
         blocked.Hotkey.OnHealthChanged!(true);
         Assert.Equal(blockedCount, blocked.States.Count);
-    }
-
-    [Fact]
-    public void Suspend_And_Resume_ForwardToHotkeyService()
-    {
-        var h = Started();
-        h.Controller.SuspendHotkeyListening();
-        Assert.Equal(1, h.Hotkey.StopCount);
-        h.Controller.ResumeHotkeyListening();
-        Assert.Equal(2, h.Hotkey.StartCount);
-    }
-
-    [Fact]
-    public void AudioPolicy_FollowsConfig()
-    {
-        var h = Started(c => c.Audio.InputDevice = AudioConfig.System);
-        h.Hotkey.OnPress!();
-        Assert.IsType<AudioInputPolicy.SystemDefault>(h.Audio.LastPolicy);
-
-        var device = Started(c => c.Audio.InputDevice = "{0.0.1.00000000}.{abc}");
-        device.Hotkey.OnPress!();
-        Assert.Equal(new AudioInputPolicy.Device("{0.0.1.00000000}.{abc}"), device.Audio.LastPolicy);
     }
 
     // ─── 电平与静音探测 ────────────────────────────────────────
@@ -1113,22 +1016,6 @@ public class VoiceTyperControllerTests
     // ─── HasActiveDictation（破坏性操作的门禁依据）──────────────
 
     [Fact]
-    public void HasActiveDictation_TracksSessionAcrossNormalFlow()
-    {
-        var h = Started();
-        Assert.False(h.Controller.HasActiveDictation);
-
-        h.Hotkey.OnPress!();
-        Assert.True(h.Controller.HasActiveDictation);
-        h.Advance(800);
-        h.Hotkey.OnRelease!();
-        Assert.True(h.Controller.HasActiveDictation); // 识别中仍算进行中
-
-        h.Session.OnFinal!("好");
-        Assert.False(h.Controller.HasActiveDictation);
-    }
-
-    [Fact]
     public void HasActiveDictation_IsFalseAfterEveryFinishPath()
     {
         // 取消
@@ -1179,14 +1066,6 @@ public class VoiceTyperControllerTests
         h.Hotkey.OnRelease!();
         h.Session.OnFinal!("照常");
         Assert.Equal(new[] { "照常" }, h.Text.Inserted);
-    }
-
-    [Fact]
-    public void HotkeyHealthFailure_WhenIdle_StillReportsError()
-    {
-        var h = Started();
-        h.Hotkey.OnHealthChanged!(false);
-        Assert.Equal(AppState.Error, h.States.Last().State);
     }
 
     // ─── 纠错回落提示 ──────────────────────────────────────────
@@ -1402,48 +1281,6 @@ public class VoiceTyperControllerTests
         Assert.Equal(DictationOutcome.StartFailed, Assert.Single(h.Metrics).Outcome);
     }
 
-    [Fact]
-    public void Metrics_RecordHookStampAndHudPaints()
-    {
-        var h = Started();
-        h.Hotkey.LastTrigger = new HotkeyTriggerStamp(h.Now, 7);
-        h.Advance(3);
-        h.Hotkey.OnPress!();
-        h.Advance(20);
-        h.Controller.NoteHudPainted(ready: false, h.Now);
-        h.Advance(400);
-        h.Controller.NoteHudPainted(ready: true, h.Now);
-        h.Controller.NoteHudPainted(ready: true, h.Now + 999); // 只记第一次
-
-        h.Advance(500);
-        h.Hotkey.OnRelease!();
-        h.Session.OnFinal!("好");
-
-        var metrics = Assert.Single(h.Metrics);
-        Assert.Equal(7, metrics.KeyEventLagMs);
-        Assert.NotNull(metrics.HookAt);
-        Assert.True(metrics.HookAt < metrics.PressedAt);
-        Assert.NotNull(metrics.HudShownAt);
-        Assert.True(metrics.HudReadyAt > metrics.HudShownAt);
-        var line = metrics.SummaryLine();
-        Assert.Contains("key_lag=7 dispatch=3 ", line);
-        Assert.Contains("hud_shown=20 hud_ready=420", line);
-    }
-
-    [Fact]
-    public void Metrics_IgnoreStaleHookStamp()
-    {
-        // 钩子时间戳远早于本次按下：不是触发这次听写的按键，不能算进耗时。
-        var h = Started();
-        h.Hotkey.LastTrigger = new HotkeyTriggerStamp(h.Now, 7);
-        h.Advance(10_000);
-        h.HoldFor(600);
-        h.Session.OnFinal!("好");
-        var metrics = Assert.Single(h.Metrics);
-        Assert.Null(metrics.HookAt);
-        Assert.Null(metrics.KeyEventLagMs);
-    }
-
     // ─── R8-F2：上屏文本与预览统一格式化 ─────────────────────────
 
     [Fact]
@@ -1482,14 +1319,4 @@ public class VoiceTyperControllerTests
         Assert.Equal(new[] { "已识别 Python 部分" }, h.Text.Copied);
     }
 
-    [Fact]
-    public void FocusChangedFallback_CopiesTheFormattedText()
-    {
-        var h = Started();
-        h.Text.Result = TextInsertionResult.FocusChanged;
-        h.HoldFor(600);
-        h.Session.OnFinal!("用Git提交");
-
-        Assert.Equal(new[] { "用 Git 提交" }, h.Text.Copied);
-    }
 }

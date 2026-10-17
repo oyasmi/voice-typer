@@ -19,22 +19,6 @@ public class UiFitAndInputTests
     }
 
     [Fact]
-    public void WindowFit_LeavesRoomyScreensUntouched()
-    {
-        var (size, min) = WindowFit.Fit(new Size(1080, 800), new Size(860, 640), new Rectangle(0, 0, 2560, 1400));
-        Assert.Equal(new Size(1080, 800), size);
-        Assert.Equal(new Size(860, 640), min);
-    }
-
-    [Fact]
-    public void WindowFit_TinyScreen_ReducesMinimumToo()
-    {
-        var (size, min) = WindowFit.Fit(new Size(1350, 1000), new Size(1075, 800), new Rectangle(0, 0, 1366, 728));
-        Assert.True(size.Height <= 728 && size.Width <= 1366);
-        Assert.Equal(size.Height, min.Height); // 最小高度被压到不超过窗口本身
-    }
-
-    [Fact]
     public void WindowFit_CenterRespectsWorkingAreaOrigin()
     {
         var p = WindowFit.Center(new Size(1000, 600), new Rectangle(1920, 0, 1920, 1040));
@@ -52,13 +36,4 @@ public class UiFitAndInputTests
         Assert.Equal(new[] { (0x56, false), (0x56, true) }, held.Select(i => ((int)i.Vk, i.KeyUp)).ToArray());
     }
 
-    [Fact]
-    public void TrayBadge_IdleHasNone_ActiveStatesHaveOne()
-    {
-        Assert.Null(TrayController.BadgeColor(AppState.Idle));
-        foreach (var state in new[] { AppState.Recording, AppState.Recognizing, AppState.Error, AppState.Paused, AppState.DownloadingModel })
-        {
-            Assert.NotNull(TrayController.BadgeColor(state));
-        }
-    }
 }

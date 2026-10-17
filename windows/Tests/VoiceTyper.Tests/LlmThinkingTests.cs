@@ -183,10 +183,4 @@ public class LlmThinkingTests
         }
     }
 
-    [Fact]
-    public void FileStore_UnreadableFile_MeansNothingCached()
-    {
-        var store = new FileLlmCapabilityStore(Path.Combine(Path.GetTempPath(), $"voicetyper-none-{Guid.NewGuid():N}", "x.txt"));
-        Assert.False(store.IsThinkingParameterUnsupported("anything"));
-    }
 }

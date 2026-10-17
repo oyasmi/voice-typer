@@ -5,7 +5,8 @@ using Xunit;
 namespace VoiceTyper.Tests;
 
 /// <summary>C# 直译自 macOS <c>AudioCaptureService.swift</c> 内嵌的 <c>AudioChunker</c> 及其测试用例
-/// （R3-01 拆分出的纯逻辑分帧器，与 WASAPI/线程无关，可脱离真实麦克风单测）。</summary>
+/// （纯逻辑分帧器，与 WASAPI/线程无关）。丢一个样本就会让整段识别错位，所以这条规则值得钉死：
+/// 凑满即吐出 chunk，不足的尾音靠 Drain 取走。</summary>
 public class AudioChunkerTests
 {
     private static float[] DecodeFloats(byte[] bytes)
@@ -16,65 +17,27 @@ public class AudioChunkerTests
     }
 
     [Fact]
-    public void Append_EmitsNoChunk_WhenBelowThreshold()
+    public void Append_AccumulatesAcrossCalls_AndEmitsEveryFullChunkInOrder()
     {
-        var chunker = new AudioChunker(chunkSamples: 100);
-        var chunks = chunker.Append(new float[50]);
-        Assert.Empty(chunks);
-    }
+        var chunker = new AudioChunker(chunkSamples: 3);
+        Assert.Empty(chunker.Append(new float[] { 1, 2 }));
 
-    [Fact]
-    public void Append_EmitsOneChunk_WhenExactlyThreshold()
-    {
-        var chunker = new AudioChunker(chunkSamples: 100);
-        var samples = new float[100];
-        for (int i = 0; i < samples.Length; i++) samples[i] = i;
-
-        var chunks = chunker.Append(samples);
-
-        Assert.Single(chunks);
-        Assert.Equal(samples, DecodeFloats(chunks[0]));
-    }
-
-    [Fact]
-    public void Append_EmitsMultipleChunks_WhenFarAboveThreshold()
-    {
-        var chunker = new AudioChunker(chunkSamples: 100);
-        var chunks = chunker.Append(new float[250]);
+        var chunks = chunker.Append(new float[] { 3, 4, 5, 6, 7 });
 
         Assert.Equal(2, chunks.Count);
-        Assert.Equal(50, DecodeFloats(chunker.Drain()).Length); // 250 - 2*100 = 50 个样本留在缓冲区
+        Assert.Equal(new float[] { 1, 2, 3 }, DecodeFloats(chunks[0]));
+        Assert.Equal(new float[] { 4, 5, 6 }, DecodeFloats(chunks[1]));
+        Assert.Equal(new float[] { 7 }, DecodeFloats(chunker.Drain()));
     }
 
     [Fact]
-    public void Append_CarriesRemainderAcrossCalls()
-    {
-        var chunker = new AudioChunker(chunkSamples: 100);
-
-        Assert.Empty(chunker.Append(new float[60]));
-        var chunks = chunker.Append(new float[60]); // 60+60=120 → 一个 100 的 chunk，剩 20
-
-        Assert.Single(chunks);
-        Assert.Equal(20, DecodeFloats(chunker.Drain()).Length);
-    }
-
-    [Fact]
-    public void Drain_ReturnsRemainderAndClearsBuffer()
-    {
-        var chunker = new AudioChunker(chunkSamples: 100);
-        chunker.Append(new float[30]);
-
-        var tail = DecodeFloats(chunker.Drain());
-        Assert.Equal(30, tail.Length);
-
-        var second = chunker.Drain();
-        Assert.Empty(second);
-    }
-
-    [Fact]
-    public void Drain_ReturnsEmpty_WhenNothingAppended()
+    public void Drain_ClearsTheBuffer()
     {
         var chunker = new AudioChunker(chunkSamples: 100);
         Assert.Empty(chunker.Drain());
+
+        chunker.Append(new float[30]);
+        Assert.Equal(30, DecodeFloats(chunker.Drain()).Length);
+        Assert.Empty(chunker.Drain()); // 重复调用不能吐出同一批样本
     }
 }

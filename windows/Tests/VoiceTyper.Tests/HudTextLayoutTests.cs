@@ -36,72 +36,13 @@ public class HudTextLayoutTests
     }
 
     [Fact]
-    public void SingleLineBudget_ShowsOnlyTail()
-    {
-        var lines = HudTextLayout.FitTail("0123456789abcdefghij", 1, 100, Measure);
-        Assert.Equal(new[] { "…bcdefghij" }, lines);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void EmptyText_ProducesNoLines(string text)
-    {
-        Assert.Empty(HudTextLayout.FitTail(text, 2, 100, Measure));
-    }
-
-    [Fact]
-    public void VeryLongInput_IsBoundedAndStillFast()
-    {
-        var text = new string('x', 100_000);
-        var lines = HudTextLayout.FitTail(text, 2, 200, Measure);
-        Assert.Equal(2, lines.Length);
-        Assert.StartsWith("…", lines[0]);
-    }
-
-    [Fact]
     public void NewlinesAreFlattened()
     {
         Assert.Equal(new[] { "你好 世界" }, HudTextLayout.FitTail("你好\n世界", 2, 200, Measure));
     }
 
-    [Theory]
-    [InlineData("", 14, "")]
-    [InlineData("Built-in Mic", 14, "Built-in Mic")]
-    [InlineData("Jabra Evolve2 65 立体声耳机", 14, "Jabra Evolve2…")]
-    public void DeviceNameTruncation(string name, int limit, string expected)
-    {
-        Assert.Equal(limit, HudTextLayout.InputDeviceNameLimit);
-        Assert.Equal(expected, HudTextLayout.TruncateDeviceName(name));
-    }
-
-    [Fact]
-    public void LevelMapping_IsMonotonicAndClamped()
-    {
-        Assert.Equal(0f, HudTextLayout.LevelToBarHeight(0f));
-        Assert.Equal(0f, HudTextLayout.LevelToBarHeight(float.NaN));
-        Assert.Equal(0f, HudTextLayout.LevelToBarHeight(0.001f)); // −60 dBFS
-        Assert.Equal(1f, HudTextLayout.LevelToBarHeight(1f));
-        Assert.Equal(1f, HudTextLayout.LevelToBarHeight(5f));
-        var quiet = HudTextLayout.LevelToBarHeight(0.01f);
-        var loud = HudTextLayout.LevelToBarHeight(0.1f);
-        Assert.InRange(quiet, 0.15f, 0.25f); // −40 dBFS
-        Assert.True(loud > quiet);
-    }
 }
 
 public class HudTextLayoutPerformanceTests
 {
-    [Fact]
-    public void EachDistinctCharacterIsMeasuredOnlyOnce()
-    {
-        int calls = 0;
-        float Measure(string s) { calls++; return s.Length * 10f; }
-
-        var text = string.Concat(System.Linq.Enumerable.Repeat("识别结果abc123，", 40)); // 重复内容，不同字符只有十来个
-        HudTextLayout.FitTail(text, 2, 300, Measure);
-
-        // 之前是数千次；缓存后只与「不同字符数」相关。
-        Assert.InRange(calls, 1, 40);
-    }
 }

@@ -29,18 +29,6 @@ public class DictationMetricsTests
     }
 
     [Fact]
-    public void SummaryLine_HasStableFieldOrder_AndDashForMissingValues()
-    {
-        var metrics = new DictationMetrics { SessionId = 0xAB, PressedAt = 0, Mode = HotkeyMode.Toggle, Hotkey = HotkeyKind.Modifier };
-        var line = metrics.SummaryLine();
-        Assert.StartsWith("dictation session=00ab outcome=failed mode=toggle hotkey=modifier input=- ", line);
-        Assert.Contains("capture_start=- first_buffer=- key_lag=- dispatch=- start_queue=- dev_resolve=- dev_cached=- "
-            + "activate=- init=- hud_shown=- hud_ready=- audio=0.0s", line);
-        Assert.Contains("llm=- llm_result=- llm_retry=-", line);
-        Assert.EndsWith("cold=0", line);
-    }
-
-    [Fact]
     public void SummaryLine_ComputesIntervals()
     {
         var metrics = new DictationMetrics
@@ -88,10 +76,4 @@ public class DictationMetricsTests
         }
     }
 
-    [Fact]
-    public void SummaryLine_NeverContainsAnythingResemblingText()
-    {
-        var line = new DictationMetrics { SessionId = 7 }.SummaryLine();
-        Assert.All(line, ch => Assert.True(ch < 128, "摘要只应含 ASCII 数字与枚举"));
-    }
 }

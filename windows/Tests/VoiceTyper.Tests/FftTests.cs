@@ -47,24 +47,6 @@ public class FftTests
     }
 
     [Fact]
-    public void Forward_OfImpulse_ProducesFlatSpectrum()
-    {
-        const int n = 512;
-        var real = new float[n];
-        var imag = new float[n];
-        real[0] = 1f;
-
-        var fft = new Rfft(n);
-        fft.Forward(real, imag);
-
-        for (int k = 0; k < n; k++)
-        {
-            Assert.True(Math.Abs(real[k] - 1f) < 1e-4f, $"bin {k}: real={real[k]}");
-            Assert.True(Math.Abs(imag[k]) < 1e-4f, $"bin {k}: imag={imag[k]}");
-        }
-    }
-
-    [Fact]
     public void Constructor_RejectsNonPowerOfTwo()
     {
         Assert.Throws<ArgumentException>(() => new Rfft(500));

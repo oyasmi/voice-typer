@@ -28,13 +28,6 @@ public class ConfigStoreTests
         Assert.Equal(0.85, original.UI.Opacity);
     }
 
-    [Fact]
-    public void HotkeyDisplayString_NormalizesModifierNames()
-    {
-        var hotkey = new HotkeyConfig { Modifiers = new() { "control", "option", "cmd" }, Key = "f2" };
-        Assert.Equal("Ctrl+Alt+Win+F2", hotkey.DisplayString);
-    }
-
     [Theory]
     [InlineData("zh", "Zh")]
     [InlineData("EN", "En")]

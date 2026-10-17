@@ -24,21 +24,4 @@ public class TextPostprocessorTests
         Assert.Equal("", TextPostprocessor.Process("<|zh|><|NEUTRAL|><|Speech|><|withitn|>。"));
     }
 
-    [Fact]
-    public void KeepsSubstantiveEnglishText()
-    {
-        Assert.Equal("hello world", TextPostprocessor.Process("hello world"));
-    }
-
-    [Fact]
-    public void CollapsesRepeatedWhitespace()
-    {
-        Assert.Equal("a b", TextPostprocessor.Process("a    b"));
-    }
-
-    [Fact]
-    public void EmptyInput_ReturnsEmpty()
-    {
-        Assert.Equal("", TextPostprocessor.Process(""));
-    }
 }

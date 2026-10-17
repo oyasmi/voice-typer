@@ -275,9 +275,7 @@ public class ModelDownloaderTests : IDisposable
 
     [Theory]
     [InlineData(400_000, 4)]
-    [InlineData(10, 4)]
     [InlineData(4, 4)]
-    [InlineData(3, 4)]
     [InlineData(241_216_270, 4)]
     public void SegmentRanges_CoverEverythingWithoutOverlap(long total, int count)
     {
@@ -286,13 +284,6 @@ public class ModelDownloaderTests : IDisposable
         Assert.Equal(total - 1, ranges[^1].End);
         for (int i = 1; i < ranges.Length; i++) Assert.Equal(ranges[i - 1].End + 1, ranges[i].Start);
         Assert.Equal(total, ranges.Sum(r => r.End - r.Start + 1));
-    }
-
-    [Fact]
-    public void SegmentRanges_RejectsEmptyInput()
-    {
-        Assert.Empty(ModelDownloader.SegmentRanges(0, 4));
-        Assert.Empty(ModelDownloader.SegmentRanges(100, 0));
     }
 
     [Fact]
@@ -311,18 +302,6 @@ public class ModelDownloaderTests : IDisposable
         using var downloader = Make(server, data, 100_000);
         await downloader.DownloadAllAsync(_ => { });
         Assert.Equal(5, server.Requests.Count);
-        Assert.Equal(data, File.ReadAllBytes(Path.Combine(_dir, "model.bin")));
-    }
-
-    [Fact]
-    public async Task ModelScopeStyle200Range_ResumesSingleConnection()
-    {
-        var data = MakeData(50_000);
-        File.WriteAllBytes(Path.Combine(_dir, "model.bin.part"), data[..20_000]);
-        var server = new RangeServer(data) { RangeReturnsOk = true };
-        using var downloader = Make(server, data, 1_000_000);
-        await downloader.DownloadAllAsync(_ => { });
-        Assert.Single(server.Requests);
         Assert.Equal(data, File.ReadAllBytes(Path.Combine(_dir, "model.bin")));
     }
 

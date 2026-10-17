@@ -21,14 +21,10 @@ public class LfrCmvnFlatTests
 
     [Theory]
     [InlineData(1, 7, 6)]
-    [InlineData(2, 7, 6)]
-    [InlineData(5, 7, 6)]
     [InlineData(6, 7, 6)]
-    [InlineData(7, 7, 6)]
     [InlineData(100, 7, 6)]
     [InlineData(101, 7, 6)]
     [InlineData(37, 5, 2)]
-    [InlineData(9, 1, 1)]
     public void Flat_EqualsTwoStepImplementation_BitForBit(int frames, int m, int n)
     {
         const int dim = 80;

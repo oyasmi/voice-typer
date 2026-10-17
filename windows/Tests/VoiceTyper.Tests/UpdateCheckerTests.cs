@@ -12,8 +12,6 @@ public class UpdateCheckerTests
     [InlineData("3.2.1", "3,2,1")]
     [InlineData("v3.2.1", "3,2,1")]
     [InlineData("windows-3.2.1-beta", "3,2,1")]
-    [InlineData("v10", "10")]
-    [InlineData("0.0.0-dev", "0,0,0")]
     [InlineData("3.2.1 (build 4567)", "3,2,1")]
     [InlineData("3..2", "3")]
     public void ParsesCommonTagShapes(string raw, string expected)

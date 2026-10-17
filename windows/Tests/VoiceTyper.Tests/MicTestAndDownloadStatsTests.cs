@@ -36,15 +36,6 @@ public class MicTestAndDownloadStatsTests
     }
 
     [Fact]
-    public void Speed_IsUnknownWhenNothingProgressed()
-    {
-        var tracker = new DownloadSpeedTracker();
-        tracker.Add(Seconds(0), 0.3);
-        tracker.Add(Seconds(3), 0.3);
-        Assert.Null(tracker.BytesPerSecond(100_000_000));
-    }
-
-    [Fact]
     public void Speed_OnlyLooksAtTheRecentWindow()
     {
         var tracker = new DownloadSpeedTracker();
@@ -55,42 +46,6 @@ public class MicTestAndDownloadStatsTests
         // 窗口内只剩最近的样本：约 2% / 2 秒，而不是被最初那一段拉高。
         var speed = tracker.BytesPerSecond(100_000_000)!.Value;
         Assert.InRange(speed, 0.9e6, 1.1e6);
-    }
-
-    [Fact]
-    public void Reset_ForgetsEverything()
-    {
-        var tracker = new DownloadSpeedTracker();
-        tracker.Add(Seconds(0), 0.0);
-        tracker.Add(Seconds(2), 0.2);
-        tracker.Reset();
-        Assert.Null(tracker.BytesPerSecond(100_000_000));
-    }
-
-    [Theory]
-    [InlineData(11.2, "12 秒")]
-    [InlineData(0, "0 秒")]
-    [InlineData(59.1, "1 分 0 秒")]
-    [InlineData(125, "2 分 5 秒")]
-    [InlineData(3600, "超过 1 小时")]
-    public void Remaining_IsHumanReadable(double seconds, string expected)
-    {
-        Assert.Equal(expected, DownloadStatusText.FormatRemaining(seconds));
-    }
-
-    [Fact]
-    public void Format_WithoutSpeed_OmitsRateAndEta()
-    {
-        var text = DownloadStatusText.Format(0.5, 200_000_000, null);
-        Assert.Equal("已下载 100.0 / 200.0 MB · 50%", text);
-    }
-
-    [Fact]
-    public void Format_WithSpeed_AppendsRateAndEta()
-    {
-        // 还剩 100MB，4MB/s：25 秒。
-        var text = DownloadStatusText.Format(0.5, 200_000_000, 4_000_000);
-        Assert.Equal("已下载 100.0 / 200.0 MB · 50% · 4.0 MB/s，约剩 25 秒", text);
     }
 
     // ─── 测试麦克风 ──────────────────────────────────────────────

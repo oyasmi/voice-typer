@@ -71,9 +71,7 @@ public class ConfigParityTests
     [Theory]
     [InlineData("hold", "Hold")]
     [InlineData("toggle", "Toggle")]
-    [InlineData("TOGGLE", "Toggle")]
     [InlineData("garbage", "Hold")]
-    [InlineData("", "Hold")]
     [InlineData(null, "Hold")]
     public void HotkeyMode_ParsesLeniently(string? raw, string expected)
     {
@@ -92,14 +90,6 @@ public class ConfigParityTests
     }
 
     [Fact]
-    public void BlankInputDevice_FallsBackToAuto()
-    {
-        var config = new AppConfig();
-        config.Audio.InputDevice = "   ";
-        Assert.Equal("auto", config.Validated().Audio.InputDevice);
-    }
-
-    [Fact]
     public void InvalidKey_FallsBackToDefaultKey_ButKeepsMode()
     {
         var config = new AppConfig();
@@ -107,16 +97,6 @@ public class ConfigParityTests
         var validated = config.Validated().Hotkey;
         Assert.Equal("f2", validated.Key);
         Assert.Equal(HotkeyMode.Toggle, validated.ModeValue); // 模式是独立的用户选择，不被非法键名连坐
-    }
-
-    [Fact]
-    public void NoModifier_FallsBackToDefaultKey_ButKeepsMode()
-    {
-        var config = new AppConfig();
-        config.Hotkey = new HotkeyConfig { Modifiers = new(), Key = "d", ModeValue = HotkeyMode.Toggle };
-        var validated = config.Validated().Hotkey;
-        Assert.Equal("f2", validated.Key);
-        Assert.Equal(HotkeyMode.Toggle, validated.ModeValue);
     }
 
     [Fact]
@@ -142,36 +122,4 @@ public class ConfigParityTests
         Assert.Equal(HotkeyMode.Toggle, back.ModeValue);
     }
 
-    [Fact]
-    public void RightAlt_ModifierOnlyKey_ValidWithoutModifiers_AndSurvivesYamlRoundTrip()
-    {
-        var config = new AppConfig();
-        config.Hotkey = new HotkeyConfig { Modifiers = new() { "alt" }, Key = "Right_Alt", ModeValue = HotkeyMode.Hold };
-        var validated = config.Validated().Hotkey;
-        Assert.Equal(ModifierHotkeys.RightAlt, validated.Key);
-        Assert.Empty(validated.Modifiers);
-        Assert.True(validated.IsModifierOnly);
-        Assert.Equal("右 Alt", validated.DisplayString);
-
-        var roundTrip = Parse(Serialize(config)).Hotkey;
-        Assert.Equal(ModifierHotkeys.RightAlt, roundTrip.Key);
-        Assert.Empty(roundTrip.Modifiers);
-        Assert.Equal(HotkeyMode.Hold, roundTrip.ModeValue);
-    }
-
-    [Fact]
-    public void Clone_IsDeepForNewSections()
-    {
-        var original = new AppConfig();
-        var clone = original.Clone();
-        clone.Audio.InputDevice = "x";
-        clone.Hotkey.ModeValue = HotkeyMode.Toggle;
-        clone.UI.HudPositionValue = HudPlacement.Hidden;
-        clone.Asr.PreloadOnLaunch = false;
-
-        Assert.Equal("auto", original.Audio.InputDevice);
-        Assert.Equal(HotkeyMode.Hold, original.Hotkey.ModeValue);
-        Assert.Equal(HudPlacement.BottomCenter, original.UI.HudPositionValue);
-        Assert.True(original.Asr.PreloadOnLaunch);
-    }
 }

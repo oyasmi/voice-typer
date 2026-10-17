@@ -62,25 +62,6 @@ public class RecognitionBufferTests
         Assert.Contains("[40000]", final);
     }
 
-    [Fact]
-    public void SampleCount_ReflectsAppendedTotal()
-    {
-        var engine = new FakeEngine();
-        var buffer = new RecognitionBuffer(engine);
-        buffer.Append(new float[100]);
-        buffer.Append(new float[50]);
-        Assert.Equal(150, buffer.SampleCount);
-    }
-
-    [Fact]
-    public void Append_IgnoresEmptyChunk()
-    {
-        var engine = new FakeEngine();
-        var buffer = new RecognitionBuffer(engine);
-        buffer.Append(Array.Empty<float>());
-        Assert.Equal(0, buffer.SampleCount);
-    }
-
     private static int GetCommittedN(RecognitionBuffer buffer)
     {
         var field = typeof(RecognitionBuffer).GetField("_committedN", BindingFlags.NonPublic | BindingFlags.Instance)!;

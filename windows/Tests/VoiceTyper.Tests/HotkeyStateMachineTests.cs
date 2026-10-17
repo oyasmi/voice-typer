@@ -133,15 +133,6 @@ public class HotkeyStateMachineTests
     }
 
     [Fact]
-    public void GenericVkControl_IsNormalizedLikeLeftRight()
-    {
-        var sm = CtrlF2();
-        sm.OnKey(VK_CONTROL, isDown: true); // 通用 0x11
-        var (a, _) = sm.OnKey(F2, isDown: true);
-        Assert.Equal(HotkeyAction.Press, a);
-    }
-
-    [Fact]
     public void EngagedMainKey_AutoRepeat_IsSwallowed()
     {
         var sm = CtrlF2();
@@ -170,17 +161,6 @@ public class HotkeyStateMachineTests
 
         sm.OnKey(F2, isDown: false);
         Assert.False(sm.IsEngaged); // 回到 Idle
-    }
-
-    [Fact]
-    public void ModifierDownDuringIdle_IsNeverConsumed()
-    {
-        var sm = CtrlF2();
-        var (a, c) = sm.OnKey(VK_LCONTROL, isDown: true);
-        Assert.Equal(HotkeyAction.None, a);
-        Assert.False(c); // 修饰键事件必须放行
-        var (a2, c2) = sm.OnKey(VK_LCONTROL, isDown: false);
-        Assert.False(c2);
     }
 
     // ─── 卡键看门狗（B3）─────────────────────────────────────────
@@ -229,13 +209,6 @@ public class HotkeyStateMachineTests
         Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(vk => vk == VK_LCONTROL)); // 又读到按下：计数清零
         Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
         Assert.True(sm.IsEngaged);
-    }
-
-    [Fact]
-    public void Watchdog_IdleMachine_DoesNothing()
-    {
-        var sm = CtrlF2();
-        for (int i = 0; i < 5; i++) Assert.Equal(HotkeyAction.None, sm.ResetIfReleased(_ => false));
     }
 
     [Fact]

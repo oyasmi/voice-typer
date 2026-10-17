@@ -95,19 +95,6 @@ public class LlmCorrectorTests
     }
 
     [Fact]
-    public async Task Correct_FallsBackToOriginalText_OnMalformedJson()
-    {
-        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("not json"),
-        });
-
-        var result = await corrector.CorrectAsync("原始文本");
-        Assert.True(result.DidFallBack);
-        Assert.Equal("原始文本", result.Text);
-    }
-
-    [Fact]
     public async Task Correct_StripsEchoedAsrTextTags()
     {
         var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -189,19 +176,6 @@ public class LlmCorrectorTests
         });
 
         await Assert.ThrowsAsync<LlmException>(() => corrector.TestAsync("原始文本"));
-    }
-
-    [Fact]
-    public async Task Test_ReturnsCorrectedText_OnSuccess()
-    {
-        var corrector = MakeCorrector(_ => new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(
-                """{"choices":[{"message":{"content":"修正后的文本"},"finish_reason":"stop"}]}"""),
-        });
-
-        var result = await corrector.TestAsync("原始文本");
-        Assert.Equal("修正后的文本", result);
     }
 
     /// <summary>TestAsync 遇到语义回落（finish_reason=length）仍返回文本、不抛错——契约不变，

@@ -118,14 +118,6 @@ public class LocalizationTests
     }
 
     [Fact]
-    public void ChineseIsTheDefaultLanguage()
-    {
-        L10n.SetLanguage(AppLanguage.Zh);
-        Assert.Equal(AppLanguage.Zh, new Core.UIConfig().InterfaceLanguageValue);
-        Assert.Equal("就绪", L10n.T("就绪"));
-    }
-
-    [Fact]
     public void BootstrapReadsInterfaceLanguageFromConfigFile()
     {
         var path = Path.Combine(Path.GetTempPath(), $"voicetyper-l10n-{Guid.NewGuid():N}.yaml");

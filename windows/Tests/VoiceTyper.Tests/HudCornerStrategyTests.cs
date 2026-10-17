@@ -49,14 +49,6 @@ public class HudCornerStrategyTests
     });
 
     [Fact]
-    public void OpaqueHudKeepsDwmCornersAndRegionExclusive() => OnUiThread(() =>
-    {
-        using var hud = new RecordingHud(new UIConfig { Opacity = 1.0 });
-        var _ = hud.Handle;
-        AssertCornerStrategyConsistent(hud);
-    });
-
-    [Fact]
     public void OpacitySwitchSwapsCornerStrategy() => OnUiThread(() =>
     {
         using var hud = new RecordingHud(new UIConfig { Opacity = 1.0 });

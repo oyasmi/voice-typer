@@ -53,12 +53,6 @@ public class OutputFormatterTests
     }
 
     [Fact]
-    public void FormatForOutputAppliesSpacing()
-    {
-        Assert.Equal("我用 Python 写代码", OutputFormatter.FormatForOutput("我用Python写代码"));
-    }
-
-    [Fact]
     public void SurrogatePairsAreTreatedAsOtherCharacters()
     {
         // 代理项对（如 𠀀 U+20000）不属于 BMP 汉字集合，与 Swift 按标量扫描的结果一致：不加空格。

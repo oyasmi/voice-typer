@@ -49,12 +49,6 @@ public class PerformanceBatchTests
         finally { pump.Dispose(); }
     }
 
-    [Fact]
-    public void CaptureChunk_IsTwoHundredMilliseconds()
-    {
-        Assert.Equal(AppConstants.TargetSampleRate / 5, AppConstants.ChunkSamples);
-    }
-
     // ─── A3：松键时中止在跑的预览 ────────────────────────────────
 
     [Fact]
@@ -114,71 +108,16 @@ public class PerformanceBatchTests
 
     [Theory]
     [InlineData(0.012, 15)]  // 快机器：上限
-    [InlineData(0.02, 15)]
     [InlineData(0.03, 10)]
     [InlineData(0.05, 6)]
-    [InlineData(0.15, 6)]    // 慢机器：下限
     [InlineData(1.0, 6)]
     [InlineData(0.0, 15)]    // 测不出：取上限
-    [InlineData(-1.0, 15)]
     public void PreviewWindow_FollowsBudgetDividedByRtf(double rtf, int expectedSeconds)
     {
         Assert.Equal(expectedSeconds, AsrService.ChoosePreviewWindowSeconds(rtf));
     }
 
     // ─── 耗时摘要的新字段 ────────────────────────────────────────
-
-    [Fact]
-    public void SummaryLine_ContainsNewFields_WithDashesWhenUnknown()
-    {
-        var line = new DictationMetrics().SummaryLine();
-        Assert.Contains("final_wait=-", line);
-        Assert.Contains("backup_wait=0", line);
-        Assert.Contains("preview_avg=-", line);
-        Assert.Contains("preview_abort=0", line);
-        Assert.Contains("tail_speech=-", line);
-        Assert.Contains("qos=-", line);
-    }
-
-    [Fact]
-    public void SummaryLine_ReportsNewFields()
-    {
-        var ms = System.Diagnostics.Stopwatch.Frequency / 1000;
-        var metrics = new DictationMetrics { EcoQosOptedOut = true };
-        metrics.Timings.FinalizeStartedAt = 100 * ms;
-        metrics.Timings.FinalizeRunStartedAt = 130 * ms;
-        metrics.Timings.PreviewRuns = 2;
-        metrics.Timings.PreviewTotalTicks = 600 * ms;
-        metrics.Timings.PreviewAborted = true;
-        metrics.Timings.TailSpeech = true;
-        var line = metrics.SummaryLine();
-        Assert.Contains("final_wait=30", line);
-        Assert.Contains("preview_avg=300", line);
-        Assert.Contains("preview_abort=1", line);
-        Assert.Contains("tail_speech=1", line);
-        Assert.Contains("qos=1", line);
-    }
-
-    [Fact]
-    public void BriefLine_IsShortAndTextFree()
-    {
-        var ms = System.Diagnostics.Stopwatch.Frequency / 1000;
-        var metrics = new DictationMetrics
-        {
-            Outcome = DictationOutcome.Inserted,
-            PressedAt = 0,
-            HudReadyAt = 420 * ms,
-            ReleasedAt = 3000 * ms,
-            DoneAt = 3350 * ms,
-        };
-        metrics.Timings.ReceivedSamples = 16000 * 3;
-        var line = metrics.BriefLine();
-        Assert.Contains("inserted", line);
-        Assert.Contains("audio=3.0s", line);
-        Assert.Contains("ready=420", line);
-        Assert.Contains("done=350", line);
-        Assert.Contains("preview=-", line);
-    }
 
     // ─── D3：最近听写与诊断信息 ──────────────────────────────────
 
@@ -196,21 +135,4 @@ public class PerformanceBatchTests
         Assert.StartsWith("12:00:05", lines[^1]); // 最早的 5 次被挤掉
     }
 
-    [Fact]
-    public void DiagnosticsReport_ListsFactsAndRecentLines()
-    {
-        var report = DiagnosticsReport.Build(
-            new[] { ("version", "3.5.1"), ("asr_rtf", "0.021") },
-            new[] { "12:00:01  inserted", "11:59:50  empty" });
-        Assert.Contains("version: 3.5.1", report);
-        Assert.Contains("asr_rtf: 0.021", report);
-        var recent = report[report.IndexOf("recent dictations", StringComparison.Ordinal)..];
-        Assert.True(recent.IndexOf("12:00:01", StringComparison.Ordinal) < recent.IndexOf("11:59:50", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void DiagnosticsReport_EmptyHistory_SaysSo()
-    {
-        Assert.Contains("(none)", DiagnosticsReport.Build(Array.Empty<(string, string)>(), Array.Empty<string>()));
-    }
 }

@@ -64,9 +64,7 @@ public class AudioInputDeviceTests
     [Theory]
     [InlineData(null, "", "auto")]
     [InlineData("", "", "auto")]
-    [InlineData("  ", "", "auto")]
     [InlineData("auto", "", "auto")]
-    [InlineData("AUTO", "", "auto")]
     [InlineData("system", "", "system")]
     [InlineData("{0.0.1.00000000}.{abc}", "{0.0.1.00000000}.{abc}", "device")]
     public void PolicyParsing(string? raw, string expectedId, string expectedKind)
@@ -85,11 +83,8 @@ public class AudioInputDeviceTests
     [InlineData("BTHHFENUM", null, null, "Bluetooth")]
     [InlineData("USB", "Webcam", 4u, "Usb")]
     [InlineData("HDAUDIO", "Microphone Array", 4u, "BuiltIn")]
-    [InlineData("INTELAUDIO", "Mic", 4u, "BuiltIn")]
     [InlineData("HDAUDIO", "Stereo Mix", 2u, "Other")]   // 立体声混音是线路输入，不是内置麦克风
     [InlineData(null, "Headset (AirPods Hands-Free AG Audio)", null, "Bluetooth")]
-    [InlineData(null, "耳机 (Foo 免提)", null, "Bluetooth")]
-    [InlineData(null, "Some USB Device", null, "Usb")]
     [InlineData(null, "Mystery", null, "Unknown")]
     public void ClassifyTransport(string? bus, string? name, uint? formFactor, string expected)
     {

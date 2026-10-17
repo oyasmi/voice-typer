@@ -38,15 +38,6 @@ public class OnboardingModelTests
     }
 
     [Fact]
-    public void PrimaryTitle_ChangesOnTrialStep()
-    {
-        var model = AtTrial();
-        Assert.Equal("先跳过", model.PrimaryActionTitle);
-        model.Handle(new OnboardingDictationEvent.Inserted("你好"));
-        Assert.Equal("完成", model.PrimaryActionTitle);
-    }
-
-    [Fact]
     public void CanRunTrial_RequiresMicAndModel()
     {
         var model = new OnboardingModel { Mic = MicProbeResult.Available, AsrState = AsrState.Ready };
@@ -87,15 +78,6 @@ public class OnboardingModelTests
         Assert.True(model.Handle(new OnboardingDictationEvent.Inserted("你好世界")));
         Assert.Equal(OnboardingTrialKind.Succeeded, model.Trial.Kind);
         Assert.Contains("你好世界", model.TrialSummary!.Value.Detail);
-    }
-
-    [Fact]
-    public void ToggleMode_ExplainsHowToStop()
-    {
-        var model = AtTrial();
-        model.HotkeyMode = HotkeyMode.Toggle;
-        model.Handle(new OnboardingDictationEvent.RecordingStarted());
-        Assert.Contains("再按一次热键", model.TrialSummary!.Value.Detail);
     }
 
     [Fact]

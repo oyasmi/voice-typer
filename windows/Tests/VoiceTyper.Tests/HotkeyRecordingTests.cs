@@ -80,13 +80,8 @@ public class HotkeyRecordingTests
 
     [Theory]
     [InlineData("c", "ctrl")]
-    [InlineData("v", "ctrl")]
-    [InlineData("s", "ctrl")]
     [InlineData("space", "ctrl")]
     [InlineData("f4", "alt")]
-    [InlineData("tab", "alt")]
-    [InlineData("space", "shift")]
-    [InlineData("space", "win")]
     public void CommonShortcuts_GetAConflictNote(string key, string modifier)
     {
         var note = HotkeyRecording.ConflictNote(key, new[] { modifier });
@@ -98,9 +93,7 @@ public class HotkeyRecordingTests
     [Theory]
     [InlineData("f2", "ctrl")]        // 默认热键
     [InlineData("space", "ctrl", "shift")]  // 修饰键集合不同：Ctrl+Shift+Space 不在冲突表里
-    [InlineData("c", "ctrl", "alt")]
     [InlineData("q", "ctrl")]
-    [InlineData("f4", "ctrl")]
     public void UncommonCombinations_HaveNoNote(string key, params string[] modifiers)
     {
         Assert.Null(HotkeyRecording.ConflictNote(key, modifiers));

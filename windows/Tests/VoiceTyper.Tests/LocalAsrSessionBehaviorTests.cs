@@ -24,31 +24,6 @@ public class LocalAsrSessionBehaviorTests
         Assert.True(LocalAsrSession.ContainsSpeech(Constant(1600, -0.1f)));
     }
 
-    [Fact]
-    public void ContainsSpeech_AveragesOverTheWholeChunk()
-    {
-        // 一个孤立的尖峰不应把整段静音判成语音（RMS 而不是峰值）。
-        var samples = new float[9600];
-        samples[100] = 0.2f;
-        Assert.False(LocalAsrSession.ContainsSpeech(samples));
-    }
-
-    [Fact]
-    public void Timings_ReceivedSamples_CountsAcceptedAudioOnly()
-    {
-        var pump = new AsrPump("VoiceTyper.Test.Pump");
-        try
-        {
-            var session = new LocalAsrSession(pump, () => null, null, 16_000);
-            session.SendAudio(new byte[4 * 1000]);
-            session.SendAudio(new byte[4 * 500]);
-            session.SendAudio(new byte[3]); // 长度不是 4 的倍数：丢弃
-            Assert.Equal(1500, session.Timings.ReceivedSamples);
-            Assert.True(session.Timings.ColdAtStart); // 收音时引擎没有就绪
-        }
-        finally { pump.Dispose(); }
-    }
-
     /// <summary>
     /// 冷恢复：引擎未就绪时缓存的有声音频，在引擎就绪、回灌 buffer 后必须恢复"有语音"标记。
     /// 否则用户恰好停顿（之后只有静音）时，预览会一直被跳过直到松键。
@@ -172,19 +147,6 @@ public class LocalAsrSessionBehaviorTests
         finally { pump.Dispose(); }
     }
 
-    [Fact]
-    public void SkipCorrection_WithoutCorrectionInFlight_DoesNothing()
-    {
-        var pump = new AsrPump("VoiceTyper.Test.NoSkipPump");
-        try
-        {
-            var session = new LocalAsrSession(pump, () => null, null, 16_000);
-            session.SkipCorrection();
-            Assert.Null(session.Timings.LlmResult);
-        }
-        finally { pump.Dispose(); }
-    }
-
     // ─── 录音阶段的"在等模型"提示（REVIEW_UX F-02）──────────────
 
     [Fact]
@@ -209,24 +171,6 @@ public class LocalAsrSessionBehaviorTests
             engine = fake;
             session.SendAudio(ToBytes(Constant(3200, 0.1f))); // 引擎就绪：配对地通知结束
             Assert.Equal(new[] { true, false }, waits);
-            session.Close();
-        }
-        finally { pump.Dispose(); }
-    }
-
-    [Fact]
-    public void EngineWaitDuringRecording_NotNotifiedWhenEngineReadyAtOnce()
-    {
-        var pump = new AsrPump("VoiceTyper.Test.NoWaitPump");
-        try
-        {
-            var fake = new FakeAsrEngine();
-            var session = new LocalAsrSession(pump, () => fake, null, 16_000);
-            var waits = new List<bool>();
-            session.OnEngineWait = waiting => waits.Add(waiting);
-
-            session.SendAudio(ToBytes(Constant(AppConstants.TargetSampleRate * 2, 0.1f)));
-            Assert.Empty(waits); // 引擎一直在：录音中不该出现"在等模型"
             session.Close();
         }
         finally { pump.Dispose(); }

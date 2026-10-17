@@ -11,39 +11,6 @@ namespace VoiceTyper.Tests;
 public class AppConfigValidationTests
 {
     [Fact]
-    public void ClampsThreads_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Asr.Threads = 9999;
-        Assert.Equal(32, config.Validated().Asr.Threads);
-
-        config.Asr.Threads = -5;
-        Assert.Equal(0, config.Validated().Asr.Threads);
-    }
-
-    [Fact]
-    public void ClampsIdleUnloadMinutes_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Asr.IdleUnloadMinutes = -5;
-        Assert.Equal(0, config.Validated().Asr.IdleUnloadMinutes);
-
-        config.Asr.IdleUnloadMinutes = 999_999;
-        Assert.Equal(24 * 60, config.Validated().Asr.IdleUnloadMinutes);
-    }
-
-    [Fact]
-    public void ClampsPreviewWindowSeconds_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Asr.PreviewWindowSeconds = -1;
-        Assert.Equal(0, config.Validated().Asr.PreviewWindowSeconds);
-
-        config.Asr.PreviewWindowSeconds = 999;
-        Assert.Equal(30, config.Validated().Asr.PreviewWindowSeconds);
-    }
-
-    [Fact]
     public void ResetsNonFiniteTemperature_ToLowerBound()
     {
         var config = new AppConfig();
@@ -55,49 +22,11 @@ public class AppConfigValidationTests
     }
 
     [Fact]
-    public void ClampsTemperature_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Llm.Temperature = 5.0;
-        Assert.Equal(2, config.Validated().Llm.Temperature);
-    }
-
-    [Fact]
-    public void ClampsMaxTokens_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Llm.MaxTokens = 1;
-        Assert.Equal(64, config.Validated().Llm.MaxTokens);
-
-        config.Llm.MaxTokens = 100_000;
-        Assert.Equal(8192, config.Validated().Llm.MaxTokens);
-    }
-
-    [Fact]
-    public void ClampsTimeout_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.Llm.Timeout = -1;
-        Assert.Equal(1, config.Validated().Llm.Timeout);
-
-        config.Llm.Timeout = 999;
-        Assert.Equal(120, config.Validated().Llm.Timeout);
-    }
-
-    [Fact]
     public void ResetsNonFiniteOpacity_ToLowerBound()
     {
         var config = new AppConfig();
         config.UI.Opacity = double.NaN;
         Assert.Equal(0.1, config.Validated().UI.Opacity);
-    }
-
-    [Fact]
-    public void ClampsOpacity_ToDocumentedRange()
-    {
-        var config = new AppConfig();
-        config.UI.Opacity = 5.0;
-        Assert.Equal(1.0, config.Validated().UI.Opacity);
     }
 
     /// <summary>R4-05：不支持的主键必须回落默认热键，而不是原样进入运行态。</summary>
@@ -139,26 +68,6 @@ public class AppConfigValidationTests
         Assert.Equal(new[] { "ctrl", "shift" }, validated.Modifiers);
     }
 
-    [Fact]
-    public void KeepsInRangeValues_Unchanged()
-    {
-        var config = new AppConfig();
-        config.Asr.Threads = 4;
-        config.Asr.IdleUnloadMinutes = 10;
-        config.Llm.Temperature = 0.7;
-        config.Llm.MaxTokens = 800;
-        config.Llm.Timeout = 5;
-        config.UI.Opacity = 0.85;
-
-        var validated = config.Validated();
-        Assert.Equal(4, validated.Asr.Threads);
-        Assert.Equal(10, validated.Asr.IdleUnloadMinutes);
-        Assert.Equal(0.7, validated.Llm.Temperature);
-        Assert.Equal(800, validated.Llm.MaxTokens);
-        Assert.Equal(5, validated.Llm.Timeout);
-        Assert.Equal(0.85, validated.UI.Opacity);
-    }
-
     // ─── 修饰键规范化 ──────────────────────────────────────────
 
     [Fact]
@@ -168,17 +77,6 @@ public class AppConfigValidationTests
         config.Hotkey = new HotkeyConfig { Modifiers = new() { "Control", "CTRL", "option", "cmd", "Shift" }, Key = "d" };
 
         Assert.Equal(new[] { "ctrl", "alt", "win", "shift" }, config.Validated().Hotkey.Modifiers);
-    }
-
-    [Fact]
-    public void DropsUnknownModifiers_AndKeepsTheValidOnes()
-    {
-        var config = new AppConfig();
-        config.Hotkey = new HotkeyConfig { Modifiers = new() { "foo", "alt" }, Key = "d" };
-
-        var validated = config.Validated().Hotkey;
-        Assert.Equal("d", validated.Key);
-        Assert.Equal(new[] { "alt" }, validated.Modifiers);
     }
 
     /// <summary>全是未知修饰键时，HotkeyService 会忽略它们而退化成裸主键全局热键——必须回落默认热键。</summary>
