@@ -90,3 +90,6 @@ config_local.yaml
 *.rej
 *.app/
 *.dmg
+
+# Xcode 生成的工作区（xcodebuild 解析 SPM 依赖时产生，pbxproj 由 macos/scripts/generate_xcodeproj.rb 生成并入库）
+macos/VoiceTyper.xcodeproj/project.xcworkspace/
