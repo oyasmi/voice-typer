@@ -2,232 +2,108 @@
 
 **简体中文** | [English](README.en.md)
 
-VoiceTyper 把语音输入变成电脑里一个随手可用的能力。回消息、写文档、记录刚冒出来的想法——
-光标停在哪里，识别后的文字就写到哪里。
+[![Release](https://img.shields.io/github/v/release/oyasmi/voice-typer)](https://github.com/oyasmi/voice-typer/releases)
+[![License](https://img.shields.io/github/license/oyasmi/voice-typer)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
-它安静地待在菜单栏或系统托盘里。需要输入时按住热键开口说，松开后继续手头的事情：不用打开
-网页，不用把录音上传到云端，也不用在转写结果和当前窗口之间来回复制粘贴。
+**按住热键说话，松开，文字就出现在光标处。** 识别在本机完成，录音不出电脑。
 
-> **macOS 与 Windows 现已都提供一体化应用。** 识别引擎已经装进 VoiceTyper，无需配置 Python 或
-> 单独启动服务端。
->
-> - macOS（Apple Silicon）：[下载](https://github.com/oyasmi/voice-typer/releases) ·
->   [安装说明](macos/README.md)
-> - Windows 10/11（x64 / arm64）：[下载](https://github.com/oyasmi/voice-typer/releases) ·
->   [安装说明](windows/README.md)
+VoiceTyper 安静地待在菜单栏或系统托盘里。回消息、写文档、记下刚冒出来的想法——不用打开网页，
+不用上传录音，也不用在转写结果和当前窗口之间来回复制粘贴。它不替换你的输入法，任何能输入文字的
+地方都能用。
 
-## 语音输入，本来就应该这么自然
+## 下载
 
-很多语音转写工具解决的是“把一段录音变成一份文稿”。VoiceTyper 解决的是另一件事：**让语音像
-键盘一样，成为任何应用都能使用的输入方式。**
+| 平台 | 系统要求 | 默认热键 | |
+| --- | --- | --- | --- |
+| **macOS** | Apple Silicon，macOS 14+ | `Fn` | [下载](https://github.com/oyasmi/voice-typer/releases) · [使用说明](macos/README.md) |
+| **Windows** | Windows 10 (1809+) / 11，x64 或 arm64，需 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | `Ctrl + F2` | [下载](https://github.com/oyasmi/voice-typer/releases) · [使用说明](windows/README.md) |
+| Linux / Intel Mac | 暂无一体化版本 | — | 可使用[客户端—服务端版本](client-server/README.md) |
 
-无论你正在微信里回复长消息，在浏览器里填写内容，在备忘录里捕捉灵感，还是在编辑器里写一段
-说明，都不必离开当前窗口。按住、说话、松开，文字会出现在光标位置。
+## 特点
 
-这份顺手，来自几个看似简单、实际很重要的选择：
+- **随处可用**：聊天、浏览器、文档、编辑器……光标在哪里，文字就写到哪里。
+- **边说边看**：浮窗实时显示识别结果，听到更多上下文后会自动修正前面的字。
+- **拿来就能发**：自动加标点，把口述数字整理成书写形式（「六十四兆」→「64兆」），中英文之间自动加空格。
+- **本地、离线、免费**：基于 SenseVoice 模型在本机识别，无需账号，没有次数限制。
+- **多语言**：中文、英文、粤语、日语、韩语，可自动判断，中英混说不用切换。
+- **不打扰**：不抢焦点；按 `Esc` 随时取消；说过的话可以从菜单里找回。
+- **可选 AI 校对**：接入任意 OpenAI 兼容服务修正同音字和口误，默认关闭。
 
-- **不打断思路。** VoiceTyper 不要求你先创建录音、等待转写，再把结果搬到别处。整个过程就在
-  当前工作流里完成。
-- **说话时就看得到结果。** HUD 会随着语音持续更新文本；当模型听到更多上下文时，前面的文字也
-  会随之修正，而不是把不准确的片段一路堆下去。
-- **松手就是完成。** 最终识别会自动补上标点，并将口述数字整理为更自然的书写形式，例如把
-  “六十四兆”写成“64兆”。
-- **它不常驻吃内存。** 默认在首次按下热键时才把识别引擎载入内存（与录音并行，约一秒），
-  空闲一段时间后再自动释放；开机自启也不会为一次可能不会发生的听写常驻数百 MB。
-- **它是一款完整的桌面应用。** 模型下载、语言选择、热键、权限、开机启动、内存释放和可选的
-  智能纠错，都可以在应用里完成；日常使用不需要终端。
+## 快速上手
 
-## 第一次使用，只需完成授权
+1. 下载并安装对应平台的应用（详见各平台使用说明）。
+2. 第一次打开时，跟着四步引导完成准备：macOS 需要授予麦克风、输入监控和辅助功能三项权限；Windows 只需
+   确认麦克风可用。约 240MB 的语音模型会在后台自动下载，只需下载一次。引导最后会让你真正试一次听写。
+3. 之后每次使用：
+   - 把光标放在要输入的位置；
+   - 按住热键说话，浮窗里实时显示识别结果；
+   - 松开热键，文字自动写入。
 
-第一次启动时，VoiceTyper 只会引导你完成必须亲自确认的事项，约 240MB 的语音模型只需下载一次。
+短于 0.3 秒的按键会被当作误触忽略。说长段内容时，可以把触发方式改成「按一次开始、再按一次结束」。
 
-- **macOS**：引导你授予系统权限，并在后台自动下载、校验、加载语音模型，无需手动点击下载。
-- **Windows**：没有额外的系统权限弹窗，只需在引导里确认麦克风可用，再点一下按钮下载模型
-  （四段并行、断点续传、失败自动重试，并校验固定 SHA256）。
+## 隐私
 
-两个平台都把这段准备做成了四步引导（macOS：欢迎 → 权限 → 模型 → 试一试；Windows：欢迎 → 麦克风
-→ 语音模型 → 试一试），最后一步会让你在引导窗口里真正完成一次听写：准备项全部就绪并不等于能用，
-只有把「热键 → 麦克风 → 识别 → 插入」整条链跑通才算数，哪一环出问题都会当场指出来。
+语音往往比最终写下的文字包含更多私人信息，所以本地识别是 VoiceTyper 的设计前提，而不是附加卖点。
 
-准备完成后，日常使用只有三个动作：
-
-1. 把光标放在想要输入文字的位置。
-2. 按住热键开始说话，在浮窗中查看实时识别结果。
-3. 松开热键，最终文字自动写入当前应用。
-
-短于 0.3 秒的按键会被当作误触丢弃。按 `Esc` 可以取消本次听写（录音中与识别中都可以），
-临时改主意时不会留下任何文字。两个平台都可以把触发方式改成「按一次开始、再按一次结束」，
-长段口述时手指不必一直按住；浮窗位置也可以改成右下角、跟随光标或干脆不显示。
-
-浮窗在录音时会显示当前输入设备名，并在持续采不到声音时主动提示检查麦克风——
-不必等说完才发现结果是空的。
-
-默认热键：
-
-| 平台 | 默认热键 | 当前状态 |
-| --- | --- | --- |
-| macOS | `Fn` / 地球仪键 | 可用；支持 Apple Silicon、macOS 14 及以上 |
-| Windows | `Ctrl + F2` | 可用；支持 Windows 10/11（x64 / arm64），也可改用右 Ctrl / 右 Alt 单独作为热键 |
-| Linux | — | 一体化版本尚未实现；可使用[客户端—服务端版本](client-server/client_linux/README.md) |
-
-## 为什么选择本地识别
-
-语音往往比最终写下来的文字包含更多私人信息：周围人的声音、房间里的谈话，以及那些说出口后
-并不打算保存的片段。因此，本地识别不是一个装饰性的卖点，而是 VoiceTyper 的基本设计前提。
-
-默认情况下：
-
-- 录音只在当前电脑内存中处理，不会上传到 VoiceTyper 或其他语音服务；
-- SenseVoice-Small 模型直接通过应用内的 ONNX Runtime 运行；
-- 模型下载完成后，语音识别可以断网使用；
-- 不需要注册账号，没有调用次数或订阅额度；
-- API Key 不会写进普通配置文件，而是存放在 macOS Keychain 或 Windows DPAPI 保护的存储中；日志不记录识别文本。
-
-VoiceTyper 也提供可选的 LLM 智能纠错，用来处理同音字、口语表达和更复杂的标点。这个功能默认
-关闭；只有主动启用后，**识别出的文字**才会发送到你自己配置的 OpenAI 兼容服务，音频始终不会
-发送。若希望完全离线，也可以接入本机运行的兼容模型。
-
-## 不只是“能识别”
-
-VoiceTyper 希望把本地语音识别做成一个可以长期留在电脑上的日常工具，而不是只在演示时看起来
-不错的技术样品。
-
-| 能力 | 带来的体验 |
-| --- | --- |
-| 系统级输入 | 不绑定某个编辑器；聊天、浏览器、文档和大多数可输入文字的应用都能使用 |
-| 实时、自我修正的预览 | 不必对着一个没有反馈的录音状态等待，也能及时发现麦克风或识别问题 |
-| 自动标点与数字规范化 | 结果更接近可以直接发送或继续编辑的文字 |
-| 中英粤日韩 | 可以指定语言，也可以自动判断；中英夹杂时不需要频繁切换 |
-| 原生热键与浮窗 | 不抢走当前窗口焦点，多屏环境下也会跟随正在工作的屏幕 |
-| 空闲自动卸载模型 | 不使用时可以释放识别引擎占用的内存，下次录音时自动恢复 |
-| 可选 LLM 纠错 | 需要时进一步润色，不需要时保持完全本地、简单可控 |
-| 中英双语界面 | 菜单、设置窗口与浮窗都有对等的中英文案，默认中文，可在设置里切换（重启生效） |
-
-## 安装
-
-### macOS
-
-系统要求：**Apple Silicon（M 系列芯片）**、macOS 14 Sonoma 或更高版本。
-
-1. 前往 [Releases](https://github.com/oyasmi/voice-typer/releases) 下载
-   `VoiceTyper-<版本>-macOS-arm64.dmg`。
-2. 打开 DMG，将 `VoiceTyper.app` 拖入“应用程序”。
-3. 第一次打开时，跟着应用内的四步引导授予麦克风、辅助功能和输入监控权限。
-4. 应用会同时自动准备语音模型；在引导最后一步试一次听写，确认整条链路可用。
-
-当前安装包没有进行 Apple 公证。若 macOS 阻止首次打开，请前往“系统设置 → 隐私与安全性”，
-选择“仍要打开”。权限用途、卸载方法和常见问题请参阅
-[macOS 完整使用说明](macos/README.md)。
-
-### Windows
-
-系统要求：Windows 10（1809+）或 Windows 11，x64 或 arm64（含 Snapdragon X 系列笔记本），
-并已安装 **.NET 10 桌面运行时**。
-
-1. 先安装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)
-   （**Desktop Runtime**，架构与你的电脑一致；普通 .NET Runtime、.NET 8/9 不能代替，已装 .NET 10 SDK 则无需重复安装）。
-   发布包不再随带 .NET，安装程序发现缺少时会提示下载地址。
-2. 前往 [Releases](https://github.com/oyasmi/voice-typer/releases) 下载
-   `VoiceTyper-<版本>-win-x64-setup.exe`（多数电脑）或 `VoiceTyper-<版本>-win-arm64-setup.exe`
-   （ARM 笔记本）。也有免安装的便携版 ZIP。
-3. 运行安装程序。它安装到当前用户目录，不需要管理员权限。
-4. 从开始菜单打开 VoiceTyper，跟着四步引导确认麦克风、下载模型，并在最后一步试一次听写。
-
-安装包没有代码签名，首次运行若被 SmartScreen 拦截，请点「更多信息 → 仍要运行」。
-以管理员身份运行的窗口会拦截系统级文本输入，此时识别结果仍会保留在剪贴板里，可手动 `Ctrl+V`。
-托盘菜单里的「复制上一次识别结果」可以随时找回最近一次的文字。
-卸载方法、设置项和排障请参阅 [Windows 完整使用说明](windows/README.md)。
-
-**验证状态**：Windows 版的功能与 macOS 对等（见[变更记录](windows/CHANGELOG.md)），已在真实
-Windows 设备上跑通完整的听写流程，包括完整模型下载与 SHA256 校验，x64 / arm64 两个架构的发布也已
-跑通。但 **arm64 真机、长期运行稳定性、性能数据以及跨屏 DPI 行为仍在继续验证**。如果你愿意参与验证
-或从源码构建，请阅读 [Windows 使用与开发说明](windows/README.md)、
-[待验证风险清单](windows/DESIGN.md#11-风险与对策)，以及逐项确认的
-[真机验证清单](windows/CHANGELOG.md#真机验证清单)。
+- 录音只在本机内存中处理，不会上传到任何服务器；
+- 模型下载完成后可以完全断网使用；
+- 日志不记录识别出的文字；
+- AI 校对默认关闭。开启后只发送**识别出的文字**到你自己配置的服务，音频始终不发送；API Key 保存在
+  macOS 钥匙串或 Windows DPAPI 加密存储中。想完全离线，可以接入本机运行的模型。
 
 ## 常见问题
 
-### 它是输入法吗？
+**它是输入法吗？**
+不是。VoiceTyper 不替换系统输入法，只是把识别结果写入当前的输入框，原来的打字习惯不受影响。
 
-不是。VoiceTyper 不替换系统输入法，而是把识别结果写入当前获得焦点的输入区域。因此通常不需要
-改变原有的中英文输入习惯，也不会接管键盘。
+**每次使用都需要联网吗？**
+不需要。只有首次下载模型、手动检查更新，以及你主动开启 AI 校对时才会联网。
 
-### 每次使用都需要联网吗？
+**会占用很多内存吗？**
+默认启动时加载模型并常驻，这样按下热键就能立刻开始，代价是常驻数百 MB 内存（macOS 实测约 500MB）。
+不常用的话，可以在设置里
+关闭预加载、或设置空闲后自动释放，下次按热键时会一边录音一边加载。
 
-不需要。首次下载语音模型时需要联网，之后的语音识别在本地完成。只有主动开启 LLM 智能纠错时，
-才需要连接你配置的模型服务。
+**哪些地方用不了？**
+大多数能粘贴文字的地方都能用。部分密码框、游戏、远程桌面和以管理员身份运行的窗口会拒绝模拟输入，
+这时结果会留在剪贴板里，也可以从菜单里找回，手动粘贴即可。
 
-### 为什么需要麦克风、辅助功能和输入监控权限？
+**为什么首次打开会被系统拦截？**
+安装包目前没有 Apple 公证或 Windows 代码签名。macOS 上到「系统设置 → 隐私与安全性」点「仍要打开」；
+Windows 上点「更多信息 → 仍要运行」。只需一次。
 
-这是 macOS 版的权限：麦克风用于录音，输入监控用于在其他应用中响应全局热键，辅助功能用于把文字
-送到当前光标位置。Windows 版不需要这些系统授权，只需要允许应用使用麦克风（「设置 → 隐私和安全性 →
-麦克风」）。VoiceTyper 不会利用这些权限记录与语音输入无关的内容。
+**可以换模型或添加热词吗？**
+一体化应用专注于 SenseVoice-Small，不支持更换模型，也没有热词功能——清晰稳定的默认体验优先于大量
+未打磨的选项。需要其他模型可以使用[客户端—服务端版本](client-server/README.md)。
 
-### 哪些地方可以使用？
+**Windows 版稳定吗？**
+功能与 macOS 版对等，已在 Windows 真机上跑通听写与模型下载；arm64 设备、长时间运行和多显示器 DPI 等场景
+仍在系统性验证中。遇到问题欢迎[提交 Issue](https://github.com/oyasmi/voice-typer/issues)。
 
-大多数能够正常粘贴文字的应用都可以使用。部分密码框、游戏、远程桌面或以管理员身份运行的窗口
-会阻止系统级输入模拟；识别结果通常仍会保留在剪贴板中，可以手动粘贴。
-
-### 支持 Intel Mac 或 Linux 吗？
-
-当前一体化 macOS 应用只支持 Apple Silicon，Windows 应用支持 x64 与 arm64。Linux 一体化版本仍然空缺。Intel Mac、Linux、远程
-识别以及多台设备共用一台 ASR 服务器的需求，可以使用仓库保留的
-[客户端—服务端实现](client-server/README.md)。
-
-### 可以更换语音模型或使用热词吗？
-
-一体化应用目前专注于 SenseVoice-Small，不支持更换为 paraformer。确有需要时，可以改用
-客户端—服务端版本并在服务端切换模型。热词则在两种形态里都已移除：早期版本有过该功能，
-但在当前的识别链路上从未真正生效。清晰、稳定的默认体验优先于暴露大量尚未打磨的选项。
-
-## 给开发者
-
-macOS 与 Windows 应用拥有相同的产品架构：热键开始录音，本地会话持续产生完整预览，松开后完成
-最终识别与文本插入。Windows 的识别管线由经过验证的 macOS Swift 实现对应移植而来，两个平台
-共用一套 Python 金标准夹具，以检查 fbank、LFR/CMVN 和文本后处理的一致性。
+## 参与开发
 
 ```text
 voice-typer/
-├── macos/             # Swift + AppKit/SwiftUI 一体化应用
-├── windows/           # .NET 10 + WinForms 一体化应用
-└── client-server/     # 保留维护的旧架构：Python 服务端与三个平台客户端
+├── macos/           # macOS 应用：Swift + AppKit/SwiftUI + ONNX Runtime
+├── windows/         # Windows 应用：.NET 10 + WinForms + ONNX Runtime
+└── client-server/   # 旧的客户端—服务端架构，用于 Linux、远程与共享服务端场景
 ```
 
-### macOS 构建与测试
+两个平台共享同一套产品架构与识别管线，用同一套金标准夹具校验数值一致性。构建、测试与架构说明：
 
-```bash
-cd macos
-ruby scripts/generate_xcodeproj.rb
-open VoiceTyper.xcodeproj
+- macOS：[开发说明](macos/DEVELOPMENT.md) · [设计文档](macos/DESIGN.md) · [更新日志](macos/CHANGELOG.md)
+- Windows：[开发说明](windows/DEVELOPMENT.md) · [设计文档](windows/DESIGN.md) · [变更记录](windows/CHANGELOG.md)
+- 客户端—服务端：[说明](client-server/README.md) · [通信协议](client-server/PROTOCOL.md)
 
-xcodebuild -project VoiceTyper.xcodeproj \
-  -scheme VoiceTyper \
-  -destination 'platform=macOS' test
-```
-
-### Windows 构建与测试
-
-```bat
-cd windows
-dotnet restore
-dotnet run
-dotnet test
-```
-
-进一步阅读：
-
-- [macOS 使用与开发说明](macos/README.md) · [架构设计](macos/DESIGN.md)
-- [Windows 使用与开发说明](windows/README.md) · [架构设计](windows/DESIGN.md)
-- [客户端—服务端版本](client-server/README.md) · [通信协议](client-server/PROTOCOL.md)
+欢迎通过 [Issues](https://github.com/oyasmi/voice-typer/issues) 反馈问题或提出建议。
 
 ## 致谢
 
-VoiceTyper 的本地识别能力建立在
-[SenseVoice](https://github.com/FunAudioLLM/SenseVoice) 和
-[ONNX Runtime](https://github.com/microsoft/onnxruntime) 之上。感谢这些项目让高质量、可离线的语音识别能够真正进入普通桌面应用。
+本地识别能力建立在 [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) 与
+[ONNX Runtime](https://github.com/microsoft/onnxruntime) 之上，感谢这些项目让高质量的离线语音识别能够走进
+普通桌面应用。
 
 ## 许可证
 
-本项目基于 [Apache License 2.0](LICENSE) 发布。
-
-第三方组件（如 SenseVoice 模型与 ONNX Runtime）各自遵循其原始许可证。
+[Apache License 2.0](LICENSE)。第三方组件（SenseVoice 模型、ONNX Runtime 等）遵循各自的许可证。

@@ -69,7 +69,9 @@ Windows 实现尚未完成真实 Windows 硬件验证。涉及发布、性能或
 ## 文档边界
 
 - 根 `README.md` 描述当前一体化产品与仓库入口。
-- `macos/README.md`、`windows/README.md` 面向各平台用户和开发者。
+- `macos/README.md`、`windows/README.md`（及 `.en.md`）面向各平台用户：安装、使用、设置、隐私与常见问题，
+  不写实现细节。构建、签名、测试、配置文件字段与日志字段放在 `macos/DEVELOPMENT.md`、`windows/DEVELOPMENT.md`。
+- `CHANGELOG.md` 只记录用户能感知的变化（新增 / 改进 / 修复），实施细节与验证步骤放 `DESIGN.md`。
 - `macos/DESIGN.md`、`windows/DESIGN.md` 记录架构决策、验证证据与待办风险。
 - `windows/docs/` 保存历轮代码评审的沉淀：`REVIEW_HISTORY.md`（评审轮次索引、WR/VW/WT 等编号
   对照、未完成遗留项与已否决方案）、`VERIFICATION.md`（真机验证清单与性能测量方法）、

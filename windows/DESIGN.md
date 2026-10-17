@@ -17,7 +17,7 @@
 > 编译、跑测试、发布**（macOS 主机上的交叉编译；280 项测试通过，含端到端识别；x64 / arm64 发布成功）。
 > 详见 [CHANGELOG.md](CHANGELOG.md) 与本文 §15。**仍未在真实 Windows 设备上运行过**——凡涉及热键钩子、麦克风、
 > 剪贴板、浮窗观感、DPI、性能的结论都只是「代码审查通过」，真机验证清单见
-> [CHANGELOG.md](CHANGELOG.md#真机验证清单)。下文与此状态矛盾的旧表述（"从未编译""待跑 dotnet build"等）
+> [docs/VERIFICATION.md](docs/VERIFICATION.md)。下文与此状态矛盾的旧表述（"从未编译""待跑 dotnet build"等）
 > 以本段为准；历轮审查与修复的过程文档已归并为 [docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md)
 >（遗留项与待验证清单见 [docs/VERIFICATION.md](docs/VERIFICATION.md)）。
 

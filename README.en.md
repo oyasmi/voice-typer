@@ -2,270 +2,127 @@
 
 [简体中文](README.md) | **English**
 
-VoiceTyper turns speech into something you can reach for anywhere on your computer. Replying to a
-message, writing a document, capturing an idea that just showed up — wherever the cursor is, that is
-where the recognized text lands.
+[![Release](https://img.shields.io/github/v/release/oyasmi/voice-typer)](https://github.com/oyasmi/voice-typer/releases)
+[![License](https://img.shields.io/github/license/oyasmi/voice-typer)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
-It sits quietly in the menu bar or the system tray. When you need to type, hold the hotkey and talk;
-release it and carry on with what you were doing. No web page to open, no recording to upload to the
-cloud, no copying and pasting between a transcript and the window you actually work in.
+**Hold a hotkey, speak, release — the text appears at your cursor.** Recognition runs on your own
+computer; recordings never leave it.
 
-> **Both macOS and Windows now ship as a single, self-contained app.** The recognition engine lives
-> inside VoiceTyper — there is no Python to configure and no server to start.
->
-> - macOS (Apple Silicon): [Download](https://github.com/oyasmi/voice-typer/releases) ·
->   [Installation guide](macos/README.en.md)
-> - Windows 10/11 (x64 / arm64): [Download](https://github.com/oyasmi/voice-typer/releases) ·
->   [Installation guide](windows/README.en.md)
+VoiceTyper sits quietly in the menu bar or system tray. Reply to a message, write a document, capture an
+idea the moment it shows up — no web page to open, no recording to upload, no copying and pasting between a
+transcript and the window you're working in. It doesn't replace your input method and works anywhere you
+can type.
 
-## Voice input the way it should feel
+## Download
 
-Most transcription tools solve one problem: turning a recording into a document. VoiceTyper solves a
-different one: **making speech an input method that any application can use, the way a keyboard is.**
+| Platform | Requirements | Default hotkey | |
+| --- | --- | --- | --- |
+| **macOS** | Apple Silicon, macOS 14+ | `Fn` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](macos/README.en.md) |
+| **Windows** | Windows 10 (1809+) / 11, x64 or arm64, [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) | `Ctrl + F2` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](windows/README.en.md) |
+| Linux / Intel Mac | No standalone app yet | — | Use the [client–server version](client-server/README.md) |
 
-Whether you are writing a long reply in a chat app, filling in a form in the browser, capturing a
-thought in a notes app, or writing a paragraph of prose in an editor, you never leave the current
-window. Hold, speak, release — the text appears at the cursor.
+## Highlights
 
-That ease comes from a few choices that look small and matter a lot:
+- **Works everywhere**: chat apps, browsers, documents, editors — text goes wherever the cursor is.
+- **See it as you speak**: the overlay shows live results and corrects earlier words as it hears more
+  context.
+- **Ready to send**: automatic punctuation, spoken numbers written as digits, and spacing between Chinese
+  and English words.
+- **Local, offline, free**: on-device recognition with the SenseVoice model; no account, no usage limits.
+- **Multilingual**: Chinese, English, Cantonese, Japanese and Korean, with automatic detection; mixed
+  Chinese and English needs no switching.
+- **Stays out of the way**: never steals focus; press `Esc` to cancel at any time; recover what you said
+  from the menu.
+- **Optional AI proofreading**: connect any OpenAI-compatible service to fix homophones and slips of the
+  tongue. Off by default.
 
-- **It does not interrupt your train of thought.** VoiceTyper never asks you to create a recording,
-  wait for a transcript, and then move the result somewhere else. The whole thing happens inside your
-  current workflow.
-- **You see the result while you speak.** The HUD keeps updating the text as you talk; when the model
-  hears more context, earlier words are corrected too, rather than piling inaccurate fragments on top
-  of each other.
-- **Letting go means done.** The final recognition adds punctuation and normalizes spoken numbers into
-  more natural written forms — “sixty-four megabytes” becomes “64MB”.
-- **It does not sit around eating memory.** By default the engine is loaded the first
-  time you press the hotkey (in parallel with recording, about one second) and released again after
-  a period of inactivity; starting at login does not mean keeping hundreds of megabytes resident for a
-  dictation that may never happen.
-- **It is a complete desktop app.** Model download, language selection, hotkey, permissions, launch at
-  login, memory release and optional AI proofreading are all handled in the app. Day-to-day use never
-  requires a terminal.
+## Getting started
 
-## The first run only asks for permissions
+1. Download and install the app for your platform (see the platform guide).
+2. On first launch, a four-step guide gets you ready: on macOS you grant microphone, Input Monitoring and
+   Accessibility permissions; on Windows you just confirm the microphone works. The ~240MB speech model
+   downloads automatically in the background, once. The guide ends with a real test dictation.
+3. From then on:
+   - put the cursor where you want the text;
+   - hold the hotkey and speak, watching live results in the overlay;
+   - release the hotkey, and the text is typed in.
 
-On first launch, VoiceTyper only walks you through the things that only you can confirm. The ~240MB
-speech model is downloaded once.
+Presses shorter than 0.3 seconds are ignored as accidental. For long passages, switch the trigger to
+“press once to start, press again to stop”.
 
-- **macOS**: guides you through the system permissions, and downloads, verifies and loads the model in
-  the background — there is no download button to hunt for.
-- **Windows**: there are no extra system permission prompts; you confirm the microphone works in the
-  guide, then click once to download the model (four parallel segments, resumable, automatic retry, and
-  pinned SHA256 verification).
+## Privacy
 
-Both platforms turn that preparation into a four-step guide (macOS: Welcome → Permissions → Model →
-Try it; Windows: Welcome → Microphone → Model → Try it), and the last step has you complete a real
-dictation inside the guide window: everything being ready does not mean the thing works. Only running
-the whole chain — hotkey → microphone → recognition → insertion — proves it, and whichever link fails
-is called out on the spot.
+Speech often carries more private information than the text you end up writing, so local recognition is a
+design premise of VoiceTyper, not an add-on.
 
-Once that is done, everyday use is three actions:
-
-1. Put the cursor where you want the text.
-2. Hold the hotkey and speak, watching the live recognition in the overlay.
-3. Release the hotkey; the final text is written into the current app.
-
-A press shorter than 0.3 seconds is treated as an accidental tap and discarded. `Esc` cancels the
-current dictation (during both recording and recognition), so changing your mind leaves nothing
-behind. On both platforms you can switch the trigger to “press once to start, press again to stop”, so
-your finger does not have to stay down through a long passage; the overlay can be moved to the
-bottom-right corner, follow the cursor, or be hidden entirely.
-
-While recording, the overlay shows the name of the current input device and warns you if no sound is
-coming in — you do not have to finish talking to discover the result was empty.
-
-Default hotkeys:
-
-| Platform | Default hotkey | Status |
-| --- | --- | --- |
-| macOS | `Fn` / globe key | Available; Apple Silicon, macOS 14 or later |
-| Windows | `Ctrl + F2` | Available; Windows 10/11 on x64 / arm64; a lone Right Ctrl / Right Alt key can also be the hotkey |
-| Linux | — | No unified version yet; use the [client–server version](client-server/client_linux/README.md) |
-
-## Why local recognition
-
-Speech usually carries more private information than the text you finally write down: other people's
-voices, conversations in the room, and fragments you never intended to keep. Local recognition is
-therefore not a decorative selling point but a basic design premise of VoiceTyper.
-
-By default:
-
-- audio is processed in this computer's memory only, and never uploaded to VoiceTyper or any other
-  speech service;
-- the SenseVoice-Small model runs through the ONNX Runtime embedded in the app;
-- once the model is downloaded, recognition works with no network at all;
-- there is no account to register, and no quota or subscription;
-- API keys are never written into ordinary configuration files — they live in the macOS Keychain or in
-  Windows DPAPI-protected storage.
-
-VoiceTyper also offers optional LLM proofreading for homophone errors, spoken filler and trickier
-punctuation. It is off by default; only when you turn it on is the **recognized text** sent to the
-OpenAI-compatible service you configured, and audio is never sent. If you want to stay fully offline,
-point it at a compatible model running on your own machine.
-
-## More than “it recognizes speech”
-
-VoiceTyper aims to be local speech recognition you can keep on your computer for years, not a
-technology demo that looks good once.
-
-| Capability | What it means in use |
-| --- | --- |
-| System-wide input | Not tied to one editor; chat apps, browsers, documents and most text fields work |
-| Live, self-correcting preview | No staring at a feedback-free recording state, and microphone or recognition problems surface immediately |
-| Automatic punctuation and number normalization | The result is closer to text you can send or keep editing right away |
-| Chinese, English, Cantonese, Japanese, Korean | Pick a language or let it decide; mixed Chinese–English needs no switching |
-| Native hotkey and overlay | Does not steal focus from the current window, and follows the screen you are working on |
-| Automatic idle unload | Frees the memory the engine holds when you are not using it, and restores it on your next recording |
-| Optional LLM proofreading | Extra polish when you want it, fully local and simple when you do not |
-| Bilingual interface | Menus, settings window and overlay have equivalent Chinese and English wording; Chinese is the default and you can switch in Settings (takes effect after a restart) |
-
-## Installation
-
-### macOS
-
-Requirements: **Apple Silicon (M-series chip)**, macOS 14 Sonoma or later.
-
-1. Download `VoiceTyper-<version>-macOS-arm64.dmg` from
-   [Releases](https://github.com/oyasmi/voice-typer/releases).
-2. Open the DMG and drag `VoiceTyper.app` into Applications.
-3. On first launch, follow the four-step guide to grant microphone, accessibility and input-monitoring
-   permissions.
-4. The app prepares the speech model at the same time; use the last step of the guide to run one real
-   dictation and confirm the whole chain works.
-
-The current package is not notarized by Apple. If macOS blocks the first launch, go to System Settings
-→ Privacy & Security and choose “Open Anyway”. For what each permission is used for, how to uninstall
-and answers to common questions, see the [full macOS guide](macos/README.en.md).
-
-### Windows
-
-Requirements: Windows 10 (1809+) or Windows 11, x64 or arm64 (including Snapdragon X laptops), with
-the **.NET 10 Desktop Runtime** installed.
-
-1. Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) first
-   (the **Desktop Runtime**, matching your PC's architecture; the regular .NET Runtime or .NET 8/9 is
-   insufficient, and a .NET 10 SDK already includes it). Packages no longer bundle .NET, and the
-   installer tells you where to get it if it is missing.
-2. Download `VoiceTyper-<version>-win-x64-setup.exe` (most PCs) or
-   `VoiceTyper-<version>-win-arm64-setup.exe` (ARM laptops) from
-   [Releases](https://github.com/oyasmi/voice-typer/releases). A no-install portable ZIP is also available.
-3. Run the installer. It installs into your user directory and needs no administrator rights.
-4. Open VoiceTyper from the Start menu, follow the four-step guide to confirm the microphone and
-   download the model, and finish with one real dictation in the last step.
-
-The installer is not code-signed. If SmartScreen blocks the first run, choose “More info → Run anyway”.
-Windows that run as administrator block system-level text input; the result then stays on the clipboard
-for a manual `Ctrl+V`. “Copy last result” in the tray menu retrieves your most recent text at any time.
-For uninstalling, settings and troubleshooting, see the [full Windows guide](windows/README.en.md).
-
-**Verification status**: the Windows app has feature parity with macOS (see the
-[changelog](windows/CHANGELOG.md), Chinese only). The full dictation flow has been run on real Windows
-hardware, including the complete model download with SHA256 verification, and publishing for both x64
-and arm64 has succeeded. **arm64 hardware, long-running stability, performance numbers and DPI
-behavior across monitors are still being verified.** If you want to help verify it or build from
-source, read the [Windows usage and development guide](windows/README.en.md), the
-[list of risks still to verify](windows/DESIGN.md#11-风险与对策) and the item-by-item
-[real-hardware checklist](windows/CHANGELOG.md#真机验证清单).
+- Audio is processed in memory on your computer and never uploaded anywhere;
+- once the model is downloaded, it works fully offline;
+- logs never contain recognized text;
+- AI proofreading is off by default. When enabled, only the **recognized text** is sent to the service you
+  configured — never audio — and the API key is kept in the macOS Keychain or Windows DPAPI-encrypted
+  storage. To stay fully offline, point it at a model running on your own machine.
 
 ## FAQ
 
-### Is it an input method (IME)?
+**Is it an input method (IME)?**
+No. VoiceTyper doesn't replace your input method; it just writes the recognized text into the focused
+field, so your typing habits stay the same.
 
-No. VoiceTyper does not replace your system input method; it writes the recognized text into whatever
-input area currently has focus. You can keep your existing typing habits, and it never takes over the
-keyboard.
+**Does it need the internet every time?**
+No. It only goes online to download the model once, when you check for updates, and when you turn on AI
+proofreading.
 
-### Does it need an internet connection every time?
+**Does it use a lot of memory?**
+By default the model loads at launch and stays resident so the hotkey responds instantly, at the cost of a
+few hundred MB (about 500MB measured on macOS). If you dictate rarely, turn off preloading or release the
+model after inactivity in Settings; it then loads while you record.
 
-No. The network is needed once, to download the speech model. Recognition after that happens locally.
-Only LLM proofreading, if you turn it on, talks to the model service you configured.
+**Where doesn't it work?**
+It works almost anywhere you can paste. Some password fields, games, remote desktops and windows running
+as administrator reject simulated input; the result then stays on the clipboard and can be recovered from
+the menu, so you can paste it manually.
 
-### Why does it need microphone, accessibility and input-monitoring permissions?
+**Why does the system block the first launch?**
+The packages aren't notarized by Apple or code-signed for Windows yet. On macOS, go to System Settings →
+Privacy & Security and click “Open Anyway”; on Windows, click “More info → Run anyway”. You only need to do
+this once.
 
-These are the macOS permissions: the microphone is for recording, input monitoring is for responding to
-the global hotkey inside other apps, and accessibility is for delivering text to the current cursor
-position. The Windows version needs none of these grants — only that apps are allowed to use the
-microphone (Settings → Privacy & security → Microphone). VoiceTyper does not use these permissions to
-record anything unrelated to voice input.
+**Can I switch models or add hotwords?**
+The standalone apps focus on SenseVoice-Small; switching models and hotwords are not supported — a clear,
+dependable default matters more than a pile of unpolished options. For other models, use the
+[client–server version](client-server/README.md).
 
-### Where can I use it?
+**Is the Windows version stable?**
+It has feature parity with macOS, and dictation and model download have been run on real Windows
+hardware. arm64 devices, long-running sessions and multi-monitor DPI are still being tested
+systematically. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if you hit a problem.
 
-Anywhere ordinary pasting works. Some password fields, games, remote desktops and windows running as
-administrator block simulated system-level input; in those cases the result usually remains on the
-clipboard so you can paste it manually.
-
-### Does it support Intel Macs or Linux?
-
-The unified macOS app is Apple Silicon only, the Windows app supports x64 and arm64, and there is no unified Linux version yet. For
-Intel Macs, Linux, remote recognition, or sharing one ASR server between several machines, use the
-[client–server implementation](client-server/README.md) kept in this repository.
-
-### Can I switch the speech model or use hotwords?
-
-The unified app focuses on SenseVoice-Small and cannot be switched to paraformer. If you really need
-that, use the client–server version and change the model on the server. Hotwords have been removed
-from both forms: early versions had the feature, but it never actually took effect in the current
-recognition pipeline. A clear, dependable default matters more than exposing a pile of unpolished
-options.
-
-## For developers
-
-The macOS and Windows apps share the same product architecture: the hotkey starts recording, a local
-session keeps producing a full preview, and releasing the key finishes recognition and inserts the
-text. The Windows pipeline is a port of the verified macOS Swift implementation, and both platforms
-share one set of Python golden fixtures to check fbank, LFR/CMVN and text post-processing for
-consistency.
+## Contributing
 
 ```text
 voice-typer/
-├── macos/             # Swift + AppKit/SwiftUI unified app
-├── windows/           # .NET 10 + WinForms unified app
-└── client-server/     # The maintained legacy architecture: Python server plus three platform clients
+├── macos/           # macOS app: Swift + AppKit/SwiftUI + ONNX Runtime
+├── windows/         # Windows app: .NET 10 + WinForms + ONNX Runtime
+└── client-server/   # Legacy client–server architecture for Linux, remote and shared-server setups
 ```
 
-### Building and testing on macOS
+Both platforms share the same product architecture and recognition pipeline, checked for numerical
+consistency against one set of golden fixtures. Build, test and architecture docs (in Chinese):
 
-```bash
-cd macos
-ruby scripts/generate_xcodeproj.rb
-open VoiceTyper.xcodeproj
+- macOS: [Development](macos/DEVELOPMENT.md) · [Design](macos/DESIGN.md) · [Changelog](macos/CHANGELOG.md)
+- Windows: [Development](windows/DEVELOPMENT.md) · [Design](windows/DESIGN.md) · [Changelog](windows/CHANGELOG.md)
+- Client–server: [Overview](client-server/README.md) · [Protocol](client-server/PROTOCOL.md)
 
-xcodebuild -project VoiceTyper.xcodeproj \
-  -scheme VoiceTyper \
-  -destination 'platform=macOS' test
-```
-
-### Building and testing on Windows
-
-```bat
-cd windows
-dotnet restore
-dotnet run
-dotnet test
-```
-
-Further reading:
-
-- [macOS usage and development](macos/README.en.md) · [Architecture](macos/DESIGN.md)
-- [Windows usage and development](windows/README.en.md) · [Architecture](windows/DESIGN.md)
-- [Client–server version](client-server/README.md) · [Protocol](client-server/PROTOCOL.md)
+Bug reports and suggestions are welcome in [Issues](https://github.com/oyasmi/voice-typer/issues).
 
 ## Acknowledgements
 
-VoiceTyper's local recognition is built on
-[SenseVoice](https://github.com/FunAudioLLM/SenseVoice) and
-[ONNX Runtime](https://github.com/microsoft/onnxruntime). Thanks to these projects for making
-high-quality, offline-capable speech recognition something an ordinary desktop app can actually ship.
-
-> Design documents (`DESIGN.md`) and the client–server documentation are currently maintained in
-> Chinese only.
+Local recognition is built on [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) and
+[ONNX Runtime](https://github.com/microsoft/onnxruntime). Thanks to these projects for bringing
+high-quality offline speech recognition to ordinary desktop apps.
 
 ## License
 
-This project is released under the [Apache License 2.0](LICENSE).
-
-Third-party components (such as the SenseVoice model and ONNX Runtime) remain under their own
-original licenses.
+[Apache License 2.0](LICENSE). Third-party components (the SenseVoice model, ONNX Runtime, etc.) remain
+under their own licenses.

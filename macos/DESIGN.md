@@ -641,7 +641,7 @@ App bundle 解包后 **35MB**，压缩后 zip **9.8MB**、DMG **11MB**——比�
 （空 entitlements，无强化运行时例外——麦克风访问走 TCC 权限而非 sandbox entitlement，本应用未
 启用 App Sandbox）。`build_xcode.sh` 默认仍是 ad-hoc 签名，不受此项影响；若设置
 `VOICETYPER_SIGN_IDENTITY`/`VOICETYPER_NOTARY_PROFILE` 可走 Developer ID 签名 + 公证，
-详见 `macos/README.md`「签名与公证」一节（R3-16）。
+详见 `macos/DEVELOPMENT.md`「签名与公证」一节（R3-16）。
 
 ---
 

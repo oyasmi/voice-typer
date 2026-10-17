@@ -1,555 +1,161 @@
-# VoiceTyper — unified macOS app
+# VoiceTyper for macOS
 
 [简体中文](README.md) | **English**
 
-[← Back to the project](../README.en.md) · [Design](DESIGN.md) · [Changelog](CHANGELOG.md) · [Split client](../client-server/client_macos_swift/README.md)
+[← Project home](../README.en.md) · [Download](https://github.com/oyasmi/voice-typer/releases) · [Changelog](CHANGELOG.md) · [Development](DEVELOPMENT.md)
 
-A single-process macOS menu bar app: the SenseVoice recognition pipeline from
-[`client-server/server/`](../client-server/server/README.md) rewritten in Swift and inlined into the
-client. Drag it into Applications and it works — **no** separate Python server to deploy. Current
-version **3.5.2**, app name **VoiceTyper**, bundle ID `com.voicetyper.app`.
-
-**Who this is for**: people who want to use it on their own Mac, and people who want to build it or
-hack on it. Deeper architectural decisions, measured numbers and the trade-offs behind them are in
-[`DESIGN.md`](DESIGN.md) (Chinese only).
-
----
-
-## Contents
-
-- [Features and limits](#features-and-limits)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Permissions and model download](#permissions-and-model-download)
-- [Usage](#usage)
-- [Settings](#settings)
-- [Architecture](#architecture)
-- [Building](#building)
-- [Testing](#testing)
-- [Logs and troubleshooting](#logs-and-troubleshooting)
-
----
-
-## Features and limits
-
-**Supported**
-
-- Runs in one process; the recognition engine (SenseVoice-Small) runs inside the app and connects to
-  no server
-- Downloads and installs the model once on first launch (~240MB), then works fully offline
-- Hold the hotkey (`Fn` by default) to record; release to recognize and insert the text. You can also
-  switch to “press once to start, press again to stop”
-- `Esc` cancels during recording *and* during recognition (after releasing, before the result lands),
-  and nothing gets inserted
-- Hotkey and Esc no longer “leak through”: with a key combination such as `⌥Space`, the key itself is
-  no longer delivered to the front app (no stray space typed), and the `Esc` used to cancel does not
-  also trigger the front app's Esc (leaving full screen, closing a dialog…). `Esc` outside dictation
-  still reaches the front app. This needs the Accessibility permission; without it the app falls back to
-  listen-only and behaves as before
-- What you said can be recovered: results that were cancelled, not inserted (focus changed or insertion
-  failed) or cut short by a recognition timeout go into **Recent Results** in the menu bar (up to 10,
-  kept in memory only, cleared on quit, and clearable from the menu). One click copies a result to the
-  clipboard; on a recognition timeout the recognized part is also copied to the clipboard automatically
-- Chinese and English text is spaced automatically in the inserted result (“我用 Python 写代码”),
-  whether or not LLM proofreading is on
-- No dictation starts while the focus is in a password field (speaking a password is unsafe, and with
-  proofreading on the content would be sent to a third-party service)
-- A four-step guide on first launch (Welcome → Permissions → Model → Try it); the last step runs one
-  real dictation to verify the whole chain
-- Live streaming preview: the HUD overlay keeps showing recognized text while you record, and corrects
-  itself
-- Optional LLM proofreading, configured right in the settings panel (base URL / API key / model /
-  temperature / timeout)
-- Recognition language can be set to auto / Chinese / English / Cantonese / Japanese / Korean
-- Interface language can be set to Chinese (default) or English; a restart applies it everywhere
-- Optional preloading at launch (on by default) and automatic release of engine memory after an idle
-  period
-- The overlay shows the current input device while recording, and warns you if no sound is arriving
-- Besides Fn and key combinations, the hotkey can be a **single Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃**
-  (for external keyboards without Fn); holding it and pressing another key still works as a normal shortcut
-- With Bluetooth headphones the app records from the built-in microphone by default (the headset mic runs
-  in call mode: poor audio, and it degrades the music in your headphones); switch to strictly following
-  the system default input in Settings
-- LLM proofreading requests turn off “deep thinking” by default (much faster on hybrid-reasoning models
-  that accept a `thinking` parameter); services that reject it automatically get a plain request
-- Simulated paste looks up the key code for the current keyboard layout, so it is ⌘V on Dvorak / Colemak too
-- Snappier preview: 200ms capture chunks and event-driven preview scheduling (new samples plus an inference duty-cycle limit)
-- The recording status line carries an operation hint: “Press X to finish” in press-once mode, “Esc to cancel” for the first 5 recordings in hold mode
-- Model download shows downloaded / total size, speed and time remaining; once it finishes with all windows closed, the overlay tells you to start speaking
-- A lost key-release event (stuck key) is detected and ends the recording; a lock screen or sleep discards the recording, and the hotkey listener is restored on wake / unlock
-- After an update of a locally (ad-hoc) signed build invalidates permissions, the Permissions page shows a re-authorization note
-- The menu bar switches recognition language, microphone (auto / follow system) and AI proofreading directly
-- Overlay position: bottom center / bottom right / follow insertion point / hidden, with adjustable opacity. The
-  overlay appears on the screen holding the front app's focused window; “follow insertion point” puts it 8pt below
-  the text cursor (flipping above when there is no room below), and falls back to the pointer when the insertion
-  point is unavailable
-- Capture continues for about 150ms after you release the key so the last half-word is not cut off (the overlay
-  already shows “Recognizing” and `Esc` still cancels during that time)
-- When the preview updates, the part that differs from the previous one is shown in a secondary colour for about
-  300ms before returning to normal (skipped under “Reduce motion”)
-- Launch at login
-- The menu bar can pause dictation, reopen the setup guide, and check for updates manually (there is no
-  background check)
-
-**Not supported / known limits**
-
-- **Apple Silicon only** (arm64); Intel Macs are not supported
-- Hotkey main keys are limited to letters, digits, `space`/`tab`/`enter`, `F1`–`F12`, and the standalone
-  `fn`; single modifier keys are limited to Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃ (Left ⌘ takes part in too
-  many shortcuts, Shift clashes with input-source switching, Left ⌃ is used for Emacs-style editing)
-- With a single modifier key as the hotkey, every time you use it as a modifier (e.g. Right ⌘ + C) the
-  microphone is opened briefly and the menu-bar microphone indicator flickers; no recording result is
-  produced. If you use Right ⌘ shortcuts a lot, prefer Right ⌥ or the “press once to start, again to
-  stop” mode (there only a clean tap starts recording, so the microphone is not opened)
-- Hotkey recording stores the physical key: on non-QWERTY layouts such as Dvorak the name shown in the
-  recorder may differ from the keycap, but recording and matching use the same key code, so it works
-- The app is not signed or notarized; the first launch needs a manual approval in System Settings →
-  Privacy & Security
-- SenseVoice-Small only — it cannot be switched to paraformer, and hotwords are removed in both forms
-  (if you need paraformer, use the [split client](../client-server/client_macos_swift/README.md) plus
-  the [server](../client-server/server/README.md))
-- No remote or shared server — recognition always runs on this machine
-
----
+VoiceTyper is a menu bar app: hold `Fn` in any app and speak, release it, and the text appears at the
+cursor. Speech recognition runs entirely on your Mac; recordings are never uploaded.
 
 ## Requirements
 
 | Item | Requirement |
 | --- | --- |
-| OS | macOS 14.0 (Sonoma) or later |
-| Architecture | **Apple Silicon only** (M-series chips) |
-| Disk | About 300MB (the app plus the model downloaded on first launch, with room to spare) |
-| Network | Only for the first model download; fully offline afterwards |
-| Xcode | Only needed if you build it yourself |
-
----
+| Chip | Apple Silicon (M-series). Intel Macs are not supported |
+| System | macOS 14 Sonoma or later |
+| Disk | About 300MB (app + speech model downloaded on first launch) |
+| Network | Only for the first model download |
 
 ## Installation
 
-### From a release
-
-1. Download `VoiceTyper-<version>-macOS-arm64.dmg` from
-   [Releases](https://github.com/oyasmi/voice-typer/releases).
+1. Download `VoiceTyper-<version>-macOS-arm64.dmg` from [Releases](https://github.com/oyasmi/voice-typer/releases).
 2. Open the DMG and drag `VoiceTyper.app` into Applications.
-3. Open VoiceTyper from Applications.
-4. If macOS blocks the first launch, go to System Settings → Privacy & Security and click “Open
-   Anyway”.
+3. Open VoiceTyper. If macOS says the developer cannot be verified, go to System Settings → Privacy &
+   Security and click “Open Anyway”.
 
-Step 4 is needed because the app is only ad-hoc signed — it has no Apple Developer signature and no
-notarization. The DMG ships a short `INSTALL.txt` describing the same steps.
+> The app is not notarized by Apple yet, so the first launch needs this one-time approval. It does not
+> affect how the app works.
 
-### Uninstalling
+## First launch
 
-Delete `/Applications/VoiceTyper.app`, then the configuration and model directory
-`~/Library/Application Support/VoiceTyper/`. The permission grants remain recorded in System Settings
-and can be removed there.
+A four-step guide opens: **Welcome → Permissions → Speech model → Try it**.
 
-### Can it coexist with the split client?
+**Grant three permissions.** The app cannot work without all of them; the guide takes you to each one:
 
-The bundle IDs (`com.voicetyper.app` vs `com.voicetyper.client`) and configuration directories are
-separate, so technically yes. But both register the same default hotkey (`Fn`), so **running them at
-the same time means fighting over it** — keep one. If you previously installed
-[the VoiceTyperClient from `client-server/client_macos_swift/`](../client-server/client_macos_swift/README.md),
-your hotkey and HUD opacity are inherited automatically on first launch.
-
----
-
-## Permissions and model download
-
-There are two independent preparation tracks on first launch; neither blocks the other:
-
-1. **Three system permissions** (microphone, accessibility, input monitoring) — all three are required,
-   and the setup guide walks you through them one by one (if you have been through the guide already,
-   the Permissions tab of the settings window opens instead).
-2. **Automatic model preparation** — the app downloads, verifies and loads the model in the background,
-   and keeps going even when permissions are still missing. A new installation only needs you to grant
-   permissions; once both tracks are ready, you can start dictating.
-
-| Permission | Used for | What happens without it |
+| Permission | Used for | Without it |
 | --- | --- | --- |
-| **Microphone** | Recording | Pressing the hotkey cannot start recording |
-| **Accessibility** | Text insertion (direct AX writes + simulated paste) | Recognition succeeds but the text cannot be inserted |
-| **Input Monitoring** | The global hotkey, especially the Fn key | The hotkey does nothing at all |
+| Microphone | Recording | Pressing the hotkey cannot start recording |
+| Input Monitoring | Responding to the hotkey in other apps | The hotkey does nothing at all |
+| Accessibility | Writing text at the cursor | Recognition works but no text appears |
 
-As long as Input Monitoring is granted, the hotkey keeps listening even when other permissions are
-missing: pressing it tells you exactly what is still missing, instead of doing nothing.
+**The speech model** (about 240MB) downloads and verifies itself in the background while you grant
+permissions. Downloads resume after interruptions and retry automatically.
 
-> **An update may require granting permissions again**: ad-hoc signatures have no stable Team ID, and
-> macOS keys permission records by code signature. The app detects whether it is an ad-hoc build and
-> says so on the guide page and the Permissions tab; the notice disappears once it is distributed with
-> a Developer ID signature.
+**Try it**: complete one real dictation inside the guide window. Only a successful run proves that the
+hotkey, microphone, recognition and text insertion all work; if one of them fails, the guide tells you
+which. You can reopen the guide any time from the menu bar (“Setup Guide…”).
 
-The model download is visible both in the setup guide and on the Recognition tab: it shows a
-percentage and can be canceled. Failures retry automatically three times with 5s / 20s / 60s backoff
-(resume data is already on disk, so a retry continues rather than starting over); only after three
-failures does it stop and wait for a manual retry. The four downloaded files (`config.yaml`, `am.mvn`,
-`tokens.json`, `model_quant.onnx`) come from ModelScope, each verified by sha256 and resumable; the
-241MB weights file is fetched in four parallel segments when the server supports range requests, and
-falls back to a single connection when it does not. If this machine has run
-[`client-server/server/`](../client-server/server/README.md) before (so `~/.cache/modelscope/` already
-holds the model), the app reuses it and downloads nothing.
+## Everyday use
 
-To reset a specific permission completely:
+1. Put the cursor where you want the text.
+2. Hold `Fn` and start speaking **once the overlay appears**. The overlay shows live results and corrects
+   earlier words as you keep talking.
+3. Release `Fn`. The final, punctuated text is written into the current app.
 
-```bash
-tccutil reset Microphone com.voicetyper.app
-tccutil reset Accessibility com.voicetyper.app
-tccutil reset ListenEvent com.voicetyper.app
-```
+Useful details:
 
----
+- **Cancel**: press `Esc` while recording or recognizing; nothing is written.
+- **Recover results**: “Recent Results” in the menu bar keeps the last 10 (including cancelled ones and
+  ones that failed to insert). Click to copy. Kept in memory only and cleared when you quit.
+- **Long dictation**: switch the trigger to “press once to start, press again to stop” in Settings.
+- **Length**: up to 120 seconds per dictation, with a countdown for the last 15 seconds. Presses shorter
+  than 0.3 seconds are ignored as accidental.
+- **Mixed Chinese and English**: no switching needed; a space is inserted between Chinese and English words.
+- **Password fields**: dictation does not start while a password field has focus.
 
-## Usage
-
-The **setup guide** opens automatically on first launch, in four steps: Welcome (including the warning
-about Fn conflicting with a system setting) → three system permissions → speech model download →
-**Try it**. The last step has you complete a real dictation in the guide's own text field — three green
-permissions do not mean it works; only running the whole chain (hotkey → microphone → local
-recognition → text insertion) does, and any broken link is named right there. You can reopen the guide
-any time from the menu bar (“Setup Guide…”).
-
-Everyday use:
-
-1. The VoiceTyper icon appears in the menu bar after launch.
-2. **Hold the hotkey** (`Fn` / globe key by default) to start recording; the HUD overlay appears.
-   **Wait for the overlay before you speak** — there is an inherent ~0.2s delay between pressing the
-   key and the microphone actually producing sound.
-3. Speak. The HUD shows recognized text live and corrects itself as you continue.
-4. **Release the hotkey**; the local engine re-recognizes the whole segment and the final text is
-   inserted at the cursor. With proofreading enabled, the overlay shows “Proofreading…” once local
-   recognition is done, so the two phases stay distinguishable. Press the hotkey once more during
-   proofreading (a single click for a modifier-only hotkey) to skip it and insert the raw transcript
-   at once. If proofreading did not succeed (timeout, rejected key, service error…), the overlay shows
-   “Inserted · Not proofread” with the reason; the raw transcript is what was inserted.
-5. Press **Esc** any time during recording or recognition to cancel; no text is inserted. Whatever was
-   recognized before cancelling can be recovered from **Recent Results** in the menu bar.
-
-A single recording is capped at 120 seconds; during the last 15 seconds the timer turns into an orange
-“N s left” countdown.
-
-**Privacy**: audio never leaves the device. The 10 most recent results live in memory only — never
-written to disk or to the logs, cleared on quit, and clearable from the menu.
-
-While recording, the overlay shows the current input device (for example “Recording · MacBook
-Microphone”). If no sound arrives after recording starts, the overlay tells you to check the
-microphone and input device — you do not have to finish talking to discover the result was empty.
-
-Switch the trigger to “press once to start, press again to stop” (Settings → General → Trigger mode)
-and step 2 becomes a single press, with another press to finish — handy for dictating emails or
-documents.
-
-Recordings shorter than **0.3 seconds** are treated as accidental taps and discarded.
-
-### Fn and conflicting system behaviour
-
-The default hotkey is `Fn`🌐, and VoiceTyper **never swallows Fn or modifier-only events** (swallowing
-modifier changes would corrupt the system's modifier state). So if System Settings → Keyboard → “Press 🌐 key to” is not set to “Do
-Nothing”, holding Fn to speak also triggers the system's own Fn action the moment you let go — the
-emoji panel pops up, or your input source switches. The guide page and Settings → General detect this
-and offer a button that opens the relevant system settings.
-
-Menu bar icon states:
-
-| State | Icon | Meaning |
-| --- | --- | --- |
-| Ready | `mic` | Waiting for the hotkey |
-| Recording | `mic.fill` | Recording |
-| Recognizing | `waveform` | Key released, waiting for the local engine |
-| Inserting | `character.cursor.ibeam` | Inserting text |
-| Model needed | Down arrow (orange) | First launch, model not downloaded yet |
-| Downloading | Down arrow + animation | Downloading the model |
-| Loading model | Rotating arrows | Permissions ready, loading the model into memory |
-| Permissions needed | Warning triangle | Some permission is missing |
-| Paused | `mic.slash` | Paused from the menu |
-
----
+The menu bar also lets you switch recognition language, microphone and AI proofreading, or pause dictation.
 
 ## Settings
 
-The settings window has three tabs, all fully graphical — no YAML editing required:
+Everything is configurable in the Settings window; there is no config file to edit.
 
-| Tab | Contents |
+| Page | Contents |
 | --- | --- |
-| **Permissions** | The three permission states, grant buttons, shortcuts into System Settings |
-| **Recognition** | Model status card (auto download / load / ready / failed, with retry and reload), idle-unload interval, preload at launch, recognition language, AI proofreading (toggle + base URL + API key + model + temperature + timeout + test) |
-| **General** | Hotkey (Fn, a single Right ⌘ / Right ⌥, or a combination, with key recording), trigger mode (hold / toggle), Fn conflict detection, launch at login, **interface language**, **microphone** (automatic / follow system), overlay position and background opacity |
+| Permissions | Status of the three permissions and shortcuts to grant them |
+| Recognition | Model status, recognition language (auto / Chinese / English / Cantonese / Japanese / Korean), memory, AI proofreading |
+| General | Hotkey, trigger mode, microphone, overlay position and opacity, launch at login, interface language |
 
-### Interface language
+- **Hotkey**: `Fn`, a key combination (such as `⌥Space`), or a single Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃
+  (handy on external keyboards without Fn). With a single modifier, holding it and pressing another key
+  still works as a normal shortcut.
+- **Microphone**: “Auto” by default — when you wear Bluetooth headphones, the built-in microphone is used
+  instead, so the headphones don't drop into low-quality call mode and pause your music. You can also
+  always follow the system default input.
+- **Memory**: by default the model loads at launch and stays resident, so the hotkey responds instantly.
+  If memory is tight, turn off preloading or release the model after a period of inactivity; it then
+  loads while you record.
+- **Interface language**: Chinese or English, applied after restarting the app. It is independent of the
+  recognition language.
 
-Chinese is the default. Switching to English on the General tab saves immediately, but the menu bar,
-the settings window and the overlay are all built with the wording chosen at launch — so **restart
-VoiceTyper** to have every piece of text use the new language. The interface language is independent
-of the recognition language on the Recognition tab: you can run an English interface while dictating
-in Chinese, or the other way around.
+### AI proofreading (optional, off by default)
 
-### Configuration file (internal storage, editing by hand is discouraged)
+Connect any OpenAI-compatible service (including a model running on your own machine) to fix homophones,
+slips of the tongue and punctuation. When enabled, only the **recognized text** is sent to the service you
+configured — never audio. The API key is stored in the macOS Keychain.
 
-Every setting has a control in the settings window. `config.yaml` is the app's **internal storage**,
-not a configuration entry point: the menu bar deliberately does **not** offer “Open config folder”, the
-app does not watch the file while running (changes need a restart), and editing it by hand bypasses the
-validation the UI does (for example “a non-Fn main key must have a modifier”). The fields are listed
-here only so the file is readable while troubleshooting.
+Press the hotkey again during proofreading to skip it and insert the original text. If proofreading fails
+(timeout, authentication error, …), the original text is used and the overlay explains why.
 
-```
-~/Library/Application Support/VoiceTyper/config.yaml
-```
+## Privacy
 
-Full field list:
+- Audio is processed in memory only — never written to disk, never uploaded.
+- Once the model is downloaded, VoiceTyper works fully offline.
+- No account, no usage limits.
+- Logs never contain recognized text; Recent Results live in memory and are cleared on quit.
 
-```yaml
-asr:
-  language: "auto"           # auto / zh / en / yue / ja / ko
-  threads: 0                 # 0 = automatic (min(4, core count))
-  model_dir: ""              # empty = locate automatically (download folder / ModelScope cache)
-  idle_unload_minutes: 0     # 0 = stay resident (default; 5/10/30 minutes also possible)
-  preload_on_launch: true    # load the model at launch; default true
-llm:
-  enabled: false
-  base_url: ""
-  model: "gpt-4o-mini"
-  temperature: 0
-  max_tokens: 800
-  timeout: 5
-  # api_key is not here — it lives in the Keychain (service com.voicetyper.app, account llm_api_key)
-hotkey:
-  modifiers: []
-  key: "fn"
-  mode: "hold"               # hold = hold to talk; toggle = press once to start, again to stop
-  # key may also be right_command / right_option / left_option / right_control (single modifier; modifiers must be empty)
-audio:
-  input_device: "auto"       # auto = built-in mic when Bluetooth headphones are connected; system = follow the system default input; or a device UID (no UI yet)
-ui:
-  opacity: 0.85
-  hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
-  interface_language: "zh"        # zh / en; interface language, applied fully after a restart
-```
+## FAQ
 
-For security reasons the LLM API key is not stored in the configuration file but in the system
-Keychain. One-off application state such as “has the guide been completed” lives in `UserDefaults` and
-likewise does not appear in the configuration file.
+**Pressing Fn opens the emoji picker or switches input source?**
+In System Settings → Keyboard, set “Press 🌐 key to” to “Do Nothing”. The guide and Settings → General
+detect this conflict and offer a shortcut. Alternatively, choose a different hotkey.
 
----
+**The hotkey does nothing?**
+Check Input Monitoring first. After updating VoiceTyper, macOS may treat the old permission as invalid
+(a known issue with non-notarized builds): remove VoiceTyper from the list in System Settings, add it
+again, then fully quit and restart the app. Also, when an app turns on Secure Input (e.g. Terminal's
+Secure Keyboard Entry or a password field), macOS blocks combination hotkeys; the menu bar tells you so.
 
-## Architecture
+**Recognition works, but the text doesn't appear?**
+Check Accessibility. A few apps refuse external input; the text is then on the clipboard or in Recent
+Results, ready to paste.
 
-```
-VoiceTyperController (state machine: Idle→Recording→Recognizing→Inserting)
-  ├── HotkeyService / AudioCaptureService / TextInsertionService
-  └── LocalASRSession (in-process recognition session, replacing the old cross-process WebSocket client)
-         └── ASRService (serial asrQueue)
-                └── SenseVoiceEngine
-                       ├── FbankFrontend (Accelerate/vDSP, Kaldi-compatible fbank)
-                       ├── LFRCMVN
-                       ├── ORTSession (onnxruntime-swift-package-manager)
-                       └── CTCDecoder + TextPostprocessor
-```
+**The overlay says nothing was recognized?**
+While recording, the overlay shows which microphone is in use. Make sure it isn't muted, that System
+Settings → Sound → Input has the right device, and that no other app holds it exclusively. The overlay also
+warns you when no sound is coming in.
 
-The recognition pipeline (fbank → LFR/CMVN → CTC decoding) is a Swift port of
-`client-server/server/voice_typer_server/recognizer.py`, kept numerically aligned point by point with
-golden tests (see `Tests/VoiceTyperTests/Fixtures/`). The other modules are independent
-implementations for the unified architecture and no longer share code or a protocol with the old split
-client.
+**The model download fails?**
+Make sure you can reach ModelScope, then retry in Settings → Recognition; the download resumes where it
+stopped. If this Mac has run the VoiceTyper server before, its model cache is reused automatically.
 
-The full design decisions, measurements (performance, memory, model I/O contract) and module
-responsibilities are in [`DESIGN.md`](DESIGN.md) (Chinese only).
+**Can it coexist with the older split client?**
+Yes, but both default to `Fn` and will fight over the hotkey if run together, so keep only one. When
+migrating, your hotkey and overlay opacity carry over automatically.
 
----
+**Known limitations**
+Apple Silicon only; only the SenseVoice-Small model, with no model switching or hotwords; recognition
+always runs locally, with no remote server option (use the
+[client–server version](../client-server/README.md) for that).
 
-## Building
+## Uninstall
 
-### Xcode
+Delete `VoiceTyper.app` from Applications and the folder `~/Library/Application Support/VoiceTyper/`
+(settings and model). To clear permission records, remove VoiceTyper from the corresponding lists in
+System Settings → Privacy & Security.
+
+## Reporting issues
+
+Open an [issue](https://github.com/oyasmi/voice-typer/issues) with what happened, your macOS version and
+Mac model. Logs help: open the Console app and search for `com.voicetyper.app`. Logs never contain
+recognized text.
+
+## Building from source
 
 ```bash
 cd macos
-ruby scripts/generate_xcodeproj.rb   # (re)generate the project; required after adding files
-open VoiceTyper.xcodeproj
-```
-
-Dependencies: [Yams](https://github.com/jpsim/Yams) (YAML parsing) and
-[onnxruntime-swift-package-manager](https://github.com/microsoft/onnxruntime-swift-package-manager)
-(pinned exactly to `1.24.2`), both through SwiftPM.
-
-### Command line
-
-```bash
-cd macos
+ruby scripts/generate_xcodeproj.rb
 ./build_xcode.sh
 ```
 
-Only the **arm64** variant is produced (Intel Macs are not supported). Artifacts land in `dist/`:
-
-```
-VoiceTyper-<version>-macOS-arm64.zip / .dmg
-```
-
-The model is not bundled with the build; the app downloads and installs it on first launch. To stage it
-offline for testing or to skip the automatic download:
-
-```bash
-./scripts/fetch_model.sh
-```
-
-### Signing and notarization (optional)
-
-By default (no environment variables set) the build is **ad-hoc signed on this machine**, which is the
-path almost every contributor should use. Ad-hoc signing has two known costs:
-
-- **Every update may require the user to grant the three permissions again** — ad-hoc signatures have
-  no stable Team ID, the cdhash changes on every build, and TCC records are keyed by code signing
-  identity.
-- It cannot be distributed through notarization, so users must approve the first launch manually
-  (“Open Anyway”) in System Settings.
-
-With a paid Apple Developer account you can enable **Developer ID signing + hardened runtime +
-notarization** through environment variables:
-
-```bash
-# 1. List the Developer ID identities available on this machine
-security find-identity -v -p codesigning
-
-# 2. (Once) store notarization credentials in the local Keychain
-xcrun notarytool store-credentials "voicetyper-notary" \
-  --apple-id "you@example.com" --team-id "TEAMID1234" --password "app-specific password"
-
-# 3. Sign + notarize + staple in one run
-VOICETYPER_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID1234)" \
-VOICETYPER_NOTARY_PROFILE="voicetyper-notary" \
-./build_xcode.sh
-```
-
-Setting only `VOICETYPER_SIGN_IDENTITY` (without `VOICETYPER_NOTARY_PROFILE`) performs Developer ID
-signing without submitting for notarization — useful for verifying the signature locally first.
-
-Implementation notes (see the comments in `build_xcode.sh`): the embedded `onnxruntime.framework` is
-signed separately with the same identity (hardened runtime, `--options runtime`) instead of a blanket
-`--deep` pass — that is Apple's documented recommendation and one of the most common causes of
-notarization failures. The project has been verified to build, run and pass all unit tests (including
-real ONNX inference) with `ENABLE_HARDENED_RUNTIME=YES`, but **the Developer ID signing and
-notarization flow itself has not been verified on real hardware** — this repository's automated
-environment has no paid developer account or usable credentials, so a maintainer who has one needs to
-run it once and update this section.
-
-Automatic updates (Sparkle and friends) are out of scope for now: a certificate solves “reinstall and
-it just works”, but continuous update checks and delivery need extra release infrastructure (appcast
-hosting, signing key management), which is left until distribution needs demand it.
-
-### Changing the version number
-
-`MARKETING_VERSION` in `scripts/generate_xcodeproj.rb` (in two places: `build_configuration_list` and
-the per-target configuration).
-
----
-
-## Testing
-
-```bash
-xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platform=macOS' test
-```
-
-| Test | Covers |
-| --- | --- |
-| `FbankParityTests` | fbank / LFR+CMVN features compared point by point against the golden output from `client-server/server/` (tolerance 1e-3), including the log floor regression for all-zero input |
-| `EndToEndRecognitionTests` | The full recognition chain against real speech samples (edit-distance tolerance, see below) |
-| `LFRCMVNTests` | LFR tail-padding branch and the per-element CMVN affine transform (pure logic, no model needed) |
-| `TextPostprocessorTests` | Each rule of the post-CTC text cleanup |
-| `RecognitionBufferTests` | Sliding-window preview scheduling (fake engine, no real model) |
-| `AudioChunkerTests` | Fixed-length framing, carry-over across calls, tail flushing (pure logic, no microphone) |
-| `LocalASRSessionTests` | Session behaviour: preview re-entry skipping, finalize watchdog (excluding engine load time), immediate failure when the engine is unavailable, wait-stage notices, skipping proofreading, the 120-second cap warning and wrap-up, suppressing late callbacks after close |
-| `ASRServiceTests` | Engine load mutual exclusion, idle unload not re-triggering a preload, language changes during loading replayed onto the new engine |
-| `VoiceTyperControllerTests` | State machine behaviour: overlapping presses rejected instead of overwriting, Esc cancellation, clean wrap-up after a device change, short recordings discarded, failure / timeout fallbacks, skipping proofreading, password-field refusal, which outcomes land in Recent Results, and so on |
-| `OutputFormatterTests` | Chinese/English spacing rule, reading the shared fixture `Fixtures/text_format_cases.json` (shared with Windows) and checking idempotence |
-| `DictationHistoryTests` | Recent Results: capacity eviction, de-duplication, blank text ignored, clearing, menu title truncation and suffixes |
-| `SecondBatchSupportTests` | Download-detail speed window and wording, recording hints, when the post-update re-authorization note shows, hotkey physical state for stuck keys, AX read-back classification |
-| `HotkeyEventFilterTests` | The hotkey event→action state machine and swallow rules (press / repeat / release pairing, Esc swallowed only when cancelling, modifier changes never swallowed, stuck-key reset) |
-| `FocusGeometryTests` | Pure overlay-placement maths: AX → Cocoa coordinate conversion, picking the screen by focused window / insertion point, insertion-point plausibility, placement and flipping relative to the insertion point |
-| `SecureInputTests` | Wording of the Secure Input explanation (with / without app name, hidden for Fn and modifier-only hotkeys) |
-| `AppCoordinatorReadinessTests` | Readiness priority (paused > missing permissions > model download > engine state) |
-| `ConfigStoreTests` | YAML round-trip, missing fields falling back to defaults |
-| `ConfigMigratorTests` | Legacy config migration inheriting only the hotkey and HUD opacity |
-| `AppConfigTests` | Config validation: clamping out-of-range values, resetting NaN/Inf, falling back for a bare non-fn key |
-| `LocalizationTests` | Bilingual coverage: every `L(...)` / `LF(...)` in the sources has an English translation, placeholders match, and lookups fall back to Chinese |
-| `LLMCorrectorTests` | Proofreading client fallbacks (network error / truncation / malformed response all return the original text) |
-| `LLMEndpointTests` | Structured parsing of the proofreading base URL (scheme/host allowlist, plain HTTP limited to loopback and private networks, `/chat/completions` suffix de-duplication) |
-| `ModelDownloaderTests` | sha256 verification, file manifest consistency, download order and the single automatic trigger policy |
-| `TextInsertionServiceTests` | AX insertion range validity (negative, out-of-bounds and overflowing ranges are all rejected) |
-
-Apart from the first two golden-fixture groups, all of these are pure logic unit tests requiring
-neither a model nor the network.
-
-`FbankParityTests` / `EndToEndRecognitionTests` need a model present on this machine (any
-`ModelLocator` priority is fine) and `XCTSkip` automatically when it is missing. Fixtures are generated
-by `scripts/dump_reference_fixtures.py` (which needs the Python environment of
-`client-server/server/`).
-
-`EndToEndRecognitionTests` accepts results by edit distance rather than byte equality: Python and macOS
-use two independently compiled ONNX Runtime binaries, and on genuinely ambiguous tokens the different
-floating-point summation order can flip the result (English word capitalization, for example). That is
-benign cross-platform floating-point non-determinism, not a logic bug. See §8 of
-[`DESIGN.md`](DESIGN.md) for the measured conclusion.
-
----
-
-## Logs and troubleshooting
-
-Logging goes through the unified logging system (`os.Logger`) rather than a separate `.log` file. The
-subsystem is `com.voicetyper.app`, with the categories `app` / `permissions` / `hotkey` / `audio` /
-`asr` / `llm` / `model` / `metrics`.
-
-**Command line** (`log` is a built-in tool):
-
-```bash
-# Follow live
-log stream --predicate 'subsystem == "com.voicetyper.app"' --level debug
-log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "asr"'
-
-# Look at the last 10 minutes
-log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
-
-# One per-stage timing summary line for every dictation
-log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metrics"'
-```
-
-`metrics` prints one line per dictation with numbers and enums only — never any recognized text. Useful
-fields: `outcome` (inserted / empty / cancelled / discarded / gesture_cancelled / failed …),
-`release_to_done` (release to text landing — the key figure), `asr` / `llm` (local recognition and
-proofreading time), `llm_retry` (whether the request was resent because the service rejected the
-`thinking` field), `input` (`builtin*` means the automatic policy switched from the system default input
-to the built-in microphone) and `cold` (whether the engine was cold-loaded).
-
-**GUI**: open Console (`/Applications/Utilities/`), select this Mac in the sidebar, and filter on
-`com.voicetyper.app`; you can narrow further by category (`llm`, `hotkey`, …).
-
-Note that log messages themselves stay in Chinese: they are a diagnostic channel for developers, not
-part of the user interface.
-
-### The model download fails
-
-Check that ModelScope is reachable. Downloads resume, so retry from the Recognition tab. If it keeps
-failing, use `scripts/fetch_model.sh` to fetch the files manually into the default model directory.
-
-### Recognition succeeds but the inserted text is empty / the overlay says “Nothing recognized”
-
-The hotkey and the recognition chain work, but that recording contained no recognizable speech. Check
-whether the microphone is muted, whether the right device is selected under System Settings → Sound →
-Input, and whether another app has exclusive use of the microphone. The device name shown in the
-overlay while recording is the device actually in use, so you can confirm it directly.
-
-### The hotkey does nothing at all
-
-See [the corresponding section in the split client documentation](../client-server/client_macos_swift/README.md#热键完全没反应)
-— the `CGEventTap` implementation is identical and the diagnosis is the same (substitute this app's
-bundle ID, `com.voicetyper.app`).
-
-### Recognition succeeds but the text is not inserted
-
-Likewise, see [the split client documentation](../client-server/client_macos_swift/README.md#识别成功但文字没插进去);
-the text insertion implementation was carried over unchanged and behaves identically.
-
----
-
-## Related links
-
-- [VoiceTyper main project](../README.en.md)
-- [Design document](DESIGN.md) (Chinese only)
-- [Split client (for sharing one server between devices)](../client-server/client_macos_swift/README.md)
-- [Server](../client-server/server/README.md) (not used by this app, but the recognition pipeline was ported from it)
+Signing, tests and log fields are covered in [DEVELOPMENT.md](DEVELOPMENT.md); architecture and design
+decisions in [DESIGN.md](DESIGN.md). Both are in Chinese.

@@ -1,488 +1,141 @@
-# VoiceTyper — 一体化 macOS App
+# VoiceTyper for macOS
 
 **简体中文** | [English](README.en.md)
 
-[← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [更新日志](CHANGELOG.md) · [分体式客户端](../client-server/client_macos_swift/README.md)
+[← 项目主页](../README.md) · [下载](https://github.com/oyasmi/voice-typer/releases) · [更新日志](CHANGELOG.md) · [开发说明](DEVELOPMENT.md)
 
-单进程 macOS 菜单栏应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 Swift 重写并
-内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.5.2**，
-应用名 **VoiceTyper**，Bundle ID `com.voicetyper.app`。
-
-**本文适合**：想在自己 Mac 上直接用的用户，以及要自行编译或二次开发的人。深入的架构决策、
-实测数据、逐项取舍见 [`DESIGN.md`](DESIGN.md)。
-
----
-
-## 目录
-
-- [功能与限制](#功能与限制)
-- [系统要求](#系统要求)
-- [安装](#安装)
-- [权限与模型下载](#权限与模型下载)
-- [使用](#使用)
-- [设置](#设置)
-- [架构](#架构)
-- [构建](#构建)
-- [测试](#测试)
-- [日志与排障](#日志与排障)
-
----
-
-## 功能与限制
-
-**支持**
-
-- 单进程运行，识别引擎（SenseVoice-Small）直接跑在 App 内，不连接任何服务端
-- 首次启动自动下载并部署一次模型（约 240MB），此后完全离线
-- 按住热键（默认 `Fn`）录音，松开自动识别并插入文本；也可切换为「按一次开始、再按一次结束」
-- 录音中与识别中（松手后、结果尚未上屏前）都可以按 `Esc` 取消，结果不会被插入
-- 热键与 Esc 不「穿透」：设为组合键（如 `⌥Space`）时，按键本身不会再被送进前台应用（不会多打一个空格）；用来取消
-  的 `Esc` 也不会同时触发前台应用的 Esc（退出全屏、关闭对话框…）。不在听写时的 `Esc` 照常交给前台应用。
-  这需要辅助功能权限；没有时退回只监听，行为与旧版相同
-- 说出的话找得回来：取消、焦点变了、插入失败、识别超时的结果都进菜单栏「最近结果」（最多 10 条，只保存在
-  内存，退出即清除，可在菜单中清空），点一下即复制到剪贴板；识别超时还会自动把已识别出的部分复制到剪贴板
-- 上屏文本中英文之间自动加空格（「我用 Python 写代码」），开不开智能校对结果一致
-- 焦点在密码输入框时不开始听写（口述密码不安全，开了智能校对还会把内容发给第三方服务）
-- 首次启动有四步引导（欢迎 → 权限 → 模型 → 试一试），最后一步会真跑一次完整听写来验证链路
-- 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
-- 可选的 LLM 智能校对，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
-- 识别语言可指定为自动 / 中文 / 英文 / 粤语 / 日语 / 韩语
-- 界面语言可选中文（默认）或英文；菜单栏、设置窗口与浮窗文案对等，切换后重启生效
-- 默认不在启动时加载模型（首次按热键才加载，与录音并行），空闲一段时间后也会自动释放引擎内存
-- 录音时浮窗显示当前输入设备名；持续采不到声音会主动提示检查麦克风
-- 热键除 `Fn`、组合键外，还可设为**单独的右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃**（外接键盘没有 Fn 时使用）；
-  按住它再按别的键仍是普通快捷键
-- 戴蓝牙耳机时默认自动改用电脑内置麦克风录音（耳机麦克风走通话模式，音质差且会拖垮耳机里的音乐），
-  可在设置里改为严格跟随系统默认输入
-- LLM 校对请求默认关闭「深度思考」（对支持 `thinking` 参数的混合推理模型显著降低耗时），不支持的服务自动改用普通请求
-- 模拟粘贴按当前键盘布局取键码，Dvorak / Colemak 下也是 ⌘V
-- 浮窗位置可选底部居中 / 右下角 / 跟随输入位置 / 不显示，不透明度可调；浮窗出现在前台应用焦点窗口所在的屏幕，
-  「跟随输入位置」把它放在输入光标下方 8pt（下方放不下翻到上方），取不到输入位置时跟随鼠标
-- 松键后再补录约 150ms，避免最后半个字被截掉（浮窗此时已显示「识别中」，期间按 `Esc` 仍可取消）
-- 预览更新时，与上一次不同的尾部先以次级色显示约 300ms 再恢复常规色（「减少动态效果」下不做）
-- 开机自启
-- 预览更跟嘴：采集块 200ms，预览按「新样本 + 推理占空比」事件驱动调度
-- 录音状态行带操作提示：按一次开始模式提示「再按 X 结束」，按住模式前 5 次提示「Esc 取消」
-- 模型下载显示已下载 / 总量、速度与剩余时间；下载完成且窗口都关着时，浮窗提示可以开始说话
-- 热键松开事件丢了（卡键）会被自动发现并结束录音；锁屏 / 睡眠时丢弃录音，唤醒 / 解锁后自动恢复热键监听
-- 本机（ad-hoc）签名的版本更新后权限失效时，「权限」页顶部有重新授权说明
-- 菜单栏可直接切换识别语言、麦克风（自动 / 跟随系统）与智能校对开关
-- 菜单栏可暂停听写、重看使用引导、手动检查更新（不做后台自动检查）
-
-**不支持 / 已知限制**
-
-- 只支持 **Apple Silicon**（arm64），不支持 Intel Mac
-- 热键主键限于字母、数字、`space`/`tab`/`enter`、`F1`–`F12`，以及独立的 `fn`；单独修饰键限右 ⌘ / 右 ⌥ /
-  左 ⌥ / 右 ⌃（左 ⌘ 参与的快捷键太多，Shift 与输入法中英切换冲突，左 ⌃ 常用于 Emacs 风格编辑，均不支持）
-- 单独修饰键作热键时，每次把它当修饰键用（如右 ⌘ + C）都会短暂打开麦克风，菜单栏的麦克风指示点会闪一下，
-  不会产生任何录音结果。常用右 ⌘ 组合快捷键的用户建议改用右 ⌥，或改用「按一次开始、再按一次结束」
-  （该模式下只有干净的单击才会开始录音，不会打开麦克风）
-- 热键录制按物理键位记录：在 Dvorak 等非 QWERTY 布局下，录制框显示的键名可能与键帽不一致，
-  但录制与匹配使用同一键码，功能正确
-- 应用未做签名公证，首次打开需在「系统设置 → 隐私与安全性」手动放行
-- 只支持 SenseVoice-Small 模型，不支持更换为 paraformer；热词在两种形态里都已移除
-  （如需 paraformer，用[分体式客户端](../client-server/client_macos_swift/README.md) +
-  [服务端](../client-server/server/README.md)）
-- 不支持远程/共享服务端——识别永远在本机跑
-
----
+VoiceTyper 是一个菜单栏应用：在任何应用里按住 `Fn` 说话，松开后文字就写到光标处。语音识别完全在你的
+Mac 上完成，录音不会上传。
 
 ## 系统要求
 
 | 项 | 要求 |
 | --- | --- |
-| 系统 | macOS 14.0 (Sonoma) 或更高 |
-| 架构 | **仅 Apple Silicon**（M 系列芯片） |
-| 磁盘 | 约 300MB（App 本体 + 首次下载的模型，留有余量） |
-| 网络 | 仅首次启动下载模型时需要；此后完全离线 |
-| Xcode | 仅自行构建时需要 |
-
----
+| 芯片 | Apple Silicon（M 系列）。不支持 Intel Mac |
+| 系统 | macOS 14 Sonoma 或更高 |
+| 磁盘 | 约 300MB（应用 + 首次下载的语音模型） |
+| 网络 | 只在首次下载模型时需要 |
 
 ## 安装
 
-### 从 Release 安装
-
-1. 从 [Release](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-<版本>-macOS-arm64.dmg`。
+1. 从 [Releases](https://github.com/oyasmi/voice-typer/releases) 下载 `VoiceTyper-<版本>-macOS-arm64.dmg`。
 2. 打开 DMG，把 `VoiceTyper.app` 拖进「应用程序」。
-3. 从「应用程序」打开 VoiceTyper。
-4. 首次打开若被系统拦截，到「系统设置 → 隐私与安全性」点「仍要打开」。
+3. 打开 VoiceTyper。如果系统提示无法验证开发者，前往「系统设置 → 隐私与安全性」，点「仍要打开」。
 
-第 4 步是因为应用只做了 ad-hoc 签名，没有 Apple 开发者签名和公证。DMG 里附了一份精简的
-`INSTALL.txt` 说明同样的流程。
+> 安装包尚未经过 Apple 公证，所以第一次打开需要手动放行一次。这不影响使用。
 
-### 卸载
+## 首次启动
 
-删掉 `/Applications/VoiceTyper.app`，再删配置与模型目录
-`~/Library/Application Support/VoiceTyper/`。权限授予记录留在系统设置里，可手动移除。
+应用会打开一个四步引导：**欢迎 → 权限 → 语音模型 → 试一试**。
 
-### 和分体式客户端共存吗？
+**授予三项权限**。缺任何一项都无法正常使用，引导会逐项带你去系统设置：
 
-Bundle ID（`com.voicetyper.app` vs `com.voicetyper.client`）与配置目录都是隔离的，技术上可以
-同时安装。但两者都会注册同一个默认热键（`Fn`），**同时运行会抢热键**，建议只保留一个。
-若之前装过 [`client-server/client_macos_swift/` 的 VoiceTyperClient](../client-server/client_macos_swift/README.md)，
-迁移过来时热键与 HUD 不透明度会在首次启动时自动继承。
-
----
-
-## 权限与模型下载
-
-首次启动有两条独立的准备工作，互不阻塞：
-
-1. **三项系统权限**（麦克风、辅助功能、输入监控）——缺一不可，首次启动会由使用引导逐项带着授权
-   （引导已完成过的话，直接弹设置窗口的「权限」页）。
-2. **自动准备语音模型**——应用会在后台自动下载、校验并加载；权限没给全时也会继续进行。用户首次安装时只需完成系统授权，两条准备线都就绪后即可使用。
-
-| 权限 | 用途 | 缺失时的表现 |
+| 权限 | 用途 | 缺少时 |
 | --- | --- | --- |
-| **麦克风** | 录音 | 按下热键无法开始录音 |
-| **辅助功能** | 文本插入（AX 直写 + 模拟粘贴） | 识别成功但文字插不进去 |
-| **输入监控** | 全局热键，尤其是 Fn 键 | 热键完全无响应 |
+| 麦克风 | 录音 | 按热键无法开始录音 |
+| 输入监控 | 在其他应用里响应热键 | 按热键完全没反应 |
+| 辅助功能 | 把文字写到光标处 | 识别成功但文字插不进去 |
 
-只要「输入监控」已授权，缺其余权限时热键仍然照常监听：按下会明确告诉你还缺哪一项，
-而不是毫无反应。
+**语音模型**（约 240MB）会在后台自动下载并校验，与授权同时进行。下载支持断点续传，失败会自动重试。
 
-> **更新后可能需要重新授权**：ad-hoc 签名没有稳定的 Team ID，而系统的授权记录以代码签名为键。
-> 应用会自己检测当前是不是 ad-hoc 构建，是的话会在引导页与「权限」页提示这件事；用 Developer ID
-> 签名分发后该提示自动消失。
+**试一试**：在引导窗口里真正完成一次听写。只有这一步成功，才说明热键、麦克风、识别和输入整条链路都已
+就绪；哪一环有问题，引导会直接指出。之后可以随时从菜单栏「使用引导…」重新打开。
 
-模型下载在使用引导与设置窗口的「识别」页都可见：显示百分比进度，支持取消。下载失败会按
-5s / 20s / 60s 退避自动重试三次（续传数据已落盘，重试是续上而不是从头再来），三次仍失败
-才停下来等用户手动重试。下载的四个文件（`config.yaml`、`am.mvn`、`tokens.json`、
-`model_quant.onnx`）来自 ModelScope，逐个校验 sha256，支持断点续传；其中 241MB 的模型权重
-会尝试分四段并行下载（服务端不支持范围请求时自动回落到单连接）。如果这台机器之前跑过 [`client-server/server/`](../client-server/server/README.md)（`~/.cache/modelscope/`
-下已有模型缓存），App 会自动复用，无需重新下载。
+## 日常使用
 
-彻底重置某项权限：
+1. 把光标放在要输入的位置。
+2. 按住 `Fn`，**浮窗出现后**开始说话。浮窗会实时显示识别结果，并随着你继续说自动修正前文。
+3. 松开 `Fn`，最终文字（带标点）写入当前应用。
 
-```bash
-tccutil reset Microphone com.voicetyper.app
-tccutil reset Accessibility com.voicetyper.app
-tccutil reset ListenEvent com.voicetyper.app
-```
+几个有用的细节：
 
----
+- **取消**：录音中或识别中按 `Esc`，什么都不会写入。
+- **找回结果**：菜单栏「最近结果」保存最近 10 条（包括取消、插入失败的），点一下即复制。只保存在内存里，
+  退出即清除。
+- **长段口述**：在设置里把触发方式改为「按一次开始、再按一次结束」，不用一直按着。
+- **时长**：单次最长 120 秒，最后 15 秒会显示倒计时；短于 0.3 秒的按键视为误触。
+- **中英混说**：不用切换，中英文之间会自动加空格（「我用 Python 写代码」）。
+- **密码框**：焦点在密码输入框时不会开始听写。
 
-## 使用
-
-首次启动会自动打开**使用引导**，四步走完即可：欢迎（含 Fn 键与系统设置冲突的提示）→
-三项系统权限 → 语音模型下载 → **试一试**。最后一步会让你在引导窗口自己的输入框里真正完成
-一次听写——三项权限全绿并不等于能用，只有把「热键 → 麦克风 → 本地识别 → 文本插入」整条链
-跑通才算数，任何一环出问题都会在那里直接指出是哪一环。引导随时可从菜单栏「使用引导…」重看。
-
-日常使用：
-
-1. 启动后菜单栏出现 VoiceTyper 图标。
-2. **按住热键**（默认 `Fn` / 地球仪键）开始录音，HUD 浮窗出现。**看到浮窗再开口**——
-   按下热键到麦克风真正出声之间有约 0.2 秒的系统固有延迟。
-3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正。
-4. **松开热键**，本地引擎做一次整段复识别，最终文本插入当前光标位置。
-   开启智能校对时，浮窗会在本地识别完成后显示「校对中…」，与本地推理阶段区分开；校对期间再按一次热键
-   （单独修饰键则单击一下）可以跳过校对、立即上屏识别原文。
-   校对没成功（超时、鉴权失败、服务出错…）时，浮窗会显示「已输入 · 未校对」并说明原因，上屏的是识别原文。
-5. 录音中和识别中随时按 **Esc** 取消，不会插入任何文本。取消前已识别出的部分可以在菜单栏「最近结果」里找回。
-
-单段录音上限 120 秒；最后 15 秒计时位置会变成橙色的「还剩 N 秒」倒计时。
-
-**隐私**：音频不出设备。最近 10 条结果只保存在内存里，不写磁盘、不进日志，退出即清除，也可在菜单里手动清空。
-
-浮窗在录音时会显示当前输入设备名（如「录音中 · MacBook 麦克风」）。如果开始录音后一直
-采不到声音，浮窗会主动提示检查麦克风与输入设备，不必等说完才发现结果是空的。
-
-把触发方式改成「按一次开始，再按一次结束」（设置 → 通用 → 触发方式）后，第 2 步按一下即可
-开始，说完再按一下结束，中途不必一直按住——适合写邮件、写文档这类长段口述。
-
-录音不足 **0.3 秒**视为误触，直接丢弃。
-
-### Fn 键与系统行为冲突
-
-默认热键是 `Fn`🌐，而 VoiceTyper **不会吞掉 Fn 与单独修饰键的事件**（吞掉修饰键变化会让系统的修饰键状态错乱）。
-因此如果
-「系统设置 → 键盘 → 按下🌐键」不是「不执行任何操作」，按住 Fn 说话、松手的一瞬间系统自己的
-Fn 功能也会触发——表现为弹出表情面板或切走输入法。引导页与「设置 → 通用」会自动检测这一项
-并给出直达系统设置的按钮。
-
-菜单栏图标状态：
-
-| 状态 | 图标 | 含义 |
-| --- | --- | --- |
-| 就绪 | `mic` | 等待热键 |
-| 录音中 | `mic.fill` | 正在录音 |
-| 识别中 | `waveform` | 已松手，等本地引擎返回 |
-| 输入中 | `character.cursor.ibeam` | 正在插入文本 |
-| 需要下载模型 | 向下箭头（橙） | 首次启动，模型尚未下载 |
-| 下载中 | 向下箭头 + 动效 | 正在下载模型 |
-| 模型加载中 | 旋转箭头 | 权限已就绪，正在把模型载入内存 |
-| 需要授权 | 警告三角 | 有权限未授予 |
-| 已暂停 | `mic.slash` | 从菜单主动暂停 |
-
----
+菜单栏还可以快速切换识别语言、麦克风和智能校对，或暂停听写。
 
 ## 设置
 
-设置窗口分三页，全部 UI 化，不需要手工编辑 YAML：
+所有选项都在设置窗口里，不需要编辑配置文件。
 
-| 页 | 内容 |
+| 页面 | 内容 |
 | --- | --- |
-| **权限** | 三项权限状态、授权按钮、跳转系统设置 |
-| **识别** | 模型状态卡片（自动下载/加载/就绪/失败 + 重试/重新加载）、空闲多久后卸载模型、启动时是否预加载模型、识别语言、智能校对（开关 + Base URL + API Key + 模型 + 温度 + 超时 + 测试校对） |
-| **通用** | 热键（Fn、单独的右 ⌘/右 ⌥ 或组合键，支持按键录制）、触发方式（按住 / 按一次切换）、Fn 键冲突检测、开机自启、**界面语言**、**麦克风**（自动 / 跟随系统）、浮窗位置与背景不透明度 |
+| 权限 | 三项权限的状态与授权入口 |
+| 识别 | 模型状态、识别语言（自动 / 中 / 英 / 粤 / 日 / 韩）、内存策略、智能校对 |
+| 通用 | 热键、触发方式、麦克风、浮窗位置与透明度、开机自启、界面语言 |
 
-### 界面语言
+- **热键**：可以是 `Fn`、组合键（如 `⌥Space`），或单独一个右 ⌘ / 右 ⌥ / 左 ⌥ / 右 ⌃（适合没有 Fn 键的外接
+  键盘）。用单独修饰键时，按住它再按别的键仍是普通快捷键。
+- **麦克风**：默认「自动」——戴蓝牙耳机时改用电脑内置麦克风，避免耳机切到通话模式导致音质变差、音乐中断。
+  也可以改为始终跟随系统默认输入。
+- **内存**：默认启动时加载模型并常驻，按下热键零等待。内存紧张时可以关闭预加载，或设置空闲多久后自动释放；
+  下次按热键会边录音边加载。
+- **界面语言**：中文或英文，重启应用后生效。界面语言与识别语言互不影响。
 
-默认中文。在「通用」页切换为英文后设置会立即落盘，但菜单栏、设置窗口与浮窗都是**按启动时的语言构造**
-出来的，因此需要**重启 VoiceTyper** 才会全部改用新语言。界面语言与「识别」页的识别语言相互独立：
-可以用英文界面听写中文，反之亦然。
+### 智能校对（可选，默认关闭）
 
-### 配置文件（内部存储，不建议手改）
+接入任意 OpenAI 兼容服务（包括本机运行的模型），修正同音字、口误和标点。开启后只有**识别出的文字**会发给
+你配置的服务，音频永远不会发送。API Key 保存在系统钥匙串中。
 
-所有配置项都在设置窗口里有对应界面。`config.yaml` 是应用的**内部存储**，不是配置入口：
-菜单栏刻意**不提供**「打开配置目录」，应用运行期也不监听该文件（改了要重启才生效），
-手改还会绕过界面上的校验（例如"非 Fn 主键必须搭配修饰键"）。下面列出字段只是为了让排障时
-能看懂文件内容。
+校对期间再按一次热键可以跳过、直接上屏原文；校对失败（超时、鉴权错误等）时会自动使用原文，浮窗会说明原因。
 
-```
-~/Library/Application Support/VoiceTyper/config.yaml
-```
+## 隐私
 
-完整字段：
+- 录音只在内存中处理，不写入磁盘，不上传到任何地方。
+- 模型下载完成后可以完全断网使用。
+- 无需注册账号，没有使用次数限制。
+- 日志不记录识别文本；「最近结果」只在内存中，退出即清除。
 
-```yaml
-asr:
-  language: "auto"          # auto / zh / en / yue / ja / ko
-  threads: 0                 # 0 = 自动（min(4, 核数)）
-  model_dir: ""               # 留空 = 自动定位（下载目录 / ModelScope 缓存）
-  idle_unload_minutes: 0      # 0 = 常驻不卸载（默认；可设 5/10/30 分钟定时卸载）
-  preload_on_launch: true     # 启动即加载模型；默认 true（关掉则首次按热键才加载）
-llm:
-  enabled: false
-  base_url: ""
-  model: "gpt-4o-mini"
-  temperature: 0
-  max_tokens: 800
-  timeout: 5
-  # api_key 不在这里，存在 Keychain（service com.voicetyper.app, account llm_api_key）
-hotkey:
-  modifiers: []
-  key: "fn"                   # 另可为 right_command / right_option / left_option / right_control（单独修饰键，modifiers 须为空）
-  mode: "hold"                # hold = 按住说话；toggle = 按一次开始、再按一次结束
-audio:
-  input_device: "auto"        # auto = 戴蓝牙耳机时改用内置麦克风；system = 严格跟随系统默认输入；也可为设备 UID（暂无界面）
-ui:
-  opacity: 0.85
-  hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
-  interface_language: "zh"        # zh / en；界面语言，重启后全面生效
-```
+## 常见问题
 
-LLM API Key 出于安全考虑不落配置文件，存在系统 Keychain 里。
-"引导是否已完成"这类应用自身的一次性状态存在 `UserDefaults`，同样不出现在配置文件里。
+**按 Fn 时会弹出表情面板或切换输入法？**
+到「系统设置 → 键盘」，把「按下 🌐 键」改为「不执行任何操作」。引导页和「设置 → 通用」会检测这个冲突，并
+提供直达按钮。也可以改用其他热键。
 
----
+**热键完全没反应？**
+先检查「输入监控」权限。如果刚更新过 VoiceTyper，系统可能把旧授权判为失效（未公证版本的已知问题）：在系统
+设置里把 VoiceTyper 从列表移除后重新添加，再完全退出并重启应用。另外，某些应用开启「安全输入」时（例如终端
+的安全键盘输入、密码框），系统会屏蔽组合键热键，菜单栏会提示。
 
-## 架构
+**识别成功了，但文字没写进去？**
+检查「辅助功能」权限。少数应用会拒绝外部输入，这时文字已在剪贴板或「最近结果」里，手动粘贴即可。
 
-```
-VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting）
-  ├── HotkeyService / AudioCaptureService / TextInsertionService
-  └── LocalASRSession（进程内识别会话，取代旧架构里跨进程的 WebSocket 客户端）
-         └── ASRService（asrQueue 串行队列）
-                └── SenseVoiceEngine
-                       ├── FbankFrontend（Accelerate/vDSP，Kaldi 兼容 fbank）
-                       ├── LFRCMVN
-                       ├── ORTSession（onnxruntime-swift-package-manager）
-                       └── CTCDecoder + TextPostprocessor
-```
+**浮窗提示「没有识别到内容」？**
+浮窗录音时会显示当前使用的麦克风名称。确认麦克风没有静音、「系统设置 → 声音 → 输入」选对了设备，且没有被
+其他应用独占。持续采不到声音时浮窗也会主动提醒。
 
-识别管线（fbank → LFR/CMVN → CTC 解码）是 `client-server/server/voice_typer_server/recognizer.py`
-的 Swift 移植，逐点数值对齐用金标准测试持续验证（见 `Tests/VoiceTyperTests/Fixtures/`）；
-其余模块是本地一体化架构下的独立实现，不再与旧的分体式客户端共享代码或协议。
+**模型下载失败？**
+确认网络能访问 ModelScope，然后在「设置 → 识别」点重试，下载会从中断处继续。如果这台 Mac 运行过
+VoiceTyper 的服务端，已有的模型缓存会被自动复用。
 
-完整的设计决策、实测数据（性能、内存、模型 I/O 契约）、模块职责映射见 [`DESIGN.md`](DESIGN.md)。
+**能和旧版「分体式客户端」一起装吗？**
+可以共存，但两者默认都用 `Fn`，同时运行会抢热键，建议只保留一个。从旧版迁移时，热键与浮窗透明度会自动继承。
 
----
+**已知限制**
+仅支持 Apple Silicon；只使用 SenseVoice-Small 模型，不支持更换模型或热词；识别始终在本机运行，不支持远程
+服务端（有这类需求请使用[客户端—服务端版本](../client-server/README.md)）。
 
-## 构建
+## 卸载
 
-### Xcode
+删除「应用程序」中的 `VoiceTyper.app`，以及配置与模型目录 `~/Library/Application Support/VoiceTyper/`。
+如需清除权限记录，在「系统设置 → 隐私与安全性」的对应列表中移除 VoiceTyper。
+
+## 反馈问题
+
+请在 [Issues](https://github.com/oyasmi/voice-typer/issues) 中描述现象、macOS 版本和机型。附上日志会很有帮助：
+打开「控制台」App，搜索 `com.voicetyper.app`。日志不包含识别文本。
+
+## 从源码构建
 
 ```bash
 cd macos
-ruby scripts/generate_xcodeproj.rb   # 生成/重新生成工程（新增文件后需要重跑）
-open VoiceTyper.xcodeproj
-```
-
-依赖：[Yams](https://github.com/jpsim/Yams)（YAML 解析）、
-[onnxruntime-swift-package-manager](https://github.com/microsoft/onnxruntime-swift-package-manager)
-（精确锁定 `1.24.2`），均走 SwiftPM。
-
-### 命令行
-
-```bash
-cd macos
+ruby scripts/generate_xcodeproj.rb
 ./build_xcode.sh
 ```
 
-只出 **arm64** 一个变体（不支持 Intel Mac）。产物在 `dist/`：
-
-```
-VoiceTyper-<版本>-macOS-arm64.zip / .dmg
-```
-
-模型不随构建产物打包，首次启动时应用会自动下载并部署。如需离线预置模型用于测试或跳过自动下载：
-
-```bash
-./scripts/fetch_model.sh
-```
-
-### 签名与公证（可选）
-
-默认（不设置任何环境变量）构建产物是 **ad-hoc 本机签名**，这也是绝大多数贡献者应该使用的路径。
-ad-hoc 签名有两个已知代价：
-
-- **每次更新都可能需要用户重新授权**麦克风/辅助功能/输入监控三项权限——ad-hoc 签名没有稳定的
-  Team ID，cdhash 每次构建都变，TCC 记录以代码签名标识为键。
-- 无法通过公证分发，用户首次打开需要在「系统设置」里手动放行（"仍要打开"）。
-
-若已有付费 Apple Developer 账号，可通过环境变量启用 **Developer ID 签名 + 强化运行时 + 公证**：
-
-```bash
-# 1. 查看本机可用的 Developer ID 签名身份
-security find-identity -v -p codesigning
-
-# 2.（仅需一次）把公证凭据存进本机 Keychain，之后无需再输入密码
-xcrun notarytool store-credentials "voicetyper-notary" \
-  --apple-id "you@example.com" --team-id "TEAMID1234" --password "应用专用密码"
-
-# 3. 签名 + 公证 + 装订一次跑完
-VOICETYPER_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID1234)" \
-VOICETYPER_NOTARY_PROFILE="voicetyper-notary" \
-./build_xcode.sh
-```
-
-只设置 `VOICETYPER_SIGN_IDENTITY`（不设置 `VOICETYPER_NOTARY_PROFILE`）则只做 Developer ID 签名、
-不提交公证——适合先本地验证签名是否正常，再决定要不要公证。
-
-实现要点（详见 `build_xcode.sh` 注释）：内嵌的 `onnxruntime.framework` 会与主程序用同一身份分别
-签名（强化运行时 `--options runtime`），而不是用 `--deep` 笼统签一次——这是 Apple 官方公证指南的
-建议做法，也是公证失败最常见原因之一。工程已在 `ENABLE_HARDENED_RUNTIME=YES` 下验证过可以正常
-编译、运行、通过全部单元测试（含真实 ONNX 推理），但**实际的 Developer ID 签名与公证流程本身
-未经真机验证**——本仓库的自动化环境没有付费开发者账号与可用凭据，这一步需要持有账号的维护者
-走通一次后更新本节状态。
-
-自动更新（Sparkle 等）不在本次范围内：证书能解决"重装即用"，但持续的版本检测/推送需要额外的
-发布基础设施（appcast 托管、签名密钥管理），留待后续按实际分发需求决定。
-
-### 改版本号
-
-`scripts/generate_xcodeproj.rb` 里的 `MARKETING_VERSION`（两处：`build_configuration_list` 与
-per-target 配置）。
-
----
-
-## 测试
-
-```bash
-xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platform=macOS' test
-```
-
-| 测试 | 内容 |
-| --- | --- |
-| `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3），含全零输入的对数下限回归 |
-| `EndToEndRecognitionTests` | 完整识别链路对真实语音样本的验收（编辑距离容忍度，见下方说明） |
-| `LFRCMVNTests` | LFR 尾帧补齐分支与 CMVN 逐元素仿射的结构校验（纯逻辑，不需要模型） |
-| `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 |
-| `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） |
-| `AudioChunkerTests` | 音频定长分帧、跨调用累积余量、尾音刷出（纯逻辑，不依赖麦克风） |
-| `LocalASRSessionTests` | 会话层行为：预览重入跳过、finalize 看门狗（不含引擎加载时间）、引擎不可用立即失败、等待阶段通知、校对中跳过、120 秒上限一次性告警并触发收尾、close 后抑制迟到回调 |
-| `ASRServiceTests` | 引擎加载互斥、空闲卸载不反向触发自动预加载、加载期间的语言变更重放到新引擎 |
-| `VoiceTyperControllerTests` | 状态机行为：识别中重叠按键拒绝而非覆盖、Esc 取消、设备变化后仍正常收尾、短录音丢弃、失败 / 超时兜底、校对中跳过、密码框拒绝、各结局进入「最近结果」等 |
-| `OutputFormatterTests` | 中英文空格规则，逐条读共享夹具 `Fixtures/text_format_cases.json`（与 Windows 共用），并校验幂等 |
-| `DictationHistoryTests` | 最近结果：容量淘汰、去重、空白忽略、清空、菜单标题截断与后缀 |
-| `SecondBatchSupportTests` | 下载进度详情的速度窗口与文案、录音操作提示、更新后重新授权的显示条件、卡键用的热键物理状态、AX 回读判定 |
-| `HotkeyEventFilterTests` | 热键「事件 → 动作」状态机与吞键规则（按下 / 重复 / 松开配对、Esc 只在取消时吞、修饰键变化永不吞、卡键复位） |
-| `FocusGeometryTests` | 浮窗落点的纯计算：AX → Cocoa 坐标换算、按焦点窗口 / 插入点选屏、插入点可信度、相对插入点定位与翻转 |
-| `SecureInputTests` | 安全输入说明文案的拼装（有 / 无应用名、Fn 与单独修饰键不显示） |
-| `AppCoordinatorReadinessTests` | 就绪编排的状态优先级（暂停 > 权限缺失 > 模型下载 > 引擎状态） |
-| `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
-| `ConfigMigratorTests` | 老配置迁移只继承 hotkey 与 HUD 不透明度 |
-| `AppConfigTests` | 配置校验：越界夹逼、NaN/Inf 重置、非 fn 裸键回落默认热键 |
-| `LocalizationTests` | 中英双语覆盖率：源码里每条 `L(...)` / `LF(...)` 都有英文翻译、占位符一致、查不到时回落中文 |
-| `LLMCorrectorTests` | 校对客户端的失败兜底（网络错误/截断/格式错误都要原样返回原文） |
-| `LLMEndpointTests` | 校对 Base URL 的结构化解析（scheme/host 白名单、明文 HTTP 限回环私网、`/chat/completions` 后缀去重） |
-| `ModelDownloaderTests` | sha256 校验、文件清单自洽性、下载顺序与单次自动触发策略 |
-| `TextInsertionServiceTests` | AX 插入范围合法性判定（负值、越界、溢出一律拒绝） |
-
-除前两组金标准测试外，其余都是纯逻辑单元测试，不需要模型或网络。
-
-`FbankParityTests` / `EndToEndRecognitionTests` 依赖本机已有模型（`ModelLocator` 任一优先级命中
-即可），缺失时自动 `XCTSkip`。夹具由 `scripts/dump_reference_fixtures.py` 生成（需要 `client-server/server/`
-的 Python 环境）。
-
-`EndToEndRecognitionTests` 用编辑距离而非逐字节相等做验收：已定位到 Python 与 macOS 用的是两套
-独立编译的 ONNX Runtime 二进制，在个别真正模棱两可的 token 上可能因浮点求和顺序不同而翻转
-识别结果（例如英文单词的大小写），这是良性的跨平台浮点非确定性，不是逻辑 bug。详见
-[`DESIGN.md`](DESIGN.md) §8 的实测结论。
-
----
-
-## 日志与排障
-
-日志走统一日志系统（`os.Logger`），不落地为独立的 `.log` 文件，subsystem 为
-`com.voicetyper.app`，分 `app` / `permissions` / `hotkey` / `audio` / `asr` / `llm` /
-`model` / `metrics` 几个 category。
-
-**命令行**（`log` 是系统自带工具）：
-
-```bash
-# 实时跟踪
-log stream --predicate 'subsystem == "com.voicetyper.app"' --level debug
-log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "asr"'
-
-# 查看历史（过去 10 分钟）
-log show --predicate 'subsystem == "com.voicetyper.app"' --last 10m
-
-# 每次听写一行的分阶段耗时摘要
-log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metrics"'
-```
-
-`metrics` 每次听写结束输出一行，只含数字与枚举，不含任何识别文本。常用字段：`outcome`（inserted / empty /
-cancelled / discarded / gesture_cancelled / failed …）、`release_to_done`（松手到上屏，核心指标）、
-`asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、
-`llm_fail`（校对回落原因：timeout / network / auth / rate_limited / server / empty）、
-`finalize_timeout`（终稿看门狗是否触发）、`preview_avg` / `final_wait`（预览送达平均耗时 / 终稿等待推理开始）、
-`tail_speech`（松键时是否仍在说话；补录开启后该值仍是松键那一刻的状态）、`insert_verify`（AX 插入回读判定）、`clip_backup`（提前备份剪贴板耗时）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
-（`builtin*` 表示由自动策略从系统默认输入切换到内置麦克风）、`cold`（引擎是否冷加载）。
-
-**图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，
-搜索框输入 `com.voicetyper.app` 过滤即可；也可以按 category 进一步筛选（如 `llm`、`hotkey`）。
-
-### 模型下载失败
-
-检查网络能否访问 ModelScope；下载支持断点续传，可在「识别」页重试。若反复失败，可用
-`scripts/fetch_model.sh` 手动下载到默认模型目录。
-
-### 识别成功但插入的是空的 / 浮窗提示「没有识别到内容」
-
-说明热键与识别链路都是通的，但这段录音里没有可识别的语音。优先检查麦克风是否被静音、
-「系统设置 → 声音 → 输入」选中的设备是否正确，以及是否有别的应用独占了麦克风。
-录音时浮窗上显示的设备名就是当前实际在用的输入设备，可以据此直接确认。
-
-### 热键完全没反应
-
-参见[分体式客户端文档的对应章节](../client-server/client_macos_swift/README.md#热键完全没反应)——`CGEventTap`
-实现完全一致，排查方式相同（换成本应用的 Bundle ID `com.voicetyper.app`）。
-
-### 识别成功但文字没插进去
-
-同上，参见[分体式客户端文档](../client-server/client_macos_swift/README.md#识别成功但文字没插进去)，文本插入
-实现代码原样搬运，行为一致。
-
----
-
-## 相关链接
-
-- [English version of this document](README.en.md)
-- [VoiceTyper 主项目](../README.md)
-- [设计方案](DESIGN.md)
-- [分体式客户端（多设备共享服务端场景）](../client-server/client_macos_swift/README.md)
-- [服务端](../client-server/server/README.md)（本 App 不使用，但识别管线移植自此）
+签名、测试、日志字段等见 [开发说明](DEVELOPMENT.md)，架构与设计决策见 [DESIGN.md](DESIGN.md)。
