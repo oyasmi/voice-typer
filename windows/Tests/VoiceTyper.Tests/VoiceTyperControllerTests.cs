@@ -1443,4 +1443,53 @@ public class VoiceTyperControllerTests
         Assert.Null(metrics.HookAt);
         Assert.Null(metrics.KeyEventLagMs);
     }
+
+    // ─── R8-F2：上屏文本与预览统一格式化 ─────────────────────────
+
+    [Fact]
+    public void FinalText_IsFormattedBeforeInsertion()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.OnFinal!("我用Python写代码");
+
+        Assert.Equal(new[] { "我用 Python 写代码" }, h.Text.Inserted);
+        Assert.Equal(new[] { "我用 Python 写代码" }, h.Recognized);
+        Assert.Equal(new[] { "我用 Python 写代码" }, h.FinalTexts);
+    }
+
+    [Fact]
+    public void PreviewCallback_ReceivesFormattedText()
+    {
+        var h = Started();
+        var previews = new List<string>();
+        h.Controller.PreviewUpdate = previews.Add;
+        h.Hotkey.OnPress!();
+        h.Session.OnPartial!("我用Python写代码");
+
+        Assert.Equal(new[] { "我用 Python 写代码" }, previews);
+    }
+
+    [Fact]
+    public void FinalizeTimeout_SalvagedPreviewIsFormatted()
+    {
+        var h = Started();
+        h.HoldFor(600);
+        h.Session.OnPartial!("已识别Python部分");
+        h.Session.Timings.FinalizeTimedOut = true;
+        h.Session.OnError!("识别超时");
+
+        Assert.Equal(new[] { "已识别 Python 部分" }, h.Text.Copied);
+    }
+
+    [Fact]
+    public void FocusChangedFallback_CopiesTheFormattedText()
+    {
+        var h = Started();
+        h.Text.Result = TextInsertionResult.FocusChanged;
+        h.HoldFor(600);
+        h.Session.OnFinal!("用Git提交");
+
+        Assert.Equal(new[] { "用 Git 提交" }, h.Text.Copied);
+    }
 }

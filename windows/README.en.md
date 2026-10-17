@@ -59,6 +59,8 @@ hardware) are in [`DESIGN.md`](DESIGN.md) (Chinese only).
   the current screen's DPI. "Follow cursor" prefers the text insertion point you are typing at, and falls
   back to the mouse position when the app does not report one (Chrome, Electron and UWP draw their own
   text boxes)
+- Chinese and English words are spaced automatically in the inserted text and the preview ("我用 Python 写代码"),
+  whether or not LLM correction is on
 - Bluetooth-headset friendly: when both the default input and the playback device are Bluetooth, the
   built-in microphone is used instead, so the headset is not forced into phone-call quality
 - `Esc` cancels a dictation both while recording and while recognizing
@@ -399,6 +401,7 @@ dotnet test
 | `FftTests` | The hand-written FFT compared against a naive DFT | No |
 | `FbankParityTests` | fbank / LFR+CMVN features compared point by point against the golden output from `client-server/server/` (tolerance 1e-3, reusing the fixtures committed under `macos/`), plus the log floor regression for all-zero input | The LFR/CMVN part does (skipped automatically when missing) |
 | `TextPostprocessorTests` | Each rule of the post-CTC text cleanup | No |
+| `OutputFormatterTests` | Chinese/English spacing rule, reading the fixture `text_format_cases.json` shared with macOS (linked from `macos/`, required) and checking idempotence | No |
 | `RecognitionBufferTests` | Sliding-window preview scheduling (fake engine, no real model) | No |
 | `ConfigStoreTests` | Config model and YAML round-trip (never touches the real `%APPDATA%`) | No |
 | `AppConfigValidationTests` | Clamping out-of-range fields, resetting non-finite floats, falling back for a bare hotkey | No |

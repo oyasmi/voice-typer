@@ -43,6 +43,7 @@
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本（最多两行，只保留最新的尾部），且会自我修正；
   HUD 带实时波形与输入设备名，录音 1.5 秒仍没采到声音会提示检查麦克风，识别为空会明确告知
 - 浮窗位置可选：底部居中 / 右下角 / 跟随光标 / 不显示（出错时仍会提示）；按当前屏幕 DPI 缩放。
+- 上屏文本、浮窗预览中中文与英文单词之间自动加空格（「我用 Python 写代码」），开不开智能纠错结果一致。
   「跟随光标」优先落在正在输入的文字插入点旁，取不到（Chrome、Electron、UWP 等自绘输入框不上报插入点）时
   才用鼠标位置
 - 蓝牙耳机友好：默认输入设备是蓝牙耳机、且播放也走蓝牙时，自动改用内置麦克风，避免耳机切到电话音质
@@ -373,6 +374,7 @@ dotnet test
 | `FftTests` | 自写 FFT 与朴素 DFT 比对 | 否 |
 | `FbankParityTests` | fbank / LFR+CMVN 特征逐点比对 `client-server/server/` 产出的金标准（阈值 1e-3，复用 `macos/` 已入库夹具），另含全零输入的对数下限回归 | LFR/CMVN 部分需要（缺失自动跳过） |
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 | 否 |
+| `OutputFormatterTests` | 中英文空格规则，逐条读与 macOS 共享的夹具 `text_format_cases.json`（Link 自 `macos/`，必需），并校验幂等 | 否 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） | 否 |
 | `ConfigStoreTests` | 配置模型与 YAML 序列化往返（不接触真实 `%APPDATA%`） | 否 |
 | `AppConfigValidationTests` | 配置字段越界夹逼、非有限浮点重置、裸键热键回落默认值 | 否 |

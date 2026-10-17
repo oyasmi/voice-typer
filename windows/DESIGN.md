@@ -1735,3 +1735,49 @@ NaN 哨兵并记入 `_pendingCalibration`，`SessionEnded` 后补跑；补跑前
 9. **测试停止原因**：点「测试麦克风」后立即按听写热键：测试应停止且状态行显示
    「已开始听写，测试已停止。」（不再是空白）。
 10. **设备下拉**：插拔 USB 麦克风后展开设置页「麦克风」下拉：新设备应出现在列表里且当前选择不变。
+
+---
+
+## 26. 2026-10-17 R8-F2：中英文之间统一加空格（与 macOS 同步）
+
+规格与决策见 [`../macos/docs/UX_R8_SPEC.md`](../macos/docs/UX_R8_SPEC.md) R8-F2 / R8-D-1，macOS 侧实施记录见
+[`../macos/DESIGN.md`](../macos/DESIGN.md) §11.5。本节只记 Windows 侧的落地与验证状态。
+
+### 26.1 改了什么
+
+`TextPostprocessor`（识别契约，与服务端对齐）会**删除**中英交界处的空格，而 `correction.md` 第 7 条要求智能纠错时**加**空格——
+结果是开不开纠错，输出风格不一样。现在在 `TextPostprocessor` 之后新增一层确定性格式化 `Core/OutputFormatter.cs`
+（`macos/.../Text/OutputFormatter.swift` 的直译），规则只增不删、幂等：
+
+- 汉字（U+3400–4DBF、4E00–9FFF、F900–FAFF）与 ASCII 英文词元之间补一个半角空格；全角标点前后永不加；
+- 词元里至少有一个字母才算英文单词（`3`、`50%` 不算）；汉字后接词元看首字符 `[A-Za-z0-9]`，词元后接汉字看尾字符 `[A-Za-z0-9+#)\]]`；
+- 含假名或谚文的整段原样返回。
+
+接入点全部在 `VoiceTyperController`，`LocalAsrSession` 仍输出识别原文：
+
+| 位置 | 行为 |
+| --- | --- |
+| `OnPartial` | `_previewText` 保存原文（供终稿超时兜底），浮窗回调 `PreviewUpdate` 收到格式化文本 |
+| `HandleFinalText` | `Trim` 之后、插入之前格式化；插入、重试（`PendingInsert`）、剪贴板兜底、`RecognizedText`、`FinalTextReady`（托盘「复制上一次识别结果」）一律用格式化文本 |
+| 终稿超时兜底 | 复制到剪贴板的预览同样先格式化 |
+| LLM 纠错 | **不改输入**：纠错收到的仍是识别原文（few-shot 就是按「中英紧挨着」的原貌写的） |
+
+### 26.2 共享夹具
+
+`Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj` 把 `macos/Tests/VoiceTyperTests/Fixtures/text_format_cases.json` Link 进输出目录
+（与 fbank 金标准夹具同一方式，但**必需**：缺失时 `OutputFormatterTests` 直接失败，而不是跳过）。25 条用例两个平台读同一份，
+既有用例的期望值不得删改，规则变更须先改规格再两边一起改。C# 按 UTF-16 码元扫描、Swift 按 Unicode 标量扫描：汉字 / 假名 / 谚文 /
+ASCII 都在 BMP 内，二者等价，代理项对（如 U+20000）两边都当作「其他字符」（有专门用例）。
+
+### 26.3 验证状态
+
+- 自动化：`OutputFormatterTests`（夹具逐条 + 幂等 + 代理项）与 `VoiceTyperControllerTests` 四条（上屏文本、预览回调、超时兜底、
+  焦点变化复制兜底均为格式化后的文本）。在 macOS 主机上交叉编译并运行全套：**483 项，474 过 / 1 跳过 / 8 失败**，
+  8 个失败仍是固定基线（`HudCornerStrategyTests` ×3、`SetupFormTests` ×5，WinForms/COM 在非 Windows 主机上不可用，
+  与本改动无关；在真实 Windows 上这 8 项此前已通过，见 §25）。
+- 真机：**未在真实 Windows 上验证**。纯字符串逻辑不依赖平台 API，风险集中在「实际应用里的观感」：
+  1. 记事本 / Word / 浏览器 / 微信里各听写一句「我用Python写代码」，上屏应为「我用 Python 写代码」；
+  2. 开关智能纠错各一次，中英文空格风格应一致；
+  3. 听写中浮窗预览里的中英文之间同样有空格；
+  4. 构造终稿超时（可临时调小看门狗），剪贴板里兜底的预览带空格。
+

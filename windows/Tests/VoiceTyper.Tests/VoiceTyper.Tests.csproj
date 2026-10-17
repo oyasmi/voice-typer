@@ -41,5 +41,9 @@
     <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_parity_shapes.json"
           Link="Fixtures\fbank_parity_shapes.json" CopyToOutputDirectory="PreserveNewest"
           Condition="Exists('..\..\..\macos\Tests\VoiceTyperTests\Fixtures\fbank_parity_shapes.json')" />
+    <!-- R8-F2「中英文之间统一加空格」的共享用例：macOS 与 Windows 的 OutputFormatter 读同一份，
+         两平台规则只能一起改。不同于上面的金标准，这份是必需的——缺失时测试直接失败，而不是跳过。 -->
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\text_format_cases.json"
+          Link="Fixtures\text_format_cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

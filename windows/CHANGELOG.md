@@ -6,6 +6,15 @@ Windows 一体化应用（`windows/`）的版本变更记录。macOS 侧见 [`..
 
 ## 未发布
 
+### R8-F2：中英文之间统一加空格（与 macOS 同步）
+
+上屏文本、浮窗预览、托盘「复制上一次识别结果」与终稿超时兜底复制的文本，中文与英文单词之间都自动补一个半角空格
+（「我用 Python 写代码」），开不开智能纠错结果一致；全角标点前后、中文与纯数字之间不加，含日文 / 韩文的整段不处理。
+发给 LLM 纠错的仍是识别原文。新增 `Core/OutputFormatter.cs`，与 macOS 共用夹具
+`macos/Tests/VoiceTyperTests/Fixtures/text_format_cases.json`。设计与验证状态见 `DESIGN.md` §26。
+在 macOS 主机上交叉编译并运行全套测试：483 项，474 过 / 1 跳过 / 8 失败（8 个为固定的 WinForms/COM 基线）；
+**尚未在真实 Windows 上做手工验证**（步骤见 DESIGN §26.3）。
+
 ### 用户体验评审修复批次（2026-10-11）
 
 来源是一轮对 `windows/` 的全量代码评审（发现清单见 [`docs/REVIEW_HISTORY.md`](docs/REVIEW_HISTORY.md) §2.5），
