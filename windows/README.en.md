@@ -125,36 +125,43 @@ the original text is used automatically.
 
 ## FAQ
 
-**The hotkey does nothing?**
+### The hotkey does nothing?
+
 Make sure the VoiceTyper icon is in the tray, dictation isn't paused, and no other program uses the same
 hotkey (for example the older split client running at the same time). When an elevated window such as Task
 Manager is in front, Windows may block the hotkey; switch to a normal window and try again.
 
-**Recognition works, but the text doesn't appear?**
+### Recognition works, but the text doesn't appear?
+
 If the target window runs as administrator (e.g. an elevated terminal), Windows blocks ordinary programs
 from typing into it. The result is already on the clipboard — press `Ctrl + V`. Some games, remote desktops
 and password fields also reject simulated input.
 
-**The overlay says no sound was detected?**
+### The overlay says no sound was detected?
+
 While recording, the overlay shows which microphone is in use. Make sure it isn't muted, the right device
 is selected, and Windows' microphone privacy settings allow access. “Test microphone” in Settings →
 Dictation helps narrow it down.
 
-**The model download fails?**
+### The model download fails?
+
 Open Settings → Speech Model → “Download details” to see why each source failed. TLS or certificate errors
 usually come from the system clock, a proxy or a corporate network. Fix that and click “Retry Download”;
 it resumes where it stopped.
 
-**It says the .NET runtime is missing?**
+### It says the .NET runtime is missing?
+
 Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) — **Desktop
 Runtime**, matching your PC's architecture.
 
-**Can it coexist with the older split client?**
+### Can it coexist with the older split client?
+
 Yes, but keeping only one is recommended. When migrating, your hotkey (the old default was `Ctrl + F2`)
 and overlay opacity carry over automatically; if both use the same hotkey, they will fight over it when run
 together.
 
-**Known limitations**
+### Known limitations
+
 CPU inference only; only the SenseVoice-Small model, with no model switching or hotwords; Left Alt, Win
 and Shift can't be used alone as the hotkey; recognition always runs locally, with no remote server option
 (use the [client–server version](../client-server/README.md) for that).

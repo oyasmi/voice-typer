@@ -105,34 +105,41 @@ Press the hotkey again during proofreading to skip it and insert the original te
 
 ## FAQ
 
-**Pressing Fn opens the emoji picker or switches input source?**
+### Pressing Fn opens the emoji picker or switches input source?
+
 In System Settings → Keyboard, set “Press 🌐 key to” to “Do Nothing”. The guide and Settings → General
 detect this conflict and offer a shortcut. Alternatively, choose a different hotkey.
 
-**The hotkey does nothing?**
+### The hotkey does nothing?
+
 Check Input Monitoring first. After updating VoiceTyper, macOS may treat the old permission as invalid
 (a known issue with non-notarized builds): remove VoiceTyper from the list in System Settings, add it
 again, then fully quit and restart the app. Also, when an app turns on Secure Input (e.g. Terminal's
 Secure Keyboard Entry or a password field), macOS blocks combination hotkeys; the menu bar tells you so.
 
-**Recognition works, but the text doesn't appear?**
+### Recognition works, but the text doesn't appear?
+
 Check Accessibility. A few apps refuse external input; the text is then on the clipboard or in Recent
 Results, ready to paste.
 
-**The overlay says nothing was recognized?**
+### The overlay says nothing was recognized?
+
 While recording, the overlay shows which microphone is in use. Make sure it isn't muted, that System
 Settings → Sound → Input has the right device, and that no other app holds it exclusively. The overlay also
 warns you when no sound is coming in.
 
-**The model download fails?**
+### The model download fails?
+
 Make sure you can reach ModelScope, then retry in Settings → Recognition; the download resumes where it
 stopped. If this Mac has run the VoiceTyper server before, its model cache is reused automatically.
 
-**Can it coexist with the older split client?**
+### Can it coexist with the older split client?
+
 Yes, but both default to `Fn` and will fight over the hotkey if run together, so keep only one. When
 migrating, your hotkey and overlay opacity carry over automatically.
 
-**Known limitations**
+### Known limitations
+
 Apple Silicon only; only the SenseVoice-Small model, with no model switching or hotwords; recognition
 always runs locally, with no remote server option (use the
 [client–server version](../client-server/README.md) for that).

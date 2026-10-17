@@ -65,35 +65,42 @@ design premise of VoiceTyper, not an add-on.
 
 ## FAQ
 
-**Is it an input method (IME)?**
+### Is it an input method (IME)?
+
 No. VoiceTyper doesn't replace your input method; it just writes the recognized text into the focused
 field, so your typing habits stay the same.
 
-**Does it need the internet every time?**
+### Does it need the internet every time?
+
 No. It only goes online to download the model once, when you check for updates, and when you turn on AI
 proofreading.
 
-**Does it use a lot of memory?**
+### Does it use a lot of memory?
+
 By default the model loads at launch and stays resident so the hotkey responds instantly, at the cost of a
 few hundred MB (about 500MB measured on macOS). If you dictate rarely, turn off preloading or release the
 model after inactivity in Settings; it then loads while you record.
 
-**Where doesn't it work?**
+### Where doesn't it work?
+
 It works almost anywhere you can paste. Some password fields, games, remote desktops and windows running
 as administrator reject simulated input; the result then stays on the clipboard and can be recovered from
 the menu, so you can paste it manually.
 
-**Why does the system block the first launch?**
+### Why does the system block the first launch?
+
 The packages aren't notarized by Apple or code-signed for Windows yet. On macOS, go to System Settings →
 Privacy & Security and click “Open Anyway”; on Windows, click “More info → Run anyway”. You only need to do
 this once.
 
-**Can I switch models or add hotwords?**
+### Can I switch models or add hotwords?
+
 The standalone apps focus on SenseVoice-Small; switching models and hotwords are not supported — a clear,
 dependable default matters more than a pile of unpolished options. For other models, use the
 [client–server version](client-server/README.md).
 
-**Is the Windows version stable?**
+### Is the Windows version stable?
+
 It has feature parity with macOS, and dictation and model download have been run on real Windows
 hardware. arm64 devices, long-running sessions and multi-monitor DPI are still being tested
 systematically. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if you hit a problem.
