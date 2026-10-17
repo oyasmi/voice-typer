@@ -99,4 +99,36 @@ final class HUDLayoutTests: XCTestCase {
         XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 120), "到点后不再显示倒计时")
         XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 0))
     }
+
+    // MARK: - R8-D3：预览尾部淡显
+
+    func testCommonPrefixLength() {
+        XCTAssertEqual(RecordingHUDController.commonPrefixLength("今天下午开会", "今天下午三点开会"), 4)
+        XCTAssertEqual(RecordingHUDController.commonPrefixLength("abc", "abc"), 3)
+        XCTAssertEqual(RecordingHUDController.commonPrefixLength("abc", "xyz"), 0)
+        XCTAssertEqual(RecordingHUDController.commonPrefixLength("", "abc"), 0)
+        XCTAssertEqual(RecordingHUDController.commonPrefixLength("ab", "abcd"), 2)
+    }
+
+    func testHighlightStartWithoutTruncationIsTheDivergencePoint() {
+        XCTAssertEqual(
+            RecordingHUDController.highlightStart(divergence: 4, displayCount: 8, fittedText: "ABCDEFGH"), 4
+        )
+        XCTAssertEqual(
+            RecordingHUDController.highlightStart(divergence: 99, displayCount: 8, fittedText: "ABCDEFGH"), 8,
+            "钳制到文本末尾"
+        )
+    }
+
+    func testHighlightStartShiftsWithLeadingTruncation() {
+        // display = ABCDEFGH，排版后 …EFGH（丢掉前 4 个字符）。
+        XCTAssertEqual(
+            RecordingHUDController.highlightStart(divergence: 6, displayCount: 8, fittedText: "…EFGH"), 3,
+            "分叉点 G 在排版后文本里的下标"
+        )
+        XCTAssertEqual(
+            RecordingHUDController.highlightStart(divergence: 2, displayCount: 8, fittedText: "…EFGH"), 1,
+            "分叉点落在被截掉的部分：省略号之后全部是新内容"
+        )
+    }
 }

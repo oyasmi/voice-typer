@@ -325,7 +325,8 @@ enum HUDPosition: String, Codable, CaseIterable {
     case bottomCenter = "bottom_center"
     /// 屏幕右下角。
     case bottomRight = "bottom_right"
-    /// 跟随鼠标位置，就近显示。
+    /// 跟随输入位置（插入点）就近显示；取不到输入位置时跟随鼠标。
+    /// 配置值仍是 `near_cursor`（兼容旧配置），显示名与行为在 R8-E3 改为跟随插入点。
     case nearCursor = "near_cursor"
     /// 不显示浮窗。
     ///
@@ -338,7 +339,7 @@ enum HUDPosition: String, Codable, CaseIterable {
         switch self {
         case .bottomCenter: return L("底部居中")
         case .bottomRight: return L("右下角")
-        case .nearCursor: return L("跟随光标")
+        case .nearCursor: return L("跟随输入位置")
         case .hidden: return L("不显示（仅出错时提示）")
         }
     }

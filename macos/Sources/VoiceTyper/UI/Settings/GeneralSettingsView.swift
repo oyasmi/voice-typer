@@ -65,7 +65,7 @@ struct GeneralSettingsView: View {
                         Text(position.displayName).tag(position)
                     }
                 }
-                .help(L("「跟随光标」把浮窗放在鼠标下方；「不显示」只隐藏录音与预览，出错时仍会提示。"))
+                .help(L("「跟随输入位置」把浮窗放在输入光标下方，取不到输入位置时跟随鼠标；「不显示」只隐藏录音与预览，出错时仍会提示。"))
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {

@@ -56,7 +56,10 @@
   可在设置里改为严格跟随系统默认输入
 - LLM 校对请求默认关闭「深度思考」（对支持 `thinking` 参数的混合推理模型显著降低耗时），不支持的服务自动改用普通请求
 - 模拟粘贴按当前键盘布局取键码，Dvorak / Colemak 下也是 ⌘V
-- 浮窗位置可选底部居中 / 右下角 / 跟随光标 / 不显示，不透明度可调
+- 浮窗位置可选底部居中 / 右下角 / 跟随输入位置 / 不显示，不透明度可调；浮窗出现在前台应用焦点窗口所在的屏幕，
+  「跟随输入位置」把它放在输入光标下方 8pt（下方放不下翻到上方），取不到输入位置时跟随鼠标
+- 松键后再补录约 150ms，避免最后半个字被截掉（浮窗此时已显示「识别中」，期间按 `Esc` 仍可取消）
+- 预览更新时，与上一次不同的尾部先以次级色显示约 300ms 再恢复常规色（「减少动态效果」下不做）
 - 开机自启
 - 预览更跟嘴：采集块 200ms，预览按「新样本 + 推理占空比」事件驱动调度
 - 录音状态行带操作提示：按一次开始模式提示「再按 X 结束」，按住模式前 5 次提示「Esc 取消」
@@ -397,6 +400,7 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `DictationHistoryTests` | 最近结果：容量淘汰、去重、空白忽略、清空、菜单标题截断与后缀 |
 | `SecondBatchSupportTests` | 下载进度详情的速度窗口与文案、录音操作提示、更新后重新授权的显示条件、卡键用的热键物理状态、AX 回读判定 |
 | `HotkeyEventFilterTests` | 热键「事件 → 动作」状态机与吞键规则（按下 / 重复 / 松开配对、Esc 只在取消时吞、修饰键变化永不吞、卡键复位） |
+| `FocusGeometryTests` | 浮窗落点的纯计算：AX → Cocoa 坐标换算、按焦点窗口 / 插入点选屏、插入点可信度、相对插入点定位与翻转 |
 | `SecureInputTests` | 安全输入说明文案的拼装（有 / 无应用名、Fn 与单独修饰键不显示） |
 | `AppCoordinatorReadinessTests` | 就绪编排的状态优先级（暂停 > 权限缺失 > 模型下载 > 引擎状态） |
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
@@ -446,7 +450,7 @@ cancelled / discarded / gesture_cancelled / failed …）、`release_to_done`（
 `asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、
 `llm_fail`（校对回落原因：timeout / network / auth / rate_limited / server / empty）、
 `finalize_timeout`（终稿看门狗是否触发）、`preview_avg` / `final_wait`（预览送达平均耗时 / 终稿等待推理开始）、
-`tail_speech`（松键时是否仍在说话）、`insert_verify`（AX 插入回读判定）、`clip_backup`（提前备份剪贴板耗时）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
+`tail_speech`（松键时是否仍在说话；补录开启后该值仍是松键那一刻的状态）、`insert_verify`（AX 插入回读判定）、`clip_backup`（提前备份剪贴板耗时）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
 （`builtin*` 表示由自动策略从系统默认输入切换到内置麦克风）、`cold`（引擎是否冷加载）。
 
 **图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，

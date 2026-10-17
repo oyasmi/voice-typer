@@ -79,7 +79,14 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
 - A lost key-release event (stuck key) is detected and ends the recording; a lock screen or sleep discards the recording, and the hotkey listener is restored on wake / unlock
 - After an update of a locally (ad-hoc) signed build invalidates permissions, the Permissions page shows a re-authorization note
 - The menu bar switches recognition language, microphone (auto / follow system) and AI proofreading directly
-- Overlay position: bottom center / bottom right / follow cursor / hidden, with adjustable opacity
+- Overlay position: bottom center / bottom right / follow insertion point / hidden, with adjustable opacity. The
+  overlay appears on the screen holding the front app's focused window; “follow insertion point” puts it 8pt below
+  the text cursor (flipping above when there is no room below), and falls back to the pointer when the insertion
+  point is unavailable
+- Capture continues for about 150ms after you release the key so the last half-word is not cut off (the overlay
+  already shows “Recognizing” and `Esc` still cancels during that time)
+- When the preview updates, the part that differs from the previous one is shown in a secondary colour for about
+  300ms before returning to normal (skipped under “Reduce motion”)
 - Launch at login
 - The menu bar can pause dictation, reopen the setup guide, and check for updates manually (there is no
   background check)
@@ -454,6 +461,7 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `DictationHistoryTests` | Recent Results: capacity eviction, de-duplication, blank text ignored, clearing, menu title truncation and suffixes |
 | `SecondBatchSupportTests` | Download-detail speed window and wording, recording hints, when the post-update re-authorization note shows, hotkey physical state for stuck keys, AX read-back classification |
 | `HotkeyEventFilterTests` | The hotkey event→action state machine and swallow rules (press / repeat / release pairing, Esc swallowed only when cancelling, modifier changes never swallowed, stuck-key reset) |
+| `FocusGeometryTests` | Pure overlay-placement maths: AX → Cocoa coordinate conversion, picking the screen by focused window / insertion point, insertion-point plausibility, placement and flipping relative to the insertion point |
 | `SecureInputTests` | Wording of the Secure Input explanation (with / without app name, hidden for Fn and modifier-only hotkeys) |
 | `AppCoordinatorReadinessTests` | Readiness priority (paused > missing permissions > model download > engine state) |
 | `ConfigStoreTests` | YAML round-trip, missing fields falling back to defaults |

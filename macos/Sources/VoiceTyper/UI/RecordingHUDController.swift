@@ -91,6 +91,18 @@ final class RecordingHUDController: NSWindowController {
 
     /// 浮窗落点。`.hidden` 时只保留错误类提示，见 `HUDPosition.hidden` 的说明。
     private var hudPosition: HUDPosition = .bottomCenter
+    /// 本次听写（或一次性提示）期间固定的落屏与插入点（R8-E2 / R8-E3）：只在浮窗出现时计算一次，
+    /// 听写过程中不随焦点变化而跳动，也避免每次预览刷新都做一次跨进程 AX 查询。
+    private var anchorScreen: NSScreen?
+    private var caretAnchor: CGRect?
+    private var anchorsResolved = false
+    /// 跟随插入点时，浮窗与插入点之间留出的间距。
+    private static let caretGap: CGFloat = 8
+    /// 预览尾部变化的淡显时长（R8-D3）。
+    static let previewHighlightDuration: TimeInterval = 0.3
+    private var previewHighlightWorkItem: DispatchWorkItem?
+    /// 上一次送达的预览原文，用于求公共前缀（R8-D3）。
+    private var previousPreviewText = ""
     /// 预览当前占几行（1 或 2），决定窗口高度与预览区高度。
     private var previewLineCount = 1
     private var previewHeightConstraint: NSLayoutConstraint?
@@ -142,6 +154,10 @@ final class RecordingHUDController: NSWindowController {
         cancelCollapse()
         cancelWarningRestore()
         endCorrectingShimmer()
+        cancelPreviewHighlight()
+        previousPreviewText = ""
+        // 新的一次听写：重新确定落在哪块屏、哪个位置（焦点窗口可能已经换了）。
+        refreshAnchors()
 
         phase = .recording
         startDate = Date()
@@ -168,6 +184,9 @@ final class RecordingHUDController: NSWindowController {
     func hideHUD() {
         timer?.invalidate()
         timer = nil
+        cancelPreviewHighlight()
+        previousPreviewText = ""
+        clearAnchors()
         cancelCollapse()
         cancelTransientHide()
         cancelWarningRestore()
@@ -187,9 +206,13 @@ final class RecordingHUDController: NSWindowController {
             cancelCollapse()
             // 先定宽再排文：能容纳多少字取决于最终宽度，顺序反了会按旧宽度截出错误的片段。
             updateHudWidth(for: text, animated: true)
-            layoutPreviewText(displayText(for: text))
+            let fitted = layoutPreviewText(displayText(for: text))
+            applyPreviewHighlight(fitted: fitted, display: displayText(for: text), text: text)
+            previousPreviewText = text
             setExpanded(true)
         } else {
+            cancelPreviewHighlight()
+            previousPreviewText = ""
             previewLabel.stringValue = displayText(for: "")
             setPreviewLineCount(1, animated: true)
             updateHudWidth(for: "", animated: true)
@@ -452,6 +475,7 @@ final class RecordingHUDController: NSWindowController {
     func updateConfig(_ config: UIConfig) {
         ensureUIBuilt()
         hudOpacity = config.opacity
+        if hudPosition != config.hudPosition { anchorsResolved = false }
         hudPosition = config.hudPosition
         applyDimOpacity()
         // 切到"不显示"时，正在显示的过程类浮窗要立刻收掉，而不是等这次听写结束。
@@ -542,7 +566,8 @@ final class RecordingHUDController: NSWindowController {
 
     /// 把一段已经准备好的展示文本排进当前宽度：超出上限行数时从**开头**截断
     /// （保留最新说出的内容），并据此决定预览区占几行。
-    private func layoutPreviewText(_ display: String) {
+    @discardableResult
+    private func layoutPreviewText(_ display: String) -> String {
         let available = max(40, currentHudWidth - Self.contentHorizontalInset * 2)
         let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .medium)
         let fitted = Self.tailFitting(
@@ -553,6 +578,72 @@ final class RecordingHUDController: NSWindowController {
         )
         previewLabel.stringValue = fitted.text
         setPreviewLineCount(fitted.lineCount, animated: true)
+        return fitted.text
+    }
+
+    // MARK: - 预览尾部淡显（R8-D3）
+
+    /// 两段文本的公共前缀长度（按 Character 计）。
+    static func commonPrefixLength(_ a: String, _ b: String) -> Int {
+        var count = 0
+        var left = a.makeIterator()
+        var right = b.makeIterator()
+        while let x = left.next(), let y = right.next(), x == y { count += 1 }
+        return count
+    }
+
+    /// 把「与上一次预览分叉的位置」换算成排版后文本里的下标。
+    ///
+    /// 排版（`tailFitting`）可能从开头截断并加 `…`：被丢掉的字符数是 `displayCount - (fittedCount - 1)`，
+    /// 分叉点要相应平移；分叉点落在被截掉的部分里则整段都是新内容（下标 0 之后的全部）。
+    static func highlightStart(
+        divergence: Int, displayCount: Int, fittedText: String, leadingEllipsis: String = "…"
+    ) -> Int {
+        let fittedCount = fittedText.count
+        guard fittedText.hasPrefix(leadingEllipsis), fittedCount - 1 < displayCount else {
+            return min(max(divergence, 0), fittedCount)
+        }
+        let dropped = displayCount - (fittedCount - 1)
+        return min(max(divergence - dropped + 1, 1), fittedCount)
+    }
+
+    /// 预览与上一次的公共前缀之后的部分以次级色显示约 300ms 再变为常规色。
+    /// 「减少动态效果」下不做；第一次出字（没有可比较的上一次）与没有变化时也不做。
+    private func applyPreviewHighlight(fitted: String, display: String, text: String) {
+        cancelPreviewHighlight()
+        guard !HUDMotion.reduceMotion, !previousPreviewText.isEmpty, text != previousPreviewText else { return }
+        let divergence = Self.commonPrefixLength(previousPreviewText, text)
+        let start = Self.highlightStart(divergence: divergence, displayCount: display.count, fittedText: fitted)
+        guard start < fitted.count else { return }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = previewLabel.alignment
+        paragraph.lineBreakMode = .byWordWrapping
+        let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .medium)
+        let attributed = NSMutableAttributedString(string: fitted, attributes: [
+            .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph,
+        ])
+        let characters = Array(fitted)
+        let prefixLength = String(characters.prefix(start)).utf16.count
+        attributed.addAttribute(
+            .foregroundColor, value: NSColor.secondaryLabelColor,
+            range: NSRange(location: prefixLength, length: attributed.length - prefixLength)
+        )
+        previewLabel.attributedStringValue = attributed
+
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // 重新设置纯文本：回到标签自身的字体与常规色。
+            self.previewLabel.stringValue = fitted
+            self.previewHighlightWorkItem = nil
+        }
+        previewHighlightWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewHighlightDuration, execute: item)
+    }
+
+    private func cancelPreviewHighlight() {
+        previewHighlightWorkItem?.cancel()
+        previewHighlightWorkItem = nil
     }
 
     /// 返回能在 `width` × `maximumLines` 内显示的文本尾部片段（截掉的开头用 `…` 代替），
@@ -644,6 +735,7 @@ final class RecordingHUDController: NSWindowController {
         cancelCollapse()
         cancelWarningRestore()
         cancelTransientHide()
+        cancelPreviewHighlight()
         endCorrectingShimmer()
         phase = .transient
 
@@ -691,8 +783,39 @@ final class RecordingHUDController: NSWindowController {
 
     // MARK: - 窗口显示 / 定位 / 动画
 
-    /// 计算目标屏幕（鼠标所在屏，回退主屏）。
+    /// 浮窗出现时确定一次落屏与插入点（R8-E2 / R8-E3）：
+    /// - 「跟随输入位置」：取得到可信的插入点就落在插入点所在屏；取不到回落鼠标所在屏与鼠标位置。
+    /// - 其他位置：落在前台应用焦点窗口所在屏；取不到回落鼠标所在屏。
+    /// 一次性计算并缓存到本次听写结束。
+    private func refreshAnchors() {
+        anchorScreen = nil
+        caretAnchor = nil
+        anchorsResolved = true
+        let screens = NSScreen.screens
+        let frames = screens.map(\.frame)
+        if hudPosition == .nearCursor {
+            if let caret = FocusGeometry.caretRect(),
+               let index = FocusGeometry.screenIndex(for: caret, screenFrames: frames) {
+                caretAnchor = caret
+                anchorScreen = screens[index]
+            }
+            return
+        }
+        if let window = FocusGeometry.focusedWindowFrame(),
+           let index = FocusGeometry.screenIndex(for: window, screenFrames: frames) {
+            anchorScreen = screens[index]
+        }
+    }
+
+    private func clearAnchors() {
+        anchorScreen = nil
+        caretAnchor = nil
+        anchorsResolved = false
+    }
+
+    /// 目标屏幕：缓存的焦点窗口 / 插入点所在屏，回退鼠标所在屏，再回退主屏。
     private func targetScreen() -> NSScreen? {
+        if let anchorScreen, NSScreen.screens.contains(anchorScreen) { return anchorScreen }
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
@@ -725,10 +848,17 @@ final class RecordingHUDController: NSWindowController {
                 y: visible.minY + Self.bottomInset
             )
         case .nearCursor:
-            // 放在光标**下方**：光标处通常正是用户在输入的位置，放上方会挡住它。
-            // 贴近屏幕下沿时下面的夹逼会自动把它顶回可见区。
-            let mouse = NSEvent.mouseLocation
-            desiredOrigin = CGPoint(x: mouse.x - width / 2, y: mouse.y - Self.cursorGap - height)
+            if let caretAnchor {
+                // 放在插入点**下方** 8pt（上方会挡住正在输入的行）；下方放不下翻到上方。
+                desiredOrigin = FocusGeometry.originNearCaret(
+                    caret: caretAnchor, size: CGSize(width: width, height: height),
+                    visible: visible, gap: Self.caretGap, margin: Self.screenMargin
+                )
+            } else {
+                // 取不到输入位置：跟随鼠标，放在鼠标下方。贴近屏幕下沿时下面的夹逼会把它顶回可见区。
+                let mouse = NSEvent.mouseLocation
+                desiredOrigin = CGPoint(x: mouse.x - width / 2, y: mouse.y - Self.cursorGap - height)
+            }
         }
 
         let minX = visible.minX + Self.screenMargin
@@ -779,6 +909,7 @@ final class RecordingHUDController: NSWindowController {
     /// 带入场动画呈现窗口（alpha 0→1 + 上移 10pt）。
     private func present(height: CGFloat) {
         guard let window else { return }
+        if !anchorsResolved { refreshAnchors() }
         let metrics = layoutMetrics(for: currentHudWidth, height: height)
         anchorOrigin = metrics.origin
         currentHudWidth = metrics.width

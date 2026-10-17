@@ -17,6 +17,11 @@ final class VoiceTyperController {
         let startedAt: Date
         var phase: Phase = .recording
         var metrics: DictationMetrics
+        /// 松键后的补录窗口（R8-D2b）：音频仍在采集，但用户视角已经进入「识别中」。
+        var isStoppingCapture = false
+        /// 「识别中」状态是否已经对外宣布过（补录时松键即宣布，尾音到达时不再重复）。
+        var announcedRecognizing = false
+        var pendingStop: DispatchWorkItem?
 
         init(session: LocalASRSession, expectedFrontmostPID: pid_t?, startedAt: Date, metrics: DictationMetrics) {
             self.session = session
@@ -48,6 +53,7 @@ final class VoiceTyperController {
     let textInsertionService: TextInserting
     private let focusInspector: FocusInspecting
     private let finalizeWatchdogTimeoutProvider: (Double) -> TimeInterval
+    private let releaseTailCapture: TimeInterval
     private let physicalHotkeyFlags: () -> UInt64
     private let stuckKeyPollInterval: TimeInterval
     private let now: MonotonicClock
@@ -84,6 +90,11 @@ final class VoiceTyperController {
     /// 只探两次：真正静音说明设备有问题，多提示无益；正常说话时第一次探测就会被
     /// 电平否掉，不会打扰。
     static let silenceProbeDelays: [TimeInterval] = [1.5, 4.5]
+
+    /// 正常松键后再补录这么久（R8-D2b）：按键到嘴停之间用户往往还在说最后半个字，`tail_speech` 度量就是为量化这件事。
+    /// 设为 0 即关闭补录、松键立即停止采集（回到 3.5.1 的行为）。
+    /// 设备变化、达到上限、卡键看门狗触发的收尾不补录；补录期间 Esc 仍可取消。
+    nonisolated static let defaultReleaseTailCapture: TimeInterval = 0.15
 
     /// 本次录音出现过的最大线性 RMS 电平。
     private var recordingPeakLevel: Float = 0
@@ -179,11 +190,13 @@ final class VoiceTyperController {
         focusInspector: FocusInspecting = AXFocusInspector(),
         llmCorrectorOverride: LLMCorrector? = nil,
         finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
+        releaseTailCapture: TimeInterval = VoiceTyperController.defaultReleaseTailCapture,
         physicalHotkeyFlags: @escaping () -> UInt64 = HotkeyPhysicalState.currentFlags,
         stuckKeyPollInterval: TimeInterval = 0.25,
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.now = now
+        self.releaseTailCapture = releaseTailCapture
         self.physicalHotkeyFlags = physicalHotkeyFlags
         self.stuckKeyPollInterval = stuckKeyPollInterval
         self.focusInspector = focusInspector
@@ -407,8 +420,9 @@ final class VoiceTyperController {
         AppLog.llm.info("用户跳过了智能校对")
     }
 
-    private func finishRecording() {
-        guard let utterance = active, utterance.phase == .recording else { return }
+    /// - Parameter captureTail: 是否在松键后补录 `releaseTailCapture`。卡键看门狗触发时用户早已松手，不补录。
+    private func finishRecording(captureTail: Bool = true) {
+        guard let utterance = active, utterance.phase == .recording, !utterance.isStoppingCapture else { return }
         utterance.metrics.releasedAt = now()
         stopStuckKeyWatchdog()
         // 只采数据：松键时是否仍在说话，决定以后要不要补录约 150ms（R8-D2b，数据驱动）。
@@ -426,8 +440,30 @@ final class VoiceTyperController {
             return
         }
 
+        if captureTail, releaseTailCapture > 0 {
+            beginTailCapture(for: utterance)
+            return
+        }
+
         // stop() 触发 onTailChunk → sendAudio(tail) + finalize()，phase 在那里推进到 .recognizing。
         audioCaptureService.stop()
+    }
+
+    /// 松键后补录一小段（R8-D2b）：浮窗立即切到「识别中」，采集延后 `releaseTailCapture` 再停。
+    /// 期间 phase 仍是 `.recording`（Esc 走「录音中取消」那条路，丢弃采集），到点或设备变化 / 达到上限
+    /// 触发的 `stop()` 才把 phase 推进到 `.recognizing` 并 finalize。
+    private func beginTailCapture(for utterance: Utterance) {
+        utterance.isStoppingCapture = true
+        utterance.announcedRecognizing = true
+        hotkeyService.acceptsCancelWhenInactive = true
+        onStateChange?(.recognizing)
+        let item = DispatchWorkItem { [weak self, weak utterance] in
+            guard let self, let utterance, self.active === utterance,
+                  utterance.isStoppingCapture, utterance.phase == .recording else { return }
+            self.audioCaptureService.stop()
+        }
+        utterance.pendingStop = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + releaseTailCapture, execute: item)
     }
 
     /// 锁屏 / 睡眠 / 切换用户时由协调器调用（R8-B3）：录音阶段静默丢弃（没有人在听，
@@ -483,7 +519,7 @@ final class VoiceTyperController {
         AppLog.hotkey.warning("热键物理上已松开但没收到松开事件，按松键处理")
         stopStuckKeyWatchdog()
         hotkeyService.resetActiveState()
-        finishRecording()
+        finishRecording(captureTail: false)
     }
 
     /// 用户按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
@@ -581,6 +617,7 @@ final class VoiceTyperController {
                 if !samples.isEmpty {
                     session?.sendAudio(samples)
                 }
+                self.active?.pendingStop?.cancel()
                 self.active?.phase = .recognizing
                 // 设备变化 / 达到会话上限时没有"松手"，以尾音到达的时刻作为收音结束点。
                 let tailAt = self.now()
@@ -595,7 +632,10 @@ final class VoiceTyperController {
                 session?.finalize(timeout: self.finalizeWatchdogTimeoutProvider(audioSeconds))
                 // 与 asrQueue 上的推理并行，不在「松键 → 出字」的关键路径上（R8-A5）。
                 self.active?.metrics.clipBackupNanos = self.textInsertionService.prepareForInsert()
-                self.onStateChange?(.recognizing)
+                if self.active?.announcedRecognizing != true {
+                    self.active?.announcedRecognizing = true
+                    self.onStateChange?(.recognizing)
+                }
             }
         }
 
@@ -661,6 +701,7 @@ final class VoiceTyperController {
     private func finish(_ outcome: Outcome) {
         guard let utterance = active else { return }
         active = nil
+        utterance.pendingStop?.cancel()
         cancelSilenceProbes()
         stopStuckKeyWatchdog()
         hotkeyService.acceptsCancelWhenInactive = false

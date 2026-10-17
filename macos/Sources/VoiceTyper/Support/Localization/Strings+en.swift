@@ -82,8 +82,8 @@ extension L10n {
             "Interface language saved. Restart VoiceTyper to apply it to all interface text.",
         "界面语言保存失败：%@": "Could not save the interface language: %@",
         "位置": "Position",
-        "「跟随光标」把浮窗放在鼠标下方；「不显示」只隐藏录音与预览，出错时仍会提示。":
-            "“Follow cursor” places the overlay below the pointer. “Hidden” only hides recording and preview — errors are still shown.",
+        "「跟随输入位置」把浮窗放在输入光标下方，取不到输入位置时跟随鼠标；「不显示」只隐藏录音与预览，出错时仍会提示。":
+            "“Follow insertion point” places the overlay below the text cursor, and falls back to the pointer when the insertion point is unavailable. “Hidden” only hides recording and preview — errors are still shown.",
         "HUD 背景不透明度": "HUD background opacity",
         "悬浮窗": "Overlay",
         "已关闭浮窗。录音、实时预览与「已输入」确认都不再显示；识别失败、没有采到声音这类提示仍会浮出来——那些信息在别处看不到。":
@@ -234,7 +234,7 @@ extension L10n {
         "韩语": "Korean",
         "底部居中": "Bottom center",
         "右下角": "Bottom right",
-        "跟随光标": "Follow cursor",
+        "跟随输入位置": "Follow insertion point",
         "不显示（仅出错时提示）": "Hidden (errors only)",
 
         // MARK: - 使用引导
