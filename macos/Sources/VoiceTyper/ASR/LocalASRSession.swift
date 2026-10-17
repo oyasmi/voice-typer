@@ -82,6 +82,13 @@ final class LocalASRSession {
     private var pendingAudio: [Float] = []
 
     private var previewInFlight = false
+    /// 自上一次预览**开始**以来累计的新样本数（R8-D1）。
+    private var samplesSinceLastPreviewStart = 0
+    /// 预览的最早允许开始时刻 = 上次预览结束 + 上次耗时 / 2，使稳态推理占空比不超过 2/3。
+    /// 不引入定时器：下一个采集块（最迟 200ms 后）到达时会再检查一次。
+    private var previewNotBefore: UInt64 = 0
+    /// 预览之间至少累计这么多新样本（300ms @ 16kHz）。
+    private static let previewMinimumNewSamples = 4_800
     /// 自上一次预览以来，是否收到过能量高于静音阈值的音频。
     ///
     /// SenseVoice 非流式，预览靠"对已累积音频重跑"实现；如果这 600ms 全是静音，
@@ -147,6 +154,7 @@ final class LocalASRSession {
         let accepted = acceptWithinCap(samples, currentCount: buffer.sampleCount)
         guard !accepted.isEmpty else { return }
         timings.receivedSamples += accepted.count
+        samplesSinceLastPreviewStart += accepted.count
 
         if Self.containsSpeech(accepted) {
             hasSpeechSinceLastPreview = true
@@ -229,6 +237,7 @@ final class LocalASRSession {
         guard buffer == nil, let engine = engineAccessor() else { return }
         let newBuffer = RecognitionBuffer(engine: engine, reservedSampleCapacity: Self.maxSessionSamples)
         if !pendingAudio.isEmpty {
+            samplesSinceLastPreviewStart += pendingAudio.count
             newBuffer.append(pendingAudio)
             pendingAudio.removeAll()
         }
@@ -255,9 +264,15 @@ final class LocalASRSession {
             timings.previewSkipped += 1
             return
         }
+        // 事件驱动的调度（R8-D1）：新样本不足 300ms、或还没到 `previewNotBefore` 时先不跑，
+        // 保留 `hasSpeechSinceLastPreview`，等下一个采集块到达再检查。
+        guard samplesSinceLastPreviewStart >= Self.previewMinimumNewSamples,
+              now() >= previewNotBefore else { return }
         hasSpeechSinceLastPreview = false
+        samplesSinceLastPreviewStart = 0
         previewInFlight = true
         let clock = now
+        let requestedAt = clock()
         asrQueue.async { [weak self] in
             if self?.cancelFlag.isSet == true { return }
             let startedAt = clock()
@@ -266,8 +281,12 @@ final class LocalASRSession {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.previewInFlight = false
+                let deliveredAt = self.now()
+                self.previewNotBefore = deliveredAt &+ elapsed / 2
                 self.timings.previewRuns += 1
                 self.timings.previewMaxNanos = max(self.timings.previewMaxNanos, elapsed)
+                self.timings.previewDeliveredNanos &+= deliveredAt &- requestedAt
+                self.timings.previewDeliveredCount += 1
                 guard !self.closed, !self.isFinalizing else { return }
                 switch result {
                 case .success(let text):
@@ -320,11 +339,15 @@ final class LocalASRSession {
 
     private func runFinalize(on buffer: RecognitionBuffer) {
         startFinalizeWatchdog()
+        let clock = now
+        timings.finalizeDispatchedAt = clock()
         asrQueue.async { [weak self] in
             if self?.cancelFlag.isSet == true { return }
+            let inferenceStartedAt = clock()
             let result = Result { try buffer.finalize() }
             Task { @MainActor [weak self] in
                 guard let self, !self.closed else { return }
+                self.timings.finalizeInferenceStartedAt = inferenceStartedAt
                 self.finalizeWatchdog?.cancel()
                 self.finalizeWatchdog = nil
 

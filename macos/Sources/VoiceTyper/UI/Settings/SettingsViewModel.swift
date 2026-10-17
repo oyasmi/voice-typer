@@ -43,6 +43,10 @@ final class SettingsViewModel {
     var asrState: ASRService.State = .unloaded
     /// nil 表示当前未在下载。
     var downloadProgress: Double?
+    /// 下载进度详情（已下载 / 总量 · 速度 · 剩余，R8-C5）；速度数据不足时只有前半段。
+    var downloadDetail: String?
+    /// 更新后重新授权引导横幅（R8-H1）；无需提示为 nil。
+    var reauthorizationNotice: String?
     /// 自动下载的最近一次失败。重试启动后清空。
     var modelDownloadError: String?
     var engineStatus = L("检查中")

@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
 
+/// 菜单栏「快捷切换」需要的当前配置快照（R8-G1）。
+struct QuickSettingsState: Equatable {
+    var language: ASRLanguage
+    /// `audio.input_device` 的原始值：`auto` / `system` / 设备 UID。
+    var inputDevice: String
+    var llmEnabled: Bool
+    /// 已填写 Base URL；没填时无法开启智能校对。
+    var llmConfigured: Bool
+    /// 听写进行中：这些项禁用（`applyConfig` 本就会拒绝）。
+    var isBusy: Bool
+}
+
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     var onOpenSetup: (() -> Void)?
@@ -14,6 +26,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     var onClearHistory: (() -> Void)?
     /// 菜单打开时现算一次安全输入说明（R8-B2），不轮询。
     var secureInputWarningProvider: (() -> String?)?
+    var quickSettingsProvider: (() -> QuickSettingsState)?
+    var onSelectLanguage: ((ASRLanguage) -> Void)?
+    var onSelectInputDevice: ((String) -> Void)?
+    var onToggleLLM: (() -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: 24)
     private let menu = NSMenu()
@@ -29,6 +45,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let recentMenuItem = NSMenuItem(title: L("最近结果"), action: nil, keyEquivalent: "")
     private let recentSubmenu = NSMenu()
     private let pauseMenuItem = NSMenuItem(title: L("暂停听写"), action: #selector(handleTogglePause), keyEquivalent: "")
+    private let languageMenuItem = NSMenuItem(title: L("识别语言"), action: nil, keyEquivalent: "")
+    private let languageSubmenu = NSMenu()
+    private let microphoneMenuItem = NSMenuItem(title: L("麦克风"), action: nil, keyEquivalent: "")
+    private let microphoneSubmenu = NSMenu()
+    private let llmMenuItem = NSMenuItem(title: L("智能校对"), action: #selector(handleToggleLLM), keyEquivalent: "")
     private let setupMenuItem = NSMenuItem(title: L("权限与设置…"), action: #selector(handleOpenSetup), keyEquivalent: ",")
     private let onboardingMenuItem = NSMenuItem(title: L("使用引导…"), action: #selector(handleOpenOnboarding), keyEquivalent: "")
     private let checkUpdatesMenuItem = NSMenuItem(title: L("检查更新…"), action: #selector(handleCheckForUpdates), keyEquivalent: "")
@@ -84,7 +105,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         headerItem.view = headerView
 
         [pauseMenuItem, setupMenuItem, onboardingMenuItem, checkUpdatesMenuItem,
-         launchAtLoginMenuItem, aboutMenuItem, quitMenuItem, copyLastMenuItem].forEach { $0.target = self }
+         launchAtLoginMenuItem, aboutMenuItem, quitMenuItem, copyLastMenuItem, llmMenuItem].forEach { $0.target = self }
+
+        languageMenuItem.submenu = languageSubmenu
+        microphoneMenuItem.submenu = microphoneSubmenu
+        languageMenuItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+        microphoneMenuItem.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+        llmMenuItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
 
         copyLastMenuItem.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)
         recentMenuItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
@@ -108,6 +135,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             recentMenuItem,
             .separator(),
             pauseMenuItem,
+            languageMenuItem,
+            microphoneMenuItem,
+            llmMenuItem,
             launchAtLoginMenuItem,
             .separator(),
             setupMenuItem,
@@ -242,6 +272,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// 每次打开前按内存里的最近结果重建子菜单。条目标题只放截断文本，不设 toolTip。
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === self.menu else { return }
+        rebuildQuickSettings()
         let entries = historyEntriesProvider?() ?? []
         copyLastMenuItem.isEnabled = !entries.isEmpty
         recentMenuItem.isEnabled = !entries.isEmpty
@@ -276,6 +307,63 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Actions
+
+    // MARK: - 快捷切换（R8-G1）
+
+    private func rebuildQuickSettings() {
+        guard let state = quickSettingsProvider?() else { return }
+
+        languageSubmenu.removeAllItems()
+        for language in ASRLanguage.allCases {
+            let item = NSMenuItem(title: language.displayName, action: #selector(handleSelectLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = language.rawValue
+            item.state = language == state.language ? .on : .off
+            item.isEnabled = !state.isBusy
+            languageSubmenu.addItem(item)
+        }
+
+        microphoneSubmenu.removeAllItems()
+        let choices: [(title: String, value: String)] = [
+            (L("自动（戴蓝牙耳机时使用内置麦克风）"), "auto"),
+            (L("跟随系统默认输入"), "system"),
+        ]
+        for choice in choices {
+            let item = NSMenuItem(title: choice.title, action: #selector(handleSelectInputDevice(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.value
+            item.state = choice.value == state.inputDevice ? .on : .off
+            item.isEnabled = !state.isBusy
+            microphoneSubmenu.addItem(item)
+        }
+        if !choices.contains(where: { $0.value == state.inputDevice }) {
+            // 配置里指定了具体设备：只展示，不在这里改（设备列表属于后续批次）。
+            let item = NSMenuItem(title: L("指定设备"), action: nil, keyEquivalent: "")
+            item.state = .on
+            item.isEnabled = false
+            microphoneSubmenu.addItem(item)
+        }
+
+        llmMenuItem.state = state.llmEnabled ? .on : .off
+        llmMenuItem.title = state.llmConfigured ? L("智能校对") : L("智能校对（在设置中配置）")
+        llmMenuItem.isEnabled = state.llmConfigured && !state.isBusy
+        languageMenuItem.isEnabled = !state.isBusy
+        microphoneMenuItem.isEnabled = !state.isBusy
+    }
+
+    @objc private func handleSelectLanguage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let language = ASRLanguage(rawValue: raw) else { return }
+        onSelectLanguage?(language)
+    }
+
+    @objc private func handleSelectInputDevice(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        onSelectInputDevice?(value)
+    }
+
+    @objc private func handleToggleLLM() {
+        onToggleLLM?()
+    }
 
     @objc private func handleCopyLastResult() {
         guard let first = historyEntriesProvider?().first else { return }

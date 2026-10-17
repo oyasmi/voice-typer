@@ -40,7 +40,7 @@ struct AudioChunker {
 /// 录音期间每凑满 `chunkSamples` 个 float32 样本就通过 `onChunk` 发出一帧；
 /// 停止时将剩余不足一帧的尾音通过 `onTailChunk` 发出，随后调用 `onStopped`。
 final class AudioCaptureService: @unchecked Sendable {
-    /// 每凑满 `chunkSamples` 个 float32 样本（默认 9600 = 600ms）触发一次
+    /// 每凑满 `chunkSamples` 个 float32 样本（默认 3200 = 200ms）触发一次
     var onChunk: (([Float]) -> Void)?
     /// 停止录音时触发一次，传入剩余不足一帧的尾音（可能为空数组）
     var onTailChunk: (([Float]) -> Void)?
@@ -103,7 +103,7 @@ final class AudioCaptureService: @unchecked Sendable {
     /// 和主线程调用，从而保证两者之间的相对顺序与 `lock` 临界区顺序一致（见上方注释）。
     private let deliveryQueue = DispatchQueue(label: "com.voicetyper.app.audiocapture.delivery")
 
-    init(chunkSamples: Int = 9600) {
+    init(chunkSamples: Int = 3200) {
         self.chunkSamples = chunkSamples
         self.chunker = AudioChunker(chunkSamples: chunkSamples)
     }

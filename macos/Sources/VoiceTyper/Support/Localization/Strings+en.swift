@@ -396,6 +396,21 @@ extension L10n {
         "%@。Fn 与单独修饰键热键不受影响。":
             "%@. Fn and single-modifier hotkeys are not affected.",
         "某个应用": "An app",
+
+        // MARK: - R8 第二批
+        "已下载 %@ / %@ · %d%%": "%@ of %@ downloaded · %d%%",
+        "已下载 %@ / %@ · %d%% · %@/s，约剩 %@": "%@ of %@ downloaded · %d%% · %@/s, about %@ left",
+        "%d 秒": "%d s",
+        "%d 分 %d 秒": "%d min %d s",
+        "再按 %@ 结束": "Press %@ to finish",
+        "Esc 取消": "Esc to cancel",
+        "智能校对（在设置中配置）": "AI proofreading (configure in Settings)",
+        "语音模型已就绪 · 按住 %@ 说话": "Speech model ready · hold %@ to speak",
+        "语音模型已就绪 · 按一下 %@ 开始说话": "Speech model ready · press %@ to start speaking",
+        "语音模型下载失败，请到「设置 → 识别」查看并重试":
+            "The speech model download failed. Check Settings → Recognition and retry.",
+        "刚更新到 %@。本机签名的版本更新后，系统会把它当成新应用，需要重新授权：请在「系统设置 → 隐私与安全性」里先移除旧的 VoiceTyper 条目，再重新添加。":
+            "Just updated to %@. After an update of a locally signed build, macOS treats it as a new app and needs the permissions granted again: in System Settings → Privacy & Security, first remove the old VoiceTyper entries, then add it again.",
         "已输入 · 未校对": "Inserted · Not proofread",
         "已跳过智能校对": "AI proofreading skipped",
         "校对中… · 再按 %@ 跳过": "Proofreading… · Press %@ to skip",

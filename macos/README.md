@@ -58,6 +58,12 @@
 - 模拟粘贴按当前键盘布局取键码，Dvorak / Colemak 下也是 ⌘V
 - 浮窗位置可选底部居中 / 右下角 / 跟随光标 / 不显示，不透明度可调
 - 开机自启
+- 预览更跟嘴：采集块 200ms，预览按「新样本 + 推理占空比」事件驱动调度
+- 录音状态行带操作提示：按一次开始模式提示「再按 X 结束」，按住模式前 5 次提示「Esc 取消」
+- 模型下载显示已下载 / 总量、速度与剩余时间；下载完成且窗口都关着时，浮窗提示可以开始说话
+- 热键松开事件丢了（卡键）会被自动发现并结束录音；锁屏 / 睡眠时丢弃录音，唤醒 / 解锁后自动恢复热键监听
+- 本机（ad-hoc）签名的版本更新后权限失效时，「权限」页顶部有重新授权说明
+- 菜单栏可直接切换识别语言、麦克风（自动 / 跟随系统）与智能校对开关
 - 菜单栏可暂停听写、重看使用引导、手动检查更新（不做后台自动检查）
 
 **不支持 / 已知限制**
@@ -389,6 +395,8 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `VoiceTyperControllerTests` | 状态机行为：识别中重叠按键拒绝而非覆盖、Esc 取消、设备变化后仍正常收尾、短录音丢弃、失败 / 超时兜底、校对中跳过、密码框拒绝、各结局进入「最近结果」等 |
 | `OutputFormatterTests` | 中英文空格规则，逐条读共享夹具 `Fixtures/text_format_cases.json`（与 Windows 共用），并校验幂等 |
 | `DictationHistoryTests` | 最近结果：容量淘汰、去重、空白忽略、清空、菜单标题截断与后缀 |
+| `SecondBatchSupportTests` | 下载进度详情的速度窗口与文案、录音操作提示、更新后重新授权的显示条件、卡键用的热键物理状态、AX 回读判定 |
+| `HotkeyEventFilterTests` | 热键「事件 → 动作」状态机与吞键规则（按下 / 重复 / 松开配对、Esc 只在取消时吞、修饰键变化永不吞、卡键复位） |
 | `SecureInputTests` | 安全输入说明文案的拼装（有 / 无应用名、Fn 与单独修饰键不显示） |
 | `AppCoordinatorReadinessTests` | 就绪编排的状态优先级（暂停 > 权限缺失 > 模型下载 > 引擎状态） |
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
@@ -437,7 +445,8 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metri
 cancelled / discarded / gesture_cancelled / failed …）、`release_to_done`（松手到上屏，核心指标）、
 `asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、
 `llm_fail`（校对回落原因：timeout / network / auth / rate_limited / server / empty）、
-`finalize_timeout`（终稿看门狗是否触发）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
+`finalize_timeout`（终稿看门狗是否触发）、`preview_avg` / `final_wait`（预览送达平均耗时 / 终稿等待推理开始）、
+`tail_speech`（松键时是否仍在说话）、`insert_verify`（AX 插入回读判定）、`clip_backup`（提前备份剪贴板耗时）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
 （`builtin*` 表示由自动策略从系统默认输入切换到内置麦克风）、`cold`（引擎是否冷加载）。
 
 **图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，

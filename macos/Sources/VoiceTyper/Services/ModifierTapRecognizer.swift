@@ -91,6 +91,11 @@ struct ModifierTapRecognizer {
         self.target = target
     }
 
+    /// 复位为空闲（卡键看门狗确认热键其实已松开时用，R8-B3）。
+    mutating func reset() {
+        state = .idle
+    }
+
     /// 目标键是否处于按住（含已作废但尚未抬起）。Esc 取消的生效窗口以它为准。
     var isHolding: Bool { state != .idle }
 

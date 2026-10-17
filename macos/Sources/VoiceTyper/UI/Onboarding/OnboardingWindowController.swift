@@ -48,6 +48,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         permissions: PermissionSnapshot,
         asrState: ASRService.State,
         downloadProgress: Double?,
+        downloadDetail: String?,
         modelDownloadError: String?,
         hotkey: HotkeyConfig,
         fnConflictWarning: String?,
@@ -57,6 +58,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         viewModel.permissions = permissions
         viewModel.asrState = asrState
         viewModel.downloadProgress = downloadProgress
+        viewModel.downloadDetail = downloadDetail
         viewModel.modelDownloadError = modelDownloadError
         viewModel.hotkeyDisplay = hotkey.displayString
         viewModel.hotkeyMode = hotkey.mode

@@ -172,7 +172,7 @@ struct RecognitionSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ProgressView(value: progress)
                 HStack {
-                    Text(LF("下载中 %d%%", Int(progress * 100)))
+                    Text(vm.downloadDetail ?? LF("下载中 %d%%", Int(progress * 100)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

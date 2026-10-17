@@ -33,6 +33,8 @@ final class RecordingHUDController: NSWindowController {
     /// 状态行里输入设备名的显示上限，超出截断——设备名可以很长
     /// （"Jabra Evolve2 65 立体声耳机"），不能让它把计时挤出可视区。
     private static let inputDeviceNameLimit = 14
+    /// 状态行带操作提示（「再按 X 结束」「Esc 取消」）时设备名收紧到这么多字符，免得把计时挤出可视区（R8-C4）。
+    private static let inputDeviceNameLimitWithHint = 8
 
     // MARK: - UI 元素
 
@@ -132,7 +134,8 @@ final class RecordingHUDController: NSWindowController {
 
     /// - Parameter inputDeviceName: 本次录音实际使用的输入设备名（由调用方传入，
     ///   可能与系统默认输入不同——见 `AudioInputPolicy`）。
-    func showHUD(inputDeviceName: String?) {
+    /// - Parameter hint: 状态行末尾的操作提示（R8-C4），见 `RecordingHint`。
+    func showHUD(inputDeviceName: String?, hint: String? = nil) {
         guard !suppressesProgressHUD else { return }
         ensureUIBuilt()
         cancelTransientHide()
@@ -145,7 +148,7 @@ final class RecordingHUDController: NSWindowController {
         isExpanded = false
         currentHudWidth = Self.defaultHudWidth
 
-        recordingStatusText = Self.recordingStatus(inputDeviceName: inputDeviceName)
+        recordingStatusText = Self.recordingStatus(inputDeviceName: inputDeviceName, hint: hint)
         setStatus(recordingStatusText)
         resetTimeLabel()
         setPreviewLineCount(1, animated: false)
@@ -306,6 +309,19 @@ final class RecordingHUDController: NSWindowController {
             color: .systemRed,
             expanded: true,
             autoHideAfter: 2.5
+        )
+    }
+
+    /// 模型就绪等「用户需要知道、但不属于听写过程」的提示（R8-C5）。不受「不显示」影响。
+    func showNotice(_ status: String, autoHideAfter: TimeInterval = 3.0) {
+        guard phase != .recording, phase != .recognizing else { return }
+        showTransient(
+            status: status,
+            message: "",
+            glyph: "checkmark.circle.fill",
+            color: .systemGreen,
+            expanded: false,
+            autoHideAfter: autoHideAfter
         )
     }
 
@@ -597,15 +613,18 @@ final class RecordingHUDController: NSWindowController {
 
     /// 录音状态行文案。带上当前输入设备名，让"录到的是哪个麦克风"这件事不必靠猜——
     /// 这是静音提示触发后用户最需要的下一条线索。
-    static func recordingStatus(inputDeviceName: String?) -> String {
+    static func recordingStatus(inputDeviceName: String?, hint: String? = nil) -> String {
+        let hint = hint?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         guard let name = inputDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty else {
-            return L("录音中")
+            return hint.map { "\(L("录音中")) · \($0)" } ?? L("录音中")
         }
-        let shortened = name.count > Self.inputDeviceNameLimit
-            ? String(name.prefix(Self.inputDeviceNameLimit)) + Self.leadingEllipsis
+        let limit = hint == nil ? Self.inputDeviceNameLimit : Self.inputDeviceNameLimitWithHint
+        let shortened = name.count > limit
+            ? String(name.prefix(limit)) + Self.leadingEllipsis
             : name
-        return LF("录音中 · %@", shortened)
+        let base = LF("录音中 · %@", shortened)
+        return hint.map { "\(base) · \($0)" } ?? base
     }
 
     // MARK: - 一次性提示
@@ -1276,4 +1295,8 @@ private final class WaveformView: NSView {
     func stop() {
         bars.forEach { $0.removeAllAnimations() }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

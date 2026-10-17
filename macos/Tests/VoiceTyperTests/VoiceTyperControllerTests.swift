@@ -16,6 +16,8 @@ final class VoiceTyperControllerTests: XCTestCase {
         var acceptsCancelWhenInactive = false
         private(set) var startCallCount = 0
         private(set) var stopCallCount = 0
+        private(set) var resetActiveStateCallCount = 0
+        func resetActiveState() { resetActiveStateCallCount += 1 }
         /// 非 nil 时，下一次 `start` 抛出该错误（模拟 tap 创建失败/超时）。
         var startError: Error?
 
@@ -69,6 +71,13 @@ final class VoiceTyperControllerTests: XCTestCase {
     private final class FakeTextInsertionService: TextInserting {
         private(set) var insertedTexts: [String] = []
         private(set) var copiedTexts: [String] = []
+        private(set) var prepareCount = 0
+        private(set) var discardCount = 0
+        var prepareResult: UInt64? = 5_000_000
+        var verification: InsertionVerification?
+        var lastInsertVerification: InsertionVerification? { verification }
+        func prepareForInsert() -> UInt64? { prepareCount += 1; return prepareResult }
+        func discardPreparedBackup() { discardCount += 1 }
         var result: TextInsertionResult = .inserted(.accessibility)
         /// 插入过程中触发，供测试推进假时钟。
         var onInsert: (() -> Void)?
@@ -177,6 +186,8 @@ final class VoiceTyperControllerTests: XCTestCase {
         clock: @escaping MonotonicClock = systemMonotonicClock,
         llmCorrector: LLMCorrector? = nil,
         watchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
+        physicalFlags: @escaping () -> UInt64 = { 0x800000 },
+        stuckKeyPollInterval: TimeInterval = 60,
         configureAudio: (FakeAudioCaptureService) -> Void = { _ in }
     ) async -> Harness {
         let engine = ScriptedEngine()
@@ -213,6 +224,8 @@ final class VoiceTyperControllerTests: XCTestCase {
             focusInspector: focus,
             llmCorrectorOverride: llmCorrector,
             finalizeWatchdogTimeout: watchdogTimeout,
+            physicalHotkeyFlags: physicalFlags,
+            stuckKeyPollInterval: stuckKeyPollInterval,
             now: clock
         )
 
@@ -1216,5 +1229,187 @@ final class VoiceTyperControllerTests: XCTestCase {
         XCTAssertEqual(harness.results.map(\.kind), [.copiedFocusChanged])
         guard case .error(let message) = harness.states.last else { return XCTFail("应以 .error 收尾") }
         XCTAssertEqual(message, "目标是密码输入框，结果已复制到剪贴板")
+    }
+
+    // MARK: - R8-D2a：松键时仍在说话（只采数据）
+
+    func testTailSpeechDetectionWindow() {
+        let ms: UInt64 = 1_000_000
+        let threshold = AppConstants.silenceRMSThreshold
+        let released: UInt64 = 1_000 * ms
+        XCTAssertTrue(VoiceTyperController.tailSpeechDetected(
+            levels: [(released - 50 * ms, 0.3)], releasedAt: released, threshold: threshold))
+        XCTAssertFalse(VoiceTyperController.tailSpeechDetected(
+            levels: [(released - 120 * ms, 0.3)], releasedAt: released, threshold: threshold), "100ms 之前的不算")
+        XCTAssertFalse(VoiceTyperController.tailSpeechDetected(
+            levels: [(released - 20 * ms, 0.001)], releasedAt: released, threshold: threshold), "低于静音阈值")
+        XCTAssertFalse(VoiceTyperController.tailSpeechDetected(levels: [], releasedAt: released, threshold: threshold))
+    }
+
+    func testTailSpeechIsRecordedInMetrics() async {
+        let speaking = await makeHarness()
+        speaking.engine.script(text: "还在说")
+        speaking.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        speaking.audio.onLevel?(0.3) // 松键前一瞬间仍有声音
+        speaking.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(speaking.metrics.first?.tailSpeech, true)
+        XCTAssertTrue(speaking.metrics.first?.summaryLine().contains("tail_speech=1") == true)
+
+        let quiet = await makeHarness()
+        quiet.engine.script(text: "说完了")
+        quiet.hotkey.onPress?()
+        await settle()
+        quiet.audio.onLevel?(0.3) // 早就停了
+        await holdPastMinimumDuration()
+        quiet.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(quiet.metrics.first?.tailSpeech, false)
+    }
+
+    func testTailSpeechIsUnmeasuredWithoutAReleaseEvent() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+        harness.hotkey.onCancel?()
+        await settle()
+        XCTAssertNil(harness.metrics.first?.tailSpeech)
+        XCTAssertTrue(harness.metrics.first?.summaryLine().contains("tail_speech=-") == true)
+    }
+
+    // MARK: - R8-A5 / R8-A3a：剪贴板提前备份与回读度量
+
+    func testClipboardBackupIsPreparedWhileRecognizingAndDiscardedAtEnd() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "有备份")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        XCTAssertEqual(harness.textInsertion.prepareCount, 0, "录音期间不备份")
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.textInsertion.prepareCount, 1)
+        XCTAssertGreaterThanOrEqual(harness.textInsertion.discardCount, 1, "收尾必须丢弃提前备份")
+        XCTAssertEqual(harness.metrics.first?.clipBackupNanos, 5_000_000)
+        XCTAssertTrue(harness.metrics.first?.summaryLine().contains("clip_backup=5") == true)
+    }
+
+    func testCancelDuringRecognizingDiscardsPreparedBackup() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "取消", delayNanoseconds: 400_000_000)
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        await settle()
+        XCTAssertEqual(harness.textInsertion.prepareCount, 1)
+        let before = harness.textInsertion.discardCount
+        harness.hotkey.onCancel?()
+        await settle()
+        XCTAssertGreaterThan(harness.textInsertion.discardCount, before)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    func testShortRecordingNeverPreparesBackup() async {
+        let harness = await makeHarness()
+        harness.hotkey.onPress?()
+        await settle()
+        harness.hotkey.onRelease?()
+        await settle()
+        XCTAssertEqual(harness.textInsertion.prepareCount, 0)
+        XCTAssertNil(harness.metrics.first?.clipBackupNanos)
+    }
+
+    func testInsertVerificationFlowsIntoMetrics() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "回读")
+        harness.textInsertion.verification = .unchanged
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.metrics.first?.insertVerify, .unchanged)
+        XCTAssertTrue(harness.metrics.first?.summaryLine().contains("insert_verify=unchanged") == true)
+    }
+
+    // MARK: - R8-B3：卡键看门狗与锁屏 / 睡眠
+
+    private final class FlagsBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64
+        init(_ value: UInt64) { self.value = value }
+        var current: UInt64 { lock.lock(); defer { lock.unlock() }; return value }
+        func set(_ newValue: UInt64) { lock.lock(); value = newValue; lock.unlock() }
+    }
+
+    func testStuckKeyWatchdogFinishesRecordingAfterTwoReleasedPolls() async {
+        let flags = FlagsBox(0x800000)
+        let harness = await makeHarness(physicalFlags: { flags.current }, stuckKeyPollInterval: 0.05)
+        harness.engine.script(text: "卡键后仍上屏")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration() // 期间观察到「按着」
+        XCTAssertEqual(harness.audio.stopCallCount, 0)
+
+        flags.set(0) // 物理上已松开，但松开事件丢了
+        try? await Task.sleep(nanoseconds: 450_000_000)
+
+        XCTAssertEqual(harness.audio.stopCallCount, 1)
+        XCTAssertEqual(harness.hotkey.resetActiveStateCallCount, 1)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["卡键后仍上屏"])
+    }
+
+    /// 从没观察到过「按着」说明这条信号在当前机器上不可靠：绝不据此结束正常录音。
+    func testStuckKeyWatchdogNeverActsWithoutObservingHeld() async {
+        let harness = await makeHarness(physicalFlags: { 0 }, stuckKeyPollInterval: 0.05)
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(harness.audio.stopCallCount, 0)
+        XCTAssertEqual(harness.states.last, .recording)
+        harness.hotkey.onCancel?()
+        await settle()
+    }
+
+    func testStuckKeyWatchdogDoesNotRunInToggleMode() async {
+        let flags = FlagsBox(0x800000)
+        let harness = await makeHarness(
+            config: toggleConfig, physicalFlags: { flags.current }, stuckKeyPollInterval: 0.05
+        )
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        flags.set(0)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.audio.stopCallCount, 0, "toggle 模式本来就不需要一直按着")
+        harness.hotkey.onCancel?()
+        await settle()
+    }
+
+    func testInterruptRecordingDiscardsSilentlyWithInterruptedOutcome() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "不应上屏")
+        harness.hotkey.onPress?()
+        await settle()
+        harness.controller.interruptRecording()
+        await settle()
+
+        XCTAssertEqual(harness.audio.stopWithoutResultCallCount, 1)
+        XCTAssertEqual(harness.cancelledCount, 0, "不弹「已取消」")
+        XCTAssertTrue(harness.textInsertion.insertedTexts.isEmpty)
+        XCTAssertEqual(harness.states.last, .idle)
+        XCTAssertEqual(harness.metrics.map(\.outcome), [.interrupted])
+        XCTAssertTrue(harness.results.isEmpty)
+    }
+
+    func testInterruptDoesNotTouchRecognizingPhase() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "识别阶段不动", delayNanoseconds: 250_000_000)
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        await settle()
+        harness.controller.interruptRecording()
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["识别阶段不动"])
+        XCTAssertEqual(harness.metrics.map(\.outcome), [.inserted])
     }
 }

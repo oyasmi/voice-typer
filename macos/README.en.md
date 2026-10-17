@@ -73,6 +73,12 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
 - LLM proofreading requests turn off “deep thinking” by default (much faster on hybrid-reasoning models
   that accept a `thinking` parameter); services that reject it automatically get a plain request
 - Simulated paste looks up the key code for the current keyboard layout, so it is ⌘V on Dvorak / Colemak too
+- Snappier preview: 200ms capture chunks and event-driven preview scheduling (new samples plus an inference duty-cycle limit)
+- The recording status line carries an operation hint: “Press X to finish” in press-once mode, “Esc to cancel” for the first 5 recordings in hold mode
+- Model download shows downloaded / total size, speed and time remaining; once it finishes with all windows closed, the overlay tells you to start speaking
+- A lost key-release event (stuck key) is detected and ends the recording; a lock screen or sleep discards the recording, and the hotkey listener is restored on wake / unlock
+- After an update of a locally (ad-hoc) signed build invalidates permissions, the Permissions page shows a re-authorization note
+- The menu bar switches recognition language, microphone (auto / follow system) and AI proofreading directly
 - Overlay position: bottom center / bottom right / follow cursor / hidden, with adjustable opacity
 - Launch at login
 - The menu bar can pause dictation, reopen the setup guide, and check for updates manually (there is no
@@ -446,6 +452,8 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `VoiceTyperControllerTests` | State machine behaviour: overlapping presses rejected instead of overwriting, Esc cancellation, clean wrap-up after a device change, short recordings discarded, failure / timeout fallbacks, skipping proofreading, password-field refusal, which outcomes land in Recent Results, and so on |
 | `OutputFormatterTests` | Chinese/English spacing rule, reading the shared fixture `Fixtures/text_format_cases.json` (shared with Windows) and checking idempotence |
 | `DictationHistoryTests` | Recent Results: capacity eviction, de-duplication, blank text ignored, clearing, menu title truncation and suffixes |
+| `SecondBatchSupportTests` | Download-detail speed window and wording, recording hints, when the post-update re-authorization note shows, hotkey physical state for stuck keys, AX read-back classification |
+| `HotkeyEventFilterTests` | The hotkey event→action state machine and swallow rules (press / repeat / release pairing, Esc swallowed only when cancelling, modifier changes never swallowed, stuck-key reset) |
 | `SecureInputTests` | Wording of the Secure Input explanation (with / without app name, hidden for Fn and modifier-only hotkeys) |
 | `AppCoordinatorReadinessTests` | Readiness priority (paused > missing permissions > model download > engine state) |
 | `ConfigStoreTests` | YAML round-trip, missing fields falling back to defaults |

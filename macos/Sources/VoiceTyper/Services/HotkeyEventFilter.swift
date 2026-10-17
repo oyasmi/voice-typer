@@ -52,6 +52,13 @@ struct HotkeyEventFilter {
         self.targetKeyCode = HotkeyService.keyCodeValue(for: hotkey.key)
     }
 
+    /// 卡键看门狗确认热键其实已松开：复位激活态与手势识别器，避免下一次按下被当成重复。
+    /// 已吞按键的配对记录不动——它们的 keyUp 仍要被吞。
+    mutating func reset() {
+        isActive = false
+        modifierRecognizer?.reset()
+    }
+
     mutating func handle(_ input: Input, acceptsCancelWhenInactive: Bool) -> Decision {
         switch input {
         case .keyDown(let keyCode, _, let isRepeat) where consumedKeyCodes.contains(keyCode):

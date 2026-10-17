@@ -86,14 +86,18 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         permissions: PermissionSnapshot,
         asrState: ASRService.State,
         downloadProgress: Double?,
+        downloadDetail: String?,
         modelDownloadError: String?,
         hotkeyDisplay: String,
-        engineStatus: String
+        engineStatus: String,
+        reauthorizationNotice: String?
     ) {
         ensureUIBuilt()
         viewModel.permissions = permissions
         viewModel.asrState = asrState
         viewModel.downloadProgress = downloadProgress
+        viewModel.downloadDetail = downloadDetail
+        viewModel.reauthorizationNotice = reauthorizationNotice
         viewModel.modelDownloadError = modelDownloadError
         viewModel.hotkeyDisplay = hotkeyDisplay
         viewModel.engineStatus = engineStatus

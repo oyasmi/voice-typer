@@ -1026,9 +1026,165 @@ Windows 影响：建议（UIA IsPassword）。
 Windows 影响：已有（WR-007）。
 ```
 
+### 第二批（3.5.2）：跟嘴 · 跟手 · 稳
+
+**验证口径**：全量 `xcodebuild … test` 通过（363 个，连跑两次无波动）。同第一批：热键、剪贴板、麦克风、浮窗、辅助功能、
+系统睡眠 / 锁屏相关行为**均未在真机验证**，下面各项「真机验证」一律写「未验证」。实施顺序：
+R8-D1 → D2a → A3a → A5 → B3 → C4 → C5 → G1 → H1。**版本号保持 3.5.2**（第一、二批共用，不再递增）。
+
+#### R8-D1 预览改为事件驱动（跟嘴）
+
+```text
+编号：R8-D1
+提交：第二批提交（feat(macos): R8 第二批——…）
+改动后的行为：采集块 600ms → 200ms（AudioCaptureService 默认 chunkSamples=3200）。预览只在下列条件全部满足时才跑：无预览在跑、
+  未进入终稿、自上次预览以来有语音、自上次预览开始累计 ≥ 4800 个新样本（300ms）、当前时刻 ≥ previewNotBefore
+  （= 上次预览结束 + 上次耗时/2，故稳态推理占空比 ≤ 2/3）。不引入定时器，下一个采集块最迟 200ms 后到达再检查。
+  RecognitionBuffer 顶部的稳态 CPU 注释同步更新。
+接口 / 配置 / 度量字段变更：ASRSessionTimings 新增 previewDeliveredNanos / previewDeliveredCount /
+  finalizeDispatchedAt / finalizeInferenceStartedAt；度量末尾追加 preview_avg（预览从发起到文字送达主线程的平均耗时）与
+  final_wait（finalize 派发到推理真正开始）。
+自动化测试及结果：样本不足 300ms 不跑且不计入「静音跳过」；占空比限制（假时钟：耗时 400ms → 200ms 内不跑，推进后再跑）；
+  preview_avg 取发起到送达；final_wait 两个时间点。通过。
+真机验证：未验证。验收方法（规格）：同一段 20s 口述改动前后对比 previews（应明显增多）、preview_avg（应下降）、活动监视器 CPU
+  （不长期贴满一个核）；M1 等较慢机型至少测一次。「说话到出字 P50 ≤ 500ms」尚无实测数据。
+与本规格的差异及理由：无。
+Windows 影响：已有（A1）。
+```
+
+#### R8-D2a 采集「松键时仍在说话」度量
+
+```text
+编号：R8-D2a
+改动后的行为：控制器保留最近 150ms 的带时间戳电平样本；松键时若最后 100ms 内最大电平 ≥ silenceRMSThreshold，度量
+  tail_speech=1，否则 0。只采数据，不改变任何行为（补录见第三批 R8-D2b，门槛：tail_speech=1 占比 ≥ 20%）。
+接口 / 配置 / 度量字段变更：DictationMetrics.tailSpeech（Bool?）；度量末尾追加 tail_speech。
+自动化测试及结果：窗口边界（50ms 内算、120ms 前不算、低于阈值不算、空缓冲）；端到端写入度量；无松键事件（取消）为未测量。通过。
+真机验证：未验证（需在真机上积累一个版本的日志后统计占比）。
+与本规格的差异及理由：没有「松键」的路径（取消、设备变化、达到上限）输出 tail_speech=-（未测量）而不是 0，避免把没测的当成「没在说话」。
+Windows 影响：已有（tail_speech）。
+```
+
+#### R8-A3a AX 插入回读度量 + 网页控件不做整值替换
+
+```text
+编号：R8-A3a
+改动后的行为：(1) kAXSelectedText 写入失败后，若焦点元素自身或其祖先（沿 kAXParent 最多 20 层）是 AXWebArea，不做
+  kAXValue 整值替换，直接走粘贴；(2) AX 写入前读一次值（≤100k 字符），写入成功后等 50ms 再读，判定 ok / unchanged / unknown。
+  只记录、不回退（回退见第三批 R8-A3b，需要数据）。日志与度量都不含值内容。
+接口 / 配置 / 度量字段变更：InsertionVerification（含纯函数 classify）；TextInsertionService.lastInsertVerification；
+  TextInserting 协议新增 lastInsertVerification（带默认实现）；度量末尾追加 insert_verify=ok|unchanged|unknown|-。
+自动化测试及结果：classify 五种情形；控制器把回读判定写入度量。通过。AX 行为本身无法单测。
+真机验证：未验证。手工验证矩阵（规格）：TextEdit、备忘录、Pages、Safari 文本框 / 富文本编辑器、Chrome 文本框 /
+  contenteditable、VS Code、Slack、微信、飞书、终端、iTerm2、Xcode——每个应用记录 insert_path 与 insert_verify。
+与本规格的差异及理由：回读的 50ms 等待在主线程同步进行（规格如此），会计入 AX 路径的 release_to_done；写入前读值
+  超过 100k 字符时跳过（得 unknown）。真机需确认这 50ms 可接受，不可接受则改为异步回读后补记度量。
+Windows 影响：不需要。
+```
+
+#### R8-A5 剪贴板备份提前到识别阶段
+
+```text
+编号：R8-A5
+改动后的行为：进入 .recognizing 时（finalize 派发之后，与 asrQueue 上的推理并行）调用 prepareForInsert() 备份用户剪贴板；
+  粘贴兜底时若 changeCount 与快照一致直接使用，否则重新快照；仍在等待中的 pendingRestore 继承逻辑优先于提前快照；所有不插入的
+  收尾（取消、失败、空结果…）与每次收尾都会 discardPreparedBackup()。copyToClipboard 也会作废提前快照。
+接口 / 配置 / 度量字段变更：TextInserting 新增 prepareForInsert() / discardPreparedBackup()（带默认空实现）；度量末尾追加
+  clip_backup（毫秒，无提前备份为 -）。
+自动化测试及结果：识别阶段备份一次、录音期间不备份、收尾丢弃、识别中取消丢弃、短录音不备份、耗时写入度量。通过。
+  PasteboardSnapshot 与 changeCount 的比较逻辑依赖真实 NSPasteboard，未单测。
+真机验证：未验证。手工步骤：剪贴板里放一张大图 / 文件后在会走粘贴兜底的应用（如终端）里听写，确认听写后原剪贴板被恢复，
+  对比 clip_backup 与 insert 的耗时；若提前快照本身也很慢，再评估移到后台线程（NSPasteboard 跨线程读取须先确认安全）。
+与本规格的差异及理由：仍有 pendingRestore 时直接不备份（此刻剪贴板里是我们写的临时文本，备份它没有意义）。
+Windows 影响：已有（§22.2）。
+```
+
+#### R8-B3 卡键看门狗 + 锁屏 / 睡眠处理
+
+```text
+编号：R8-B3
+改动后的行为：(1) 按住模式录音期间每 250ms 读一次热键的物理状态（Fn：maskSecondaryFn；单独修饰键：设备相关的左右位；
+  组合键：所需修饰键，不检查主键），连续两次判定已松开 → 按松键处理并调用 HotkeyService.resetActiveState()（在 worker
+  线程复位激活态与识别器）；toggle 模式不轮询。(2) AppCoordinator 订阅 willSleep / sessionDidResignActive /
+  com.apple.screenIsLocked：录音阶段静默丢弃（outcome=interrupted，不弹「已取消」），识别阶段不动；订阅 didWake /
+  sessionDidBecomeActive / com.apple.screenIsUnlocked：控制器在跑且无进行中的听写时重新安装 tap（suspend + resume），失败走
+  既有就绪重评；1 秒内的连串通知只重装一次。
+接口 / 配置 / 度量字段变更：Services/HotkeyPhysicalState.swift；HotkeyListening.resetActiveState()；
+  HotkeyEventFilter / ModifierTapRecognizer 的 reset()；VoiceTyperController.interruptRecording()；
+  DictationMetrics.Outcome.interrupted。
+自动化测试及结果：物理状态三种热键类型；两次判定已松开 → 结束录音、复位、文本上屏；从没观察到「按着」不动作；toggle 不轮询；
+  interrupted 结局静默且不进历史；识别阶段不受打断；filter.reset()。通过。
+真机验证：未验证。手工步骤：按住热键说话时合盖 / 锁屏 → 不应残留录音与麦克风指示点；唤醒后热键立即可用；
+  人为制造丢失松开事件（如按住时快速锁屏再解锁）后下一次按下正常。CGEventSource.flagsState 是否包含设备相关位、
+  被吞的组合键主键是否影响物理状态（规格标 V）都需真机确认。
+与本规格的差异及理由：看门狗只在本次录音「至少观察到一次物理上按着」之后才会判定卡键。这条信号在某台机器 / 某类热键上若不可靠
+  （始终读到未按下），不加这个保护会在 500ms 后误杀每一次正常录音——「不丢字」优先；代价是用户在第一个 250ms 轮询前就
+  卡键的极端情形救不了（短录音本身也由 300ms 过滤处理）。
+Windows 影响：已有（B3 / B4）。
+```
+
+#### R8-C4 操作提示
+
+```text
+编号：R8-C4
+改动后的行为：toggle 模式录音状态行追加「 · 再按 %@ 结束」；hold 模式前 5 次录音追加「 · Esc 取消」，计数存
+  UserDefaults（hint.escCancelShownCount）；浮窗设为「不显示」时不计数。带提示时设备名显示上限由 14 收紧到 8 个字符。
+  「减少动态效果」下文案不变。
+接口 / 配置 / 度量字段变更：Support/RecordingHint.swift；showHUD(inputDeviceName:hint:)；recordingStatus(inputDeviceName:hint:)。
+自动化测试及结果：两种模式的提示文本与次数上限；带 / 不带提示的状态行与设备名截断。通过。
+真机验证：未验证（规格要求中英文案都测宽度：长设备名 + 「Press … to finish」是否把计时挤出可视区，需肉眼确认，必要时再收紧上限）。
+与本规格的差异及理由：无。
+Windows 影响：部分。
+```
+
+#### R8-C5 下载进度详情 + 就绪提示
+
+```text
+编号：R8-C5
+改动后的行为：设置「识别」模型卡片、引导「语音模型」一步、菜单头副标题显示「已下载 X / Y · N% · Z/s，约剩 T」；速度取最近 8s
+  窗口，不足 1s 或无进展只显示前半段。下载完成且模型就绪后，引导和设置窗口都不可见且权限齐全时，浮窗 3s「语音模型已就绪 ·
+  按住 %@ 说话」（toggle：「按一下 %@ 开始说话」）；权限未齐不提示。自动重试用尽、窗口都不可见时浮窗提示一次失败并指向
+  「设置 → 识别」。两条提示不受「不显示」影响。
+接口 / 配置 / 度量字段变更：Support/DownloadStats.swift（总量取 ModelDownloader.totalBytes）；RecordingHUDController.showNotice(_:)；
+  Setup / Onboarding 的 updateStatus 新增 downloadDetail 参数。
+自动化测试及结果：速度窗口（跨度、无进展、8s 滑出）；文本两种形态与剩余时间；分钟格式；进度钳制；总量等于文件清单之和。通过。
+真机验证：未验证（需实际下载一次：观察三处文案刷新、窗口都关闭后完成时的浮窗、断网到重试用尽时的浮窗）。
+与本规格的差异及理由：无。
+Windows 影响：已有（E3、F-01）。
+```
+
+#### R8-G1 菜单栏快捷切换
+
+```text
+编号：R8-G1
+改动后的行为：「暂停听写」下方新增「识别语言」（自动 / 中文 / 英文 / 粤语 / 日语 / 韩语）、「麦克风」（自动 / 跟随系统；配置里是
+  指定设备时只显示一个选中的「指定设备」）、「智能校对」开关项（未填 Base URL 时禁用，标题为「智能校对（在设置中配置）」）。选择后经
+  AppCoordinator.applyConfig 保存（与设置页同一事务）；听写进行中这些项禁用。
+接口 / 配置 / 度量字段变更：StatusBarController 新增 QuickSettingsState / quickSettingsProvider / onSelectLanguage /
+  onSelectInputDevice / onToggleLLM；无配置字段变更。
+自动化测试及结果：菜单与 NSMenu 构建无自动化覆盖（与现有菜单一致），applyConfig 路径沿用既有测试。构建通过。
+真机验证：未验证（逐项切换后确认设置窗口同步、识别语言在下一次听写生效、听写中项目呈禁用）。
+与本规格的差异及理由：规格里「麦克风」的设备列表依赖 R8-G2（第三批），本批只有「自动 / 跟随系统」两项。
+Windows 影响：可选。
+```
+
+#### R8-H1 更新后重新授权引导
+
+```text
+编号：R8-H1
+改动后的行为：UserDefaults 记录 lastLaunchedVersion 与 permissionsWereAllGranted。启动时版本号变化、上次权限齐全而这次不齐、
+  且签名确为 ad-hoc / 未签名（Developer ID 不显示）→ 设置「权限」页顶部显示横幅，权限补齐后消失；每项权限已有「系统设置」按钮。
+接口 / 配置 / 度量字段变更：ReauthorizationNotice（shouldShow / bannerText）；SettingsViewModel.reauthorizationNotice。
+自动化测试及结果：显示条件六种组合；横幅文案含版本号。通过。
+真机验证：未验证（需要真实的 ad-hoc 更新：旧版授权后安装新版，权限被系统判失效）。
+与本规格的差异及理由：横幅显示后把 permissionsWereAllGranted 置 false，避免下一次版本更新前重复提示（权限补齐后重新置 true）；
+  横幅只放在设置的权限页，引导（首次使用）里没有。
+Windows 影响：不需要。
+```
+
 ### 与规格 §2 已定决策的关系
 
-第一批没有改动 §2 的任何已定决策（R8-D-1…D-6）。实施中的偏离均为「不丢字、不打扰」方向的最小调整，已逐项写在上面各条的「差异」里。
+第一、二批没有改动 §2 的任何已定决策（R8-D-1…D-6）。实施中的偏离均为「不丢字、不打扰」方向的最小调整，已逐项写在上面各条的「差异」里。
 
 ---
 

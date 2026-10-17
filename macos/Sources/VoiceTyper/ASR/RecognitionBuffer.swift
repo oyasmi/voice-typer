@@ -11,7 +11,8 @@ import Foundation
 /// 每次新建、用完即弃；非线程安全的部分（`committedText`/`committedN`）只应在
 /// `ASRService.asrQueue` 上访问；`append` 允许从任意线程调用（内部用锁保护）。
 final class RecognitionBuffer: @unchecked Sendable {
-    /// 预览窗口（采样点，16kHz）。稳态预览 CPU ≈ RTF × 15s / 0.6s（0.6s 为客户端送帧间隔）。
+    /// 预览窗口（采样点，16kHz）。稳态预览 CPU ≈ RTF × 15s / 预览间隔。预览间隔由 `LocalASRSession` 事件驱动：
+    /// 至少累计 300ms 新样本，且上一次结束后再等其耗时的一半，因此推理占空比不超过 2/3（R8-D1）。
     static let previewWindowSamples = 15 * 16000
     /// 窗口滚动时，在目标切点 ±100ms 内挑能量最低的 10ms 处下刀。
     private static let seamSearchRadius = 1600

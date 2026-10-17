@@ -88,6 +88,14 @@ final class AppCoordinator {
     private var cachedFnConflictWarning: String?
     /// 缓存的安全输入说明（引导窗口用）；菜单头每次打开现算，见 `bindStatusBarActions`。
     private var cachedSecureInputWarning: String?
+    /// 下载进度详情的采样（R8-C5）。
+    private var downloadStats = DownloadStats()
+    /// 下载完成后，等模型加载就绪且窗口都不可见时，用浮窗告诉用户「可以用了」（R8-C5）。
+    private var pendingReadyNotice = false
+    /// 更新后需要重新授权的引导文案（R8-H1）；权限补齐后清空。
+    private var reauthorizationNotice: String?
+    /// 系统唤醒 / 解锁等通知常常成串到达，1 秒内只重装一次热键监听。
+    private var lastHotkeyReinstall: Date?
     /// 校对回落 / 跳过的说明，由 `onInsertedWithNote` 先到、`.idle` 状态后到时消费。
     private var pendingInsertionNote: VoiceTyperController.InsertionNote?
 
@@ -110,6 +118,8 @@ final class AppCoordinator {
         if !permissions.allRequiredGranted {
             currentState = .setupRequired
         }
+        evaluateReauthorization()
+        observeSystemEvents()
         updateStatusUI()
 
         // 首次运行走完整引导（欢迎 → 权限 → 模型 → 试一试），而不是直接把设置窗口的
@@ -128,6 +138,109 @@ final class AppCoordinator {
         Task {
             await prepareEngineForLaunch()
             await reevaluateReadiness()
+        }
+    }
+
+    // MARK: - 更新后重新授权（R8-H1）
+
+    private func evaluateReauthorization() {
+        let defaults = UserDefaults.standard
+        let lastVersion = defaults.string(forKey: ReauthorizationNotice.lastVersionKey)
+        let wereAllGranted = defaults.bool(forKey: ReauthorizationNotice.wereAllGrantedKey)
+        if ReauthorizationNotice.shouldShow(
+            lastVersion: lastVersion,
+            currentVersion: AppConstants.version,
+            wereAllGranted: wereAllGranted,
+            nowAllGranted: permissions.allRequiredGranted,
+            mayLosePermissionsOnUpdate: CodeSigningInfo.mayLosePermissionsOnUpdate
+        ) {
+            reauthorizationNotice = ReauthorizationNotice.bannerText(version: AppConstants.version)
+            // 已经提示过：下一次版本更新前不再重复，权限补齐后会重新置位。
+            defaults.set(false, forKey: ReauthorizationNotice.wereAllGrantedKey)
+        }
+        defaults.set(AppConstants.version, forKey: ReauthorizationNotice.lastVersionKey)
+        if permissions.allRequiredGranted {
+            defaults.set(true, forKey: ReauthorizationNotice.wereAllGrantedKey)
+        }
+    }
+
+    private func noteCurrentPermissionsForReauthorization() {
+        guard permissions.allRequiredGranted else { return }
+        reauthorizationNotice = nil
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: ReauthorizationNotice.wereAllGrantedKey) {
+            defaults.set(true, forKey: ReauthorizationNotice.wereAllGrantedKey)
+        }
+    }
+
+    // MARK: - 锁屏 / 睡眠 / 切换用户（R8-B3）
+
+    private func observeSystemEvents() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.systemWillInterrupt() }
+            }
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.systemDidResume() }
+            }
+        }
+        let distributed = DistributedNotificationCenter.default()
+        distributed.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillInterrupt() }
+        }
+        distributed.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemDidResume() }
+        }
+    }
+
+    /// 录音阶段静默丢弃（没有人在听，也不弹「已取消」）；识别阶段不动。
+    private func systemWillInterrupt() {
+        voiceTyperController?.interruptRecording()
+    }
+
+    /// 睡眠唤醒 / 解锁后事件 tap 可能已失效：重新安装一次。失败走既有的就绪重评。
+    private func systemDidResume() {
+        guard !isPaused, let controller = voiceTyperController, controller.isStarted,
+              !currentState.isActiveDictation else { return }
+        if let last = lastHotkeyReinstall, Date().timeIntervalSince(last) < 1 { return }
+        lastHotkeyReinstall = Date()
+        controller.suspendHotkeyListening()
+        do {
+            try controller.resumeHotkeyListening()
+            AppLog.hotkey.info("系统唤醒 / 解锁，已重新安装热键监听")
+        } catch {
+            AppLog.hotkey.error("系统唤醒后重新安装热键监听失败，交由就绪重评重试: \(error.localizedDescription, privacy: .public)")
+            Task { await self.reevaluateReadiness() }
+        }
+    }
+
+    // MARK: - 菜单栏快捷切换（R8-G1）
+
+    private var quickSettingsState: QuickSettingsState {
+        QuickSettingsState(
+            language: config.asr.language,
+            inputDevice: config.audio.inputDevice,
+            llmEnabled: config.llm.enabled,
+            llmConfigured: !config.llm.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            isBusy: currentState.isActiveDictation
+        )
+    }
+
+    /// 与设置页同一事务（`applyConfig`）：保存、重建控制器、重新评估就绪。
+    private func applyQuickSetting(_ mutate: (inout AppConfig) -> Void) {
+        var updated = config
+        mutate(&updated)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.applyConfig(updated)
+            } catch {
+                AppLog.app.error("菜单栏快捷切换保存失败: \(error.localizedDescription, privacy: .public)")
+                self.recordingHUDController?.showError(error.localizedDescription)
+            }
         }
     }
 
@@ -184,6 +297,20 @@ final class AppCoordinator {
         }
         statusBarController.onClearHistory = { [weak self] in
             self?.dictationHistory.clear()
+        }
+        statusBarController.quickSettingsProvider = { [weak self] in
+            self?.quickSettingsState ?? QuickSettingsState(
+                language: .auto, inputDevice: "auto", llmEnabled: false, llmConfigured: false, isBusy: true
+            )
+        }
+        statusBarController.onSelectLanguage = { [weak self] language in
+            self?.applyQuickSetting { $0.asr.language = language }
+        }
+        statusBarController.onSelectInputDevice = { [weak self] value in
+            self?.applyQuickSetting { $0.audio.inputDevice = value }
+        }
+        statusBarController.onToggleLLM = { [weak self] in
+            self?.applyQuickSetting { $0.llm.enabled.toggle() }
         }
         statusBarController.secureInputWarningProvider = { [weak self] in
             guard let self else { return nil }
@@ -450,6 +577,7 @@ final class AppCoordinator {
         }
 
         permissions = permissionCenter.snapshot()
+        noteCurrentPermissionsForReauthorization()
 
         let previousState = currentState
         let target = Self.computeTargetState(
@@ -494,8 +622,22 @@ final class AppCoordinator {
             break
         }
 
+        showModelReadyNoticeIfNeeded(target: target)
         syncAuxiliaryWindows()
         updateStatusUI()
+    }
+
+    /// 下载完成且模型加载就绪后，引导和设置窗口都不可见、权限已齐全时，浮窗告诉用户可以用了（R8-C5）。
+    /// 权限未齐不提示——引导 / 设置窗口会接手。
+    private func showModelReadyNoticeIfNeeded(target: AppState) {
+        guard pendingReadyNotice, isModelReady, !isDownloadingModel, target == .idle else { return }
+        if isOnboardingVisible || setupWindowController?.window?.isVisible == true { return }
+        pendingReadyNotice = false
+        let display = config.hotkey.displayString
+        let text = config.hotkey.mode == .toggle
+            ? LF("语音模型已就绪 · 按一下 %@ 开始说话", display)
+            : LF("语音模型已就绪 · 按住 %@ 说话", display)
+        recordingHUDController?.showNotice(text)
     }
 
     /// 未就绪的原因文案：具体说出缺哪几项，而不是笼统的"权限不足"。
@@ -592,6 +734,7 @@ final class AppCoordinator {
         isDownloadingModel = true
         modelDownloadProgress = 0
         modelDownloadError = nil
+        downloadStats.reset()
         if !isPaused, permissions.allRequiredGranted {
             currentState = .downloadingModel(0)
         }
@@ -606,6 +749,7 @@ final class AppCoordinator {
                 try await downloader.downloadAll { [weak self] progress in
                     guard let self, self.isDownloadingModel else { return }
                     self.modelDownloadProgress = progress
+                    self.downloadStats.record(progress: progress, at: ProcessInfo.processInfo.systemUptime)
                     if !self.isPaused, self.permissions.allRequiredGranted {
                         self.currentState = .downloadingModel(progress)
                     }
@@ -616,6 +760,7 @@ final class AppCoordinator {
                 self.modelDownloader = nil
                 self.modelDownloadError = nil
                 self.downloadRetryAttempt = 0
+                self.pendingReadyNotice = true
                 await self.asrService.reload()
                 await self.reevaluateReadiness()
             } catch let error as ModelDownloader.DownloadError {
@@ -653,6 +798,10 @@ final class AppCoordinator {
                 "%@已自动重试 %d 次仍未成功，请检查网络后手动重试。",
                 reason, Self.downloadRetryDelays.count
             )
+            // 自动重试用尽：窗口都不可见时，浮窗提示一次并指向设置（不受「不显示」影响，R8-C5）。
+            if !isOnboardingVisible, setupWindowController?.window?.isVisible != true {
+                recordingHUDController?.showError(L("语音模型下载失败，请到「设置 → 识别」查看并重试"))
+            }
         }
 
         currentState = permissions.allRequiredGranted
@@ -774,15 +923,29 @@ final class AppCoordinator {
     private func showRecordingHUD() {
         let deviceName = voiceTyperController?.recordingInputDeviceName
         guard config.hotkey.isModifierOnly else {
-            recordingHUDController?.showHUD(inputDeviceName: deviceName)
+            recordingHUDController?.showHUD(inputDeviceName: deviceName, hint: nextRecordingHint())
             return
         }
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.currentState == .recording else { return }
-            self.recordingHUDController?.showHUD(inputDeviceName: deviceName)
+            self.recordingHUDController?.showHUD(inputDeviceName: deviceName, hint: self.nextRecordingHint())
         }
         pendingRecordingHUDItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+    }
+
+    /// 录音状态行末尾的操作提示（R8-C4）：toggle 模式每次提示「再按 X 结束」；hold 模式只在前 5 次
+    /// 提示「Esc 取消」，计数存 `UserDefaults`。浮窗设为「不显示」时不计数。
+    private func nextRecordingHint() -> String? {
+        let defaults = UserDefaults.standard
+        let shown = defaults.integer(forKey: RecordingHint.escShownCountDefaultsKey)
+        guard let text = RecordingHint.text(
+            mode: config.hotkey.mode, hotkeyDisplay: config.hotkey.displayString, escShownCount: shown
+        ) else { return nil }
+        if config.hotkey.mode == .hold, config.ui.hudPosition != .hidden {
+            defaults.set(shown + 1, forKey: RecordingHint.escShownCountDefaultsKey)
+        }
+        return text
     }
 
     private func bindControllerEvents() {
@@ -999,14 +1162,17 @@ final class AppCoordinator {
             permissions: permissions,
             asrState: asrService.state,
             downloadProgress: progress,
+            downloadDetail: downloadDetailText(),
             modelDownloadError: modelDownloadError,
             hotkeyDisplay: config.hotkey.displayString,
-            engineStatus: engineStatusText()
+            engineStatus: engineStatusText(),
+            reauthorizationNotice: reauthorizationNotice
         )
         onboardingWindowController?.updateStatus(
             permissions: permissions,
             asrState: asrService.state,
             downloadProgress: progress,
+            downloadDetail: downloadDetailText(),
             modelDownloadError: modelDownloadError,
             hotkey: config.hotkey,
             fnConflictWarning: cachedFnConflictWarning,
@@ -1019,6 +1185,12 @@ final class AppCoordinator {
         cachedSecureInputWarning = SecureInput.currentWarning(for: config.hotkey)
     }
 
+    /// 下载进度详情（已下载 / 总量 · 速度 · 剩余）；不在下载时为 nil（R8-C5）。
+    private func downloadDetailText() -> String? {
+        guard isDownloadingModel else { return nil }
+        return downloadStats.text(progress: modelDownloadProgress)
+    }
+
     /// 菜单栏下拉里那行副标题。
     ///
     /// 必须自己感知下载进度：下载期间 `asrService.state` 仍是 `.modelMissing`，
@@ -1027,7 +1199,7 @@ final class AppCoordinator {
     /// 下载进度（B2）。
     private func engineStatusText() -> String {
         if isDownloadingModel {
-            return LF("模型下载中 %d%%", Int(modelDownloadProgress * 100))
+            return downloadDetailText() ?? LF("模型下载中 %d%%", Int(modelDownloadProgress * 100))
         }
         if let modelDownloadError {
             return LF("模型下载失败：%@", modelDownloadError)

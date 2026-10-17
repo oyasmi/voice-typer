@@ -5,6 +5,21 @@ struct PermissionsSettingsView: View {
 
     var body: some View {
         Form {
+            // 更新后权限失效的引导（R8-H1）：权限补齐后自动消失；每项下方的「系统设置」按钮直达对应页面。
+            if let notice = vm.reauthorizationNotice, !vm.permissions.allRequiredGranted {
+                Section {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(.orange)
+                        Text(notice)
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
             Section {
                 ForEach(PermissionKind.allCases, id: \.self) { kind in
                     PermissionRow(

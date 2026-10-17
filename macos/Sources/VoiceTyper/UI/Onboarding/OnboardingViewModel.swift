@@ -81,6 +81,8 @@ final class OnboardingViewModel {
     var permissions = PermissionSnapshot(microphone: .notDetermined, accessibility: .denied, inputMonitoring: .denied)
     var asrState: ASRService.State = .unloaded
     var downloadProgress: Double?
+    /// 下载进度详情（R8-C5）。
+    var downloadDetail: String?
     var modelDownloadError: String?
     var hotkeyDisplay = "Fn🌐"
     var hotkeyMode: HotkeyMode = .hold

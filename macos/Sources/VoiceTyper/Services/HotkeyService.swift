@@ -170,6 +170,15 @@ final class HotkeyService: @unchecked Sendable {
         acceptsCancelWhenInactive = false
     }
 
+    /// 在 worker 线程上复位激活态（R8-B3）：状态机只允许在 worker 线程读写。
+    func resetActiveState() {
+        guard let runLoop else { return }
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            self?.filter?.reset()
+        }
+        CFRunLoopWakeUp(runLoop)
+    }
+
     private func runEventLoop(startupBox: StartupResultBox, lifecycle: WorkerLifecycle, context: TapContext) {
         let mask =
             (1 << CGEventType.keyDown.rawValue) |

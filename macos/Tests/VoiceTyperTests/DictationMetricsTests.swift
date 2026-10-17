@@ -33,7 +33,7 @@ final class DictationMetricsTests: XCTestCase {
             "dictation session=7f3a outcome=inserted mode=hold hotkey=fn input=builtin* capture_start=41 "
                 + "first_buffer=162 audio=4.2s release_to_finalize=3 engine_wait=0 asr=71 llm=812 "
                 + "llm_result=corrected llm_retry=0 insert=34 insert_path=ax release_to_done=921 "
-                + "previews=7 previews_skipped=3 preview_max=88 cold=0 finalize_timeout=0 llm_fail=-"
+                + "previews=7 previews_skipped=3 preview_max=88 cold=0 finalize_timeout=0 llm_fail=- preview_avg=- final_wait=- tail_speech=- insert_verify=- clip_backup=-"
         )
     }
 
@@ -44,7 +44,7 @@ final class DictationMetricsTests: XCTestCase {
             "dictation session=0001 outcome=failed mode=toggle hotkey=modifier input=- capture_start=- "
                 + "first_buffer=- audio=0.0s release_to_finalize=- engine_wait=- asr=- llm=- llm_result=- "
                 + "llm_retry=- insert=- insert_path=- release_to_done=- previews=0 previews_skipped=0 "
-                + "preview_max=- cold=0 finalize_timeout=0 llm_fail=-"
+                + "preview_max=- cold=0 finalize_timeout=0 llm_fail=- preview_avg=- final_wait=- tail_speech=- insert_verify=- clip_backup=-"
         )
     }
 
@@ -56,8 +56,32 @@ final class DictationMetricsTests: XCTestCase {
         metrics.timings.llmResult = .fellBack
         metrics.timings.llmFallbackReason = .rateLimited
         let line = metrics.summaryLine()
-        XCTAssertTrue(line.hasSuffix("cold=0 finalize_timeout=1 llm_fail=rate_limited"), line)
+        XCTAssertTrue(line.hasSuffix("cold=0 finalize_timeout=1 llm_fail=rate_limited preview_avg=- final_wait=- tail_speech=- insert_verify=- clip_backup=-"), line)
         XCTAssertTrue(line.contains("llm_result=fell_back"))
+    }
+
+    /// 第二批字段：追加在第一批字段之后，只有数字与枚举。
+    func testSecondBatchFieldsRenderInOrder() {
+        let ms: UInt64 = 1_000_000
+        var metrics = DictationMetrics(sessionID: 6, mode: .hold, hotkey: .fn, pressedAt: 0)
+        metrics.timings.previewDeliveredNanos = 600 * ms
+        metrics.timings.previewDeliveredCount = 3
+        metrics.timings.finalizeDispatchedAt = 1_000 * ms
+        metrics.timings.finalizeInferenceStartedAt = 1_012 * ms
+        metrics.tailSpeech = true
+        metrics.insertVerify = .unchanged
+        metrics.clipBackupNanos = 7 * ms
+        XCTAssertTrue(
+            metrics.summaryLine().hasSuffix(
+                "llm_fail=- preview_avg=200 final_wait=12 tail_speech=1 insert_verify=unchanged clip_backup=7"
+            ),
+            metrics.summaryLine()
+        )
+        metrics.tailSpeech = false
+        metrics.insertVerify = .ok
+        XCTAssertTrue(metrics.summaryLine().contains("tail_speech=0 insert_verify=ok"))
+        metrics.outcome = .interrupted
+        XCTAssertTrue(metrics.summaryLine().contains("outcome=interrupted"))
     }
 
     func testSkippedAndSecureFieldEnumValues() {

@@ -13,6 +13,8 @@ protocol HotkeyListening: AnyObject {
     var acceptsCancelWhenInactive: Bool { get set }
     func start(with hotkey: HotkeyConfig) throws
     func stop()
+    /// 复位热键的激活态（卡键看门狗确认物理上已松开后调用）。
+    func resetActiveState()
 }
 
 @MainActor
@@ -32,6 +34,18 @@ protocol AudioCapturing: AnyObject {
 protocol TextInserting: AnyObject {
     func insert(text: String, expectedFrontmostPID: pid_t?) -> TextInsertionResult
     func copyToClipboard(text: String)
+    /// 最近一次插入的 AX 回读判定（R8-A3a）；未走 AX 为 nil。
+    var lastInsertVerification: InsertionVerification? { get }
+    /// 进入识别阶段时提前备份剪贴板，返回耗时（纳秒）（R8-A5）。
+    @discardableResult func prepareForInsert() -> UInt64?
+    /// 不再插入时丢弃提前备份。
+    func discardPreparedBackup()
+}
+
+extension TextInserting {
+    var lastInsertVerification: InsertionVerification? { nil }
+    func prepareForInsert() -> UInt64? { nil }
+    func discardPreparedBackup() {}
 }
 
 extension HotkeyService: HotkeyListening {}

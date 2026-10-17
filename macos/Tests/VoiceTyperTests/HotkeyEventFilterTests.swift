@@ -247,4 +247,29 @@ final class HotkeyEventFilterTests: XCTestCase {
         XCTAssertEqual(down(&f, escape), HotkeyEventFilter.Decision())
         XCTAssertEqual(up(&f, escape), HotkeyEventFilter.Decision())
     }
+
+    // MARK: - 卡键复位（R8-B3）
+
+    func testResetClearsActiveStateSoNextPressIsFresh() {
+        var f = filter(key: "space", modifiers: ["option"])
+        XCTAssertEqual(down(&f, space, flags: option).actions, [.press])
+        f.reset()
+        XCTAssertEqual(up(&f, space).actions, [], "复位后没有激活态，不再产生 release")
+        XCTAssertEqual(down(&f, space, flags: option).actions, [.press], "下一次按下是全新的一次")
+
+        var fn = filter(key: "fn")
+        _ = fn.handle(.flagsChanged(keyCode: 63, flags: fnFlag), acceptsCancelWhenInactive: false)
+        fn.reset()
+        XCTAssertEqual(fn.handle(.flagsChanged(keyCode: 63, flags: fnFlag), acceptsCancelWhenInactive: false).actions, [.press])
+    }
+
+    func testResetReleasesModifierRecognizer() {
+        var f = filter(key: "right_command")
+        _ = f.handle(.flagsChanged(keyCode: 54, flags: command | 0x10), acceptsCancelWhenInactive: false)
+        f.reset()
+        XCTAssertEqual(
+            f.handle(.flagsChanged(keyCode: 54, flags: command | 0x10), acceptsCancelWhenInactive: false).actions,
+            [.press], "复位后识别器回到空闲，新的按下重新开始"
+        )
+    }
 }

@@ -35,6 +35,12 @@ struct ASRSessionTimings: Equatable {
     var finalizeTimedOut = false
     /// 校对回落原文的原因；仅 `llmResult == .fellBack` 时有值（R8-C1）。
     var llmFallbackReason: LLMCorrector.FallbackReason?
+    /// 预览从发起到文字送达主线程的累计耗时与送达次数（R8-D1，求平均用）。
+    var previewDeliveredNanos: UInt64 = 0
+    var previewDeliveredCount = 0
+    /// `finalize` 派发到 asrQueue 的时刻，与推理真正开始的时刻（R8-D1，二者之差即 `final_wait`）。
+    var finalizeDispatchedAt: UInt64?
+    var finalizeInferenceStartedAt: UInt64?
 }
 
 /// 一次听写的耗时与结果摘要，收尾时以一行日志输出（`summaryLine()`）。
@@ -55,6 +61,8 @@ struct DictationMetrics {
         case startFailed = "start_failed"
         /// 焦点在密码输入框，拒绝开始听写（R8-B2）。
         case secureField = "secure_field"
+        /// 锁屏 / 睡眠 / 切换用户打断了录音：静默丢弃，不弹「已取消」（R8-B3）。
+        case interrupted
     }
 
     enum HotkeyKind: String {
@@ -83,6 +91,14 @@ struct DictationMetrics {
     /// 实际使用的输入设备类型；`inputSwitchedByAuto` 表示由「自动」策略从系统默认输入切换而来。
     var inputTransport: AudioTransport?
     var inputSwitchedByAuto = false
+
+    /// 松键时用户是否仍在说话（最后 100ms 内有高于静音阈值的电平）；未测量（设备变化、达到上限等
+    /// 没有「松键」的路径）为 nil（R8-D2a）。本批只采数据。
+    var tailSpeech: Bool?
+    /// AX 插入后的回读判定；粘贴路径或未走 AX 为 nil（R8-A3a）。
+    var insertVerify: InsertionVerification?
+    /// 提前备份剪贴板的耗时；没有提前备份为 nil（R8-A5）。
+    var clipBackupNanos: UInt64?
 
     init(sessionID: UInt16, mode: HotkeyMode, hotkey: HotkeyKind, pressedAt: UInt64) {
         self.sessionID = sessionID
@@ -123,6 +139,12 @@ struct DictationMetrics {
             // R8 起新增字段一律追加在末尾，不打乱既有字段顺序。
             ("finalize_timeout", timings.finalizeTimedOut ? "1" : "0"),
             ("llm_fail", timings.llmFallbackReason?.rawValue ?? "-"),
+            ("preview_avg", timings.previewDeliveredCount == 0
+                ? "-" : Self.ms(timings.previewDeliveredNanos / UInt64(timings.previewDeliveredCount))),
+            ("final_wait", Self.ms(Self.interval(timings.finalizeDispatchedAt, timings.finalizeInferenceStartedAt))),
+            ("tail_speech", tailSpeech.map { $0 ? "1" : "0" } ?? "-"),
+            ("insert_verify", insertVerify?.rawValue ?? "-"),
+            ("clip_backup", Self.ms(clipBackupNanos)),
         ]
         return "dictation " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
     }

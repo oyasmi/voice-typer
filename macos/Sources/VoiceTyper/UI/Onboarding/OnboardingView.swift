@@ -234,7 +234,7 @@ struct OnboardingView: View {
         if vm.isModelReady {
             statusLine("checkmark.circle.fill", .green, L("模型已就绪"), L("离线识别引擎可以直接使用。"))
         } else if let progress = vm.downloadProgress {
-            statusLine("arrow.down.circle", .accentColor, LF("正在下载 %d%%", Int(progress * 100)),
+            statusLine("arrow.down.circle", .accentColor, vm.downloadDetail ?? LF("正在下载 %d%%", Int(progress * 100)),
                        L("支持断点续传，取消后可以随时继续。"))
             ProgressView(value: progress)
             HStack {

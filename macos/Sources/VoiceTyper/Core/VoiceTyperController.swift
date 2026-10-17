@@ -35,6 +35,8 @@ final class VoiceTyperController {
         case gestureDiscarded
         /// stop()：控制器整体停止，不发任何状态变化。
         case shutdown
+        /// 锁屏 / 睡眠 / 切换用户打断了录音：静默丢弃，不弹「已取消」（R8-B3）。
+        case interrupted
     }
 
     private let config: AppConfig
@@ -46,6 +48,8 @@ final class VoiceTyperController {
     let textInsertionService: TextInserting
     private let focusInspector: FocusInspecting
     private let finalizeWatchdogTimeoutProvider: (Double) -> TimeInterval
+    private let physicalHotkeyFlags: () -> UInt64
+    private let stuckKeyPollInterval: TimeInterval
     private let now: MonotonicClock
 
     private var active: Utterance?
@@ -84,6 +88,18 @@ final class VoiceTyperController {
     /// 本次录音出现过的最大线性 RMS 电平。
     private var recordingPeakLevel: Float = 0
     private var silenceProbeWorkItems: [DispatchWorkItem] = []
+
+    /// 最近 150ms 的电平样本（带时间戳的小环形缓冲），松键时据此判断用户是否仍在说话（R8-D2a）。
+    private var recentLevels: [(at: UInt64, level: Float)] = []
+    private static let recentLevelWindowNanos: UInt64 = 150_000_000
+    private nonisolated static let tailSpeechWindowNanos: UInt64 = 100_000_000
+
+    /// 卡键看门狗（R8-B3）：按住模式录音期间定期读热键的物理状态。
+    private var stuckKeyTimer: Timer?
+    private var stuckKeyReleasedPolls = 0
+    /// 本次录音是否至少有一次观察到「物理上按着」。从没观察到过，说明这条信号在当前机器上不可靠
+    /// （或用户在第一个轮询前就松了手，那由短录音过滤处理）——此时绝不据此结束录音，宁可不救卡键也不误杀正常录音。
+    private var stuckKeyObservedHeld = false
 
     var onStateChange: ((AppState) -> Void)?
     var onRecognizedText: ((String) -> Void)?
@@ -163,9 +179,13 @@ final class VoiceTyperController {
         focusInspector: FocusInspecting = AXFocusInspector(),
         llmCorrectorOverride: LLMCorrector? = nil,
         finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
+        physicalHotkeyFlags: @escaping () -> UInt64 = HotkeyPhysicalState.currentFlags,
+        stuckKeyPollInterval: TimeInterval = 0.25,
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.now = now
+        self.physicalHotkeyFlags = physicalHotkeyFlags
+        self.stuckKeyPollInterval = stuckKeyPollInterval
         self.focusInspector = focusInspector
         self.finalizeWatchdogTimeoutProvider = finalizeWatchdogTimeout
         self.config = config
@@ -222,6 +242,7 @@ final class VoiceTyperController {
                     utterance.metrics.firstBufferAt = receivedAt
                 }
                 self.recordingPeakLevel = max(self.recordingPeakLevel, level)
+                self.recordLevelSample(at: receivedAt, level: level)
                 self.onAudioLevel?(level)
             }
         }
@@ -240,6 +261,7 @@ final class VoiceTyperController {
     func stop() {
         hotkeyService.acceptsCancelWhenInactive = false
         cancelSilenceProbes()
+        stopStuckKeyWatchdog()
         hotkeyService.stop()
         audioCaptureService.stopWithoutResult()
         if active != nil {
@@ -388,6 +410,13 @@ final class VoiceTyperController {
     private func finishRecording() {
         guard let utterance = active, utterance.phase == .recording else { return }
         utterance.metrics.releasedAt = now()
+        stopStuckKeyWatchdog()
+        // 只采数据：松键时是否仍在说话，决定以后要不要补录约 150ms（R8-D2b，数据驱动）。
+        if let releasedAt = utterance.metrics.releasedAt {
+            utterance.metrics.tailSpeech = Self.tailSpeechDetected(
+                levels: recentLevels, releasedAt: releasedAt, threshold: AppConstants.silenceRMSThreshold
+            )
+        }
 
         // 短录音过滤：低于阈值的录音视为误触，立即取消。
         if Date().timeIntervalSince(utterance.startedAt) < Self.minimumRecordingDuration {
@@ -399,6 +428,62 @@ final class VoiceTyperController {
 
         // stop() 触发 onTailChunk → sendAudio(tail) + finalize()，phase 在那里推进到 .recognizing。
         audioCaptureService.stop()
+    }
+
+    /// 锁屏 / 睡眠 / 切换用户时由协调器调用（R8-B3）：录音阶段静默丢弃（没有人在听，
+    /// 也不弹「已取消」）；识别阶段不动——结果照常上屏或进入「最近结果」。
+    func interruptRecording() {
+        guard let utterance = active, utterance.phase == .recording else { return }
+        audioCaptureService.stopWithoutResult()
+        finish(.interrupted)
+    }
+
+    /// 松键前 100ms 内是否出现过高于静音阈值的电平。
+    nonisolated static func tailSpeechDetected(
+        levels: [(at: UInt64, level: Float)], releasedAt: UInt64, threshold: Float
+    ) -> Bool {
+        levels.contains { sample in
+            sample.at <= releasedAt && releasedAt &- sample.at <= tailSpeechWindowNanos && sample.level >= threshold
+        }
+    }
+
+    private func recordLevelSample(at time: UInt64, level: Float) {
+        recentLevels.append((time, level))
+        recentLevels.removeAll { time &- $0.at > Self.recentLevelWindowNanos && time >= $0.at }
+    }
+
+    // MARK: 卡键看门狗（R8-B3）
+
+    private func startStuckKeyWatchdog() {
+        stopStuckKeyWatchdog()
+        guard config.hotkey.mode == .hold else { return }
+        stuckKeyTimer = Timer.scheduledTimer(withTimeInterval: stuckKeyPollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollHotkeyPhysicalState() }
+        }
+    }
+
+    private func stopStuckKeyWatchdog() {
+        stuckKeyTimer?.invalidate()
+        stuckKeyTimer = nil
+        stuckKeyReleasedPolls = 0
+        stuckKeyObservedHeld = false
+    }
+
+    private func pollHotkeyPhysicalState() {
+        guard isRecording else { stopStuckKeyWatchdog(); return }
+        if HotkeyPhysicalState.isHeld(config.hotkey, flags: physicalHotkeyFlags()) {
+            stuckKeyObservedHeld = true
+            stuckKeyReleasedPolls = 0
+            return
+        }
+        guard stuckKeyObservedHeld else { return }
+        stuckKeyReleasedPolls += 1
+        guard stuckKeyReleasedPolls >= 2 else { return }
+        // 连续两次判定已松开：松键事件丢了。按松键处理，并让热键服务复位，避免下一次按下被当成重复。
+        AppLog.hotkey.warning("热键物理上已松开但没收到松开事件，按松键处理")
+        stopStuckKeyWatchdog()
+        hotkeyService.resetActiveState()
+        finishRecording()
     }
 
     /// 用户按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
@@ -508,6 +593,8 @@ final class VoiceTyperController {
                 // 时长随录音长度放大（R8-A1）。
                 let audioSeconds = Double(session?.timings.receivedSamples ?? 0) / 16_000
                 session?.finalize(timeout: self.finalizeWatchdogTimeoutProvider(audioSeconds))
+                // 与 asrQueue 上的推理并行，不在「松键 → 出字」的关键路径上（R8-A5）。
+                self.active?.metrics.clipBackupNanos = self.textInsertionService.prepareForInsert()
                 self.onStateChange?(.recognizing)
             }
         }
@@ -536,7 +623,9 @@ final class VoiceTyperController {
         active = utterance
         previewText = ""
         recordingPeakLevel = 0
+        recentLevels.removeAll()
         scheduleSilenceProbes()
+        startStuckKeyWatchdog()
         onStateChange?(.recording)
     }
 
@@ -573,6 +662,7 @@ final class VoiceTyperController {
         guard let utterance = active else { return }
         active = nil
         cancelSilenceProbes()
+        stopStuckKeyWatchdog()
         hotkeyService.acceptsCancelWhenInactive = false
         // 必须在 close() 之前取：这是会话内分阶段打点的唯一读取点。
         var metrics = utterance.metrics
@@ -611,9 +701,18 @@ final class VoiceTyperController {
             } else {
                 result = .discarded
             }
+        case .interrupted:
+            if isRunning {
+                AppLog.audio.info("系统锁屏 / 睡眠，已静默丢弃录音")
+                onStateChange?(.idle)
+            }
+            result = .interrupted
         case .shutdown:
+            textInsertionService.discardPreparedBackup()
             return // stop() 不是一次完整听写，不上报
         }
+        // 提前备份的剪贴板只服务于粘贴兜底；不论本次是否真的用到，收尾都要丢弃。
+        textInsertionService.discardPreparedBackup()
 
         metrics.outcome = result
         metrics.doneAt = now()
@@ -672,6 +771,7 @@ final class VoiceTyperController {
         let insertStartedAt = now()
         let insertResult = textInsertionService.insert(text: output, expectedFrontmostPID: expectedFrontmostPID)
         metrics.insertNanos = now() &- insertStartedAt
+        metrics.insertVerify = textInsertionService.lastInsertVerification
         switch insertResult {
         case .inserted(let path):
             metrics.insertPath = path

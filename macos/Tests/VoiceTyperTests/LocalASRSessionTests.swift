@@ -662,4 +662,71 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertFalse(session.isCorrecting)
         XCTAssertFalse(session.skipCorrection())
     }
+
+    // MARK: - R8-D1：事件驱动的预览调度
+
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var nanos: UInt64 = 1_000_000_000
+        func advance(ms: UInt64) { lock.lock(); nanos += ms * 1_000_000; lock.unlock() }
+        var clock: MonotonicClock { { [self] in lock.lock(); defer { lock.unlock() }; return nanos } }
+    }
+
+    func testPreviewWaitsForThreeHundredMillisecondsOfNewSamples() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+
+        session.sendAudio(speech(count: 3_200)) // 200ms，不足 300ms
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(engine.callCount, 0)
+
+        session.sendAudio(speech(count: 3_200)) // 累计 400ms
+        await poll { engine.callCount == 1 }
+        XCTAssertEqual(engine.callCount, 1)
+        XCTAssertEqual(session.timings.previewSkipped, 0, "样本不足不算「静音跳过」")
+    }
+
+    func testNextPreviewWaitsForHalfOfLastPreviewDuration() async {
+        let testClock = TestClock()
+        let engine = GatedFakeEngine()
+        engine.textForCall = { index in
+            testClock.advance(ms: 400) // 这次预览「耗时」400ms
+            return "preview\(index)"
+        }
+        let session = LocalASRSession(
+            asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil, now: testClock.clock
+        )
+
+        session.sendAudio(speech(count: 8_000))
+        await poll { session.timings.previewRuns == 1 }
+        XCTAssertEqual(session.timings.previewRuns, 1)
+        XCTAssertEqual(session.timings.previewDeliveredCount, 1)
+        XCTAssertEqual(session.timings.previewDeliveredNanos, 400_000_000, "从发起到送达")
+
+        // 新样本已够，但还没到「结束 + 耗时/2」。
+        session.sendAudio(speech(count: 8_000))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(engine.callCount, 1, "占空比限制：还不能跑下一次")
+
+        testClock.advance(ms: 200)
+        session.sendAudio(speech(count: 160)) // 下一个采集块到达，再检查一次
+        await poll { engine.callCount == 2 }
+        XCTAssertEqual(engine.callCount, 2)
+    }
+
+    func testFinalizeRecordsDispatchAndInferenceStartTimes() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+        var final: String?
+        session.onFinal = { final = $0 }
+        session.sendAudio(speech(count: 20_000))
+        session.finalize(timeout: 5)
+        await poll { final != nil }
+
+        let dispatched = session.timings.finalizeDispatchedAt
+        let started = session.timings.finalizeInferenceStartedAt
+        XCTAssertNotNil(dispatched)
+        XCTAssertNotNil(started)
+        XCTAssertGreaterThanOrEqual(started ?? 0, dispatched ?? UInt64.max)
+    }
 }
