@@ -42,7 +42,10 @@ final class VoiceTyperController {
     private let llmCorrector: LLMCorrector?
     private let hotkeyService: HotkeyListening
     private let audioCaptureService: AudioCapturing
-    private let textInsertionService: TextInserting
+    /// 内部可见仅为测试断言「协调器重建控制器后仍是同一个插入服务」（R8-A2）。
+    let textInsertionService: TextInserting
+    private let focusInspector: FocusInspecting
+    private let finalizeWatchdogTimeoutProvider: (Double) -> TimeInterval
     private let now: MonotonicClock
 
     private var active: Utterance?
@@ -102,7 +105,47 @@ final class VoiceTyperController {
     var onAudioLevel: ((Float) -> Void)?
     /// 每次听写收尾时恰好触发一次（`stop()` 除外），参数只含数字与枚举。
     var onMetrics: ((DictationMetrics) -> Void)?
+    /// 一段听写产生了值得留存的结果（R8-A2）：已输入、没输进去（已复制）、被取消但有预览、
+    /// 失败 / 超时但有已识别部分。文本是上屏用的格式化后文本。
+    var onResultAvailable: ((String, DictationHistory.Kind) -> Void)?
+    /// 成功上屏时的附加说明（R8-C1/C2）：校对回落或被用户跳过。`nil` 表示一切正常。
+    /// 在 `onStateChange(.idle)` 之前触发，让「已输入」提示能带上这行说明。
+    var onInsertedWithNote: ((InsertionNote?) -> Void)?
+    /// 引擎未就绪而用户在等待（R8-A1）。
+    var onEngineWait: ((EngineWaitStage) -> Void)?
+    /// 焦点在密码输入框，已拒绝开始听写（R8-B2）。
+    var onSecureFieldRefused: (() -> Void)?
     var isStarted: Bool { isRunning }
+
+    /// 「已输入」之后的附加说明。
+    struct InsertionNote: Equatable {
+        let message: String
+        /// 浮窗设为「不显示」时是否仍要提示（配置类问题，例如 API Key 失效，每次都会失败）。
+        let showsWhenHUDHidden: Bool
+    }
+
+    /// 终稿看门狗时长：随录音时长放大，慢机上长录音不会被误判超时；真卡死仍会被发现（R8-A1）。
+    nonisolated static func finalizeWatchdogTimeout(audioSeconds: Double) -> TimeInterval {
+        min(max(audioSeconds * 5, 30), 300)
+    }
+
+    /// 校对回落原因 → 给用户的一句话（R8-C1）。
+    static func insertionNote(for timings: ASRSessionTimings) -> InsertionNote? {
+        if timings.llmResult == .skipped {
+            return InsertionNote(message: L("已跳过智能校对"), showsWhenHUDHidden: false)
+        }
+        guard timings.llmResult == .fellBack else { return nil }
+        let message: String
+        switch timings.llmFallbackReason {
+        case .timeout: message = L("智能校对超时，已输入识别原文。")
+        case .network: message = L("无法连接智能校对服务，已输入识别原文。")
+        case .auth: message = L("智能校对鉴权失败，请到「设置 → 识别」检查 API Key。已输入识别原文。")
+        case .rateLimited: message = L("智能校对请求过于频繁，已输入识别原文。")
+        case .emptyResult: message = L("智能校对没有返回有效结果，已输入识别原文。")
+        case .server, .none: message = L("智能校对服务出错，已输入识别原文。")
+        }
+        return InsertionNote(message: message, showsWhenHUDHidden: timings.llmFallbackReason == .auth)
+    }
 
     /// 当前录音实际使用的输入设备名，供 HUD 显示；`start` 成功后才有值。
     var recordingInputDeviceName: String? {
@@ -117,16 +160,24 @@ final class VoiceTyperController {
         hotkeyService: HotkeyListening = HotkeyService(),
         audioCaptureService: AudioCapturing = AudioCaptureService(),
         textInsertionService: TextInserting = TextInsertionService(),
+        focusInspector: FocusInspecting = AXFocusInspector(),
+        llmCorrectorOverride: LLMCorrector? = nil,
+        finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.now = now
+        self.focusInspector = focusInspector
+        self.finalizeWatchdogTimeoutProvider = finalizeWatchdogTimeout
         self.config = config
         self.asrService = asrService
         self.hotkeyService = hotkeyService
         self.audioCaptureService = audioCaptureService
         self.textInsertionService = textInsertionService
 
-        if config.llm.enabled, let chatURL = LLMEndpoint.chatCompletionsURL(from: config.llm.baseURL) {
+        if let llmCorrectorOverride {
+            // 仅测试注入：让校对请求可被桩替换。
+            self.llmCorrector = llmCorrectorOverride
+        } else if config.llm.enabled, let chatURL = LLMEndpoint.chatCompletionsURL(from: config.llm.baseURL) {
             self.llmCorrector = LLMCorrector(config: LLMCorrector.Config(
                 chatCompletionsURL: chatURL,
                 apiKey: KeychainStore.loadLLMAPIKey(),
@@ -235,9 +286,16 @@ final class VoiceTyperController {
             if !config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
             return
         }
+        // 校对中再按热键 = 跳过校对（R8-C2）。单独修饰键只认干净的单击（在松开时处理），
+        // 避免 ⌘C 之类的组合快捷键误触发；按下时也不要再弹「上一段听写尚未完成」。
+        if active?.phase == .recognizing, active?.session.isCorrecting == true {
+            if !config.hotkey.isModifierOnly { skipCorrectionByUser() }
+            return
+        }
         switch config.hotkey.mode {
         case .hold:
-            beginRecording(pressedAt: pressedAt)
+            // 单独修饰键（hold）每次组合快捷键都会"按下"：密码框里的拒绝提示留到干净单击时再说。
+            beginRecording(pressedAt: pressedAt, announcesRefusal: !config.hotkey.isModifierOnly)
         case .toggle:
             // 单独修饰键的 toggle：只有干净的单击才算，改在 `handleHotkeyRelease` 里切换，
             // 这样按住右 ⌘ 再按 C 之类的组合快捷键不会误开录音。
@@ -259,9 +317,19 @@ final class VoiceTyperController {
             if config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
             return
         }
+        // 干净单击且正在校对：跳过校对（R8-C2）。
+        if config.hotkey.isModifierOnly, active?.phase == .recognizing, active?.session.isCorrecting == true {
+            skipCorrectionByUser()
+            return
+        }
         switch config.hotkey.mode {
         case .hold:
-            finishRecording()
+            if active == nil, config.hotkey.isModifierOnly {
+                // 按下时没有开始录音（密码框）：干净单击到这里才说明原因。
+                _ = refuseIfFocusIsSecure(pressedAt: now())
+            } else {
+                finishRecording()
+            }
         case .toggle:
             // 普通热键的松开不是结束信号；单独修饰键的松开才是"一次干净的单击"。
             guard config.hotkey.isModifierOnly else { return }
@@ -281,13 +349,40 @@ final class VoiceTyperController {
         finish(.gestureDiscarded)
     }
 
-    private func beginRecording(pressedAt: UInt64) {
+    private func beginRecording(pressedAt: UInt64, announcesRefusal: Bool = true) {
         guard isRunning else { return }
         guard active == nil else {
             onPreviewWarning?(L("上一段听写尚未完成"))
             return
         }
+        // 密码框里不听写：开了智能校对会把口述内容发给第三方服务，口述密码本身也不安全（R8-D-3）。
+        if focusInspector.isFocusedElementSecure() {
+            if announcesRefusal { _ = refuseIfFocusIsSecure(pressedAt: pressedAt, alreadyChecked: true) }
+            return
+        }
         beginDictationSession(pressedAt: pressedAt)
+    }
+
+    /// 焦点在密码框时拒绝听写并说明原因，度量照常上报一行。返回是否拒绝。
+    private func refuseIfFocusIsSecure(pressedAt: UInt64, alreadyChecked: Bool = false) -> Bool {
+        guard alreadyChecked || focusInspector.isFocusedElementSecure() else { return false }
+        var metrics = DictationMetrics(
+            sessionID: UInt16.random(in: .min ... .max),
+            mode: config.hotkey.mode,
+            hotkey: config.hotkey.kind,
+            pressedAt: pressedAt
+        )
+        metrics.outcome = .secureField
+        metrics.doneAt = now()
+        AppLog.app.info("焦点在密码输入框，拒绝开始听写")
+        onSecureFieldRefused?()
+        onMetrics?(metrics)
+        return true
+    }
+
+    private func skipCorrectionByUser() {
+        guard let session = active?.session, session.skipCorrection() else { return }
+        AppLog.llm.info("用户跳过了智能校对")
     }
 
     private func finishRecording() {
@@ -358,8 +453,9 @@ final class VoiceTyperController {
         // 后一次结果会修正前一次的文字，增量语义无法表达这种回溯修改。
         session.onPartial = { [weak self] text in
             guard let self else { return }
+            // previewText 保存原始文本（供识别失败时兜底）；浮窗显示的是上屏用的格式化文本（R8-F2）。
             self.previewText = text
-            self.onPreviewUpdate?(self.previewText)
+            self.onPreviewUpdate?(OutputFormatter.formatForOutput(text))
         }
 
         session.onFinal = { [weak self] text in
@@ -384,6 +480,10 @@ final class VoiceTyperController {
             self?.onCorrectionStarted?()
         }
 
+        session.onEngineWait = { [weak self] stage in
+            self?.onEngineWait?(stage)
+        }
+
         audioCaptureService.onChunk = { [weak session] samples in
             Task { @MainActor [weak session] in
                 session?.sendAudio(samples)
@@ -405,7 +505,9 @@ final class VoiceTyperController {
                 // 受理 Esc）。收尾时由 finish(_:) 统一关闭这个窗口。
                 self.hotkeyService.acceptsCancelWhenInactive = true
                 // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
-                session?.finalize(timeout: 30)
+                // 时长随录音长度放大（R8-A1）。
+                let audioSeconds = Double(session?.timings.receivedSamples ?? 0) / 16_000
+                session?.finalize(timeout: self.finalizeWatchdogTimeoutProvider(audioSeconds))
                 self.onStateChange?(.recognizing)
             }
         }
@@ -479,6 +581,8 @@ final class VoiceTyperController {
         asrService.sessionEnded()
         audioCaptureService.onChunk = nil
         audioCaptureService.onTailChunk = nil
+        // 清空之前取走：识别失败 / 取消时，已识别出的预览是用户唯一能找回的内容（R8-A1/A2）。
+        let partial = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
         previewText = ""
         onPreviewUpdate?("")
 
@@ -487,11 +591,14 @@ final class VoiceTyperController {
         case .text(let text):
             result = handleFinalText(text, expectedFrontmostPID: utterance.expectedFrontmostPID, metrics: &metrics)
         case .failed(let message):
-            onStateChange?(.error(message))
+            handleRecognitionFailure(message, partial: partial, timedOut: metrics.timings.finalizeTimedOut)
             result = .failed
         case .cancelled:
             if isRunning {
                 AppLog.audio.info("用户取消录音")
+                if !partial.isEmpty {
+                    onResultAvailable?(OutputFormatter.formatForOutput(partial), .cancelled)
+                }
                 onCancelled?()
             }
             result = .cancelled
@@ -513,6 +620,25 @@ final class VoiceTyperController {
         onMetrics?(metrics)
     }
 
+    /// 识别失败的兜底（R8-A1，对应 R8-D-5）：只有**超时**才把已识别的部分复制到剪贴板；
+    /// 其他失败只放进「最近结果」，不覆盖用户的剪贴板。无预览文本时两者都不发生。
+    private func handleRecognitionFailure(_ message: String, partial: String, timedOut: Bool) {
+        guard !partial.isEmpty else {
+            onStateChange?(.error(message))
+            return
+        }
+        let output = OutputFormatter.formatForOutput(partial)
+        if timedOut {
+            textInsertionService.copyToClipboard(text: output)
+            onResultAvailable?(output, .partialAfterTimeout)
+            onStateChange?(.error(L("识别超时，已把识别出的部分复制到剪贴板")))
+        } else {
+            onResultAvailable?(output, .partialAfterFailure)
+            let base = message.trimmingCharacters(in: CharacterSet(charactersIn: "。.！!，, ").union(.whitespaces))
+            onStateChange?(.error(LF("%@。%@", base, L("可在菜单栏「最近结果」里找回已识别的部分"))))
+        }
+    }
+
     /// 插入最终文本并更新状态，返回本次听写的结局。调用方（`finish(_:)`）负责在调用前完成会话拆解。
     private func handleFinalText(
         _ text: String, expectedFrontmostPID: pid_t?, metrics: inout DictationMetrics
@@ -530,26 +656,42 @@ final class VoiceTyperController {
 
         guard isRunning else { return .discarded }
 
+        // 上屏用的最终文本：位于识别契约之后的确定性格式化（R8-F2），与是否启用 LLM 无关。
+        let output = OutputFormatter.formatForOutput(trimmed)
+
+        // toggle 模式录音中途焦点可能移到了密码框：同一应用内的切换 PID 校验发现不了（R8-B2）。
+        if focusInspector.isFocusedElementSecure() {
+            textInsertionService.copyToClipboard(text: output)
+            AppLog.app.warning("目标是密码输入框，插入已取消，改为复制到剪贴板")
+            onResultAvailable?(output, .copiedFocusChanged)
+            onStateChange?(.error(L("目标是密码输入框，结果已复制到剪贴板")))
+            return .focusChanged
+        }
+
         onStateChange?(.inserting)
         let insertStartedAt = now()
-        let insertResult = textInsertionService.insert(text: trimmed, expectedFrontmostPID: expectedFrontmostPID)
+        let insertResult = textInsertionService.insert(text: output, expectedFrontmostPID: expectedFrontmostPID)
         metrics.insertNanos = now() &- insertStartedAt
         switch insertResult {
         case .inserted(let path):
             metrics.insertPath = path
-            onRecognizedText?(trimmed)
+            onResultAvailable?(output, .inserted)
+            onRecognizedText?(output)
+            onInsertedWithNote?(Self.insertionNote(for: metrics.timings))
             onStateChange?(.idle)
             return .inserted
         case .focusChanged:
             // 录音开始到插入之间前台应用已切换：不写入用户未预期的窗口，只复制到剪贴板。
-            textInsertionService.copyToClipboard(text: trimmed)
+            textInsertionService.copyToClipboard(text: output)
             AppLog.app.warning("目标窗口已变化，插入已取消，改为复制到剪贴板")
+            onResultAvailable?(output, .copiedFocusChanged)
             onStateChange?(.error(L("目标窗口已变化，结果已复制到剪贴板")))
             return .focusChanged
         case .failed:
             // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
-            textInsertionService.copyToClipboard(text: trimmed)
+            textInsertionService.copyToClipboard(text: output)
             AppLog.app.error("文本插入失败，已复制到剪贴板")
+            onResultAvailable?(output, .copiedInsertFailed)
             onStateChange?(.error(L("插入失败，已复制到剪贴板，可手动粘贴")))
             return .insertFailed
         }

@@ -38,3 +38,10 @@ python3 macos/scripts/dump_reference_fixtures.py
 
 `fbank_input.f32` / `fbank_reference.f32` / `lfrcmvn_reference.f32` / `fbank_parity_shapes.json`
 会被脚本覆盖重写；`speech_zh_en_mixed.wav` 不会（脚本只读它），需要另行准备合成语音替换。
+
+## text_format_cases.json
+
+R8-F2「中英文之间统一加空格」的共享用例（`OutputFormatterTests` 逐条读取）。**不是**识别金标准：
+它约束的是 `TextPostprocessor` 之后的 `OutputFormatter`，规则见 `macos/docs/UX_R8_SPEC.md` R8-F2。
+Windows 侧同规则的 C# 实现应在 `VoiceTyper.Tests.csproj` 里 `Link` 同一份文件，两平台规则只能一起改。
+既有用例的期望值不得删改；新增用例须同时在两个平台通过。

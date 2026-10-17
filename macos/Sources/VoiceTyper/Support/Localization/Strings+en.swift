@@ -373,7 +373,44 @@ extension L10n {
         "录音已达 %d 秒上限，自动结束本次听写": "Reached the %d-second limit; this dictation ended automatically",
         "识别超时": "Recognition timed out",
         "识别引擎尚未就绪": "The speech engine is not ready yet",
-        "智能校对未成功，已使用识别原文": "AI proofreading did not succeed; the raw recognition was used",
+
+        // MARK: - R8：最近结果 / 失败兜底 / 校对回落 / 密码框
+        "复制上一次结果": "Copy Last Result",
+        "最近结果": "Recent Results",
+        "清空最近结果": "Clear Recent Results",
+        "（未输入）": "(not inserted)",
+        "（已取消）": "(cancelled)",
+        "（部分）": "(partial)",
+        "已复制到剪贴板": "Copied to clipboard",
+        "识别超时，已把识别出的部分复制到剪贴板": "Recognition timed out. The recognized part was copied to the clipboard.",
+        "可在菜单栏「最近结果」里找回已识别的部分":
+            "You can recover the recognized part from Recent Results in the menu bar.",
+        "%@。%@": "%@. %@",
+        "识别中 · 正在加载模型…": "Recognizing · Loading model…",
+        "录音中 · 模型加载中…": "Recording · Loading model…",
+        "无法听写": "Can't dictate here",
+        "当前是密码输入框，VoiceTyper 不会在这里听写": "This is a password field. VoiceTyper won't dictate here.",
+        "目标是密码输入框，结果已复制到剪贴板": "The target is a password field. The result was copied to the clipboard.",
+        "「%@」开启了安全输入，组合键热键暂时收不到":
+            "“%@” has turned on Secure Input, so key-combination hotkeys can't be received right now",
+        "%@。Fn 与单独修饰键热键不受影响。":
+            "%@. Fn and single-modifier hotkeys are not affected.",
+        "某个应用": "An app",
+        "已输入 · 未校对": "Inserted · Not proofread",
+        "已跳过智能校对": "AI proofreading skipped",
+        "校对中… · 再按 %@ 跳过": "Proofreading… · Press %@ to skip",
+        "还剩 %d 秒": "%d s left",
+        "智能校对超时，已输入识别原文。": "AI proofreading timed out; the raw transcript was inserted.",
+        "无法连接智能校对服务，已输入识别原文。":
+            "Could not reach the proofreading service; the raw transcript was inserted.",
+        "智能校对鉴权失败，请到「设置 → 识别」检查 API Key。已输入识别原文。":
+            "The proofreading service rejected the API key. Check Settings → Recognition. The raw transcript was inserted.",
+        "智能校对请求过于频繁，已输入识别原文。":
+            "The proofreading service is rate-limiting requests; the raw transcript was inserted.",
+        "智能校对服务出错，已输入识别原文。":
+            "The proofreading service returned an error; the raw transcript was inserted.",
+        "智能校对没有返回有效结果，已输入识别原文。":
+            "Proofreading returned no usable result; the raw transcript was inserted.",
         "LLM 服务响应无效": "Invalid response from the LLM service",
         "LLM API 错误 (%d)": "LLM API error (%d)",
         "LLM 响应格式无法解析": "The LLM response could not be parsed",

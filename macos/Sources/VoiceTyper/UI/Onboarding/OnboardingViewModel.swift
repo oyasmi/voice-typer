@@ -86,6 +86,8 @@ final class OnboardingViewModel {
     var hotkeyMode: HotkeyMode = .hold
     /// Fn 与系统「按下🌐键」行为冲突时的提示文案；无冲突为 nil。
     var fnConflictWarning: String?
+    /// 其他应用开启了「安全输入」、组合键热键暂时收不到时的说明（R8-B2）；否则为 nil。
+    var secureInputWarning: String?
 
     // MARK: 试一试
 

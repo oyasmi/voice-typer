@@ -153,6 +153,7 @@ final class LocalASRSessionTests: XCTestCase {
 
         await poll(timeout: 1) { receivedError != nil }
         XCTAssertEqual(receivedError, "识别超时")
+        XCTAssertTrue(session.timings.finalizeTimedOut, "超时必须置位，控制器据此决定是否复制已识别部分（R8-A1）")
 
         engine.release() // 放行被阻塞的调用，避免残留一个长期占用线程池的挂起任务。
     }
@@ -341,7 +342,10 @@ final class LocalASRSessionTests: XCTestCase {
 
         await poll(timeout: 3) { finalText != nil }
         XCTAssertEqual(finalText, "raw-asr-text")
-        XCTAssertTrue(warnings.contains("智能校对未成功，已使用识别原文"))
+        // 原因交给控制器在「已输入 · 未校对」里说明，不再发会被成功提示盖掉的 warning（R8-C1）。
+        XCTAssertTrue(warnings.isEmpty, "回落不应再发 onWarning：\(warnings)")
+        XCTAssertEqual(session.timings.llmResult, .fellBack)
+        XCTAssertEqual(session.timings.llmFallbackReason, .server)
     }
 
     /// 进入 LLM 校对阶段必须发一次 `onCorrectionStarted`：没有它，HUD 会一直停在
@@ -523,5 +527,139 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertNotNil(session.timings.finalizeStartedAt)
         XCTAssertNotNil(session.timings.asrCompletedAt)
         XCTAssertEqual(session.timings.llmResult, .off)
+    }
+
+    // MARK: - R8-A1：看门狗起算点、引擎不可用、等待阶段
+
+    /// 看门狗从推理真正派发时起算，不含等待引擎加载：慢机上引擎加载超过看门狗时长，
+    /// 不应该被误判成「识别超时」。
+    func testFinalizeWatchdogDoesNotCountEngineLoadTime() async {
+        final class EngineBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var engine: (any SenseVoiceRecognizing)?
+            var current: (any SenseVoiceRecognizing)? { lock.lock(); defer { lock.unlock() }; return engine }
+            func set(_ value: any SenseVoiceRecognizing) { lock.lock(); engine = value; lock.unlock() }
+        }
+        let box = EngineBox()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { box.current }, llmCorrector: nil)
+        session.sendAudio(speech(count: 5_000))
+
+        var finalText: String?
+        var receivedError: String?
+        session.onFinal = { finalText = $0 }
+        session.onError = { receivedError = $0 }
+        session.finalize(timeout: 0.1)
+
+        // 引擎在 0.1s 看门狗时长之后才就绪。
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertNil(receivedError, "等待引擎加载的时间不应计入看门狗")
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "late-engine" }
+        box.set(engine)
+
+        await poll { finalText != nil || receivedError != nil }
+        XCTAssertEqual(finalText, "late-engine")
+        XCTAssertFalse(session.timings.finalizeTimedOut)
+    }
+
+    func testEngineUnavailableFailsImmediatelyWithoutWaiting() async {
+        let session = LocalASRSession(
+            asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil, engineUnavailable: { true }
+        )
+        session.sendAudio(speech(count: 5_000))
+        var receivedError: String?
+        session.onError = { receivedError = $0 }
+        session.finalize(timeout: 30)
+
+        await poll(timeout: 0.5) { receivedError != nil }
+        XCTAssertEqual(receivedError, "识别引擎尚未就绪")
+        XCTAssertFalse(session.timings.finalizeTimedOut)
+    }
+
+    func testRecordingEngineWaitNoticeFiresOnceAfterOneSecondOfAudio() {
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil)
+        var stages: [EngineWaitStage] = []
+        session.onEngineWait = { stages.append($0) }
+
+        session.sendAudio(speech(count: 8_000))
+        XCTAssertTrue(stages.isEmpty, "不足 1s 音频时不提示")
+        session.sendAudio(speech(count: 8_000))
+        XCTAssertEqual(stages, [.recording])
+        session.sendAudio(speech(count: 8_000))
+        XCTAssertEqual(stages, [.recording], "同一阶段至多提示一次")
+    }
+
+    func testFinalizingEngineWaitNoticeFiresOnceAfterAboutThreePolls() async {
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { nil }, llmCorrector: nil)
+        var stages: [EngineWaitStage] = []
+        session.onEngineWait = { stages.append($0) }
+        session.sendAudio(speech(count: 5_000))
+        session.finalize(timeout: 30)
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(stages.isEmpty, "约 300ms 之内不提示")
+        await poll(timeout: 1) { stages == [.finalizing] }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(stages, [.finalizing])
+        session.close()
+    }
+
+    // MARK: - R8-C2：校对中跳过
+
+    private func makeGatedCorrector(gate: DispatchSemaphore) -> LLMCorrector {
+        StubURLProtocol.handler = { _ in
+            _ = gate.wait(timeout: .now() + 5)
+            return (200, #"{"choices":[{"message":{"content":"corrected-text"},"finish_reason":"stop"}]}"#)
+        }
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [StubURLProtocol.self]
+        return LLMCorrector(
+            config: LLMCorrector.Config(
+                chatCompletionsURL: LLMEndpoint.chatCompletionsURL(from: "https://stub.invalid/v1")!,
+                apiKey: "test-key", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
+            ),
+            urlSession: URLSession(configuration: sessionConfig)
+        )
+    }
+
+    func testSkipCorrectionFinalizesOnceWithRawTextAndIgnoresLateResult() async {
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "raw-asr-text" }
+        let gate = DispatchSemaphore(value: 0)
+        let session = LocalASRSession(
+            asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: makeGatedCorrector(gate: gate)
+        )
+        var finals: [String] = []
+        var correctionStarted = false
+        session.onFinal = { finals.append($0) }
+        session.onCorrectionStarted = { correctionStarted = true }
+
+        XCTAssertFalse(session.skipCorrection(), "未开始校对时不能跳过")
+        session.sendAudio(speech(count: 20_000))
+        session.finalize(timeout: 5)
+        await poll { correctionStarted }
+        XCTAssertTrue(session.isCorrecting)
+
+        XCTAssertTrue(session.skipCorrection())
+        XCTAssertEqual(finals, ["raw-asr-text"])
+        XCTAssertEqual(session.timings.llmResult, .skipped)
+        XCTAssertFalse(session.isCorrecting)
+        XCTAssertFalse(session.skipCorrection(), "只能跳过一次")
+
+        gate.signal() // LLM 结果迟到
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(finals, ["raw-asr-text"], "迟到的校对结果必须被忽略")
+    }
+
+    func testIsCorrectingIsFalseWithoutCorrector() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+        var final: String?
+        session.onFinal = { final = $0 }
+        session.sendAudio(speech(count: 20_000))
+        session.finalize(timeout: 5)
+        await poll { final != nil }
+        XCTAssertFalse(session.isCorrecting)
+        XCTAssertFalse(session.skipCorrection())
     }
 }

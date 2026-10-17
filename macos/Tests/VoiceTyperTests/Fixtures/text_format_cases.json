@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "description": "OutputFormatter 的共享用例（macOS Swift 与 Windows C# 两边的测试读同一份）。规则变更须先改 macos/docs/UX_R8_SPEC.md R8-F2；既有用例的期望值不得删改。",
+  "cjk_latin_spacing": [
+    {"input": "我用Python写代码", "expected": "我用 Python 写代码", "note": "基本左右边界"},
+    {"input": "我用Mac和iPad", "expected": "我用 Mac 和 iPad", "note": "多个词元、文末"},
+    {"input": "iPhone的电池", "expected": "iPhone 的电池", "note": "文首英文"},
+    {"input": "我们3个人", "expected": "我们3个人", "note": "纯数字不加"},
+    {"input": "提升了25%的转化率", "expected": "提升了25%的转化率", "note": "数字加符号不加"},
+    {"input": "用5G网络", "expected": "用 5G 网络", "note": "含字母的数字词元"},
+    {"input": "Python3写的脚本", "expected": "Python3 写的脚本", "note": "词元以数字结尾"},
+    {"input": "v1.2版本", "expected": "v1.2 版本", "note": "词元内含句点"},
+    {"input": "C++代码和C#开发", "expected": "C++ 代码和 C# 开发", "note": "+ 和 # 结尾"},
+    {"input": "调用foo()函数", "expected": "调用 foo() 函数", "note": ") 结尾"},
+    {"input": "好的，OK。", "expected": "好的，OK。", "note": "全角标点前后不加"},
+    {"input": "好的OK.我们走", "expected": "好的 OK.我们走", "note": "英文句点后不加"},
+    {"input": "那个登录页面的问题不是 bug，是 feature", "expected": "那个登录页面的问题不是 bug，是 feature", "note": "已有空格，幂等"},
+    {"input": "第一行\n第二行用Git", "expected": "第一行\n第二行用 Git", "note": "多行"},
+    {"input": "日本語のAPIを使う", "expected": "日本語のAPIを使う", "note": "含假名整段跳过"},
+    {"input": "한국어API", "expected": "한국어API", "note": "含谚文整段跳过"},
+    {"input": "https://github.com/oyasmi看看", "expected": "https://github.com/oyasmi 看看", "note": "URL 词元整体不拆"},
+    {"input": "Hello world", "expected": "Hello world", "note": "纯英文不变"},
+    {"input": "", "expected": "", "note": "空输入"},
+    {"input": "打印3D模型", "expected": "打印 3D 模型", "note": "数字开头的含字母词元"},
+    {"input": "中A文", "expected": "中 A 文", "note": "单字母夹在汉字之间"},
+    {"input": "他说(OK)就行", "expected": "他说(OK) 就行", "note": "左侧为 ( 不加，右侧 ) 后加"},
+    {"input": "已有 空格 Python 写法", "expected": "已有 空格 Python 写法", "note": "只增不删"},
+    {"input": "邮箱是a@b.com请查收", "expected": "邮箱是 a@b.com 请查收", "note": "含 @ 的词元整体"},
+    {"input": "2026年10月", "expected": "2026年10月", "note": "纯数字与汉字不加"}
+  ]
+}

@@ -71,6 +71,9 @@ final class SettingsViewModel {
     /// 只在打开设置窗口与用户主动重新检测时刷新——`SystemKeyboardSettings` 每次查询都会
     /// 丢弃偏好缓存，不适合放在每秒会跑很多次的同步路径上。
     var fnConflictWarning: String?
+    /// 其他应用开启了「安全输入」、组合键热键暂时收不到时的说明（R8-B2）；否则为 nil。
+    /// 与 `fnConflictWarning` 同时机刷新：打开设置窗口与用户点「重新检测」。
+    var secureInputWarning: String?
 
     // MARK: 通用 / 识别引擎
     var launchAtLogin = false
@@ -268,6 +271,7 @@ final class SettingsViewModel {
     /// 重新探测系统「按下🌐键」的设置。用户很可能刚去系统设置改完切回来。
     func refreshFnConflictWarning() {
         fnConflictWarning = SystemKeyboardSettings.fnConflictWarning(for: hotkeyConfig)
+        secureInputWarning = SecureInput.currentWarning(for: hotkeyConfig)
     }
 
     /// 录制器捕获到新热键后调用：校验、落盘、更新显示。

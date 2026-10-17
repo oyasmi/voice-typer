@@ -88,4 +88,15 @@ final class HUDLayoutTests: XCTestCase {
         XCTAssertTrue(status.hasSuffix("…"))
         XCTAssertLessThan(status.count, 25)
     }
+
+    // MARK: - R8-C3：上限倒计时
+
+    func testCountdownOnlyAppearsInLastFifteenSeconds() {
+        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 104.9))
+        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 105), 15)
+        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 110.2), 10)
+        XCTAssertEqual(RecordingHUDController.countdownSeconds(elapsed: 119.6), 1)
+        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 120), "到点后不再显示倒计时")
+        XCTAssertNil(RecordingHUDController.countdownSeconds(elapsed: 0))
+    }
 }

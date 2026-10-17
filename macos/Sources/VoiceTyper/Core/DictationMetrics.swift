@@ -11,6 +11,8 @@ struct ASRSessionTimings: Equatable {
         case corrected
         case fellBack = "fell_back"
         case off
+        /// 校对中用户再按热键，直接上屏识别原文（R8-C2）。
+        case skipped
     }
 
     /// 会话实际接受的样本数（16kHz 单声道）。
@@ -29,6 +31,10 @@ struct ASRSessionTimings: Equatable {
     var previewRuns = 0
     var previewSkipped = 0
     var previewMaxNanos: UInt64 = 0
+    /// 终稿看门狗是否触发过（R8-A1）。
+    var finalizeTimedOut = false
+    /// 校对回落原文的原因；仅 `llmResult == .fellBack` 时有值（R8-C1）。
+    var llmFallbackReason: LLMCorrector.FallbackReason?
 }
 
 /// 一次听写的耗时与结果摘要，收尾时以一行日志输出（`summaryLine()`）。
@@ -47,6 +53,8 @@ struct DictationMetrics {
         case gestureCancelled = "gesture_cancelled"
         case failed
         case startFailed = "start_failed"
+        /// 焦点在密码输入框，拒绝开始听写（R8-B2）。
+        case secureField = "secure_field"
     }
 
     enum HotkeyKind: String {
@@ -112,6 +120,9 @@ struct DictationMetrics {
             ("previews_skipped", String(timings.previewSkipped)),
             ("preview_max", timings.previewRuns == 0 ? "-" : Self.ms(timings.previewMaxNanos)),
             ("cold", timings.coldAtStart ? "1" : "0"),
+            // R8 起新增字段一律追加在末尾，不打乱既有字段顺序。
+            ("finalize_timeout", timings.finalizeTimedOut ? "1" : "0"),
+            ("llm_fail", timings.llmFallbackReason?.rawValue ?? "-"),
         ]
         return "dictation " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
     }

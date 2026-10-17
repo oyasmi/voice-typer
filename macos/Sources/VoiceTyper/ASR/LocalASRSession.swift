@@ -16,6 +16,14 @@ private final class CancelFlag: @unchecked Sendable {
     }
 }
 
+/// 引擎还没加载完时用户正在等待的阶段（R8-A1），用于让浮窗说明「在等模型」。
+enum EngineWaitStage: Equatable {
+    /// 录音中已攒满约 1s 音频，引擎仍未就绪。
+    case recording
+    /// 松键后引擎仍未就绪（约 300ms 后触发）。
+    case finalizing
+}
+
 /// 单次录音会话的本地识别接缝层：接收流式音频、驱动滑窗预览、录音结束后离线整段
 /// 复识别、可选 LLM 校对，通过四个回调把结果交给 `VoiceTyperController`。
 ///
@@ -40,15 +48,27 @@ final class LocalASRSession {
     /// ASR 已出结果、开始等待 LLM 校对时触发一次。
     /// 没有这个信号时 HUD 会一直停在"识别中"，用户不知道自己在等的是本地推理还是网络。
     var onCorrectionStarted: (() -> Void)?
+    /// 引擎未就绪而用户在等待时触发，每个阶段至多一次。
+    var onEngineWait: ((EngineWaitStage) -> Void)?
 
-    /// 单段录音上限：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
+    /// 单段录音上限（秒）：桌面听写场景 5 分钟不是合理假设，且更长的会话意味着更大的
     /// finalize 峰值内存与耗时。若要恢复到 300 秒，需先补 60/90/300 秒的峰值 RSS
-    /// 与 finalize 耗时实测（F-07b）。
-    private static let maxSessionSamples = 120 * 16000
+    /// 与 finalize 耗时实测（F-07b）。浮窗的上限倒计时也读它（R8-C3）。
+    static let maxSessionSeconds = 120
+    private static let maxSessionSamples = maxSessionSeconds * 16000
+
+    /// 等引擎加载的上限：慢机或磁盘繁忙时加载可能远超 0.85s；真正失败由 `engineUnavailable`
+    /// 立即发现，不必靠等满时间来判断（R8-A1）。
+    private static let engineWaitMaxAttempts = 600
+    private static let engineWaitPollNanos: UInt64 = 100_000_000
+    private static let engineWaitNoticeAttempt = 3
+    private static let engineWaitRecordingNoticeSamples = 16_000
 
     private let asrQueue: DispatchQueue
     private let engineAccessor: () -> (any SenseVoiceRecognizing)?
     private let llmCorrector: LLMCorrector?
+    /// 引擎已确定不可能就绪（加载失败 / 模型缺失）。为 true 时 finalize 立即失败，不再空等。
+    private let engineUnavailable: () -> Bool
     /// 单调时钟；会在 asrQueue 上被调用，必须线程安全（默认实现满足）。
     private let now: MonotonicClock
 
@@ -78,16 +98,26 @@ final class LocalASRSession {
     private let cancelFlag = CancelFlag()
     private var lastPreview = ""
     private var finalizeWatchdog: Task<Void, Never>?
+    /// `finalize(timeout:)` 给定的看门狗时长；真正开表在推理派发到 asrQueue 的时刻（`runFinalize`）。
+    private var finalizeTimeout: TimeInterval = 0
+    private var notifiedRecordingWait = false
+    private var notifiedFinalizingWait = false
+    private var correctionTask: Task<Void, Never>?
+    private var correctionOriginalText = ""
+    /// 正在等 LLM 校对。控制器据此决定再按热键是否跳过校对（R8-C2）。
+    private(set) var isCorrecting = false
 
     init(
         asrQueue: DispatchQueue,
         engineAccessor: @escaping () -> (any SenseVoiceRecognizing)?,
         llmCorrector: LLMCorrector?,
+        engineUnavailable: @escaping () -> Bool = { false },
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.asrQueue = asrQueue
         self.engineAccessor = engineAccessor
         self.llmCorrector = llmCorrector
+        self.engineUnavailable = engineUnavailable
         self.now = now
     }
 
@@ -107,6 +137,10 @@ final class LocalASRSession {
             let accepted = acceptWithinCap(samples, currentCount: pendingAudio.count)
             pendingAudio.append(contentsOf: accepted)
             timings.receivedSamples += accepted.count
+            if !notifiedRecordingWait, pendingAudio.count >= Self.engineWaitRecordingNoticeSamples {
+                notifiedRecordingWait = true
+                onEngineWait?(.recording)
+            }
             return
         }
 
@@ -141,22 +175,15 @@ final class LocalASRSession {
         onSessionCapped?()
     }
 
-    /// - Parameter timeout: 等待识别完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的
-    ///   看门狗。传 <= 0 表示不设超时。
+    /// - Parameter timeout: 推理开始后等待识别完成的最长时间；本地无网络往返，这里纯粹是防止
+    ///   推理卡死的看门狗。传 <= 0 表示不设超时。计时从推理真正派发到 asrQueue 起算，
+    ///   **不含**等待引擎加载的时间（那段另有上限）（R8-A1）。
     func finalize(timeout: TimeInterval) {
         guard !closed, !isFinalizing else { return }
         isFinalizing = true
         timings.finalizeStartedAt = now()
         finalizeWatchdog?.cancel()
-
-        if timeout > 0 {
-            finalizeWatchdog = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                guard !Task.isCancelled, let self, !self.closed else { return }
-                AppLog.asr.error("finalize 超时（\(timeout, privacy: .public)s）")
-                self.onError?(L("识别超时"))
-            }
-        }
+        finalizeTimeout = timeout
 
         ensureBufferIfPossible()
         guard let buffer else {
@@ -176,7 +203,24 @@ final class LocalASRSession {
         cancelFlag.set()
         finalizeWatchdog?.cancel()
         finalizeWatchdog = nil
+        correctionTask?.cancel()
+        correctionTask = nil
+        isCorrecting = false
         buffer = nil
+    }
+
+    /// 校对中用户选择跳过：取消网络请求，立即以识别原文收尾（R8-C2）。
+    /// 返回是否真的跳过了；不在校对中（或已收尾）返回 false。
+    @discardableResult
+    func skipCorrection() -> Bool {
+        guard isCorrecting, !closed else { return false }
+        isCorrecting = false
+        correctionTask?.cancel()
+        correctionTask = nil
+        timings.llmCompletedAt = now()
+        timings.llmResult = .skipped
+        onFinal?(correctionOriginalText)
+        return true
     }
 
     // MARK: - 私有实现
@@ -240,17 +284,27 @@ final class LocalASRSession {
     }
 
     private func waitForEngineThenFinalize(attempt: Int = 0) {
-        // 引擎加载耗时约 0.85s；每 100ms 探测一次，最多等 5s——超过这个时间基本
-        // 意味着模型加载失败，交给外层 finalizeWatchdog 的超时兜底报错。
-        guard attempt < 50, !closed else {
+        // 引擎加载耗时约 0.85s（慢机更久）；每 100ms 探测一次，最多等 60s。加载已确定失败
+        // （`engineUnavailable`）时立即报错，不再空等（R8-A1）。
+        if !closed, engineUnavailable() {
+            AppLog.asr.error("识别引擎不可用，终稿立即失败")
+            isFinalizing = false
+            onError?(L("识别引擎尚未就绪"))
+            return
+        }
+        guard attempt < Self.engineWaitMaxAttempts, !closed else {
             if !closed {
                 isFinalizing = false
                 onError?(L("识别引擎尚未就绪"))
             }
             return
         }
+        if attempt >= Self.engineWaitNoticeAttempt, !notifiedFinalizingWait {
+            notifiedFinalizingWait = true
+            onEngineWait?(.finalizing)
+        }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: Self.engineWaitPollNanos)
             guard let self, !self.closed else { return }
             self.ensureBufferIfPossible()
             if let buffer = self.buffer {
@@ -265,6 +319,7 @@ final class LocalASRSession {
     }
 
     private func runFinalize(on buffer: RecognitionBuffer) {
+        startFinalizeWatchdog()
         asrQueue.async { [weak self] in
             if self?.cancelFlag.isSet == true { return }
             let result = Result { try buffer.finalize() }
@@ -285,6 +340,19 @@ final class LocalASRSession {
         }
     }
 
+    private func startFinalizeWatchdog() {
+        let timeout = finalizeTimeout
+        guard timeout > 0 else { return }
+        finalizeWatchdog?.cancel()
+        finalizeWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled, let self, !self.closed else { return }
+            AppLog.asr.error("finalize 超时（\(timeout, privacy: .public)s）")
+            self.timings.finalizeTimedOut = true
+            self.onError?(L("识别超时"))
+        }
+    }
+
     /// 拿到 ASR 原文后：若启用了 LLM 校对，先把原文通过 onPartial 顶到 HUD 上
     /// （让用户立刻看到结果，校对中不会像"卡住"），再异步校对，最终以校对结果调用 onFinal。
     /// 这一步在跨进程架构下没有意义（要多一次网络往返），进程内是免费的。
@@ -298,19 +366,23 @@ final class LocalASRSession {
         onPartial?(text)
         onCorrectionStarted?()
         timings.llmStartedAt = now()
-        Task { @MainActor [weak self] in
+        correctionOriginalText = text
+        isCorrecting = true
+        correctionTask = Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
             let report = await llmCorrector.correctWithReport(text)
-            guard !self.closed else { return }
+            // 已被用户跳过（skipCorrection 已用原文收尾）或会话已关闭：迟到的结果一律忽略。
+            guard !self.closed, self.isCorrecting else { return }
+            self.isCorrecting = false
+            self.correctionTask = nil
             let outcome = report.outcome
             self.timings.llmCompletedAt = self.now()
             self.timings.llmRetriedWithoutThinking = (report.thinkingParameter == .rejectedThenOmitted)
             if case .fellBack = outcome {
                 self.timings.llmResult = .fellBack
-                // DESIGN.md 约定：校对失败回落原文时要给用户一个非致命提示。
-                // 这条 warning 可能在最终成功 HUD 展示前被覆盖，保持当前 UI 行为，
-                // 不引入额外的 UI 调度。
-                self.onWarning?(L("智能校对未成功，已使用识别原文"))
+                // 回落原因交给控制器，在「已输入 · 未校对」里说明（R8-C1）；
+                // 不再发 onWarning——它会被紧随其后的成功提示盖掉。
+                self.timings.llmFallbackReason = report.fallbackReason
             }
             if case .corrected = outcome { self.timings.llmResult = .corrected }
             self.onFinal?(outcome.text)

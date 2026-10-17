@@ -62,6 +62,20 @@ struct HotkeySettingsView: View {
             }
         }
 
+        // 其他应用开启「安全输入」时，组合键热键收不到按键；Fn 与单独修饰键不受影响。
+        if let warning = vm.secureInputWarning {
+            Section {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.orange)
+                    Text(LF("%@。Fn 与单独修饰键热键不受影响。", warning))
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+
         if !vm.hotkeyMessage.isEmpty {
             Section {
                 Text(vm.hotkeyMessage)

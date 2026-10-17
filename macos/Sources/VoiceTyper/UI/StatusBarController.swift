@@ -8,6 +8,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     var onCheckForUpdates: (() -> Void)?
     var onTogglePause: (() -> Void)?
     var onQuit: (() -> Void)?
+    /// 菜单打开前取一次最近结果（R8-A2）；每次现取，不缓存文本。
+    var historyEntriesProvider: (() -> [DictationHistory.Entry])?
+    var onCopyHistoryEntry: ((UUID) -> Void)?
+    var onClearHistory: (() -> Void)?
+    /// 菜单打开时现算一次安全输入说明（R8-B2），不轮询。
+    var secureInputWarningProvider: (() -> String?)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: 24)
     private let menu = NSMenu()
@@ -19,6 +25,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private let headerView = StatusMenuHeaderView()
     private let headerItem = NSMenuItem()
+    private let copyLastMenuItem = NSMenuItem(title: L("复制上一次结果"), action: #selector(handleCopyLastResult), keyEquivalent: "")
+    private let recentMenuItem = NSMenuItem(title: L("最近结果"), action: nil, keyEquivalent: "")
+    private let recentSubmenu = NSMenu()
     private let pauseMenuItem = NSMenuItem(title: L("暂停听写"), action: #selector(handleTogglePause), keyEquivalent: "")
     private let setupMenuItem = NSMenuItem(title: L("权限与设置…"), action: #selector(handleOpenSetup), keyEquivalent: ",")
     private let onboardingMenuItem = NSMenuItem(title: L("使用引导…"), action: #selector(handleOpenOnboarding), keyEquivalent: "")
@@ -75,7 +84,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         headerItem.view = headerView
 
         [pauseMenuItem, setupMenuItem, onboardingMenuItem, checkUpdatesMenuItem,
-         launchAtLoginMenuItem, aboutMenuItem, quitMenuItem].forEach { $0.target = self }
+         launchAtLoginMenuItem, aboutMenuItem, quitMenuItem, copyLastMenuItem].forEach { $0.target = self }
+
+        copyLastMenuItem.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)
+        recentMenuItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+        recentMenuItem.submenu = recentSubmenu
+        copyLastMenuItem.isEnabled = false
+        recentMenuItem.isEnabled = false
 
         setupMenuItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         onboardingMenuItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
@@ -88,6 +103,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         // 设置窗口里有界面，手改 YAML 只会绕过 UI 校验、还要重启才生效（B9，见 ConfigStore）。
         menu.items = [
             headerItem,
+            .separator(),
+            copyLastMenuItem,
+            recentMenuItem,
             .separator(),
             pauseMenuItem,
             launchAtLoginMenuItem,
@@ -221,7 +239,32 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: - NSMenuDelegate
 
+    /// 每次打开前按内存里的最近结果重建子菜单。条目标题只放截断文本，不设 toolTip。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        let entries = historyEntriesProvider?() ?? []
+        copyLastMenuItem.isEnabled = !entries.isEmpty
+        recentMenuItem.isEnabled = !entries.isEmpty
+        recentSubmenu.removeAllItems()
+        guard !entries.isEmpty else { return }
+        for entry in entries {
+            let item = NSMenuItem(
+                title: DictationHistory.menuTitle(for: entry),
+                action: #selector(handleHistoryEntry(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = entry.id
+            recentSubmenu.addItem(item)
+        }
+        recentSubmenu.addItem(.separator())
+        let clear = NSMenuItem(title: L("清空最近结果"), action: #selector(handleClearHistory), keyEquivalent: "")
+        clear.target = self
+        recentSubmenu.addItem(clear)
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        headerView.setWarning(secureInputWarningProvider?())
         refreshLaunchAtLoginItem()
         menuIsOpen = true
         iconView.contentTintColor = .selectedMenuItemTextColor
@@ -233,6 +276,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func handleCopyLastResult() {
+        guard let first = historyEntriesProvider?().first else { return }
+        onCopyHistoryEntry?(first.id)
+    }
+
+    @objc private func handleHistoryEntry(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        onCopyHistoryEntry?(id)
+    }
+
+    @objc private func handleClearHistory() {
+        onClearHistory?()
+    }
 
     @objc private func handleTogglePause() {
         onTogglePause?()

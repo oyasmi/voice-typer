@@ -5,7 +5,7 @@
 [← 返回主项目](../README.md) · [设计方案](DESIGN.md) · [更新日志](CHANGELOG.md) · [分体式客户端](../client-server/client_macos_swift/README.md)
 
 单进程 macOS 菜单栏应用：把 [`client-server/server/`](../client-server/server/README.md) 的 SenseVoice 识别链路用 Swift 重写并
-内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.5.1**，
+内联进客户端，拖进「应用程序」打开即用，**不需要**单独部署 Python 服务端。当前版本 **3.6.0**，
 应用名 **VoiceTyper**，Bundle ID `com.voicetyper.app`。
 
 **本文适合**：想在自己 Mac 上直接用的用户，以及要自行编译或二次开发的人。深入的架构决策、
@@ -36,6 +36,10 @@
 - 首次启动自动下载并部署一次模型（约 240MB），此后完全离线
 - 按住热键（默认 `Fn`）录音，松开自动识别并插入文本；也可切换为「按一次开始、再按一次结束」
 - 录音中与识别中（松手后、结果尚未上屏前）都可以按 `Esc` 取消，结果不会被插入
+- 说出的话找得回来：取消、焦点变了、插入失败、识别超时的结果都进菜单栏「最近结果」（最多 10 条，只保存在
+  内存，退出即清除，可在菜单中清空），点一下即复制到剪贴板；识别超时还会自动把已识别出的部分复制到剪贴板
+- 上屏文本中英文之间自动加空格（「我用 Python 写代码」），开不开智能校对结果一致
+- 焦点在密码输入框时不开始听写（口述密码不安全，开了智能校对还会把内容发给第三方服务）
 - 首次启动有四步引导（欢迎 → 权限 → 模型 → 试一试），最后一步会真跑一次完整听写来验证链路
 - 流式实时预览：录音时 HUD 浮窗持续显示识别文本，且会自我修正
 - 可选的 LLM 智能校对，配置项直接在设置面板里（Base URL / API Key / 模型 / 温度 / 超时）
@@ -161,8 +165,14 @@ tccutil reset ListenEvent com.voicetyper.app
    按下热键到麦克风真正出声之间有约 0.2 秒的系统固有延迟。
 3. 说话。HUD 会实时显示识别文本，并随着你继续说而自我修正。
 4. **松开热键**，本地引擎做一次整段复识别，最终文本插入当前光标位置。
-   开启智能校对时，浮窗会在本地识别完成后显示「校对中…」，与本地推理阶段区分开。
-5. 录音中和识别中随时按 **Esc** 取消，不会插入任何文本。
+   开启智能校对时，浮窗会在本地识别完成后显示「校对中…」，与本地推理阶段区分开；校对期间再按一次热键
+   （单独修饰键则单击一下）可以跳过校对、立即上屏识别原文。
+   校对没成功（超时、鉴权失败、服务出错…）时，浮窗会显示「已输入 · 未校对」并说明原因，上屏的是识别原文。
+5. 录音中和识别中随时按 **Esc** 取消，不会插入任何文本。取消前已识别出的部分可以在菜单栏「最近结果」里找回。
+
+单段录音上限 120 秒；最后 15 秒计时位置会变成橙色的「还剩 N 秒」倒计时。
+
+**隐私**：音频不出设备。最近 10 条结果只保存在内存里，不写磁盘、不进日志，退出即清除，也可在菜单里手动清空。
 
 浮窗在录音时会显示当前输入设备名（如「录音中 · MacBook 麦克风」）。如果开始录音后一直
 采不到声音，浮窗会主动提示检查麦克风与输入设备，不必等说完才发现结果是空的。
@@ -370,9 +380,12 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `TextPostprocessorTests` | CTC 解码后文本清洗的各条规则 |
 | `RecognitionBufferTests` | 滑窗预览调度逻辑（用假引擎，不依赖真实模型） |
 | `AudioChunkerTests` | 音频定长分帧、跨调用累积余量、尾音刷出（纯逻辑，不依赖麦克风） |
-| `LocalASRSessionTests` | 会话层行为：预览重入跳过、finalize 看门狗、120 秒上限一次性告警并触发收尾、close 后抑制迟到回调 |
+| `LocalASRSessionTests` | 会话层行为：预览重入跳过、finalize 看门狗（不含引擎加载时间）、引擎不可用立即失败、等待阶段通知、校对中跳过、120 秒上限一次性告警并触发收尾、close 后抑制迟到回调 |
 | `ASRServiceTests` | 引擎加载互斥、空闲卸载不反向触发自动预加载、加载期间的语言变更重放到新引擎 |
-| `VoiceTyperControllerTests` | 状态机行为：识别中重叠按键拒绝而非覆盖、Esc 取消、设备变化后仍正常收尾、短录音丢弃等 |
+| `VoiceTyperControllerTests` | 状态机行为：识别中重叠按键拒绝而非覆盖、Esc 取消、设备变化后仍正常收尾、短录音丢弃、失败 / 超时兜底、校对中跳过、密码框拒绝、各结局进入「最近结果」等 |
+| `OutputFormatterTests` | 中英文空格规则，逐条读共享夹具 `Fixtures/text_format_cases.json`（与 Windows 共用），并校验幂等 |
+| `DictationHistoryTests` | 最近结果：容量淘汰、去重、空白忽略、清空、菜单标题截断与后缀 |
+| `SecureInputTests` | 安全输入说明文案的拼装（有 / 无应用名、Fn 与单独修饰键不显示） |
 | `AppCoordinatorReadinessTests` | 就绪编排的状态优先级（暂停 > 权限缺失 > 模型下载 > 引擎状态） |
 | `ConfigStoreTests` | YAML 读写往返、缺字段回落默认 |
 | `ConfigMigratorTests` | 老配置迁移只继承 hotkey 与 HUD 不透明度 |
@@ -418,7 +431,9 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metri
 
 `metrics` 每次听写结束输出一行，只含数字与枚举，不含任何识别文本。常用字段：`outcome`（inserted / empty /
 cancelled / discarded / gesture_cancelled / failed …）、`release_to_done`（松手到上屏，核心指标）、
-`asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、`input`
+`asr` / `llm`（本地识别与校对耗时）、`llm_retry`（是否因服务拒绝 `thinking` 字段而重发）、
+`llm_fail`（校对回落原因：timeout / network / auth / rate_limited / server / empty）、
+`finalize_timeout`（终稿看门狗是否触发）、`outcome=secure_field`（焦点在密码框，拒绝听写）、`input`
 （`builtin*` 表示由自动策略从系统默认输入切换到内置麦克风）、`cold`（引擎是否冷加载）。
 
 **图形界面**：打开「控制台」（Console.app，`/Applications/Utilities/`），左侧选中本机设备，

@@ -7,7 +7,7 @@
 A single-process macOS menu bar app: the SenseVoice recognition pipeline from
 [`client-server/server/`](../client-server/server/README.md) rewritten in Swift and inlined into the
 client. Drag it into Applications and it works — **no** separate Python server to deploy. Current
-version **3.5.1**, app name **VoiceTyper**, bundle ID `com.voicetyper.app`.
+version **3.6.0**, app name **VoiceTyper**, bundle ID `com.voicetyper.app`.
 
 **Who this is for**: people who want to use it on their own Mac, and people who want to build it or
 hack on it. Deeper architectural decisions, measured numbers and the trade-offs behind them are in
@@ -41,6 +41,14 @@ hack on it. Deeper architectural decisions, measured numbers and the trade-offs 
   switch to “press once to start, press again to stop”
 - `Esc` cancels during recording *and* during recognition (after releasing, before the result lands),
   and nothing gets inserted
+- What you said can be recovered: results that were cancelled, not inserted (focus changed or insertion
+  failed) or cut short by a recognition timeout go into **Recent Results** in the menu bar (up to 10,
+  kept in memory only, cleared on quit, and clearable from the menu). One click copies a result to the
+  clipboard; on a recognition timeout the recognized part is also copied to the clipboard automatically
+- Chinese and English text is spaced automatically in the inserted result (“我用 Python 写代码”),
+  whether or not LLM proofreading is on
+- No dictation starts while the focus is in a password field (speaking a password is unsafe, and with
+  proofreading on the content would be sent to a third-party service)
 - A four-step guide on first launch (Welcome → Permissions → Model → Try it); the last step runs one
   real dictation to verify the whole chain
 - Live streaming preview: the HUD overlay keeps showing recognized text while you record, and corrects
@@ -191,8 +199,18 @@ Everyday use:
 3. Speak. The HUD shows recognized text live and corrects itself as you continue.
 4. **Release the hotkey**; the local engine re-recognizes the whole segment and the final text is
    inserted at the cursor. With proofreading enabled, the overlay shows “Proofreading…” once local
-   recognition is done, so the two phases stay distinguishable.
-5. Press **Esc** any time during recording or recognition to cancel; no text is inserted.
+   recognition is done, so the two phases stay distinguishable. Press the hotkey once more during
+   proofreading (a single click for a modifier-only hotkey) to skip it and insert the raw transcript
+   at once. If proofreading did not succeed (timeout, rejected key, service error…), the overlay shows
+   “Inserted · Not proofread” with the reason; the raw transcript is what was inserted.
+5. Press **Esc** any time during recording or recognition to cancel; no text is inserted. Whatever was
+   recognized before cancelling can be recovered from **Recent Results** in the menu bar.
+
+A single recording is capped at 120 seconds; during the last 15 seconds the timer turns into an orange
+“N s left” countdown.
+
+**Privacy**: audio never leaves the device. The 10 most recent results live in memory only — never
+written to disk or to the logs, cleared on quit, and clearable from the menu.
 
 While recording, the overlay shows the current input device (for example “Recording · MacBook
 Microphone”). If no sound arrives after recording starts, the overlay tells you to check the
@@ -418,9 +436,12 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 | `TextPostprocessorTests` | Each rule of the post-CTC text cleanup |
 | `RecognitionBufferTests` | Sliding-window preview scheduling (fake engine, no real model) |
 | `AudioChunkerTests` | Fixed-length framing, carry-over across calls, tail flushing (pure logic, no microphone) |
-| `LocalASRSessionTests` | Session behaviour: preview re-entry skipping, finalize watchdog, the 120-second cap warning and wrap-up, suppressing late callbacks after close |
+| `LocalASRSessionTests` | Session behaviour: preview re-entry skipping, finalize watchdog (excluding engine load time), immediate failure when the engine is unavailable, wait-stage notices, skipping proofreading, the 120-second cap warning and wrap-up, suppressing late callbacks after close |
 | `ASRServiceTests` | Engine load mutual exclusion, idle unload not re-triggering a preload, language changes during loading replayed onto the new engine |
-| `VoiceTyperControllerTests` | State machine behaviour: overlapping presses rejected instead of overwriting, Esc cancellation, clean wrap-up after a device change, short recordings discarded, and so on |
+| `VoiceTyperControllerTests` | State machine behaviour: overlapping presses rejected instead of overwriting, Esc cancellation, clean wrap-up after a device change, short recordings discarded, failure / timeout fallbacks, skipping proofreading, password-field refusal, which outcomes land in Recent Results, and so on |
+| `OutputFormatterTests` | Chinese/English spacing rule, reading the shared fixture `Fixtures/text_format_cases.json` (shared with Windows) and checking idempotence |
+| `DictationHistoryTests` | Recent Results: capacity eviction, de-duplication, blank text ignored, clearing, menu title truncation and suffixes |
+| `SecureInputTests` | Wording of the Secure Input explanation (with / without app name, hidden for Fn and modifier-only hotkeys) |
 | `AppCoordinatorReadinessTests` | Readiness priority (paused > missing permissions > model download > engine state) |
 | `ConfigStoreTests` | YAML round-trip, missing fields falling back to defaults |
 | `ConfigMigratorTests` | Legacy config migration inheriting only the hotkey and HUD opacity |

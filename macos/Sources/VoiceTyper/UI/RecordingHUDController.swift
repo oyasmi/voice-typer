@@ -147,7 +147,7 @@ final class RecordingHUDController: NSWindowController {
 
         recordingStatusText = Self.recordingStatus(inputDeviceName: inputDeviceName)
         setStatus(recordingStatusText)
-        timeLabel.stringValue = ""
+        resetTimeLabel()
         setPreviewLineCount(1, animated: false)
         previewLabel.stringValue = displayText(for: "")
         previewLabel.alphaValue = 0
@@ -200,9 +200,13 @@ final class RecordingHUDController: NSWindowController {
         cancelTransientHide()
         cancelWarningRestore()
         endCorrectingShimmer()
-        // 松键后录音结束，冻结计时（保留最后时长）。
+        // 松键后录音结束，冻结计时（保留最后时长）。上限倒计时的橙色「还剩 N 秒」不应带进识别阶段。
         timer?.invalidate()
         timer = nil
+        if let startDate {
+            timeLabel.stringValue = Self.timeString(Int(Date().timeIntervalSince(startDate)))
+            timeLabel.textColor = Self.timeTextColor
+        }
         phase = .recognizing
         recognizingStatusText = L("识别中")
         setStatus(recognizingStatusText)
@@ -224,15 +228,36 @@ final class RecordingHUDController: NSWindowController {
     ///
     /// 与"识别中"分开的理由：本地推理是几百毫秒且完全可控，而校对要走网络、最长可以等到
     /// `llm.timeout`。两者都显示"识别中"的话，用户既不知道该不该继续等，也无从判断慢在哪。
-    func setCorrecting() {
+    ///
+    /// - Parameter hotkeyDisplay: 当前热键的显示名；提供时状态行提示「再按 %@ 跳过」（R8-C2）。
+    func setCorrecting(hotkeyDisplay: String? = nil) {
         guard !suppressesProgressHUD else { return }
         guard phase == .recognizing else { return }
         cancelWarningRestore()
-        recognizingStatusText = L("校对中…")
+        if let hotkeyDisplay, !hotkeyDisplay.isEmpty {
+            recognizingStatusText = LF("校对中… · 再按 %@ 跳过", hotkeyDisplay)
+        } else {
+            recognizingStatusText = L("校对中…")
+        }
         setStatus(recognizingStatusText)
         dotView.setStatic(color: .systemBlue)
         isCorrecting = true
         startShimmer()
+    }
+
+    /// 引擎还在加载而用户在等（R8-A1）：只改状态行文案，警告闪现结束后恢复为它。
+    func setEngineWait(_ stage: EngineWaitStage) {
+        guard !suppressesProgressHUD else { return }
+        switch stage {
+        case .recording:
+            guard phase == .recording else { return }
+            recordingStatusText = L("录音中 · 模型加载中…")
+            if warningRestoreWorkItem == nil { setStatus(recordingStatusText) }
+        case .finalizing:
+            guard phase == .recognizing, !isCorrecting else { return }
+            recognizingStatusText = L("识别中 · 正在加载模型…")
+            if warningRestoreWorkItem == nil { setStatus(recognizingStatusText) }
+        }
     }
 
     /// 实时音量电平（0…1 量级），驱动波形。仅录音阶段生效，内部节流。
@@ -245,7 +270,22 @@ final class RecordingHUDController: NSWindowController {
     }
 
     /// final 文本插入成功后的一次性反馈（绿色对钩），约 0.7s 后淡出。
-    func showSuccess() {
+    ///
+    /// 带 `note`（校对回落 / 被跳过，R8-C1/C2）时改为「已输入 · 未校对」并多停留一会儿，下一行写原因。
+    /// 浮窗设为「不显示」时，只有配置类问题（`showsWhenHUDHidden`）才仍然提示。
+    func showSuccess(note: VoiceTyperController.InsertionNote? = nil) {
+        if let note {
+            guard !suppressesProgressHUD || note.showsWhenHUDHidden else { return }
+            showTransient(
+                status: L("已输入 · 未校对"),
+                message: note.message,
+                glyph: "checkmark.circle.fill",
+                color: .systemOrange,
+                expanded: true,
+                autoHideAfter: 2.5
+            )
+            return
+        }
         guard !suppressesProgressHUD else { return }
         showTransient(
             status: L("已输入"),
@@ -266,6 +306,32 @@ final class RecordingHUDController: NSWindowController {
             color: .systemRed,
             expanded: true,
             autoHideAfter: 2.5
+        )
+    }
+
+    /// 焦点在密码输入框，已拒绝开始听写（R8-B2）。解释类信息，即使浮窗设为「不显示」也提示。
+    func showSecureFieldRefusal() {
+        showTransient(
+            status: L("无法听写"),
+            message: L("当前是密码输入框，VoiceTyper 不会在这里听写"),
+            glyph: "lock.fill",
+            color: .systemOrange,
+            expanded: true,
+            autoHideAfter: 2.0
+        )
+    }
+
+    /// 用户从「最近结果」菜单复制后的确认（R8-A2）。用户主动操作，不受「不显示」影响；
+    /// 但听写进行中不打断过程类浮窗。
+    func showCopiedToClipboard() {
+        guard phase != .recording, phase != .recognizing else { return }
+        showTransient(
+            status: L("已复制到剪贴板"),
+            message: "",
+            glyph: "doc.on.clipboard.fill",
+            color: .systemGreen,
+            expanded: false,
+            autoHideAfter: 0.9
         )
     }
 
@@ -397,7 +463,7 @@ final class RecordingHUDController: NSWindowController {
 
         phase = .transient
         setStatus(L("背景预览"))
-        timeLabel.stringValue = ""
+        resetTimeLabel()
         previewLabel.alphaValue = 0
         showGlyph(false)
         dotView.isHidden = false
@@ -563,7 +629,7 @@ final class RecordingHUDController: NSWindowController {
         phase = .transient
 
         setStatus(status)
-        timeLabel.stringValue = ""
+        resetTimeLabel()
         previewLabel.alphaValue = expanded ? 1 : 0
 
         dotView.isHidden = true
@@ -995,12 +1061,37 @@ final class RecordingHUDController: NSWindowController {
 
     // MARK: - 计时器
 
+    private static let timeTextColor: NSColor = .tertiaryLabelColor
+    /// 录音剩余不足这么多秒时，计时位置改为橙色倒计时（R8-C3）。
+    private static let countdownWindowSeconds = 15
+
+    private func resetTimeLabel() {
+        timeLabel.stringValue = ""
+        timeLabel.textColor = Self.timeTextColor
+    }
+
+    /// 距单段录音上限还剩多少秒；剩余多于 15 秒或已到上限返回 nil（R8-C3）。
+    /// HUD 的起点与真实录音起点最多相差 150ms（单独修饰键延迟显示），可接受。
+    static func countdownSeconds(
+        elapsed: TimeInterval, maximumSeconds: Int = LocalASRSession.maxSessionSeconds
+    ) -> Int? {
+        let remaining = Int(ceil(Double(maximumSeconds) - elapsed))
+        return (1...countdownWindowSeconds).contains(remaining) ? remaining : nil
+    }
+
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let startDate = self.startDate else { return }
-                self.timeLabel.stringValue = Self.timeString(Int(Date().timeIntervalSince(startDate)))
+                let elapsed = Date().timeIntervalSince(startDate)
+                if let remaining = Self.countdownSeconds(elapsed: elapsed) {
+                    self.timeLabel.stringValue = LF("还剩 %d 秒", remaining)
+                    self.timeLabel.textColor = .systemOrange
+                } else {
+                    self.timeLabel.stringValue = Self.timeString(Int(elapsed))
+                    self.timeLabel.textColor = Self.timeTextColor
+                }
             }
         }
         timer?.tolerance = 0.1

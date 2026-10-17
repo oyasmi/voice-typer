@@ -7,9 +7,12 @@ final class StatusMenuHeaderView: NSView {
     private let dotView = NSView()
     private let titleLabel = NSTextField(labelWithString: AppConstants.appName)
     private let subtitleLabel = NSTextField(labelWithString: "")
+    /// 第三行：安全输入等需要用户知道的说明（R8-B2）。无内容时隐藏，高度回到两行布局。
+    private let warningLabel = NSTextField(wrappingLabelWithString: "")
 
     private static let width: CGFloat = 268
     private static let height: CGFloat = 54
+    private static let warningHeight: CGFloat = 86
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
@@ -33,7 +36,13 @@ final class StatusMenuHeaderView: NSView {
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
-        let textStack = NSStackView(views: [titleLabel, subtitleLabel])
+        warningLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        warningLabel.textColor = .systemOrange
+        warningLabel.maximumNumberOfLines = 3
+        warningLabel.preferredMaxLayoutWidth = Self.width - 15 - 8 - 9 - 14
+        warningLabel.isHidden = true
+
+        let textStack = NSStackView(views: [titleLabel, subtitleLabel, warningLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 3
@@ -52,6 +61,14 @@ final class StatusMenuHeaderView: NSView {
             textStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    /// 设置或清除第三行说明，并相应调整菜单项视图高度。
+    func setWarning(_ text: String?) {
+        let hasWarning = !(text ?? "").isEmpty
+        warningLabel.stringValue = text ?? ""
+        warningLabel.isHidden = !hasWarning
+        setFrameSize(NSSize(width: Self.width, height: hasWarning ? Self.warningHeight : Self.height))
     }
 
     func update(state: AppState, hotkeyDisplay: String, engineStatus: String) {

@@ -81,7 +81,62 @@ final class LLMCorrectorTests: XCTestCase {
 
     override func tearDown() {
         StubURLProtocol.handler = nil
+        StubURLProtocol.failure = nil
         super.tearDown()
+    }
+
+    // MARK: - R8-C1：回落原因分类
+
+    private func fallbackReason(forStatus status: Int, body: String = "oops") async -> LLMCorrector.FallbackReason? {
+        StubURLProtocol.handler = { _ in (status, body) }
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        return report.fallbackReason
+    }
+
+    func testFallbackReasonMapping() async {
+        let authCodes = [401, 403]
+        for code in authCodes {
+            let reason = await fallbackReason(forStatus: code)
+            XCTAssertEqual(reason, .auth, "HTTP \(code)")
+        }
+        let rateLimited = await fallbackReason(forStatus: 429)
+        XCTAssertEqual(rateLimited, .rateLimited)
+        let server = await fallbackReason(forStatus: 503)
+        XCTAssertEqual(server, .server)
+        let other = await fallbackReason(forStatus: 404)
+        XCTAssertEqual(other, .server, "其他 HTTP 错误归入「服务出错」")
+        let malformed = await fallbackReason(forStatus: 200, body: "not json")
+        XCTAssertEqual(malformed, .server, "响应无法解析归入「服务出错」")
+    }
+
+    func testFallbackReasonForTimeoutAndNetworkErrors() async {
+        StubURLProtocol.failure = URLError(.timedOut)
+        let timedOut = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        XCTAssertEqual(timedOut.fallbackReason, .timeout)
+
+        StubURLProtocol.failure = URLError(.notConnectedToInternet)
+        let offline = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        XCTAssertEqual(offline.fallbackReason, .network)
+    }
+
+    func testSemanticFallbacksReportEmptyResult() async {
+        StubURLProtocol.handler = { _ in
+            (200, #"{"choices":[{"message":{"content":"半截"},"finish_reason":"length"}]}"#)
+        }
+        let truncated = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        XCTAssertEqual(truncated.fallbackReason, .emptyResult)
+
+        StubURLProtocol.handler = { _ in
+            (200, #"{"choices":[{"message":{"content":"  "},"finish_reason":"stop"}]}"#)
+        }
+        let blank = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        XCTAssertEqual(blank.fallbackReason, .emptyResult)
+    }
+
+    func testSuccessfulCorrectionHasNoFallbackReason() async {
+        StubURLProtocol.handler = { _ in (200, Self.okBody) }
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        XCTAssertNil(report.fallbackReason)
     }
 
     private func assertFellBack(
@@ -418,11 +473,17 @@ final class SettingsViewModelTests: XCTestCase {
 /// 拦截所有请求，交给测试用例设置的 handler 决定响应。
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, String))?
+    /// 非 nil 时请求直接以该网络错误失败（验证超时 / 网络不通的回落分类）。
+    nonisolated(unsafe) static var failure: URLError?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        if let failure = Self.failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
         guard let handler = Self.handler else {
             client?.urlProtocol(self, didFailWithError: URLError(.unknown))
             return

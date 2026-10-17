@@ -33,7 +33,7 @@ final class DictationMetricsTests: XCTestCase {
             "dictation session=7f3a outcome=inserted mode=hold hotkey=fn input=builtin* capture_start=41 "
                 + "first_buffer=162 audio=4.2s release_to_finalize=3 engine_wait=0 asr=71 llm=812 "
                 + "llm_result=corrected llm_retry=0 insert=34 insert_path=ax release_to_done=921 "
-                + "previews=7 previews_skipped=3 preview_max=88 cold=0"
+                + "previews=7 previews_skipped=3 preview_max=88 cold=0 finalize_timeout=0 llm_fail=-"
         )
     }
 
@@ -44,8 +44,28 @@ final class DictationMetricsTests: XCTestCase {
             "dictation session=0001 outcome=failed mode=toggle hotkey=modifier input=- capture_start=- "
                 + "first_buffer=- audio=0.0s release_to_finalize=- engine_wait=- asr=- llm=- llm_result=- "
                 + "llm_retry=- insert=- insert_path=- release_to_done=- previews=0 previews_skipped=0 "
-                + "preview_max=- cold=0"
+                + "preview_max=- cold=0 finalize_timeout=0 llm_fail=-"
         )
+    }
+
+    /// R8 新增字段：追加在末尾，且只有数字与枚举。
+    func testR8FieldsAreAppendedAtTheEnd() {
+        var metrics = DictationMetrics(sessionID: 4, mode: .hold, hotkey: .combo, pressedAt: 0)
+        metrics.outcome = .failed
+        metrics.timings.finalizeTimedOut = true
+        metrics.timings.llmResult = .fellBack
+        metrics.timings.llmFallbackReason = .rateLimited
+        let line = metrics.summaryLine()
+        XCTAssertTrue(line.hasSuffix("cold=0 finalize_timeout=1 llm_fail=rate_limited"), line)
+        XCTAssertTrue(line.contains("llm_result=fell_back"))
+    }
+
+    func testSkippedAndSecureFieldEnumValues() {
+        var metrics = DictationMetrics(sessionID: 5, mode: .hold, hotkey: .modifier, pressedAt: 0)
+        metrics.timings.llmResult = .skipped
+        XCTAssertTrue(metrics.summaryLine().contains("llm_result=skipped llm_retry=0"))
+        metrics.outcome = .secureField
+        XCTAssertTrue(metrics.summaryLine().contains("outcome=secure_field"))
     }
 
     func testIntervalNeverGoesNegative() {

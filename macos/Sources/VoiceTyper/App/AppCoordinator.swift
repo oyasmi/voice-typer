@@ -19,6 +19,11 @@ final class AppCoordinator {
     private let permissionCenter = PermissionCenter()
     private let statusBarController = StatusBarController()
     private let asrService = ASRService()
+    /// 全应用唯一的文本插入服务（R8-A2）。`pendingRestore`（待恢复的用户原剪贴板）住在它里面：
+    /// 此前每次保存设置重建控制器都会新建一个，待恢复的原剪贴板随之丢失。
+    let textInsertionService = TextInsertionService()
+    /// 最近的听写结果，只在内存（R8-D-2）：退出即清，不落盘、不进日志。
+    private let dictationHistory = DictationHistory()
 
     private var setupWindowController: SetupWindowController?
     private var onboardingWindowController: OnboardingWindowController?
@@ -81,6 +86,10 @@ final class AppCoordinator {
     /// 而每次查询都要 `CFPreferencesAppSynchronize` 一次（同步 IPC）。只在真正可能变化的
     /// 时机重算：引导/设置窗口出现、用户点「重新检测」、热键配置变更。
     private var cachedFnConflictWarning: String?
+    /// 缓存的安全输入说明（引导窗口用）；菜单头每次打开现算，见 `bindStatusBarActions`。
+    private var cachedSecureInputWarning: String?
+    /// 校对回落 / 跳过的说明，由 `onInsertedWithNote` 先到、`.idle` 状态后到时消费。
+    private var pendingInsertionNote: VoiceTyperController.InsertionNote?
 
     func start() {
         bindStatusBarActions()
@@ -167,6 +176,26 @@ final class AppCoordinator {
         statusBarController.onQuit = {
             NSApp.terminate(nil)
         }
+        statusBarController.historyEntriesProvider = { [weak self] in
+            self?.dictationHistory.entries ?? []
+        }
+        statusBarController.onCopyHistoryEntry = { [weak self] id in
+            self?.copyHistoryEntry(id)
+        }
+        statusBarController.onClearHistory = { [weak self] in
+            self?.dictationHistory.clear()
+        }
+        statusBarController.secureInputWarningProvider = { [weak self] in
+            guard let self else { return nil }
+            return SecureInput.currentWarning(for: self.config.hotkey)
+        }
+    }
+
+    /// 菜单点击「最近结果」条目：写入剪贴板（沿用 concealed / transient 标记），浮窗确认。
+    private func copyHistoryEntry(_ id: UUID) {
+        guard let entry = dictationHistory.entries.first(where: { $0.id == id }) else { return }
+        textInsertionService.copyToClipboard(text: entry.text)
+        recordingHUDController?.showCopiedToClipboard()
     }
 
     private func setupControllerIfNeeded(forceShow: Bool = false, preferredTab: SetupTab? = nil) {
@@ -539,9 +568,14 @@ final class AppCoordinator {
 
     private func ensureController() {
         if voiceTyperController == nil {
-            voiceTyperController = VoiceTyperController(config: config, asrService: asrService)
+            voiceTyperController = makeController()
             bindControllerEvents()
         }
+    }
+
+    /// 总是注入同一个文本插入服务（R8-A2）；单独成函数以便测试断言。
+    func makeController() -> VoiceTyperController {
+        VoiceTyperController(config: config, asrService: asrService, textInsertionService: textInsertionService)
     }
 
     // MARK: - 模型下载
@@ -780,8 +814,11 @@ final class AppCoordinator {
             case .idle:
                 self.dictationErrorRecoveryWorkItem?.cancel()
                 if previous == .inserting {
-                    self.recordingHUDController?.showSuccess()
+                    let note = self.pendingInsertionNote
+                    self.pendingInsertionNote = nil
+                    self.recordingHUDController?.showSuccess(note: note)
                 } else {
+                    self.pendingInsertionNote = nil
                     self.recordingHUDController?.hideHUD()
                 }
             default:
@@ -816,7 +853,26 @@ final class AppCoordinator {
         // 菜单栏状态保持 .recognizing——这一层的粒度就到"正在处理"为止，
         // 细分到底在等本地推理还是网络是 HUD 的职责。
         voiceTyperController?.onCorrectionStarted = { [weak self] in
-            self?.recordingHUDController?.setCorrecting()
+            guard let self else { return }
+            self.recordingHUDController?.setCorrecting(hotkeyDisplay: self.config.hotkey.displayString)
+        }
+
+        voiceTyperController?.onEngineWait = { [weak self] stage in
+            self?.recordingHUDController?.setEngineWait(stage)
+        }
+
+        voiceTyperController?.onInsertedWithNote = { [weak self] note in
+            self?.pendingInsertionNote = note
+        }
+
+        voiceTyperController?.onResultAvailable = { [weak self] text, kind in
+            self?.dictationHistory.record(text, kind: kind)
+        }
+
+        voiceTyperController?.onSecureFieldRefused = { [weak self] in
+            guard let self else { return }
+            self.recordingHUDController?.showSecureFieldRefusal()
+            self.forwardToOnboarding(.blocked(L("当前是密码输入框，VoiceTyper 不会在这里听写")))
         }
 
         voiceTyperController?.onPreviewWarning = { [weak self] message in
@@ -953,12 +1009,14 @@ final class AppCoordinator {
             downloadProgress: progress,
             modelDownloadError: modelDownloadError,
             hotkey: config.hotkey,
-            fnConflictWarning: cachedFnConflictWarning
+            fnConflictWarning: cachedFnConflictWarning,
+            secureInputWarning: cachedSecureInputWarning
         )
     }
 
     private func refreshFnConflictWarning() {
         cachedFnConflictWarning = SystemKeyboardSettings.fnConflictWarning(for: config.hotkey)
+        cachedSecureInputWarning = SecureInput.currentWarning(for: config.hotkey)
     }
 
     /// 菜单栏下拉里那行副标题。

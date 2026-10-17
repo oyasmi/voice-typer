@@ -120,9 +120,38 @@ actor LLMCorrector {
         let thinkingParameter: ThinkingParameterUsage
     }
 
+    /// 校对回落原文的原因（R8-C1）。只含枚举，可安全进入度量日志。
+    enum FallbackReason: String {
+        case timeout
+        case network
+        case auth
+        case rateLimited = "rate_limited"
+        case server
+        /// 截断（finish_reason=length）、空 content 或剥标签后为空等语义回落。
+        case emptyResult = "empty"
+    }
+
     struct CorrectionReport {
         let outcome: CorrectionOutcome
         let thinkingParameter: ThinkingParameterUsage
+        /// 仅 `.fellBack` 时有值。
+        var fallbackReason: FallbackReason?
+    }
+
+    /// 把校对过程中抛出的错误归类为用户可理解的几档原因。
+    static func fallbackReason(for error: Error) -> FallbackReason {
+        if let urlError = error as? URLError {
+            return urlError.code == .timedOut ? .timeout : .network
+        }
+        if let llmError = error as? LLMError, case .httpStatus(let code) = llmError {
+            switch code {
+            case 401, 403: return .auth
+            case 429: return .rateLimited
+            default: return .server
+            }
+        }
+        // 响应无法解析、内部错误等：服务端行为异常，按「服务出错」处理。
+        return .server
     }
 
     /// 使用 LLM 校对识别文本中的显著错误；任何失败（网络/超时/鉴权/解析）都回落到
@@ -135,10 +164,15 @@ actor LLMCorrector {
         var usage = ThinkingParameterUsage.sent
         do {
             let outcome = try await correctOrThrow(text, probeFresh: false, usage: &usage)
+            if case .fellBack = outcome {
+                return CorrectionReport(outcome: outcome, thinkingParameter: usage, fallbackReason: .emptyResult)
+            }
             return CorrectionReport(outcome: outcome, thinkingParameter: usage)
         } catch {
             AppLog.llm.warning("LLM 校对失败，使用原始文本: \(String(describing: error), privacy: .public)")
-            return CorrectionReport(outcome: .fellBack(text), thinkingParameter: usage)
+            return CorrectionReport(
+                outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: Self.fallbackReason(for: error)
+            )
         }
     }
 

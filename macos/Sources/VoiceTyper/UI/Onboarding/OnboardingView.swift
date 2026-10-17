@@ -303,6 +303,9 @@ struct OnboardingView: View {
             DisclosureGroup(L("按下热键完全没反应？")) {
                 VStack(alignment: .leading, spacing: 8) {
                     troubleshooting(L("「输入监控」权限没给全——回到上一步确认三项都是绿色。"))
+                    if let secureInputWarning = vm.secureInputWarning {
+                        troubleshooting(secureInputWarning)
+                    }
                     troubleshooting(L("热键被别的应用抢走了（如 Spotlight ⌘Space、输入法切换 ⌃Space）；可以在「设置 → 通用」里换一个热键。"))
                     troubleshooting(L("刚更新过版本：本机签名的构建在更新后可能需要重新授权，先到「系统设置 → 隐私与安全性」把 VoiceTyper 移除再重新添加。"))
                 }

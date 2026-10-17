@@ -34,7 +34,7 @@
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
-| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.5.1**（当前版本，见 D3） |
+| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.6.0**（当前版本，见 D3） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
 > 代价：老客户端用户升级到改名版后需要**重新授权一次**三项权限。由于两个 App 都是 adhoc 签名、
@@ -849,6 +849,153 @@ A2 的六个 AirPods 场景（含合盖、连续两次切换策略、识别准�
 
 ---
 
+## 11.5 R8：用户体验打磨
+
+实施规格见 [`docs/UX_R8_SPEC.md`](docs/UX_R8_SPEC.md)（编号 `R8-xx`，分四批）。主题：说出的话永远找得回来、
+热键与 Esc 不穿透、等待期反馈、跟嘴跟手、输出格式与自定义词汇。已定决策中影响输出的一条：**中英文之间统一加空格**
+（在 `TextPostprocessor` 之后的独立格式化层实现，不改识别契约与金标准夹具，两平台共用用例夹具）。
+
+### 第一批（3.6.0）：不丢字 · 不打扰
+
+**验证口径**：全量 `xcodebuild … test` 通过（见各项）。以下所有涉及热键、剪贴板、麦克风、浮窗、辅助功能的行为
+**均未在真机验证**，下表「真机验证」列一律写「未验证」，不得当作已验证。实现顺序按规格 §11：
+R8-F2 → R8-A2 → R8-A1 → R8-C1 → R8-C2 → R8-C3 → R8-B2 → R8-B1（B1 单独提交）。
+
+#### R8-F2 中英文之间统一加空格
+
+```text
+编号：R8-F2
+提交：第一批提交（feat(macos): R8 第一批——…）
+改动后的行为：上屏文本、浮窗预览、「最近结果」里的文本，中文与英文单词之间都有一个半角空格；与是否启用 LLM 无关。
+  LLM 收到的仍是 ASR 原文（不改发给 LLM 的文本）。TextPostprocessor 与金标准夹具未动。
+接口 / 配置 / 度量字段变更：新增 Text/OutputFormatter.swift（applyCJKLatinSpacing / formatForOutput）；
+  共享夹具 Fixtures/text_format_cases.json（25 条，含规格要求的 19 条）。无配置、无度量字段。
+自动化测试及结果：OutputFormatterTests（逐条读夹具 + 幂等断言）；VoiceTyperControllerTests 增补「插入服务与回调收到
+  格式化后的文本」「预览回调收到格式化后的文本」。全部通过。
+真机验证：不涉及系统 API，无需真机；真实输入法 / 应用里的观感未验证。
+与本规格的差异及理由：夹具在规格 19 条基础上多加 6 条边界用例（数字开头词元、单字母、括号、@、纯数字与汉字等），
+  未删改规格里任何期望值。
+Windows 影响：必须。C# 实现同一规则并在 VoiceTyper.Tests.csproj 里 Link 同一份夹具，两平台规则只能一起改（未做）。
+```
+
+#### R8-A2 最近结果（内存）与单例插入服务
+
+```text
+编号：R8-A2
+提交：第一批提交
+改动后的行为：菜单栏在 header 之后新增「复制上一次结果」与「最近结果」子菜单（最多 10 条，新的在前，前 30 字符，
+  后缀（未输入）/（已取消）/（部分），末尾「清空最近结果」）；点击条目写入剪贴板（concealed / transient）并弹 0.9s
+  「已复制到剪贴板」（不受浮窗「不显示」影响，听写进行中不打断）。AppCoordinator 持有唯一的 TextInsertionService，
+  重建控制器不再丢 pendingRestore。
+接口 / 配置 / 度量字段变更：新增 Core/DictationHistory.swift；VoiceTyperController.onResultAvailable、
+  init(textInsertionService:)（原已有）改由协调器注入；StatusBarController 新增 historyEntriesProvider /
+  onCopyHistoryEntry / onClearHistory；RecordingHUDController.showCopiedToClipboard()。
+自动化测试及结果：DictationHistoryTests（容量淘汰、去重、空白忽略、清空、onChange、菜单标题）；控制器各结局记录
+  （已输入 / 焦点变化 / 插入失败 / 取消有预览 / 取消无预览 / 空与丢弃不记录）；AppCoordinatorInsertionServiceTests
+  （重建控制器后插入服务同一实例）。通过。
+真机验证：未验证。手工步骤：① 正常听写 → 菜单出现条目；② 听写中切到别的应用 → 条目带「（未输入）」；
+  ③ 识别中按 Esc → 条目带「（已取消）」；④ 点击条目后在 TextEdit 粘贴，内容正确；⑤ 清空后菜单项禁用；
+  ⑥ 退出重开，列表为空。另：浮窗设为「不显示」时点击条目仍应弹出确认。
+与本规格的差异及理由：「取消」只在 isRunning 时记录（与「已取消」提示同条件）。
+Windows 影响：可选（Windows 只有「上一次」）。
+```
+
+#### R8-A1 终稿看门狗按时长缩放 + 失败兜底
+
+```text
+编号：R8-A1
+提交：第一批提交
+改动后的行为：看门狗 = min(max(录音秒数×5, 30), 300)，从推理真正派发到 asrQueue 起算（不含等引擎加载）；等引擎上限
+  60s，加载失败 / 模型缺失（engineUnavailable）时立即失败；超时 → 把已识别预览（格式化后）复制到剪贴板并进入「最近结果」，
+  浮窗「识别超时，已把识别出的部分复制到剪贴板」；其他失败 → 只进「最近结果」，不碰剪贴板，报错追加「可在菜单栏「最近结果」
+  里找回已识别的部分」；无预览则两者都不发生。等引擎时浮窗状态行改为「录音中 · 模型加载中…」（已攒 1s 音频）/
+  「识别中 · 正在加载模型…」（松键后约 300ms 仍未就绪）。
+接口 / 配置 / 度量字段变更：VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:)；LocalASRSession 新增
+  engineUnavailable 构造参数、onEngineWait / EngineWaitStage；ASRSessionTimings.finalizeTimedOut；度量末尾追加
+  finalize_timeout=0|1；RecordingHUDController.setEngineWait(_:)。
+自动化测试及结果：公式 5 例；超时置位 finalizeTimedOut；看门狗不含引擎加载时间；engineUnavailable 立即失败；
+  onEngineWait 每阶段至多一次；超时有预览 → 复制 + 历史 1 条；普通失败有预览 → 不复制 + 历史 1 条；无预览 → 都不发生。通过。
+真机验证：未验证。手工步骤：设置「空闲卸载 5 分钟」并关闭启动预加载 → 重启后立刻按住热键说 3 秒 → 浮窗应出现
+  「录音中 · 模型加载中…」，结果正常上屏。超时路径可在 Debug 构建临时把公式下限改成 0.1s 验证（不得提交）。
+与本规格的差异及理由：(1) 失败文案拼接用 LF("%@。%@")（先去掉原文末尾标点），中英文各有对应格式串；
+  (2) 看门狗时长通过控制器 init 参数注入（默认即公式），仅为让测试不必等 30s。
+Windows 影响：已有（W-01），对齐即可。
+```
+
+#### R8-C1 校对回落不再被「已输入」盖掉
+
+```text
+编号：R8-C1
+提交：第一批提交
+改动后的行为：校对回落时成功提示变为「已输入 · 未校对」+ 原因一行，显示 2.5s；原因六档见规格表。浮窗为「不显示」时仅
+  鉴权失败仍提示（配置类问题），其余不提示。LocalASRSession 不再发「智能校对未成功」的 onWarning。
+接口 / 配置 / 度量字段变更：LLMCorrector.FallbackReason、CorrectionReport.fallbackReason；ASRSessionTimings.llmFallbackReason；
+  VoiceTyperController.onInsertedWithNote(InsertionNote?)（InsertionNote 带 showsWhenHUDHidden）；
+  RecordingHUDController.showSuccess(note:)；度量末尾追加 llm_fail=<reason|->。
+自动化测试及结果：LLMCorrectorTests 覆盖 401/403/429/5xx/其他 4xx/无法解析、URLError.timedOut / 其他 URLError、
+  截断 / 空结果六档映射；控制器 insertionNote 映射与「不显示」例外；成功时 note 为 nil。通过。
+真机验证：未验证（需要真实服务：改错 Key / 断网各试一次，观察浮窗两行提示的排版与停留时长）。
+与本规格的差异及理由：(1) 英文文案沿用界面既有术语「AI proofreading」而非规格里的「Smart correction」，
+  避免同一功能两种叫法；(2) 非 HTTP、无法解析的响应归入「服务出错」。
+Windows 影响：已有（WT-16）。
+```
+
+#### R8-C2 校对中再按热键跳过校对
+
+```text
+编号：R8-C2
+提交：第一批提交
+改动后的行为：校对中浮窗状态行为「校对中… · 再按 %@ 跳过」；此时按热键（hold / toggle）立即上屏识别原文，提示
+  「已输入 · 未校对 / 已跳过智能校对」（不算失败，不受「不显示」例外）。单独修饰键只认干净单击（松开时），按下时
+  不跳过也不弹「上一段听写尚未完成」。
+接口 / 配置 / 度量字段变更：LocalASRSession.isCorrecting / skipCorrection()；ASRSessionTimings.LLMResult.skipped
+  （llm_result=skipped）；RecordingHUDController.setCorrecting(hotkeyDisplay:)。
+自动化测试及结果：跳过后 onFinal 恰好一次且为原文、迟到结果被忽略、不能重复跳过、未校对时返回 false；控制器：hold 下按键
+  跳过且不开始新录音，修饰键按下不跳过、干净单击才跳过，未校对时按键行为不变。通过。
+真机验证：未验证（需开启智能校对，在校对中按热键；右 ⌘ 单击与 ⌘C 各试一次）。
+与本规格的差异及理由：控制器 init 新增 llmCorrectorOverride（仅测试注入桩 URLSession）。
+Windows 影响：已有（C3）。
+```
+
+#### R8-C3 120 秒上限倒计时
+
+```text
+编号：R8-C3
+提交：第一批提交
+改动后的行为：录音剩余 ≤ 15s 时计时位置变为橙色「还剩 N 秒」，每 0.5s 刷新；进入识别阶段恢复常规色与已录时长。
+接口 / 配置 / 度量字段变更：LocalASRSession.maxSessionSeconds（maxSessionSamples 由它推出）；
+  RecordingHUDController.countdownSeconds(elapsed:)。
+自动化测试及结果：countdownSeconds：104.9 → nil、105 → 15、110.2 → 10、119.6 → 1、120 → nil。通过。
+真机验证：未验证（录满 105s 以上观察橙色倒计时与文案宽度；中英文各一次）。
+与本规格的差异及理由：无。
+Windows 影响：已有（C3）。
+```
+
+#### R8-B2 安全输入与密码框
+
+```text
+编号：R8-B2
+提交：第一批提交
+改动后的行为：(1) 焦点是密码框（AXSecureTextField）时按热键不开始录音，浮窗锁形图标 +「当前是密码输入框…」2s，
+  不受「不显示」影响，度量 outcome=secure_field；(2) 插入前再查一次，若焦点已到密码框则不插入、改为复制并提示
+  「目标是密码输入框，结果已复制到剪贴板」，进入「最近结果」；(3) 系统安全输入开启且热键为组合键时，菜单 header
+  第三行、设置 → 通用 → 热键下方与引导「试一试」排障列表显示「「%@」开启了安全输入，组合键热键暂时收不到」（设置页附
+  「Fn 与单独修饰键热键不受影响」）。
+接口 / 配置 / 度量字段变更：新增 Support/SecureInput.swift（isEnabled / ownerPID / warning / currentWarning）、
+  Services/FocusInspector.swift（FocusInspecting + AXFocusInspector）；控制器 init(focusInspector:)、
+  onSecureFieldRefused；DictationMetrics.Outcome.secureField；StatusMenuHeaderView.setWarning。
+自动化测试及结果：控制器：密码框时不调用 audioCapture.start 并上报 secure_field、离开后可立即听写、插入前变成密码框 →
+  复制不插入且进历史、单独修饰键（hold）按下不提示而干净单击才提示；SecureInputTests（有 / 无应用名、Fn 与单独修饰键、
+  未开启时不显示）。通过。
+真机验证：未验证。手工步骤：Safari 登录页密码框按住 Fn → 拒绝提示；终端开启「安全键盘输入」后：组合键热键 → 菜单
+  header 有说明；Fn 热键 → 记录是否仍能触发（V）；关闭后提示消失。ownerPID（IOConsoleUsers 里的
+  kCGSSessionSecureInputPID）字段是否存在待真机确认，取不到时应用名回落为「某个应用」。
+与本规格的差异及理由：(1) 单独修饰键（hold）每次组合快捷键都会「按下」，密码框里的拒绝提示留到干净单击（松开）时才弹，
+  否则 ⌘C 之类会被反复骚扰（「不打扰」优先）；(2) AX 查询设 250ms 消息超时，主线程不会因目标应用无响应而卡数秒；
+  (3) 插入前的密码框检查在主线程做一次 AX 查询，会计入 release_to_done，真机需确认其耗时可忽略。
+Windows 影响：建议（UIA IsPassword）。
+```
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |
@@ -856,7 +1003,7 @@ A2 的六个 AirPods 场景（含合盖、连续两次切换策略、识别准�
 | D1 | 模型分发方式 | ✅ **首启从 ModelScope 下载** | App 52MB；已验证端点、断点续传与 sha256（§4.4） |
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
-| D3 | 新 App 版本号 | ✅ **3.3.1**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 → 3.3.0 → 3.3.1 |
+| D3 | 新 App 版本号 | ✅ **3.6.0**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 → 3.3.0 → 3.3.1 → 3.5.0 → 3.5.1 → 3.6.0（R8 第一批） |
 | D4 | 空闲卸载默认值 | ✅ **从不卸载**（`ASRConfig.idleUnloadMinutes` 默认 0） | 初版默认 10 分钟，3.3.0 后改为"从不"：与"启动时预加载"默认开启配套，让按热键始终零等待；内存代价（~510MB 常驻）由用户按需改回定时卸载 |
 | D6 | 热键触发方式 | ✅ **显式二选一 `hold`（默认）/ `toggle`** | 否决"短按 toggle、长按 hold"的自动判别：会把被丢弃的误触升级为用户无察觉的持续录音（§11.2 R5-03） |
 | D7 | 版本更新提醒 | ✅ **菜单里手动「检查更新…」**，不引入 Sparkle、不做后台轮询 | 后台自动检查与"音频只在本机处理"的定位相悖；Sparkle 需要 appcast 托管与更新签名密钥管理，不在本轮范围（§11.2 R5-05） |

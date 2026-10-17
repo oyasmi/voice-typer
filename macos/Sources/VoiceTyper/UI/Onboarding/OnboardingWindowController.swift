@@ -50,7 +50,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         downloadProgress: Double?,
         modelDownloadError: String?,
         hotkey: HotkeyConfig,
-        fnConflictWarning: String?
+        fnConflictWarning: String?,
+        secureInputWarning: String?
     ) {
         ensureUIBuilt()
         viewModel.permissions = permissions
@@ -60,6 +61,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         viewModel.hotkeyDisplay = hotkey.displayString
         viewModel.hotkeyMode = hotkey.mode
         viewModel.fnConflictWarning = fnConflictWarning
+        viewModel.secureInputWarning = secureInputWarning
     }
 
     func handleDictationEvent(_ event: OnboardingDictationEvent) {
