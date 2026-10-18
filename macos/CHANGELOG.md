@@ -4,7 +4,7 @@ macOS 应用（`macos/`）的版本变更，按版本倒序排列，只记录用
 [`DESIGN.md`](DESIGN.md)；Windows 版见 [`windows/CHANGELOG.md`](../windows/CHANGELOG.md)，旧客户端—服务端
 架构见 [`client-server/server/CHANGELOG.md`](../client-server/server/CHANGELOG.md)。
 
-## 3.5.2（未发布）
+## 3.5.2 — 2026-10-18
 
 用户体验打磨（R8，规格见 [`docs/UX_R8_SPEC.md`](docs/UX_R8_SPEC.md)）。单元测试全部通过；涉及热键、剪贴板、
 麦克风、浮窗与辅助功能的行为**尚未在真机验证**，逐项手工步骤见 [`DESIGN.md`](DESIGN.md) §11.5。
