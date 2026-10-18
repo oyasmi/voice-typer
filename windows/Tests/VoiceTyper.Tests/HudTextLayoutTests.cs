@@ -41,6 +41,34 @@ public class HudTextLayoutTests
         Assert.Equal(new[] { "你好 世界" }, HudTextLayout.FitTail("你好\n世界", 2, 200, Measure));
     }
 
+    /// <summary>中英混排时英文单词整体换到下一行，而不是 "rev" / "iew" 各占一行；行首不留空格。
+    /// 行拼起来必须仍是原文——尾部淡显按字符数从末尾倒数，少一个空格就会错位。</summary>
+    [Fact]
+    public void EnglishWordsAreNotSplit_AndLinesConcatenateToOriginal()
+    {
+        const string text = "今天我们 review 一下代码";
+        var lines = HudTextLayout.FitTail(text, 3, 100, Measure);
+        Assert.Equal(new[] { "今天我们 ", "review 一下代", "码" }, lines);
+        Assert.Equal(text, string.Concat(lines));
+        Assert.All(lines, l => Assert.False(l.StartsWith(' ')));
+        Assert.All(lines, l => Assert.True(Measure(l.TrimEnd()) <= 100));
+    }
+
+    [Fact]
+    public void PunctuationDoesNotStartALine()
+    {
+        var lines = HudTextLayout.FitTail("一二三四五六七八九十，好", 2, 100, Measure);
+        Assert.Equal(new[] { "一二三四五六七八九", "十，好" }, lines);
+    }
+
+    /// <summary>一个词比整行还宽（长网址、长串数字）时只能逐字符断，不能卡死或溢出。</summary>
+    [Fact]
+    public void WordWiderThanLine_FallsBackToCharacterBreaks()
+    {
+        var lines = HudTextLayout.FitTail("abcdefghijklmnopqrstuvwxyz", 3, 100, Measure);
+        Assert.Equal(new[] { "abcdefghij", "klmnopqrst", "uvwxyz" }, lines);
+    }
+
 }
 
 public class HudTextLayoutPerformanceTests

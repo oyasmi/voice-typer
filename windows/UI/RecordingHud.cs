@@ -14,7 +14,7 @@ namespace VoiceTyper.UI;
 /// 无边框、置顶、不抢焦点的听写指示器。对应 macOS 的 <c>RecordingHUDController</c>。
 ///
 /// 上方一行：圆点 / 结果图标 + 实时波形 + 状态文字（含输入设备名）+ 计时。
-/// 下方（有内容时才展开）：最多两行的预览，放不下时保留<b>尾部</b>并以省略号开头。
+/// 下方（有内容时才展开）：最多三行、按词换行的预览，放不下时保留<b>尾部</b>并以省略号开头。
 /// 阶段：Preparing（麦克风启动中）→ Recording → Recognizing（→ 纠错中）→ 一次性结果
 /// （成功 / 错误 / 已取消 / 没有识别到内容）。
 ///
@@ -38,10 +38,13 @@ internal sealed class RecordingHud : Form
     /// <summary>浮窗与文字插入点之间的间距：比鼠标指针的 <see cref="CursorGap"/> 小，插入点本身很细。</summary>
     private const int CaretGap = 8;
     private const int ScreenMargin = 16;
-    private const int PreviewMaxLines = 2;
+    /// <summary>预览最多显示的行数。与 macOS 一致：宽度封顶 680 后用第三行补回容量（约 130 个汉字），
+    /// 浮窗面积与此前 860 宽、两行时相当。</summary>
+    private const int PreviewMaxLines = 3;
     private const int BarCount = 9;
-    /// <summary>宽度按档位增长而不是逐像素跟随文本，避免文字一边识别一边窗口一直在抖。</summary>
-    private static readonly int[] WidthSteps = { 420, 560, 700, 860 };
+    /// <summary>宽度按档位增长而不是逐像素跟随文本，避免文字一边识别一边窗口一直在抖。
+    /// 封顶 680（约 45 个汉字一行）：一行过长时视线要来回扫很远，宁可收窄、多排几行。</summary>
+    private static readonly int[] WidthSteps = { 420, 560, 680 };
 
     private readonly System.Windows.Forms.Timer _animationTimer;
     /// <summary>状态 / 预览字体取自 <see cref="UiFonts"/>（与设置窗口同一字体族，中文用微软雅黑 UI），
