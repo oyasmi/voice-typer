@@ -1916,8 +1916,12 @@ Windows CI 的首次 PNG 复查还发现：嵌套单列 TableLayoutPanel 按自�
 
 - macOS 主机：Release 编译通过（0 警告 / 0 错误），win-x64 / win-arm64 交叉编译通过；排除 WinForms STA
   用例的测试共 379 项，378 通过、1 项真实联网测试按设计跳过。
-- Windows CI：推送后执行完整测试，启用中英文五页及窄窗口错误状态的真实控件预览；TRX 与 PNG 保存为
-  `voicetyper-windows-ui-check` 构建附件。CI 结果与具体提交绑定，不能替代下面的真机 DPI 验收。
+- Windows x64 CI：[代码提交 de6fb94 的运行记录](https://github.com/oyasmi/voice-typer/actions/runs/39108451322)
+  完整 388 项中 383 通过、5 项因真实模型/联网条件跳过；Release 构建、win-x64 / win-arm64 发布及产物结构检查通过。
+  这不代表 arm64 原生运行验证。TRX、PNG 与布局尺寸 JSON 保存为 `voicetyper-windows-ui-check` 构建附件。
+- 已逐张复查中英文五页和窄窗口错误状态共 12 张 CI 预览：无文字重叠，卡片与保存区多余留白已消除，纵向滚动和
+  底部操作正常。同一 CI 显示环境下，英文听写卡片由 404 高收紧至 261，保存区由 144 高收紧至 96（物理像素）。
+  CI 结果与具体提交绑定，默认 DPI 的控件渲染不能替代下面的真机 DPI 验收。
 
 Windows 真机手工验收（尚未执行）：
 
