@@ -13,6 +13,7 @@ using Xunit;
 namespace VoiceTyper.Tests;
 
 /// <summary>在 STA 上验证真实控件的跨页草稿、保存失败、撤销与布局；不写用户配置和密钥。</summary>
+[Collection("Settings UI")]
 public class SetupFormTests
 {
     private static void OnUiThread(Action test)
@@ -111,6 +112,79 @@ public class SetupFormTests
         Assert.Equal("正在听写", Field<Label>(form, "_modelStatusLabel").Text);
     });
 
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child)) yield return descendant;
+        }
+    }
+
+    [Fact]
+    public void SettingsFields_ReflowWithoutLosingValuesOrChangingParents() => OnUiThread(() =>
+    {
+        using var title = new Label { Text = "超时 / Timeout" };
+        using var hint = new Label { Text = "超时后仍使用原识别文本。Keep the original recognition result when the request times out." };
+        using var editor = new NumericUpDown { Value = 17 };
+        using var field = new SettingsField(title, hint, editor, fullWidth: false, editorWidth: 120);
+        foreach (var width in new[] { 700, 320, 700, 320 })
+        {
+            var pixels = width * field.DeviceDpi / 96;
+            field.Size = field.GetPreferredSize(new Size(pixels, 0));
+            field.PerformLayout();
+            Assert.True(field.ClientRectangle.Contains(editor.Bounds));
+            Assert.True(field.ClientRectangle.Contains(hint.Bounds));
+            Assert.True(title.Bottom <= hint.Top);
+            if (width == 320) Assert.True(hint.Bottom <= editor.Top);
+            else Assert.True(hint.Right <= editor.Left);
+            Assert.Same(field, editor.Parent);
+            Assert.Equal(17, editor.Value);
+            Assert.True(editor.Width < pixels / 2);
+        }
+    });
+
+    [Fact]
+    public void NarrowSettings_AllPagesScrollVertically_AndKeepSaveActionsVisible() => OnUiThread(() =>
+    {
+        try
+        {
+            foreach (var language in new[] { AppLanguage.Zh, AppLanguage.En })
+            {
+                L10n.SetLanguage(language);
+                using var form = new SetupForm();
+                form.LoadEditableContent(new AppConfig(), refreshDevices: false);
+                form.Show();
+                form.MicTestStopped("麦克风测试已停止。The microphone test stopped because the selected device is unavailable. Please reconnect it and retry.");
+                Field<CheckBox>(form, "_llmEnabledCheck").Checked = true;
+                Field<Label>(form, "_generalMessage").Text = string.Join(" ", Enumerable.Repeat("保存失败，请检查设置后重试。Please check settings and retry.", 3));
+                foreach (var width in new[] { 1000, 720, 900, 720 })
+                {
+                    form.ClientSize = new Size(width, 540);
+                    foreach (var tab in Enum.GetValues<SetupTab>())
+                    {
+                        form.SelectTab(tab);
+                        foreach (var toggle in Descendants(form).OfType<Button>().Where(b => b.Visible && b.Text.StartsWith("+ ")).ToArray())
+                            toggle.PerformClick();
+                        form.PerformLayout(); Application.DoEvents();
+                        var pages = Field<Dictionary<SetupTab, Control>>(form, "_pages");
+                        var page = (ScrollableControl)pages[tab];
+                        Assert.False(page.HorizontalScroll.Visible, $"页面横向溢出：{language} / {tab} / {width}");
+                        foreach (var button in new[] { Field<Button>(form, "_saveRecognitionButton"), Field<Button>(form, "_discardButton") })
+                        {
+                            var bounds = form.RectangleToClient(button.RectangleToScreen(button.ClientRectangle));
+                            Assert.True(form.ClientRectangle.Contains(bounds), $"底部按钮被裁切：{language} / {tab} / {width}");
+                        }
+                        foreach (var field in Descendants(page).OfType<SettingsField>().Where(f => f.Visible))
+                            foreach (Control control in field.Controls)
+                                Assert.True(field.ClientRectangle.Contains(control.Bounds), $"字段被裁切：{language} / {tab} / {width} / {control.GetType().Name}");
+                    }
+                }
+            }
+        }
+        finally { L10n.SetLanguage(AppLanguage.Zh); }
+    });
+
     [SkippableFact]
     public void RenderSettingsPreviews() => OnUiThread(() =>
     {
@@ -155,3 +229,7 @@ public class SetupFormTests
         finally { L10n.SetLanguage(AppLanguage.Zh); }
     });
 }
+
+// 界面语言和共享字体缓存属于进程状态，布局检查不能与其他测试并行切换它们。
+[CollectionDefinition("Settings UI", DisableParallelization = true)]
+public class SettingsUiCollection { }

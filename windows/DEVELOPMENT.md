@@ -49,7 +49,8 @@ VoiceTyper-<版本>-win-arm64-portable.zip
   `scripts/verify_publish.ps1` 检查必需文件，并拒绝含 .NET 运行时、模型或测试程序集的产物。体积记录见
   [`docs/PACKAGING.md`](docs/PACKAGING.md)。
 - 模型不随包分发。离线预置：`powershell -ExecutionPolicy Bypass -File scripts\fetch_model.ps1`。
-- 改版本号：`VoiceTyper.csproj` 的 `<Version>` / `<AssemblyVersion>` / `<FileVersion>`，以及 `app.manifest`。
+- 改版本号：`VoiceTyper.csproj` 的 `<Version>` / `<AssemblyVersion>` / `<FileVersion>`、`app.manifest`，
+  并同步 `build.bat` 与 `installer/VoiceTyper.iss` 的版本回退值。
 
 ### 签名（可选）
 
@@ -97,6 +98,8 @@ dotnet test
 - 中英文空格规则读与 macOS 共享的 `text_format_cases.json`（从 `macos/` 链接）。
 - 涉及热键、麦克风、剪贴板、浮窗的改动，单测之外还要给出手工验证步骤，并区分
   「代码审查通过」与「真机验证通过」。
+- Windows CI 会额外输出设置窗口中英文预览与 TRX 结果，下载该次运行的 `voicetyper-windows-ui-check`
+  附件查看；真实系统缩放、跨屏和工作区变化仍按 [DESIGN §30.3](DESIGN.md#303-验证与手工步骤) 验收。
 
 ## 配置文件
 

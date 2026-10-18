@@ -25,6 +25,30 @@ public class UiFitAndInputTests
         Assert.Equal(new Point(1920 + 460, 220), p);
     }
 
+    [Theory]
+    [InlineData(-3000, 100, -1920, 100)]
+    [InlineData(-100, 900, -1000, 440)]
+    [InlineData(-1800, 200, -1800, 200)]
+    public void WindowFit_ClampsToNegativeOriginMonitor_WithoutRecentering(int x, int y, int expectedX, int expectedY)
+    {
+        var location = WindowFit.ClampLocation(new Rectangle(x, y, 1000, 600), new Rectangle(-1920, 0, 1920, 1040));
+        Assert.Equal(new Point(expectedX, expectedY), location);
+    }
+
+    [Theory]
+    [InlineData(120)]
+    [InlineData(144)]
+    [InlineData(192)]
+    public void WindowFit_LargeScaledWindow_FitsSmallWorkingArea(int dpi)
+    {
+        var area = new Rectangle(1366, -100, 1366, 728);
+        var (size, minimum) = WindowFit.Fit(new Size(1000 * dpi / 96, 700 * dpi / 96),
+            new Size(720 * dpi / 96, 480 * dpi / 96), area);
+        var location = WindowFit.ClampLocation(new Rectangle(2500, 500, size.Width, size.Height), area);
+        Assert.True(area.Contains(new Rectangle(location, size)));
+        Assert.True(minimum.Width <= size.Width && minimum.Height <= size.Height);
+    }
+
     [Fact]
     public void PasteSequence_OmitsCtrlWhenAlreadyHeld()
     {

@@ -31,4 +31,9 @@ internal static class WindowFit
     public static Point Center(Size size, Rectangle workingArea) => new(
         workingArea.Left + (workingArea.Width - size.Width) / 2,
         workingArea.Top + (workingArea.Height - size.Height) / 2);
+
+    /// <summary>保留用户放置的位置，只把越界部分移回工作区；支持负坐标的副屏。</summary>
+    public static Point ClampLocation(Rectangle bounds, Rectangle workingArea) => new(
+        Math.Clamp(bounds.Left, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - bounds.Width)),
+        Math.Clamp(bounds.Top, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - bounds.Height)));
 }

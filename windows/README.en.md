@@ -84,6 +84,10 @@ Right-click the tray icon for Settings, Pause Dictation, Check for Updates and m
 
 Everything is configurable in the Settings window; there is no config file to edit.
 
+The window adapts to display scaling and available space. In narrow windows, fields stack vertically and
+pages scroll while Save and Discard remain at the bottom. Microphone, service URL and model name fields
+use the full content width for longer values.
+
 | Page | Contents |
 | --- | --- |
 | Dictation | Hotkey, trigger mode, microphone and “Test microphone”, recognition language (auto / Chinese / English / Cantonese / Japanese / Korean) |

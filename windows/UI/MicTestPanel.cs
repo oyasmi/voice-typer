@@ -80,6 +80,8 @@ internal sealed class MicTestPanel : FlowLayoutPanel
     private readonly Button _button = new();
     private readonly LevelMeter _meter = new();
     private readonly Label _status = new();
+    private readonly FlowLayoutPanel _row;
+    private bool _layingOut;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 500 };
     private bool _running;
     private bool _heardSound;
@@ -97,6 +99,10 @@ internal sealed class MicTestPanel : FlowLayoutPanel
     public Button ToggleButton => _button;
     public bool IsRunning => _running;
 
+    /// <summary>设置页按宿主宽度约束；引导页继续使用 ApplyScale 的显式尺寸。</summary>
+    [DefaultValue(false)]
+    public bool FitToWidth { get; set; }
+
     public MicTestPanel()
     {
         // 两行：第一行按钮 + 电平条，第二行状态文字（可换行，不会把面板撑出页面）。
@@ -110,20 +116,40 @@ internal sealed class MicTestPanel : FlowLayoutPanel
         _button.AutoSize = true;
         _button.Click += (_, _) => Toggle();
         _meter.Margin = new Padding(8, 12, 0, 0);
-        var row = new FlowLayoutPanel
+        _row = new FlowLayoutPanel
         {
             AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
             FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty,
         };
-        row.Controls.AddRange(new Control[] { _button, _meter });
+        _row.Controls.AddRange(new Control[] { _button, _meter });
         _status.AutoSize = true;
         _status.MaximumSize = new Size(520, 0);
         _status.Margin = new Padding(0, 2, 0, 0);
         _status.ForeColor = Color.FromArgb(99, 110, 128);
-        Controls.AddRange(new Control[] { row, _status });
+        Controls.AddRange(new Control[] { _row, _status });
 
         _timer.Tick += (_, _) => OnTimer();
         Disposed += (_, _) => _timer.Dispose();
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        if (FitToWidth && _row is not null && !_layingOut)
+        {
+            _layingOut = true;
+            try
+            {
+                var width = Math.Max(1, ClientSize.Width - Padding.Horizontal);
+                _row.WrapContents = true;
+                _row.MaximumSize = new Size(width, 0);
+                _status.MaximumSize = new Size(Math.Max(1, width - _status.Margin.Horizontal), 0);
+                var remaining = width - _button.GetPreferredSize(Size.Empty).Width
+                    - _button.Margin.Horizontal - _meter.Margin.Horizontal;
+                _meter.Width = Math.Min(LogicalToDeviceUnits(200), Math.Max(LogicalToDeviceUnits(60), remaining));
+            }
+            finally { _layingOut = false; }
+        }
+        base.OnLayout(e);
     }
 
     /// <summary>

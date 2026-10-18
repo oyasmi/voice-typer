@@ -31,6 +31,7 @@ internal sealed partial class SetupForm
     private void BuildSettingsLayout()
     {
         _windowLayout.Dock = DockStyle.Fill;
+        _windowLayout.Margin = Padding.Empty;
         _windowLayout.ColumnCount = 2;
         _windowLayout.RowCount = 2;
         _windowLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 178));
@@ -38,7 +39,7 @@ internal sealed partial class SetupForm
         _windowLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _windowLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var sidebar = Stack();
-        sidebar.Dock = DockStyle.Fill;
+        sidebar.Dock = DockStyle.Top;
         sidebar.BackColor = Color.FromArgb(239, 242, 247);
         sidebar.Padding = new Padding(16, 26, 16, 16);
         Add(sidebar, TextLabel("VoiceTyper", 15, true));
@@ -53,8 +54,11 @@ internal sealed partial class SetupForm
         StyleLabel(_versionLabel, Muted);
         _versionLabel.Margin = new Padding(0, 24, 0, 0);
         Add(sidebar, _versionLabel);
-        _windowLayout.Controls.Add(sidebar, 0, 0);
-        _windowLayout.SetRowSpan(sidebar, 2);
+        var sidebarScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true,
+            BackColor = sidebar.BackColor, Margin = Padding.Empty };
+        sidebarScroll.Controls.Add(sidebar);
+        _windowLayout.Controls.Add(sidebarScroll, 0, 0);
+        _windowLayout.SetRowSpan(sidebarScroll, 2);
 
         var main = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -168,7 +172,7 @@ internal sealed partial class SetupForm
 
         var input = Card(page, L10n.T("语音输入"));
         _micDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo);
+        AddField(input, L10n.T("麦克风"), L10n.T("自动模式优先避免蓝牙通话模式影响声音。"), _micDeviceCombo, fullWidth: true);
         // 展开时重新列设备：插拔麦克风后不必关窗重开（REVIEW_UX U-04）。保留当前选择
         //（含尚未保存的草稿与"已保存但当前未连接"的占位项），选中值不变就不会误触发脏检查。
         _micDeviceCombo.DropDown += (_, _) => RefreshMicChoices(CurrentMicDraftValue());
@@ -177,6 +181,8 @@ internal sealed partial class SetupForm
         _micTest.StartRequested = value => OnStartMicTest?.Invoke(value);
         _micTest.StopRequested = () => OnStopMicTest?.Invoke();
         StyleButton(_micTest.ToggleButton, L10n.T("测试麦克风"));
+        _micTest.Dock = DockStyle.Top;
+        _micTest.FitToWidth = true;
         _micDeviceCombo.SelectedIndexChanged += (_, _) => _micTest.Stop();
         Add(input, _micTest);
         ConfigureCombo(_languageCombo, Enum.GetValues<AsrLanguage>(), value => ((AsrLanguage)value).DisplayName());
@@ -225,10 +231,10 @@ internal sealed partial class SetupForm
         Add(card, _llmEnabledCheck);
         var fields = Stack();
         _llmBaseUrlField.PlaceholderText = "https://api.openai.com/v1";
-        AddField(fields, L10n.T("服务地址"), L10n.T("兼容 OpenAI 的 API 地址。"), _llmBaseUrlField);
+        AddField(fields, L10n.T("服务地址"), L10n.T("兼容 OpenAI 的 API 地址。"), _llmBaseUrlField, fullWidth: true);
         _llmApiKeyField.UseSystemPasswordChar = true;
-        AddField(fields, "API Key", L10n.T("密钥由 Windows 加密保存。"), _llmApiKeyField);
-        AddField(fields, L10n.T("模型名称"), L10n.T("填写服务提供方支持的模型名称。"), _llmModelField);
+        AddField(fields, "API Key", L10n.T("密钥由 Windows 加密保存。"), _llmApiKeyField, fullWidth: true);
+        AddField(fields, L10n.T("模型名称"), L10n.T("填写服务提供方支持的模型名称。"), _llmModelField, fullWidth: true);
         var advanced = Stack();
         ConfigureNumber(_llmTemperatureField, (decimal)ConfigLimits.TemperatureMin, (decimal)ConfigLimits.TemperatureMax, 2, 0.05m);
         ConfigureNumber(_llmMaxTokensField, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax, 0, 64);
@@ -303,10 +309,11 @@ internal sealed partial class SetupForm
 
     private void BuildSaveFooter()
     {
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2,
-            Padding = new Padding(26, 14, 26, 14), BackColor = Color.White, Margin = Padding.Empty };
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2,
+            Padding = new Padding(26, 8, 26, 10), BackColor = Color.White, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         StyleLabel(_generalMessage, Muted);
         footer.Controls.Add(_generalMessage, 0, 0);
         StyleButton(_discardButton, L10n.T("撤销更改"));
@@ -314,10 +321,11 @@ internal sealed partial class SetupForm
         StyleButton(_saveRecognitionButton, L10n.T("保存并应用"), true);
         _saveRecognitionButton.Click += async (_, _) => await HandleSaveAll();
         var actions = ButtonRow(_discardButton, _saveRecognitionButton);
-        actions.WrapContents = false;
-        actions.Dock = DockStyle.None;
-        actions.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        footer.Controls.Add(actions, 1, 0);
+        actions.WrapContents = true;
+        actions.Dock = DockStyle.Top;
+        actions.FlowDirection = FlowDirection.RightToLeft;
+        actions.Controls.SetChildIndex(_saveRecognitionButton, 0);
+        footer.Controls.Add(actions, 0, 1);
         _windowLayout.Controls.Add(footer, 1, 1);
         AcceptButton = _saveRecognitionButton;
     }
@@ -374,7 +382,7 @@ internal sealed partial class SetupForm
                     var column = table.GetColumn(label);
                     if (column >= 0 && column < columns.Length && columns[column] > 0) width = columns[column];
                 }
-                var maximum = new Size(Math.Max(40, width - label.Margin.Horizontal), 0);
+                var maximum = new Size(Math.Max(1, width - label.Margin.Horizontal), 0);
                 if (label.MaximumSize != maximum) label.MaximumSize = maximum;
             }
             parent.SizeChanged += (_, _) => ResizeLabel();
@@ -402,16 +410,13 @@ internal sealed partial class SetupForm
         return row;
     }
 
-    private static void AddField(TableLayoutPanel card, string title, string description, Control editor)
+    private static void AddField(TableLayoutPanel card, string title, string description, Control editor, bool fullWidth = false)
     {
-        var row = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 2, Margin = new Padding(0, 6, 0, 6) };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
-        var text = Stack(); text.Margin = new Padding(0, 0, 16, 0);
-        Add(text, TextLabel(title, 9, true)); Add(text, TextLabel(description, 8, false, Muted));
-        editor.Dock = DockStyle.Top;
-        editor.Margin = new Padding(0, 5, 0, 0);
-        row.Controls.Add(text, 0, 0); row.Controls.Add(editor, 1, 0); Add(card, row);
+        // 数值和短主键保持紧凑；设备名、URL、密钥和模型名使用整行。
+        var width = editor is NumericUpDown ? 120 : editor is TextBox ? 160 : 240;
+        var heading = new Label { Text = title, Font = UiFonts.Get(9, true), ForeColor = Color.FromArgb(34, 43, 58) };
+        var hint = new Label { Text = description, Font = UiFonts.Get(9), ForeColor = Muted };
+        Add(card, new SettingsField(heading, hint, editor, fullWidth, width));
     }
 
     private static void ConfigureNumber(NumericUpDown number, decimal min, decimal max, int decimals, decimal step)

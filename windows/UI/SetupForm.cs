@@ -155,14 +155,18 @@ internal sealed partial class SetupForm : Form
     private SetupTab _selectedTab = SetupTab.Hotkey;
     private readonly Label _versionLabel = new();
     private readonly TableLayoutPanel _windowLayout = new();
+    private bool _fittingWindow;
+    private bool _windowFitPending;
+    private FormWindowState _lastWindowState;
 
     public SetupForm()
     {
+        SuspendLayout();
         Text = L10n.F("{0} 设置", "VoiceTyper");
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96f, 96f);
-        ClientSize = new Size(1080, 800);
-        MinimumSize = new Size(860, 640);
+        ClientSize = new Size(1000, 660);
+        MinimumSize = new Size(720, 480);
         StartPosition = FormStartPosition.CenterScreen;
         Font = UiFonts.Get(9f);
         BackColor = Color.FromArgb(247, 248, 250);
@@ -181,18 +185,74 @@ internal sealed partial class SetupForm : Form
         };
         Deactivate += (_, _) => StopHotkeyRecording();
         _permissionPollTimer.Tick += (_, _) => OnPollMicProbe?.Invoke();
+        ResumeLayout(true);
     }
     /// <summary>首次显示前按所在屏幕的可用区域收紧窗口：设计尺寸按逻辑像素写死，
     /// 缩放后在常见笔记本屏幕上会超出可用区域（标题栏或保存按钮落到屏幕外）。</summary>
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        var workingArea = Screen.FromControl(this).WorkingArea;
-        var (size, minimum) = WindowFit.Fit(Size, MinimumSize, workingArea);
-        if (size == Size && minimum == MinimumSize) return;
-        MinimumSize = minimum; // 先降最小尺寸，否则缩小尺寸会被抬回去
-        Size = size;
-        Location = WindowFit.Center(size, workingArea);
+        FitToWorkingArea();
+    }
+
+    private void FitToWorkingArea()
+    {
+        if (_fittingWindow || IsDisposed || WindowState != FormWindowState.Normal) return;
+        _fittingWindow = true;
+        try
+        {
+            var workingArea = Screen.FromControl(this).WorkingArea;
+            // 每次从 96 DPI 基准重算最小值，避免在小屏降低后永久丢失下限。
+            // 控件缩放仍完全交给 WinForms，这里只约束顶层窗口的物理像素边界。
+            var desiredMinimum = LogicalToDeviceUnits(new Size(720, 480));
+            var desired = new Size(Math.Max(Width, desiredMinimum.Width), Math.Max(Height, desiredMinimum.Height));
+            var (size, minimum) = WindowFit.Fit(desired, desiredMinimum, workingArea);
+            MinimumSize = minimum;
+            var bounds = new Rectangle(Location, size);
+            Bounds = new Rectangle(WindowFit.ClampLocation(bounds, workingArea), size);
+        }
+        finally { _fittingWindow = false; }
+    }
+
+    private void QueueWindowFit()
+    {
+        if (_windowFitPending || !IsHandleCreated || IsDisposed || Disposing) return;
+        _windowFitPending = true;
+        BeginInvoke((Action)(() =>
+        {
+            _windowFitPending = false;
+            if (Visible && !IsDisposed) FitToWorkingArea();
+        }));
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        // 等框架应用建议矩形和子控件缩放后再收紧，避免被后续 DPI 处理覆盖。
+        QueueWindowFit();
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        FitToWorkingArea();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        var restored = _lastWindowState != FormWindowState.Normal && WindowState == FormWindowState.Normal;
+        _lastWindowState = WindowState;
+        if (restored) QueueWindowFit();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WmDisplayChange = 0x007E;
+        const int WmSettingChange = 0x001A;
+        base.WndProc(ref m);
+        // 分辨率、显示器连接、任务栏工作区变化；不订阅全局静态事件。
+        if (m.Msg is WmDisplayChange or WmSettingChange) QueueWindowFit();
     }
 
     /// <summary>
@@ -374,6 +434,7 @@ internal sealed partial class SetupForm : Form
     {
         if (!Visible) Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        FitToWorkingArea();
         BringToFront();
         Activate();
     }

@@ -47,7 +47,19 @@ jobs:
         run: dotnet build VoiceTyper.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test VoiceTyper.sln -c Release --no-build --logger "console;verbosity=normal"
+        env:
+          VOICETYPER_SETTINGS_PREVIEW: ${{ runner.temp }}/voicetyper-settings-preview
+        run: dotnet test VoiceTyper.sln -c Release --no-build --logger "console;verbosity=normal" --logger "trx;LogFileName=windows-tests.trx" --results-directory TestResults
+
+      - name: Upload UI previews and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicetyper-windows-ui-check
+          path: |
+            ${{ runner.temp }}/voicetyper-settings-preview
+            windows/TestResults
+          retention-days: 7
 
       - name: Publish win-x64
         run: >
