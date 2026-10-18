@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Text.Json;
 using System.Windows.Forms;
 using VoiceTyper.Asr;
 using VoiceTyper.Core;
@@ -176,8 +177,12 @@ public class SetupFormTests
                             Assert.True(form.ClientRectangle.Contains(bounds), $"底部按钮被裁切：{language} / {tab} / {width}");
                         }
                         foreach (var field in Descendants(page).OfType<SettingsField>().Where(f => f.Visible))
+                        {
+                            Assert.True(field.Height <= field.GetPreferredSize(new Size(field.Width, 0)).Height + 2,
+                                $"字段存在多余留白：{language} / {tab} / {width} / {field.Height}");
                             foreach (Control control in field.Controls)
                                 Assert.True(field.ClientRectangle.Contains(control.Bounds), $"字段被裁切：{language} / {tab} / {width} / {control.GetType().Name}");
+                        }
                     }
                 }
             }
@@ -214,6 +219,16 @@ public class SetupFormTests
                     using var bitmap = new Bitmap(form.Width, form.Height);
                     form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
                     bitmap.Save(Path.Combine(directory!, $"settings-{language}-{tab}.png"), ImageFormat.Png);
+                    // 只输出本测试的虚构界面数据，不记录编辑器文本，便于定位容器的意外留白。
+                    var layout = Descendants(form).Where(c => c.Visible).Select(c => new
+                    {
+                        Type = c.GetType().Name,
+                        Caption = c is Label or Button ? c.Text : "",
+                        Bounds = c.Bounds.ToString(),
+                        Preferred = c.GetPreferredSize(new Size(c.Width, 0)).ToString(),
+                        Rows = c is TableLayoutPanel table ? table.GetRowHeights() : Array.Empty<int>(),
+                    });
+                    File.WriteAllText(Path.Combine(directory!, $"settings-{language}-{tab}.json"), JsonSerializer.Serialize(layout, new JsonSerializerOptions { WriteIndented = true }));
                 }
                 form.ClientSize = new Size(740, 550);
                 form.SelectTab(SetupTab.Recognition);

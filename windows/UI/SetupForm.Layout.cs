@@ -309,7 +309,7 @@ internal sealed partial class SetupForm
 
     private void BuildSaveFooter()
     {
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2,
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2,
             Padding = new Padding(26, 8, 26, 10), BackColor = Color.White, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
