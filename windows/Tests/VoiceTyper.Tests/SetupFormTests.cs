@@ -183,6 +183,12 @@ public class SetupFormTests
                             foreach (Control control in field.Controls)
                                 Assert.True(field.ClientRectangle.Contains(control.Bounds), $"字段被裁切：{language} / {tab} / {width} / {control.GetType().Name}");
                         }
+                        foreach (var stack in Descendants(page).OfType<SettingsStack>().Where(s => s.Visible))
+                        {
+                            var bottom = stack.Controls.Cast<Control>().Where(c => c.Visible)
+                                .Select(c => c.Bottom + c.Margin.Bottom).DefaultIfEmpty(stack.Padding.Top).Max();
+                            Assert.InRange(stack.Height - bottom - stack.Padding.Bottom, 0, 2);
+                        }
                     }
                 }
             }
