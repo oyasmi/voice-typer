@@ -6,10 +6,14 @@ import QuartzCore
 final class RecordingHUDController: NSWindowController {
     // MARK: - 几何常量
 
-    /// 起步宽度：容得下状态行（波形 + 「录音中 · 设备名 · 操作提示」+ 计时）。预览变长时再加宽。
-    static let defaultHudWidth: CGFloat = 480
-    /// 宽度上限。一行过长时视线要来回扫很远，宁可收窄、多排几行：680pt 约 45 个汉字一行。
-    static let maximumHudWidth: CGFloat = 680
+    /// 宽度策略：浮窗是顺带瞥一眼的辅助信息，尺寸变化要少、跳得干脆、只增不减。
+    /// - 起步宽度 400（约 25 个汉字）；状态行（设备名 + 操作提示）实测更宽时放宽，至多 460。
+    static let compactWidthRange: ClosedRange<CGFloat> = 400...460
+    /// - 预览一行放不下时直接跳到最宽 600（约 40 个汉字一行，中文舒适行长的上限），之后换行。
+    ///   只有两档：中间档比起步只宽几个字，多跳一次换不来什么。
+    /// - 一次显示期间只增不减（`widthFloor`）：预览被修正变短时不回缩，整个过程最多跳一次。
+    ///   浮窗从中心向两边变宽而文字左对齐，每跳一次文字整体左移一下，逐字跟随时会一直在挪。
+    static let maximumHudWidth: CGFloat = 600
     private static let maximumScreenWidthRatio: CGFloat = 0.5
     private static let screenMargin: CGFloat = 16
     /// 纵向排版：顶部内边距 + 状态行 + 状态行与预览的间距 + 预览 N 行 + 底部内边距。
@@ -25,15 +29,26 @@ final class RecordingHUDController: NSWindowController {
     /// 预览最多显示的行数。
     ///
     /// 一行 + 前导省略号意味着长句只剩尾巴，而"边说边校对识别结果"正是 HUD 存在的理由。
-    /// 宽度收窄到 `maximumHudWidth` 后用三行补回容量（约 130 个汉字），浮窗总面积与此前
-    /// 850pt 宽的单行浮窗相当，不会更多地遮挡用户正在工作的窗口。
+    /// 宽度收窄到 `maximumHudWidth` 后用三行补回容量（约 120 个汉字，连续说 30 秒左右），
+    /// 不会更多地遮挡用户正在工作的窗口。超过三行时按整行滚动：第四行出现的同时第一行整行消失，
+    /// 其余各行的断行位置不变（见 `lastLines`）。
     static let previewMaximumLines = 3
+    /// 行数减少后要持续这么久才收矮：识别修正常让预览短暂少一行，立刻收矮会一跳一跳。变高则立即生效。
+    static let lineShrinkDelay: TimeInterval = 0.6
     static let previewFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+    static let statusFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    static let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
     /// `NSTextField` 绘制文字时左右各留 2pt 行片段内边距，实际换行宽度比标签窄 4pt。
-    /// 测量（`fitPreview`、`preferredHudWidth`）必须扣掉它，否则算作一行的文字在标签里会折到看不见的下一行。
-    static let previewTextPadding: CGFloat = 4
+    /// 测量（`fitPreview`、`singleLineHudWidth`、`compactWidth`）必须算上它，否则算作一行的文字会折到看不见的下一行。
+    static let labelTextPadding: CGFloat = 4
     /// 内容区左右内缩，与 buildUI 里 topRow / previewClipView 的约束常量保持一致。
     static let contentHorizontalInset: CGFloat = 16
+    /// 状态行各元素的尺寸，buildUI 与 `compactWidth` 共用。
+    private static let indicatorSize: CGFloat = 16
+    private static let waveformWidth: CGFloat = 44
+    private static let topRowSpacing: CGFloat = 10
+    /// 计时位预留的宽度样本：录音上限 120 秒，最长显示为「2:00」。
+    private static let timeWidthSample = "0:00"
     /// 底部落点距屏幕可见区下沿的距离（避开 Dock）。
     private static let screenBottomOffset: CGFloat = 80
     /// 跟随光标时浮窗与光标之间留出的间距。
@@ -81,7 +96,7 @@ final class RecordingHUDController: NSWindowController {
         Self.expandedHeight(lineCount: previewLineCount)
     }
 
-    /// 预览字体的单行高度，与 `tailFitting` 判定行数用的是同一个量。
+    /// 预览字体的单行高度。
     static let previewLineHeight = lineHeight(of: previewFont)
 
     /// 展开态窗口高度：预览区正好容纳 `lineCount` 行，下方只留 `bottomInset`。
@@ -96,8 +111,13 @@ final class RecordingHUDController: NSWindowController {
         previewLineHeight * CGFloat(max(1, min(previewMaximumLines, lineCount)))
     }
 
-    /// 当前 HUD 宽度。随预览内容增长到上限，避免文本继续把窗口推到屏幕外。
-    private var currentHudWidth: CGFloat = defaultHudWidth
+    /// 当前 HUD 宽度。随预览内容按档位增长到上限，避免文本继续把窗口推到屏幕外。
+    private var currentHudWidth: CGFloat = compactWidthRange.lowerBound
+    /// 本次显示期间已经到过的宽度：宽度只增不减。浮窗隐藏或开始新一次听写时归零。
+    private var widthFloor: CGFloat = 0
+    /// 行数减少后的延迟收矮（见 `lineShrinkDelay`）。
+    private var lineShrinkWorkItem: DispatchWorkItem?
+    private var pendingShrinkLineCount = 1
     /// 当前窗口底边左下角锚点（展开/收起时保持底边不动，向上生长）。
     private var anchorOrigin: CGPoint = .zero
     /// 收起防抖：preview 短暂清空时延迟收起，避免抖动。
@@ -138,7 +158,10 @@ final class RecordingHUDController: NSWindowController {
     // MARK: - 初始化
 
     convenience init(config: UIConfig) {
-        let rect = NSRect(x: 0, y: 0, width: RecordingHUDController.defaultHudWidth, height: RecordingHUDController.compactHeight)
+        let rect = NSRect(
+            x: 0, y: 0,
+            width: RecordingHUDController.compactWidthRange.lowerBound, height: RecordingHUDController.compactHeight
+        )
         let panel = NSPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -186,10 +209,12 @@ final class RecordingHUDController: NSWindowController {
         phase = .recording
         startDate = Date()
         isExpanded = false
-        currentHudWidth = Self.defaultHudWidth
 
         recordingStatusText = Self.recordingStatus(inputDeviceName: inputDeviceName, hint: hint)
         setStatus(recordingStatusText)
+        // 新的一次听写从起步宽度重新开始，不继承上一次显示到过的宽度。
+        widthFloor = 0
+        currentHudWidth = Self.compactWidth(status: recordingStatusText)
         resetTimeLabel()
         setPreviewLineCount(1, animated: false)
         previewLabel.stringValue = displayText(for: "")
@@ -214,8 +239,10 @@ final class RecordingHUDController: NSWindowController {
         cancelCollapse()
         cancelTransientHide()
         cancelWarningRestore()
+        cancelLineShrink()
         endCorrectingShimmer()
         phase = .hidden
+        widthFloor = 0
         dotView.stopPulse()
         waveformView.stop()
         dismiss()
@@ -235,11 +262,10 @@ final class RecordingHUDController: NSWindowController {
             previousPreviewText = text
             setExpanded(true)
         } else {
+            // 宽高都不动，只等防抖收起：短暂清空后很快又有字时，浮窗不必先缩一下再长回来。
             cancelPreviewHighlight()
             previousPreviewText = ""
             previewLabel.stringValue = displayText(for: "")
-            setPreviewLineCount(1, animated: true)
-            updateHudWidth(for: "", animated: true)
             scheduleCollapse()
         }
     }
@@ -290,6 +316,7 @@ final class RecordingHUDController: NSWindowController {
             recognizingStatusText = L("校对中…")
         }
         setStatus(recognizingStatusText)
+        widenForStatus()
         dotView.setStatic(color: .systemBlue)
         isCorrecting = true
         startShimmer()
@@ -534,10 +561,11 @@ final class RecordingHUDController: NSWindowController {
         dotView.stopPulse()
         dotView.setStatic(color: .systemGreen)
         waveformView.isHidden = true
-        currentHudWidth = Self.defaultHudWidth
 
         if window?.isVisible != true {
             isExpanded = false
+            widthFloor = 0
+            currentHudWidth = Self.compactWidth(status: statusLabel.stringValue)
             present(height: Self.compactHeight)
         } else {
             updateHudWidth(for: "", animated: true)
@@ -555,13 +583,39 @@ final class RecordingHUDController: NSWindowController {
 
     // MARK: - 预览排版
 
-    /// 切换预览区占几行，并把窗口高度跟着调整。
+    /// 切换预览区占几行，并把窗口高度跟着调整。变高立即生效；录音 / 识别中展开态下变矮要等
+    /// `lineShrinkDelay`，期间行数又回升则作废。
     private func setPreviewLineCount(_ lines: Int, animated: Bool) {
         let clamped = max(1, min(Self.previewMaximumLines, lines))
-        guard clamped != previewLineCount else { return }
-        previewLineCount = clamped
-        previewHeightConstraint?.constant = Self.previewHeight(lineCount: clamped)
+        let defersShrink = clamped < previewLineCount && isExpanded
+            && (phase == .recording || phase == .recognizing)
+        guard defersShrink else {
+            cancelLineShrink()
+            applyPreviewLineCount(clamped, animated: animated)
+            return
+        }
+        pendingShrinkLineCount = clamped
+        // 从第一次变少开始计时，后续更新只改目标行数，不重新计时。
+        guard lineShrinkWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lineShrinkWorkItem = nil
+            self.applyPreviewLineCount(self.pendingShrinkLineCount, animated: true)
+        }
+        lineShrinkWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.lineShrinkDelay, execute: item)
+    }
+
+    private func applyPreviewLineCount(_ lines: Int, animated: Bool) {
+        guard lines != previewLineCount else { return }
+        previewLineCount = lines
+        previewHeightConstraint?.constant = Self.previewHeight(lineCount: lines)
         applyExpandedHeight(animated: animated)
+    }
+
+    private func cancelLineShrink() {
+        lineShrinkWorkItem?.cancel()
+        lineShrinkWorkItem = nil
     }
 
     /// 展开态下把窗口高度对齐到 `currentExpandedHeight`（底边不动，向上生长）。
@@ -586,7 +640,7 @@ final class RecordingHUDController: NSWindowController {
         }
     }
 
-    /// 把一段已经准备好的展示文本排进当前宽度：超出上限行数时从**开头**截断
+    /// 把一段已经准备好的展示文本排进当前宽度：超出上限行数时只显示最后几行
     /// （保留最新说出的内容），并据此决定预览区占几行。
     @discardableResult
     private func layoutPreviewText(_ display: String) -> String {
@@ -598,8 +652,8 @@ final class RecordingHUDController: NSWindowController {
 
     /// 按浮窗宽度排预览：扣掉左右内缩与标签自身的行片段内边距，得到标签真正的换行宽度。
     static func fitPreview(_ display: String, hudWidth: CGFloat) -> (text: String, lineCount: Int) {
-        let wrapWidth = max(40, hudWidth - contentHorizontalInset * 2) - previewTextPadding
-        return tailFitting(display, width: wrapWidth, maximumLines: previewMaximumLines, font: previewFont)
+        let wrapWidth = max(40, hudWidth - contentHorizontalInset * 2) - labelTextPadding
+        return lastLines(display, width: wrapWidth, maximumLines: previewMaximumLines, font: previewFont)
     }
 
     // MARK: - 预览尾部淡显（R8-D3）
@@ -615,17 +669,11 @@ final class RecordingHUDController: NSWindowController {
 
     /// 把「与上一次预览分叉的位置」换算成排版后文本里的下标。
     ///
-    /// 排版（`tailFitting`）可能从开头截断并加 `…`：被丢掉的字符数是 `displayCount - (fittedCount - 1)`，
-    /// 分叉点要相应平移；分叉点落在被截掉的部分里则整段都是新内容（下标 0 之后的全部）。
-    static func highlightStart(
-        divergence: Int, displayCount: Int, fittedText: String, leadingEllipsis: String = "…"
-    ) -> Int {
-        let fittedCount = fittedText.count
-        guard fittedText.hasPrefix(leadingEllipsis), fittedCount - 1 < displayCount else {
-            return min(max(divergence, 0), fittedCount)
-        }
-        let dropped = displayCount - (fittedCount - 1)
-        return min(max(divergence - dropped + 1, 1), fittedCount)
+    /// 排版（`lastLines`）超过行数上限时只保留最后几行，显示的是原文的后缀：被滚出去的字符数是
+    /// `displayCount - fittedCount`，分叉点要相应平移；分叉点落在滚出去的部分里则整段都是新内容。
+    static func highlightStart(divergence: Int, displayCount: Int, fittedCount: Int) -> Int {
+        let dropped = max(0, displayCount - fittedCount)
+        return min(max(divergence - dropped, 0), fittedCount)
     }
 
     /// 预览与上一次的公共前缀之后的部分以次级色显示约 300ms 再变为常规色。
@@ -634,7 +682,7 @@ final class RecordingHUDController: NSWindowController {
         cancelPreviewHighlight()
         guard !HUDMotion.reduceMotion, !previousPreviewText.isEmpty, text != previousPreviewText else { return }
         let divergence = Self.commonPrefixLength(previousPreviewText, text)
-        let start = Self.highlightStart(divergence: divergence, displayCount: display.count, fittedText: fitted)
+        let start = Self.highlightStart(divergence: divergence, displayCount: display.count, fittedCount: fitted.count)
         guard start < fitted.count else { return }
 
         let paragraph = NSMutableParagraphStyle()
@@ -667,60 +715,42 @@ final class RecordingHUDController: NSWindowController {
         previewHighlightWorkItem = nil
     }
 
-    /// 返回能在 `width` × `maximumLines` 内显示的文本尾部片段（截掉的开头用 `…` 代替），
-    /// 以及它实际占用的行数。
+    /// 把 `text` 从头按词换行排进 `width`，超过 `maximumLines` 行时只返回最后 `maximumLines` 行
+    /// （原文的一个后缀，从某一行的行首开始），以及实际占用的行数。
     ///
-    /// 为什么自己算而不是交给 `NSTextField` 的 `.byTruncatingHead`：AppKit 只保证对**单个
-    /// 行片段**做首部截断，`maximumNumberOfLines > 1` 时的行为没有明确契约。万一它退化成
-    /// 截尾部，用户看到的会是一段长听写的**开头**——那比现在的单行还糟，因为预览的全部
-    /// 意义就在于看到自己刚说的话。自己二分测量是确定的，代价只有 log(n) 次 boundingRect。
-    static func tailFitting(
+    /// 为什么从头排、按整行滚动，而不是逐字丢掉开头再加 `…`：逐字丢开头时，每来一个字所有行的断行
+    /// 位置都会变，整段文字像蛇一样往前爬，眼睛无处落脚。从头排版时已经显示过的行断行不变，
+    /// 第四行出现的同时第一行整行消失，其余各行只是整体上移一行。
+    ///
+    /// 不交给 `NSTextField` 的 `.byTruncatingHead`：AppKit 只保证对单个行片段做首部截断，多行时
+    /// 没有明确契约，万一退化成截尾部，用户看到的会是长听写的开头而不是刚说完的话。
+    static func lastLines(
         _ text: String,
         width: CGFloat,
         maximumLines: Int,
         font: NSFont
     ) -> (text: String, lineCount: Int) {
         guard width > 0, maximumLines >= 1, !text.isEmpty else { return (text, 1) }
-        let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        let bounds = CGSize(width: width, height: .greatestFiniteMagnitude)
+        let lineStarts = lineStartOffsets(text, width: width, font: font)
+        guard lineStarts.count > maximumLines else { return (text, max(1, lineStarts.count)) }
+        let start = lineStarts[lineStarts.count - maximumLines]
+        return ((text as NSString).substring(from: start), maximumLines)
+    }
 
-        func height(_ candidate: String) -> CGFloat {
-            guard !candidate.isEmpty else { return 0 }
-            return (candidate as NSString).boundingRect(
-                with: bounds,
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: attributes
-            ).height
+    /// 每一行行首在 `text` 里的 UTF-16 偏移。换行规则与预览标签一致（按词换行、无行片段内边距的宽度）。
+    static func lineStartOffsets(_ text: String, width: CGFloat, font: NSFont) -> [Int] {
+        let storage = NSTextStorage(string: text, attributes: [.font: font])
+        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+        var starts: [Int] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: layoutManager.glyphRange(for: container)) {
+            _, _, _, glyphRange, _ in
+            starts.append(layoutManager.characterIndexForGlyph(at: glyphRange.location))
         }
-
-        let lineHeight = Self.lineHeight(of: font)
-        // 容差 1pt：boundingRect 返回的是浮点高度，恰好卡在整数倍上会被误判成多出一行。
-        let maximumHeight = lineHeight * CGFloat(maximumLines) + 1
-
-        func lineCount(of candidate: String) -> Int {
-            max(1, min(maximumLines, Int((height(candidate) / lineHeight).rounded())))
-        }
-
-        if height(text) <= maximumHeight {
-            return (text, lineCount(of: text))
-        }
-
-        // 二分"最少要丢掉多少个开头字符"。丢得越多越矮，单调，可二分。
-        let characters = Array(text)
-        var low = 1
-        var high = characters.count
-        var best = Self.leadingEllipsis
-        while low <= high {
-            let mid = (low + high) / 2
-            let candidate = Self.leadingEllipsis + String(characters[mid...])
-            if height(candidate) <= maximumHeight {
-                best = candidate
-                high = mid - 1
-            } else {
-                low = mid + 1
-            }
-        }
-        return (best, lineCount(of: best))
+        return starts
     }
 
     /// 单行文字的排版高度（14pt 系统字体为 17pt），与标签实际绘制的行距一致。
@@ -769,6 +799,8 @@ final class RecordingHUDController: NSWindowController {
         cancelPreviewHighlight()
         endCorrectingShimmer()
         phase = .transient
+        // 紧接在听写后面的提示（「已输入」等）沿用当前宽度，不先缩一下；单独出现时从紧凑宽度起步。
+        if window?.isVisible != true { widthFloor = 0 }
 
         setStatus(status)
         resetTimeLabel()
@@ -857,16 +889,14 @@ final class RecordingHUDController: NSWindowController {
     /// - Parameter height: 本次要摆放的窗口高度。跟随光标时需要它才能把浮窗放到光标下方。
     private func layoutMetrics(for requestedWidth: CGFloat, height: CGFloat) -> (origin: CGPoint, width: CGFloat) {
         guard let screen = targetScreen() else {
-            return (CGPoint(x: 0, y: 0), min(max(requestedWidth, Self.defaultHudWidth), Self.maximumHudWidth))
+            return (CGPoint(x: 0, y: 0), min(requestedWidth, Self.maximumHudWidth))
         }
         let visible = screen.visibleFrame
         let availableWidth = max(180, visible.width - Self.screenMargin * 2)
         let maximumWidth = min(Self.maximumHudWidth, visible.width * Self.maximumScreenWidthRatio, availableWidth)
-        // 曾经这里写成 `let defaultWidth = maximumWidth`，导致 `min(max(requested, defaultWidth),
-        // maximumWidth)` 恒等于 maximumWidth——HUD 宽度实际上永远等于上限，
-        // `preferredHudWidth(for:)` 按预览文本测宽的结果被完全忽略（R3-11）。这里改回真正的
-        // "默认宽度起步，随文本增长，封顶 `maximumHudWidth`（窄屏再受屏幕宽度一半约束）"。
-        let width = min(max(requestedWidth, Self.defaultHudWidth), maximumWidth)
+        // 曾经这里把默认宽度写成了上限，HUD 宽度永远等于上限，按内容选宽度的结果被完全忽略（R3-11）。
+        // 档位由 `targetWidth(status:preview:)` 决定，这里只做屏幕夹逼（窄屏受屏幕宽度一半约束）。
+        let width = min(requestedWidth, maximumWidth)
 
         let desiredOrigin: CGPoint
         switch hudPosition {
@@ -905,23 +935,50 @@ final class RecordingHUDController: NSWindowController {
         )
     }
 
-    /// 让 `text` 恰好排成一行所需的浮窗宽度（未做上限夹逼，夹逼在 `layoutMetrics`）。
-    static func preferredHudWidth(for text: String) -> CGFloat {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return defaultHudWidth }
+    /// 紧凑态宽度：状态行（指示点、波形、状态文字、计时）实测宽度，夹在 `compactWidthRange` 内。
+    static func compactWidth(status: String) -> CGFloat {
+        func labelWidth(_ text: String, _ font: NSFont) -> CGFloat {
+            ceil((text as NSString).size(withAttributes: [.font: font]).width) + labelTextPadding
+        }
+        let content = indicatorSize + waveformWidth + topRowSpacing * 4
+            + labelWidth(status, statusFont) + labelWidth(timeWidthSample, timeFont)
+        let total = content + contentHorizontalInset * 2
+        return min(max(total, compactWidthRange.lowerBound), compactWidthRange.upperBound)
+    }
 
-        let textWidth = ceil((trimmed as NSString).size(withAttributes: [.font: previewFont]).width)
-        return max(defaultHudWidth, textWidth + previewTextPadding + contentHorizontalInset * 2)
+    /// 让 `text` 恰好排成一行所需的浮窗宽度（未做上限夹逼）。
+    static func singleLineHudWidth(for text: String) -> CGFloat {
+        let textWidth = ceil((text as NSString).size(withAttributes: [.font: previewFont]).width)
+        return textWidth + labelTextPadding + contentHorizontalInset * 2
+    }
+
+    /// 浮窗该用的宽度档位：预览单行放得进紧凑宽度就用紧凑宽度，否则直接用最宽档（之后换行）。
+    /// 未做「只增不减」与屏幕夹逼，那两步在 `updateHudWidth` / `layoutMetrics`。
+    static func targetWidth(status: String, preview: String) -> CGFloat {
+        let compact = compactWidth(status: status)
+        let trimmed = preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, singleLineHudWidth(for: trimmed) > compact else { return compact }
+        return maximumHudWidth
+    }
+
+    /// 状态行文案变长（如「校对中… · 再按 X 跳过」）时按需加宽，同样只增不减。
+    private func widenForStatus() {
+        guard window?.isVisible == true else { return }
+        updateHudWidth(for: previousPreviewText, animated: true)
     }
 
     private func updateHudWidth(for text: String, animated: Bool) {
         let height = isExpanded ? currentExpandedHeight : Self.compactHeight
-        let metrics = layoutMetrics(for: Self.preferredHudWidth(for: text), height: height)
+        let requested = max(Self.targetWidth(status: statusLabel.stringValue, preview: text), widthFloor)
+        let metrics = layoutMetrics(for: requested, height: height)
         currentHudWidth = metrics.width
+        widthFloor = metrics.width
         anchorOrigin = metrics.origin
 
         guard let window, window.isVisible else { return }
         let target = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
+        // 档位没变时每次预览刷新都会走到这里，不必重放动画。
+        guard window.frame != target else { return }
         guard animated else {
             window.setFrame(target, display: true)
             window.invalidateShadow()
@@ -944,6 +1001,7 @@ final class RecordingHUDController: NSWindowController {
         let metrics = layoutMetrics(for: currentHudWidth, height: height)
         anchorOrigin = metrics.origin
         currentHudWidth = metrics.width
+        widthFloor = max(widthFloor, currentHudWidth)
         let endFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y, width: currentHudWidth, height: height)
 
         // 已可见（连读：上一次成功/错误提示或其淡出动画还没结束）时直接就位，
@@ -1039,6 +1097,8 @@ final class RecordingHUDController: NSWindowController {
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.setExpanded(false)
+            // 收起后才把预览区回到一行，下次展开从一行长起。
+            self.setPreviewLineCount(1, animated: false)
         }
         collapseWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: item)
@@ -1114,7 +1174,7 @@ final class RecordingHUDController: NSWindowController {
 
         // 层级约定:预览文字是 HUD 的正文(用户实时校对识别结果),用主色;
         // 状态标签只是装饰性提示(呼吸点/波形已在传达录音状态),降为次级色。
-        statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.font = Self.statusFont
         statusLabel.textColor = Self.statusTextColor
         statusLabel.alignment = .left
         // 状态行现在会带上输入设备名（"录音中 · MacBook Pro 麦克风"），长度不再可控。
@@ -1134,7 +1194,7 @@ final class RecordingHUDController: NSWindowController {
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        timeLabel.font = Self.timeFont
         timeLabel.textColor = .tertiaryLabelColor
         timeLabel.alignment = .right
         timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -1150,7 +1210,7 @@ final class RecordingHUDController: NSWindowController {
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.distribution = .fill
-        topRow.spacing = 10
+        topRow.spacing = Self.topRowSpacing
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
         previewClipView.wantsLayer = true
@@ -1177,8 +1237,8 @@ final class RecordingHUDController: NSWindowController {
             dimView.topAnchor.constraint(equalTo: effectView.topAnchor),
             dimView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
 
-            indicator.widthAnchor.constraint(equalToConstant: 16),
-            indicator.heightAnchor.constraint(equalToConstant: 16),
+            indicator.widthAnchor.constraint(equalToConstant: Self.indicatorSize),
+            indicator.heightAnchor.constraint(equalToConstant: Self.indicatorSize),
             dotView.centerXAnchor.constraint(equalTo: indicator.centerXAnchor),
             dotView.centerYAnchor.constraint(equalTo: indicator.centerYAnchor),
             glyphView.leadingAnchor.constraint(equalTo: indicator.leadingAnchor),
@@ -1186,7 +1246,7 @@ final class RecordingHUDController: NSWindowController {
             glyphView.topAnchor.constraint(equalTo: indicator.topAnchor),
             glyphView.bottomAnchor.constraint(equalTo: indicator.bottomAnchor),
 
-            waveformView.widthAnchor.constraint(equalToConstant: 44),
+            waveformView.widthAnchor.constraint(equalToConstant: Self.waveformWidth),
             waveformView.heightAnchor.constraint(equalToConstant: 22),
 
             topRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: Self.contentHorizontalInset),
