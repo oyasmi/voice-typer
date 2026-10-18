@@ -14,7 +14,7 @@ namespace VoiceTyper.UI;
 /// 无边框、置顶、不抢焦点的听写指示器。对应 macOS 的 <c>RecordingHUDController</c>。
 ///
 /// 上方一行：圆点 / 结果图标 + 实时波形 + 状态文字（含输入设备名）+ 计时。
-/// 下方（有内容时才展开）：最多三行、按词换行的预览，放不下时保留<b>尾部</b>并以省略号开头。
+/// 下方（有内容时才展开）：最多三行、按词换行的预览，超出时按整行滚动，只显示最后三行。
 /// 阶段：Preparing（麦克风启动中）→ Recording → Recognizing（→ 纠错中）→ 一次性结果
 /// （成功 / 错误 / 已取消 / 没有识别到内容）。
 ///
@@ -38,13 +38,12 @@ internal sealed class RecordingHud : Form
     /// <summary>浮窗与文字插入点之间的间距：比鼠标指针的 <see cref="CursorGap"/> 小，插入点本身很细。</summary>
     private const int CaretGap = 8;
     private const int ScreenMargin = 16;
-    /// <summary>预览最多显示的行数。与 macOS 一致：宽度封顶 680 后用第三行补回容量（约 130 个汉字），
-    /// 浮窗面积与此前 860 宽、两行时相当。</summary>
+    /// <summary>预览最多显示的行数。与 macOS 一致：宽度封顶 600 后用第三行补回容量（约 120 个汉字，
+    /// 连续说 30 秒左右）；再多按整行滚动。宽度档位见 <see cref="HudTextLayout.ChooseWidth"/>。</summary>
     private const int PreviewMaxLines = 3;
+    /// <summary>行数减少后要持续这么久才收矮：识别修正常让预览短暂少一行，立刻收矮会一跳一跳。变高则立即生效。</summary>
+    private const int LineShrinkDelayMs = 600;
     private const int BarCount = 9;
-    /// <summary>宽度按档位增长而不是逐像素跟随文本，避免文字一边识别一边窗口一直在抖。
-    /// 封顶 680（约 45 个汉字一行）：一行过长时视线要来回扫很远，宁可收窄、多排几行。</summary>
-    private static readonly int[] WidthSteps = { 420, 560, 680 };
 
     private readonly System.Windows.Forms.Timer _animationTimer;
     /// <summary>状态 / 预览字体取自 <see cref="UiFonts"/>（与设置窗口同一字体族，中文用微软雅黑 UI），
@@ -99,6 +98,11 @@ internal sealed class RecordingHud : Form
     private readonly record struct FollowPoint(int X, int BelowY, int AboveY);
     private FollowPoint _follow;
     private int _currentWidth;
+    /// <summary>本次显示期间到过的宽度（@96DPI）：宽度只增不减。浮窗隐藏或开始新一次听写时归零。</summary>
+    private int _widthFloor;
+    /// <summary>窗口高度按几行预览留位。行数减少时延迟跟进（<see cref="LineShrinkDelayMs"/>），期间多出的行位留空。</summary>
+    private int _lineSlots;
+    private System.Windows.Forms.Timer? _lineShrinkTimer;
     private Screen? _targetScreen;
 
     /// <summary>一次性提示（成功/错误/已取消）的自动隐藏任务；状态变化时作废。</summary>
@@ -129,8 +133,8 @@ internal sealed class RecordingHud : Form
         _placement = uiConfig.HudPositionValue;
         BackColor = Color.FromArgb(20, 20, 22);
         DoubleBuffered = true;
-        Size = new Size(S(WidthSteps[0]), S(CompactHeight));
-        _currentWidth = WidthSteps[0];
+        Size = new Size(S(HudTextLayout.CompactMinWidth), S(CompactHeight));
+        _currentWidth = HudTextLayout.CompactMinWidth;
 
         // 层级约定与 macOS 一致：预览文字是 HUD 的正文（用户实时校对识别结果），
         // 字号与亮度都高于顶行的状态提示（呼吸点/波形已在传达录音状态）。
@@ -188,6 +192,7 @@ internal sealed class RecordingHud : Form
 
         _phase = Phase.Preparing;
         _isCorrecting = false;
+        _widthFloor = 0;
         _glyph = Glyph.None;
         _accent = Color.FromArgb(150, 150, 150);
         _preparingStatusText = L10n.T("麦克风启动中…");
@@ -210,6 +215,8 @@ internal sealed class RecordingHud : Form
 
         _phase = Phase.Recording;
         _isCorrecting = false;
+        // 从"麦克风启动中"原地切换时沿用已有宽度；否则是新的一次听写，从起步宽度重新开始。
+        if (!keepAnchor) _widthFloor = 0;
         _startedTimestamp = Stopwatch.GetTimestamp();
         _glyph = Glyph.None;
         _accent = Color.FromArgb(235, 70, 60);
@@ -251,7 +258,7 @@ internal sealed class RecordingHud : Form
         _isCorrecting = false;
         _phase = Phase.Inserting;
         SetStatus(L10n.T("正在输入…"));
-        Invalidate();
+        RelayoutIfVisible();
     }
 
     /// <summary>
@@ -271,7 +278,7 @@ internal sealed class RecordingHud : Form
             : L10n.F("纠错中… 再按 {0} 跳过", skipHotkey);
         SetStatus(_recognizingStatusText);
         _accent = Color.FromArgb(70, 140, 255);
-        Invalidate();
+        RelayoutIfVisible();
     }
 
     /// <summary>
@@ -288,12 +295,12 @@ internal sealed class RecordingHud : Form
             case Phase.Recognizing:
                 _recognizingStatusText = waiting ? L10n.T("正在加载识别模型…") : L10n.T("识别中");
                 SetStatus(_recognizingStatusText);
-                Invalidate();
+                RelayoutIfVisible();
                 break;
             case Phase.Recording:
                 // 等待期间不显示设备名：状态行的空间有限，"在等模型"比设备名紧要。
                 SetStatus(waiting ? L10n.T("录音中 · 模型加载中…") : _recordingStatusText);
-                Invalidate();
+                RelayoutIfVisible();
                 break;
         }
     }
@@ -321,6 +328,9 @@ internal sealed class RecordingHud : Form
         _fadeTimer.Stop();
         _hideAfterFade = false;
         SetPreviewSource("");
+        CancelLineShrink();
+        _lineSlots = 0;
+        _widthFloor = 0;
         if (Visible) Hide();
         Opacity = _userOpacity;
     }
@@ -530,6 +540,7 @@ internal sealed class RecordingHud : Form
         CancelTransientHide();
         CancelWarningRestore();
         CancelCollapse();
+        CancelLineShrink();
     }
 
     private void CancelTransientHide()
@@ -553,6 +564,13 @@ internal sealed class RecordingHud : Form
         _collapseTimer?.Stop();
         _collapseTimer?.Dispose();
         _collapseTimer = null;
+    }
+
+    private void CancelLineShrink()
+    {
+        _lineShrinkTimer?.Stop();
+        _lineShrinkTimer?.Dispose();
+        _lineShrinkTimer = null;
     }
 
     // ─── 布局与定位 ───────────────────────────────────────────────
@@ -661,36 +679,33 @@ internal sealed class RecordingHud : Form
     {
         var screen = _targetScreen ?? Screen.PrimaryScreen ?? Screen.AllScreens[0];
         var wa = screen.WorkingArea;
-        var maxWidth = Math.Min(S(WidthSteps[^1]), (int)(wa.Width * 0.5));
+        var maxWidth = Math.Min(S(HudTextLayout.MaxWidth), (int)(wa.Width * 0.5));
 
         using (var g = CreateGraphics())
         {
             var format = _previewFormat;
             float Measure(string s) => g.MeasureString(s, _previewFont, PointF.Empty, format).Width;
+            float Dip(float px) => px * 96f / DeviceDpi;
 
             // 先定宽再排文：能容纳多少字取决于最终宽度，顺序反了会按旧宽度截出错误的片段。
+            // 折行按单字符宽度累加，与整串绘制的实际宽度会有细微出入，留 3% 余量避免行尾被裁；单行所需宽度按同一余量反推。
+            // 已经是最宽档时宽度不会再变，不必再量整段预览。
             var text = _lastPreviewSource;
-            int width = S(WidthSteps[0]);
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                var needed = (int)Math.Ceiling(Measure(text.Trim())) + 2 * S(HorizontalInset);
-                width = maxWidth;
-                foreach (var step in WidthSteps)
-                {
-                    if (S(step) >= needed && S(step) <= maxWidth) { width = S(step); break; }
-                }
-            }
-            width = Math.Max(Math.Min(width, maxWidth), Math.Min(S(WidthSteps[0]), maxWidth));
+            float previewLineWidth = _widthFloor >= HudTextLayout.MaxWidth || string.IsNullOrWhiteSpace(text)
+                ? 0
+                : Dip(Measure(text.Trim())) / 0.97f + 2 * HorizontalInset;
+            _widthFloor = HudTextLayout.ChooseWidth(Dip(StatusRowWidth(g)), previewLineWidth, _widthFloor);
+            int width = Math.Min(S(_widthFloor), maxWidth);
 
-            // 折行按单字符宽度累加，与整串绘制的实际宽度会有细微出入，留 3% 余量避免行尾被裁。
-            _previewLines = HudTextLayout.FitTail(text, PreviewMaxLines, (width - 2 * S(HorizontalInset)) * 0.97f, Measure);
+            _previewLines = HudTextLayout.LastLines(text, PreviewMaxLines, (width - 2 * S(HorizontalInset)) * 0.97f, Measure);
             _currentWidth = width;
         }
 
+        UpdateLineSlots();
         var height = S(CompactHeight);
-        if (_previewLines.Length > 0)
+        if (_lineSlots > 0)
         {
-            height += S(PreviewPadTop) + _previewLines.Length * PreviewLineHeight() + S(PreviewPadBottom);
+            height += S(PreviewPadTop) + _lineSlots * PreviewLineHeight() + S(PreviewPadBottom);
         }
 
         Point location = EffectivePlacement switch
@@ -710,6 +725,51 @@ internal sealed class RecordingHud : Form
         var bounds = new Rectangle(location, new Size(_currentWidth, height));
         if (Bounds != bounds) Bounds = bounds;
         Invalidate();
+    }
+
+    private void RelayoutIfVisible()
+    {
+        if (Visible) Relayout();
+        else Invalidate();
+    }
+
+    /// <summary>状态行内容（含左右内缩）的像素宽度，与 <see cref="OnPaint"/> 的排布一致；计时位按最长的"120s"预留。</summary>
+    private float StatusRowWidth(Graphics g)
+    {
+        float width = 2 * S(HorizontalInset) + S(12f) + S(10f);
+        if (_phase is Phase.Preparing or Phase.Recording or Phase.Recognizing or Phase.Inserting) width += S(40f) + S(10f);
+        width += g.MeasureString(_statusText, _statusFont).Width;
+        if (_phase is Phase.Recording or Phase.Recognizing or Phase.Inserting)
+        {
+            width += g.MeasureString("120s", _timerFont).Width + S(10f);
+        }
+        return width;
+    }
+
+    /// <summary>按预览行数确定窗口留几行位：变多或清空立即跟进；录音 / 识别中变少时等
+    /// <see cref="LineShrinkDelayMs"/>，期间行数回升则作废。计时从第一次变少开始，后续更新不重新计时。</summary>
+    private void UpdateLineSlots()
+    {
+        var lines = _previewLines.Length;
+        var defer = lines > 0 && lines < _lineSlots
+            && (_phase is Phase.Recording or Phase.Recognizing or Phase.Inserting);
+        if (!defer)
+        {
+            CancelLineShrink();
+            _lineSlots = lines;
+            return;
+        }
+        if (_lineShrinkTimer is not null) return;
+
+        var timer = new System.Windows.Forms.Timer { Interval = LineShrinkDelayMs };
+        timer.Tick += (_, _) =>
+        {
+            CancelLineShrink();
+            _lineSlots = _previewLines.Length;
+            Relayout();
+        };
+        _lineShrinkTimer = timer;
+        timer.Start();
     }
 
     private int PreviewLineHeight() => (int)Math.Ceiling(_previewFont.GetHeight(DeviceDpi) * 1.15);
@@ -1035,6 +1095,7 @@ internal sealed class RecordingHud : Form
             _transientHideTimer?.Dispose();
             _warningRestoreTimer?.Dispose();
             _collapseTimer?.Dispose();
+            _lineShrinkTimer?.Dispose();
             _timerFont.Dispose();
             _previewFormat.Dispose();
             _statusFormat.Dispose();
