@@ -6,27 +6,36 @@ import QuartzCore
 final class RecordingHUDController: NSWindowController {
     // MARK: - 几何常量
 
-    private static let legacyHudWidth: CGFloat = 340
-    private static let defaultHudWidth: CGFloat = legacyHudWidth * 2.5
+    /// 起步宽度：容得下状态行（波形 + 「录音中 · 设备名 · 操作提示」+ 计时）。预览变长时再加宽。
+    static let defaultHudWidth: CGFloat = 480
+    /// 宽度上限。一行过长时视线要来回扫很远，宁可收窄、多排几行：680pt 约 45 个汉字一行。
+    static let maximumHudWidth: CGFloat = 680
     private static let maximumScreenWidthRatio: CGFloat = 0.5
     private static let screenMargin: CGFloat = 16
-    private static let compactHeight: CGFloat = 48
-    /// 展开态（显示预览行）的高度，按预览占几行区分。
-    private static let expandedHeightOneLine: CGFloat = 100
-    private static let expandedHeightTwoLines: CGFloat = 122
-    /// 预览区在一行 / 两行时的高度。
-    private static let previewHeightOneLine: CGFloat = 22
-    private static let previewHeightTwoLines: CGFloat = 44
+    /// 纵向排版：顶部内边距 + 状态行 + 状态行与预览的间距 + 预览 N 行 + 底部内边距。
+    /// 高度一律由这几段与预览字体的行高推出，不再手写总高——此前手写的 100 / 122 在预览下方
+    /// 留出了约两行的空白。
+    private static let topInset: CGFloat = 10
+    private static let topRowHeight: CGFloat = 28
+    private static let previewTopSpacing: CGFloat = 6
+    /// 比 `topInset` 略大：状态行文字在 28pt 行内垂直居中，视觉上的上边距约 16pt，底部与之相称。
+    private static let bottomInset: CGFloat = 14
+    private static let compactHeight: CGFloat = topInset + topRowHeight + topInset
     private static let cornerRadius: CGFloat = 24
     /// 预览最多显示的行数。
     ///
     /// 一行 + 前导省略号意味着长句只剩尾巴，而"边说边校对识别结果"正是 HUD 存在的理由。
-    /// 两行是取舍点：再多就会遮挡用户正在工作的窗口，这个浮窗毕竟是常驻在屏幕上的。
-    private static let previewMaximumLines = 2
+    /// 宽度收窄到 `maximumHudWidth` 后用三行补回容量（约 130 个汉字），浮窗总面积与此前
+    /// 850pt 宽的单行浮窗相当，不会更多地遮挡用户正在工作的窗口。
+    static let previewMaximumLines = 3
+    static let previewFont = NSFont.systemFont(ofSize: 14, weight: .medium)
+    /// `NSTextField` 绘制文字时左右各留 2pt 行片段内边距，实际换行宽度比标签窄 4pt。
+    /// 测量（`fitPreview`、`preferredHudWidth`）必须扣掉它，否则算作一行的文字在标签里会折到看不见的下一行。
+    static let previewTextPadding: CGFloat = 4
     /// 内容区左右内缩，与 buildUI 里 topRow / previewClipView 的约束常量保持一致。
-    private static let contentHorizontalInset: CGFloat = 16
+    static let contentHorizontalInset: CGFloat = 16
     /// 底部落点距屏幕可见区下沿的距离（避开 Dock）。
-    private static let bottomInset: CGFloat = 80
+    private static let screenBottomOffset: CGFloat = 80
     /// 跟随光标时浮窗与光标之间留出的间距。
     private static let cursorGap: CGFloat = 24
     private static let leadingEllipsis = "…"
@@ -69,7 +78,22 @@ final class RecordingHUDController: NSWindowController {
     private var isExpanded = false
     /// 展开态当前应有的窗口高度（随预览行数变化）。
     private var currentExpandedHeight: CGFloat {
-        previewLineCount >= 2 ? Self.expandedHeightTwoLines : Self.expandedHeightOneLine
+        Self.expandedHeight(lineCount: previewLineCount)
+    }
+
+    /// 预览字体的单行高度，与 `tailFitting` 判定行数用的是同一个量。
+    static let previewLineHeight = lineHeight(of: previewFont)
+
+    /// 展开态窗口高度：预览区正好容纳 `lineCount` 行，下方只留 `bottomInset`。
+    static func expandedHeight(lineCount: Int) -> CGFloat {
+        previewTopOffset + previewHeight(lineCount: lineCount) + bottomInset
+    }
+
+    /// 预览区上沿距窗口顶边的距离。
+    static let previewTopOffset: CGFloat = topInset + topRowHeight + previewTopSpacing
+
+    static func previewHeight(lineCount: Int) -> CGFloat {
+        previewLineHeight * CGFloat(max(1, min(previewMaximumLines, lineCount)))
     }
 
     /// 当前 HUD 宽度。随预览内容增长到上限，避免文本继续把窗口推到屏幕外。
@@ -103,7 +127,7 @@ final class RecordingHUDController: NSWindowController {
     private var previewHighlightWorkItem: DispatchWorkItem?
     /// 上一次送达的预览原文，用于求公共前缀（R8-D3）。
     private var previousPreviewText = ""
-    /// 预览当前占几行（1 或 2），决定窗口高度与预览区高度。
+    /// 预览当前占几行（1…`previewMaximumLines`），决定窗口高度与预览区高度。
     private var previewLineCount = 1
     private var previewHeightConstraint: NSLayoutConstraint?
     /// 录音期状态行的基准文案（含输入设备名）。警告闪现结束后要恢复成它。
@@ -536,9 +560,7 @@ final class RecordingHUDController: NSWindowController {
         let clamped = max(1, min(Self.previewMaximumLines, lines))
         guard clamped != previewLineCount else { return }
         previewLineCount = clamped
-        previewHeightConstraint?.constant = clamped >= 2
-            ? Self.previewHeightTwoLines
-            : Self.previewHeightOneLine
+        previewHeightConstraint?.constant = Self.previewHeight(lineCount: clamped)
         applyExpandedHeight(animated: animated)
     }
 
@@ -568,17 +590,16 @@ final class RecordingHUDController: NSWindowController {
     /// （保留最新说出的内容），并据此决定预览区占几行。
     @discardableResult
     private func layoutPreviewText(_ display: String) -> String {
-        let available = max(40, currentHudWidth - Self.contentHorizontalInset * 2)
-        let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .medium)
-        let fitted = Self.tailFitting(
-            display,
-            width: available,
-            maximumLines: Self.previewMaximumLines,
-            font: font
-        )
+        let fitted = Self.fitPreview(display, hudWidth: currentHudWidth)
         previewLabel.stringValue = fitted.text
         setPreviewLineCount(fitted.lineCount, animated: true)
         return fitted.text
+    }
+
+    /// 按浮窗宽度排预览：扣掉左右内缩与标签自身的行片段内边距，得到标签真正的换行宽度。
+    static func fitPreview(_ display: String, hudWidth: CGFloat) -> (text: String, lineCount: Int) {
+        let wrapWidth = max(40, hudWidth - contentHorizontalInset * 2) - previewTextPadding
+        return tailFitting(display, width: wrapWidth, maximumLines: previewMaximumLines, font: previewFont)
     }
 
     // MARK: - 预览尾部淡显（R8-D3）
@@ -619,7 +640,7 @@ final class RecordingHUDController: NSWindowController {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = previewLabel.alignment
         paragraph.lineBreakMode = .byWordWrapping
-        let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .medium)
+        let font = previewLabel.font ?? Self.previewFont
         let attributed = NSMutableAttributedString(string: fitted, attributes: [
             .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph,
         ])
@@ -672,7 +693,7 @@ final class RecordingHUDController: NSWindowController {
             ).height
         }
 
-        let lineHeight = max(height("字"), 1)
+        let lineHeight = Self.lineHeight(of: font)
         // 容差 1pt：boundingRect 返回的是浮点高度，恰好卡在整数倍上会被误判成多出一行。
         let maximumHeight = lineHeight * CGFloat(maximumLines) + 1
 
@@ -700,6 +721,16 @@ final class RecordingHUDController: NSWindowController {
             }
         }
         return (best, lineCount(of: best))
+    }
+
+    /// 单行文字的排版高度（14pt 系统字体为 17pt），与标签实际绘制的行距一致。
+    static func lineHeight(of font: NSFont) -> CGFloat {
+        let height = ("字" as NSString).boundingRect(
+            with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        ).height
+        return max(ceil(height), 1)
     }
 
     /// 录音状态行文案。带上当前输入设备名，让"录到的是哪个麦克风"这件事不必靠猜——
@@ -826,26 +857,26 @@ final class RecordingHUDController: NSWindowController {
     /// - Parameter height: 本次要摆放的窗口高度。跟随光标时需要它才能把浮窗放到光标下方。
     private func layoutMetrics(for requestedWidth: CGFloat, height: CGFloat) -> (origin: CGPoint, width: CGFloat) {
         guard let screen = targetScreen() else {
-            return (CGPoint(x: 0, y: 0), max(requestedWidth, Self.defaultHudWidth))
+            return (CGPoint(x: 0, y: 0), min(max(requestedWidth, Self.defaultHudWidth), Self.maximumHudWidth))
         }
         let visible = screen.visibleFrame
         let availableWidth = max(180, visible.width - Self.screenMargin * 2)
-        let maximumWidth = min(visible.width * Self.maximumScreenWidthRatio, availableWidth)
+        let maximumWidth = min(Self.maximumHudWidth, visible.width * Self.maximumScreenWidthRatio, availableWidth)
         // 曾经这里写成 `let defaultWidth = maximumWidth`，导致 `min(max(requested, defaultWidth),
-        // maximumWidth)` 恒等于 maximumWidth——HUD 宽度实际上永远等于屏幕宽的 50%，
-        // `targetHudWidth(for:)` 按预览文本测宽的结果被完全忽略（R3-11）。这里改回真正的
-        // "默认宽度起步，随文本增长，封顶屏幕宽度一半"。
+        // maximumWidth)` 恒等于 maximumWidth——HUD 宽度实际上永远等于上限，
+        // `preferredHudWidth(for:)` 按预览文本测宽的结果被完全忽略（R3-11）。这里改回真正的
+        // "默认宽度起步，随文本增长，封顶 `maximumHudWidth`（窄屏再受屏幕宽度一半约束）"。
         let width = min(max(requestedWidth, Self.defaultHudWidth), maximumWidth)
 
         let desiredOrigin: CGPoint
         switch hudPosition {
         case .bottomCenter, .hidden:
             // `.hidden` 只保留错误类提示，那些仍按默认位置摆放。
-            desiredOrigin = CGPoint(x: visible.midX - width / 2, y: visible.minY + Self.bottomInset)
+            desiredOrigin = CGPoint(x: visible.midX - width / 2, y: visible.minY + Self.screenBottomOffset)
         case .bottomRight:
             desiredOrigin = CGPoint(
                 x: visible.maxX - Self.screenMargin - width,
-                y: visible.minY + Self.bottomInset
+                y: visible.minY + Self.screenBottomOffset
             )
         case .nearCursor:
             if let caretAnchor {
@@ -874,18 +905,18 @@ final class RecordingHUDController: NSWindowController {
         )
     }
 
-    private func targetHudWidth(for text: String) -> CGFloat {
+    /// 让 `text` 恰好排成一行所需的浮窗宽度（未做上限夹逼，夹逼在 `layoutMetrics`）。
+    static func preferredHudWidth(for text: String) -> CGFloat {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return Self.defaultHudWidth }
+        guard !trimmed.isEmpty else { return defaultHudWidth }
 
-        let font = previewLabel.font ?? .systemFont(ofSize: 14, weight: .regular)
-        let textWidth = ceil((trimmed as NSString).size(withAttributes: [.font: font]).width)
-        return max(Self.defaultHudWidth, textWidth + 32)
+        let textWidth = ceil((trimmed as NSString).size(withAttributes: [.font: previewFont]).width)
+        return max(defaultHudWidth, textWidth + previewTextPadding + contentHorizontalInset * 2)
     }
 
     private func updateHudWidth(for text: String, animated: Bool) {
         let height = isExpanded ? currentExpandedHeight : Self.compactHeight
-        let metrics = layoutMetrics(for: targetHudWidth(for: text), height: height)
+        let metrics = layoutMetrics(for: Self.preferredHudWidth(for: text), height: height)
         currentHudWidth = metrics.width
         anchorOrigin = metrics.origin
 
@@ -1126,22 +1157,9 @@ final class RecordingHUDController: NSWindowController {
         previewClipView.layer?.masksToBounds = true
         previewClipView.translatesAutoresizingMaskIntoConstraints = false
 
-        previewLabel.font = .systemFont(ofSize: 14, weight: .medium)
-        previewLabel.textColor = .labelColor
-        previewLabel.alignment = .right
-        // 首部截断（与 Windows 的 TruncateToFitFromStart 对齐）现在由 `tailFitting` 在
-        // 送进来之前算好，这里只负责按词换行、最多 `previewMaximumLines` 行。
-        // 不再用 `.byTruncatingHead`：AppKit 对多行时的首部截断没有明确契约，
-        // 万一退化成截尾部，用户看到的会是长听写的开头而不是刚说完的话。
-        previewLabel.lineBreakMode = .byWordWrapping
-        previewLabel.maximumNumberOfLines = Self.previewMaximumLines
-        previewLabel.cell?.usesSingleLineMode = false
-        previewLabel.cell?.wraps = true
-        previewLabel.cell?.isScrollable = false
+        Self.configurePreviewLabel(previewLabel)
         previewLabel.alphaValue = 0
         previewLabel.translatesAutoresizingMaskIntoConstraints = false
-        previewLabel.setContentHuggingPriority(.required, for: .horizontal)
-        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewClipView.addSubview(previewLabel)
 
         contentView.addSubview(effectView)
@@ -1173,25 +1191,47 @@ final class RecordingHUDController: NSWindowController {
 
             topRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: Self.contentHorizontalInset),
             topRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -Self.contentHorizontalInset),
-            topRow.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            topRow.heightAnchor.constraint(equalToConstant: 28),
+            topRow.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.topInset),
+            topRow.heightAnchor.constraint(equalToConstant: Self.topRowHeight),
 
             previewClipView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: Self.contentHorizontalInset),
             previewClipView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -Self.contentHorizontalInset),
-            previewClipView.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 8),
+            previewClipView.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: Self.previewTopSpacing),
 
+            // 标签与预览区四边对齐，换行宽度就是预览区宽度。此前左边是 `<=` 且横向强制贴合内容：
+            // 换行标签的固有宽度是「整段排成一行」的宽度，于是标签被撑成一条向左伸出的长行，
+            // 两行预览从未生效，窗口却按两行长高，下方空出一大片。
+            previewLabel.leadingAnchor.constraint(equalTo: previewClipView.leadingAnchor),
             previewLabel.trailingAnchor.constraint(equalTo: previewClipView.trailingAnchor),
-            previewLabel.centerYAnchor.constraint(equalTo: previewClipView.centerYAnchor),
-            previewLabel.leadingAnchor.constraint(lessThanOrEqualTo: previewClipView.leadingAnchor),
+            previewLabel.topAnchor.constraint(equalTo: previewClipView.topAnchor),
             previewLabel.heightAnchor.constraint(equalTo: previewClipView.heightAnchor),
         ])
 
-        let previewHeight = previewClipView.heightAnchor.constraint(equalToConstant: Self.previewHeightOneLine)
+        let previewHeight = previewClipView.heightAnchor.constraint(equalToConstant: Self.previewHeight(lineCount: 1))
         previewHeight.isActive = true
         previewHeightConstraint = previewHeight
 
         applyDimOpacity()
         previewLabel.stringValue = displayText(for: "")
+    }
+
+    /// 预览标签的排版配置。单独抽出来，让测试能按同一配置验证「算出的行数 = 实际绘制的行数」。
+    static func configurePreviewLabel(_ label: NSTextField) {
+        label.font = previewFont
+        label.textColor = .labelColor
+        // 左对齐：多行时右对齐会让首行左边参差不齐；浮窗宽度随文字伸缩，单行时两者看起来几乎一样。
+        label.alignment = .left
+        // 首部截断（与 Windows 的 TruncateToFitFromStart 对齐）由 `fitPreview` 在
+        // 送进来之前算好，这里只负责按词换行、最多 `previewMaximumLines` 行。
+        // 不用 `.byTruncatingHead`：AppKit 对多行时的首部截断没有明确契约，
+        // 万一退化成截尾部，用户看到的会是长听写的开头而不是刚说完的话。
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = previewMaximumLines
+        label.cell?.usesSingleLineMode = false
+        label.cell?.wraps = true
+        label.cell?.isScrollable = false
+        // 宽度完全由约束决定；固有宽度（整段排一行）不能参与竞争。
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     private func applyDimOpacity() {
