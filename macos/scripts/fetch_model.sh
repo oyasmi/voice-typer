@@ -39,7 +39,7 @@ for entry in "${FILES[@]}"; do
 
   actual_sha=$(shasum -a 256 "$dest.part" | awk '{print $1}')
   if [ "$actual_sha" != "$expected_sha" ]; then
-    echo "校验失败: $name (期望 $expected_sha，实际 $actual_sha)" >&2
+    echo "校验失败: $name (期望 ${expected_sha}，实际 $actual_sha)" >&2
     rm -f "$dest.part"
     exit 1
   fi

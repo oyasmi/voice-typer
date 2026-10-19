@@ -125,7 +125,7 @@ create_app_zip() {
   (cd "$app_parent" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$out_zip") || status=$?
   [ "$status" -eq 0 ] && return 0
 
-  echo "警告: ditto 打包失败（退出码 $status，137 即被 SIGKILL，常见于安全软件拦截），改用 zip -ry 重试" >&2
+  echo "警告: ditto 打包失败（退出码 ${status}，137 即被 SIGKILL，常见于安全软件拦截），改用 zip -ry 重试" >&2
   rm -f "$out_zip"
   (cd "$app_parent" && /usr/bin/zip -qry "$out_zip" "$APP_NAME.app")
 }
@@ -137,7 +137,7 @@ notarize_and_staple() {
     return 0
   }
 
-  echo "提交公证（keychain profile: $NOTARY_PROFILE）…"
+  echo "提交公证（keychain profile: ${NOTARY_PROFILE}）…"
   local submission_zip="$BUILD_DIR/notarize-submission.zip"
   create_app_zip "$submission_zip"
 

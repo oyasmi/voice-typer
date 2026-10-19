@@ -37,11 +37,11 @@ required_files=(
 for rid in "${rids[@]}"; do
     case "$rid" in
         win-x64|win-arm64) ;;
-        *) echo "[ERROR] 不支持的 RID：$rid（仅支持 win-x64、win-arm64）" >&2; exit 1 ;;
+        *) echo "[ERROR] 不支持的 RID：${rid}（仅支持 win-x64、win-arm64）" >&2; exit 1 ;;
     esac
 
     out="dist-cross/$rid"
-    echo "[cross] 发布 $rid（$version）→ $out"
+    echo "[cross] 发布 ${rid}（${version}）→ $out"
     rm -rf "$out"
     dotnet publish VoiceTyper.csproj -c Release -r "$rid" \
         --self-contained false \
