@@ -40,6 +40,52 @@
 
 ---
 
+## 0. 当前架构与线程归属（2026-10-19，以本节为准）
+
+§1–§12 是最初方案，§13 起是各批次的改动记录，二者都保留原貌；架构与线程模型已多次演进，**现状以本节为准**，
+历史章节与本节冲突处以本节为准。
+
+### 0.1 模块与所有权
+
+```
+TrayApplicationContext
+  └── AppCoordinator（UI 线程；装配、显示状态、配置事务、托盘 / HUD / 设置 / 引导接线）
+        ├── ReadinessPolicy           纯函数：模型 / 下载 / 暂停 / 听写事实 → 显示状态、热键门禁、引擎动作
+        ├── ModelDownloadOrchestrator 下载、进度测速、退避自动重试、失败说明（下载本身在 ModelDownloader）
+        ├── AsrService                引擎生命周期：定位 → 加载 → 会话租约 → 空闲卸载；AsrPump 串行执行
+        ├── TextInsertionService      应用级唯一，控制器只借用（重建控制器不丢剪贴板恢复状态）
+        └── VoiceTyperController      一次听写 = 一个 Utterance，唯一收尾入口 Finish()
+              ├── HotkeyService       低级钩子 + HotkeyStateMachine（专用钩子线程）
+              ├── AudioCaptureService WASAPI 控制线程 + 投递线程；每次采集一个 CaptureContext
+              ├── LlmCorrector        可选，失败只回落原文
+              └── LocalAsrSession     预览 / 终稿 / 纠错；回调全部在 UI 线程
+```
+
+- **显示状态**（`AppCoordinator._currentState`）只在 UI 线程写：就绪类变化一律经 `ReadinessPolicy.Decide`
+  算出（有单测），听写类变化来自控制器的 `StateChanged`。`AsrService` 的状态变化经 `UiDispatcher.PostAsync`
+  投递后再重评估，不在 `AsrService` 方法中途同步重入。
+- **破坏性操作的门禁**以 `VoiceTyperController.HasActiveDictation` 为事实源（不看会被错误提示覆盖的显示状态）：
+  重载模型、保存需重建控制器的设置、录制热键在听写中被拒绝；托盘「暂停听写」推迟到这一段收尾后执行。
+- **引擎**只在 `AsrPump` 上访问；`IAsrEngine.Abort` 是唯一可跨线程调用的成员，中止标志保持到 `ResetAbort`，
+  所以每个推理任务（预览、终稿、自校准）开跑前先复位。
+
+### 0.2 线程
+
+| 线程 | 所有者 | 在上面跑什么 | 约束 |
+| --- | --- | --- | --- |
+| UI（STA，WinForms 消息泵） | `Program` | 协调器、控制器、会话公共方法与全部回调、托盘 / HUD / 设置 / 引导、剪贴板写入与 `SendInput` | 业务状态只在这里读写；其他线程经 `UiDispatcher.Post` / `PostAsync` 回来 |
+| `VoiceTyper.HotkeyHook`（自带消息循环） | `HotkeyService` | `WH_KEYBOARD_LL` / `WH_MOUSE_LL` 回调、按键状态机、健康检查（30s）、卡键看门狗（250ms） | 回调只做判定，动作 `PostAsync` 回 UI；`Start` / `Stop` 从 UI 同步 `Invoke`（5s 超时） |
+| `VoiceTyper.AudioControl`（MTA） | `AudioCaptureService` | 端点解析与缓存、`WasapiCapture` 创建 / `StartRecording` / `StopRecording` / 释放 | 所有 WASAPI 对象调用串行于此；`BeginStart` 的完成回调在此触发 |
+| NAudio 采集线程 | `WasapiCapture` | `DataAvailable` → 下混与重采样 → 分帧 → 电平 | 只在锁内写分帧器并入队投递，不执行业务代码（电平回调由调用方自行回 UI） |
+| `VoiceTyper.AudioDelivery` | `AudioCaptureService` | 按锁定义的顺序触发 `OnChunk` / `OnTailChunk` | 控制器在回调里 `Post` 回 UI |
+| `VoiceTyper.AsrPump`（AboveNormal） | `AsrService` | 模型加载 / 卸载、预览、终稿、预览窗口自校准 | 串行；`SenseVoiceEngine` 与特征前端只在此访问 |
+| ORT intra-op 线程 | ONNX Runtime | 单次推理内的并行 | 数量 = `asr.threads`，0 时取 min(4, 核数) |
+| `VoiceTyper.ClipboardPrefetch`（STA，每次听写一条） | `TextInsertionService` | 识别阶段备份用户剪贴板 | 结果经 `Task` 交给 UI，插入前按剪贴板序列号核对 |
+| 系统事件线程 | `SystemEvents` | 锁屏 / 睡眠 / 会话切换通知 | 一律 `PostAsync` 回 UI |
+| 线程池 | — | LLM 请求与预连接、模型下载、麦克风探测（同步打开最长等 8s）、终稿看门狗、引擎等待轮询 | 结果一律投递回 UI |
+
+---
+
 ## 1. 目标与非目标
 
 ### 1.1 目标
@@ -124,6 +170,8 @@
 ---
 
 ## 3. 总体架构
+
+> 补注（2026-10-19）：下图是最初方案。热键钩子、音频控制与投递等线程已从 UI 线程拆出，现状见 §0。
 
 ```
 ┌──────────────────────── VoiceTyper.exe（单进程，.NET 10 / WinForms）────────────────────┐
@@ -309,6 +357,8 @@ Windows 测试工程直接以链接文件引用同一份夹具，用同样的 1e
 夹具粒度到帧、到维度，可以精确定位是分帧、预加重、窗、FFT 还是 mel 出的偏差。
 
 ### 4.4 线程模型 —— 专用串行线程替代 `DispatchQueue`
+
+> 补注（2026-10-19）：本节只描述最初的两个执行域，完整的线程表见 §0.2。
 
 macOS 靠 `@MainActor` + 一条串行 `DispatchQueue` 划出两个执行域。C# 侧的对应物：
 
@@ -1933,3 +1983,61 @@ Windows 真机手工验收（尚未执行）：
    外框留在工作区内，回到大屏后最小尺寸恢复，不出现重复放大。最大化、还原、贴靠各检查一次。
 5. 点击测试麦克风，检查电平、长静音提示与停止原因；调整窗口宽度，测试区不撑出页面。引导页测试麦克风、
    离页自动停止仍正常；用 Tab 逐个访问字段、保存和撤销，核对草稿、撤销、保存与关闭重开行为。
+
+## 31. 2026-10-19 第五轮评审修复（W5-01…W5-09）
+
+评审与编号对照见 [docs/REVIEW_HISTORY.md](docs/REVIEW_HISTORY.md) §1、§2.6。三批：A 小修、B 文档、C 协调器拆分。
+用户拍板：听写中暂停改为「等这段结束再暂停」；WT-05「中止终稿推理」本轮不重新评估。
+
+### 31.1 改了什么
+
+| ID | 改动 | 落点 |
+| --- | --- | --- |
+| W5-01 | 听写进行中点托盘「暂停听写」不再 `Stop()` 丢弃当前听写：登记后浮窗提示「将在这段听写结束后暂停」，在 `MetricsReported`（每段听写恰好一次、收尾最后一步）之后投递执行；这时又开始了新的一段就等下一次收尾。暂停后不收起浮窗，刚才那段的结果提示照常显示完 | `AppCoordinator.TogglePause` / `ApplyRequestedPause` |
+| W5-02 | 就绪重评估改为同步方法，不再是吞异常的 `async Task` 后丢弃；`AsrService` 状态变化与启动时的首次重评估经 `PostAsync` 投递，消除同步重入（外层用过期判定覆盖内层结果）与异常被算到引擎头上的问题；异常由 `UiDispatcher` 记录 | `ReevaluateReadiness`、`OnAsrStateChanged` |
+| W5-03 | 麦克风探测的同步打开最多等 8s，超时撤销本次启动并按设备故障上报，探测不再可能永久「在飞」 | `AudioCaptureService.Start` |
+| W5-04 | 配置文件无法解析时先另存为 `config.yaml.broken`（覆盖上一份）再回落默认值，并弹托盘气泡告知；原文件保持不动，直到用户在设置页保存 | `ConfigStore.LoadOrCreate` / `BackupBrokenConfig` |
+| W5-05 | `AppLog.Error(…, ex)` 记录完整异常链与调用栈；写入或打开失败后 1 分钟再试，不再整个进程停写 | `AppLog` |
+| W5-06 | 预览窗口自校准开跑前先 `ResetAbort`，上一段会话留下的中止标志不会让校准失败、永久落到默认窗口 | `AsrService.CalibratePreviewWindowIfNeededAsync` |
+| W5-07 | 听写错误的 2.5s 回落只回落它自己那条错误态（期间换成模型加载失败 / 下载失败就不动）；侧载模型 `config.yaml` 的数字按 InvariantCulture 解析 | `ScheduleDictationErrorRecovery`、`ModelLocator` |
+| W5-08 | 就绪判定抽成纯函数 `ReadinessPolicy`（`Decide` + `BlockedReason`，对应 macOS `computeTargetState`）；下载编排抽成 `ModelDownloadOrchestrator`（下载器经 `IModelDownloading` 注入）。门禁与「是否打断听写」改以 `HasActiveDictation` 为准，不再看显示状态 | `App/ReadinessPolicy.cs`、`App/ModelDownloadOrchestrator.cs` |
+| W5-09 | 新增 §0 现状架构与线程表；修正 6 处仍写「钩子在 UI 线程」的代码注释；REVIEW_HISTORY / VERIFICATION 中独立钩子线程改记为已实施 | 文档 |
+
+`AppCoordinator` 由 1386 行降到 1254 行；新增的两个类合计 287 行（含注释），判定与下载编排的分支都有单测。
+`UiTimer.Once` 合并了 `AsrService` 与下载重试各自的一次性 WinForms 计时器。
+
+行为差异（有意）：空闲卸载后首次按热键触发的模型加载，原先会在录音已开始后给控制器挂上门禁文案，听写结束到
+加载完成之间（例如第一段被 Esc 取消）再按热键只得到「正在加载」提示；现在以 `HasActiveDictation` 判断，不挂门禁，
+这段时间的新听写照常录音、引擎就绪后回灌音频（与录音中途加载走同一条路径）。
+
+### 31.2 没做的
+
+- `Shutdown` 收尾（退出程序、模型被移除）时把预览文本复制到剪贴板兜底：不在本批拍板范围内，留作 L3。
+- DESIGN §13–§30 归档到单独文件：代码注释、CHANGELOG 与评审文档大量按「DESIGN §NN」引用，挪动会让这些引用失效；
+  改为新增 §0 作为现状入口、历史章节加补注。
+- 剪贴板全格式备份的开销：需真机测量后再定，见 [VERIFICATION.md](docs/VERIFICATION.md) §4。
+- macOS 对等：`macos/…/AppCoordinator.swift` 的 `togglePause()` 同样直接 `stop()`，听写中暂停会丢掉当前这一段；
+  本轮只改 Windows，是否同步由 macOS 侧决定。其余改动不涉及 fbank / LFR / CMVN / CTC 与模型 I/O 契约，不影响共享夹具。
+
+### 31.3 验证状态
+
+| 项 | 状态 |
+| --- | --- |
+| 代码 + 自动化 | Linux 主机：Release 交叉编译 0 警告 / 0 错误；测试工程编译通过。按 DEVELOPMENT.md 去掉 WindowsDesktop 依赖后完整运行 407 项：393 通过，5 项因模型 / 联网条件跳过，9 项为需要 STA 线程的已知基线（`SetupFormTests`、`HudCornerStrategyTests`，非 Windows 必然失败）。新增 19 项（就绪判定 8、下载编排 7、配置备份 / 日志调用栈 / 校准复位 / 区域设置各 1）；对校准复位与区域设置做过变异检查，去掉修复后对应用例失败。连续 7 次完整运行结果一致。顺带修复一个既有的测试竞态：`LocalizationTests` 会临时把进程级界面语言切到英文，与断言中文文案的控制器测试并行时偶发失败，现已放进关闭并行的集合（与 `SetupFormTests` 同理）。Windows CI 尚未运行 |
+| Windows x64 真机 | 未验证 |
+| Windows arm64 真机 | 未验证 |
+
+`AppCoordinator` 本身仍无单测（依赖 WinForms 窗体与托盘）；W5-01 / W5-02 / W5-04 的接线部分只有代码审查。
+
+### 31.4 手工验证步骤（真机）
+
+1. **听写中暂停**：切换模式录音中点托盘「暂停听写」，浮窗闪「将在这段听写结束后暂停」；继续说完、再按热键结束，
+   文字正常上屏、成功提示照常显示，随后托盘变为「已暂停」，热键不再响应；「恢复听写」后恢复。开启纠错，在
+   「纠错中」时点暂停再做一次；空闲时点暂停应立即生效。
+2. **配置写坏**：退出应用，把 `%APPDATA%\VoiceTyper\config.yaml` 改成非法 YAML（如 `asr: [`）后启动：托盘气泡提示，
+   目录里出现 `config.yaml.broken` 且内容与改坏的文件一致；在设置页保存后 `config.yaml` 恢复为合法内容。
+3. **下载重试与就绪**：删除模型后断网启动，确认 5 / 20 / 60 秒三次自动重试后弹出失败气泡；重试等待中手动点
+   「重试下载」，下一次失败的等待回到 5 秒；取消下载后不再自动重试；联网后下载完成气泡与「就绪」状态正常。
+4. **日志**：触发任一失败（如断网下载），`app.log` 的 ERROR 行带调用栈。
+5. **空闲卸载后连续听写**：`idle_unload_minutes: 1`，等卸载后按热键开始录音、随即按 Esc 取消，在模型加载完成前
+   再按热键说一句：照常录音，加载完成后出字，托盘状态最终回到「就绪」。

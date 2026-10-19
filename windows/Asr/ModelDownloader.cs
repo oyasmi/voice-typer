@@ -22,6 +22,14 @@ internal sealed class ModelDownloadException : Exception
         : base(message, inner) { CanRetry = canRetry; Diagnostics = diagnostics; }
 }
 
+/// <summary>一次模型下载（<see cref="ModelDownloader"/> 的抽象），供下载编排单测替换。</summary>
+internal interface IModelDownloading : IDisposable
+{
+    /// <param name="onProgress">总体进度（0…1），可能在任意线程触发。</param>
+    Task DownloadAllAsync(Action<double> onProgress, CancellationToken ct = default);
+    void Cancel();
+}
+
 /// <summary>
 /// 首次启动时从 ModelScope 拉取 SenseVoice-Small 权重。端点与 sha256 已实测验证
 /// （见 windows/DESIGN.md §5.2）：
@@ -40,7 +48,7 @@ internal sealed class ModelDownloadException : Exception
 /// </list>
 /// 两条路径最终都以固定 sha256 校验为准。
 /// </summary>
-internal sealed class ModelDownloader : IDisposable
+internal sealed class ModelDownloader : IModelDownloading
 {
     public sealed record FileSpec(string Name, string Sha256, long SizeHint);
 

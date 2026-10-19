@@ -21,7 +21,7 @@ internal interface IHotkeyListening : IDisposable
     /// <summary>无进行中的组合键时是否仍受理 Esc（见 <see cref="HotkeyStateMachine.AcceptsCancelWhenInactive"/>）。</summary>
     bool AcceptsCancelWhenInactive { get; set; }
     /// <summary>最近一次触发 <see cref="OnPress"/>/<see cref="OnRelease"/> 的按键在钩子里的时间戳，只用于耗时日志。
-    /// 钩子与这两个回调都在 UI 线程上，回调执行时读到的就是触发它的那次按键。</summary>
+    /// 钩子在专用线程上，时间戳与回调在同一次 UI 线程投递里先赋值、后触发，回调执行时读到的就是触发它的那次按键。</summary>
     HotkeyTriggerStamp? LastTrigger { get; }
     void Start(HotkeyConfig hotkey);
     void Stop();
@@ -33,7 +33,7 @@ internal interface IHotkeyListening : IDisposable
 }
 
 /// <param name="HookTimestamp">钩子回调收到按键时的 <see cref="System.Diagnostics.Stopwatch"/> 时间戳。</param>
-/// <param name="KeyEventLagMs">系统给按键事件打的时间戳到钩子回调之间的毫秒数；UI 线程被阻塞时会明显变大。</param>
+/// <param name="KeyEventLagMs">系统给按键事件打的时间戳到钩子回调之间的毫秒数；钩子线程被耽误或系统繁忙时会明显变大。</param>
 internal readonly record struct HotkeyTriggerStamp(long HookTimestamp, int? KeyEventLagMs);
 
 internal interface IAudioCapturing : IDisposable

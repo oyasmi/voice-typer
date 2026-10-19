@@ -20,8 +20,11 @@ internal sealed class ConfigStore
     /// 不存在时：若能从老客户端（voice_typer）迁移热键/透明度则据此生成，否则写入默认配置。
     /// 存在时按现状解析。
     /// </summary>
-    public AppConfig LoadOrCreate()
+    /// <param name="brokenBackupPath">配置文件无法解析、已回落默认值时，原文件另存的路径；否则为 null。
+    /// 回落后的下一次保存会覆盖原文件，调用方应据此告知用户。</param>
+    public AppConfig LoadOrCreate(out string? brokenBackupPath)
     {
+        brokenBackupPath = null;
         Directory.CreateDirectory(ConfigDirectory);
 
         if (!File.Exists(ConfigPath))
@@ -45,7 +48,25 @@ internal sealed class ConfigStore
         catch (Exception ex)
         {
             AppLog.Error("config", "配置解析失败，回落为默认值", ex);
+            brokenBackupPath = BackupBrokenConfig(ConfigPath);
             return new AppConfig();
+        }
+    }
+
+    /// <summary>把无法解析的配置文件另存为 <c>&lt;原名&gt;.broken</c>（覆盖上一份），原文件保持不动。
+    /// 返回备份路径；另存失败时返回 null。</summary>
+    internal static string? BackupBrokenConfig(string path)
+    {
+        var backup = path + ".broken";
+        try
+        {
+            File.Copy(path, backup, overwrite: true);
+            return backup;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("config", "另存无法解析的配置文件失败", ex);
+            return null;
         }
     }
 

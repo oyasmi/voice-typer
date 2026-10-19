@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows.Forms;
 using VoiceTyper.Core;
 using VoiceTyper.Llm;
 using VoiceTyper.Support;
@@ -74,7 +73,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
 
     public AsrService()
         : this(ModelLocator.Locate, (bundle, language, threads) => new SenseVoiceEngine(bundle, language, threads),
-            ScheduleWithFormsTimer)
+            UiTimer.Once)
     {
     }
 
@@ -86,18 +85,6 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         _build = build;
         _schedule = schedule;
         _pump = pump ?? new AsrPump();
-    }
-
-    private static IDisposable ScheduleWithFormsTimer(TimeSpan delay, Action action)
-    {
-        var timer = new System.Windows.Forms.Timer { Interval = (int)Math.Min(delay.TotalMilliseconds, int.MaxValue) };
-        timer.Tick += (_, _) =>
-        {
-            timer.Stop();
-            action();
-        };
-        timer.Start();
-        return timer;
     }
 
     /// <summary>用户显式配置优先；否则用自校准结果；都没有时取默认 15 秒。每次建会话时现算，
@@ -430,6 +417,8 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
             rtf = await _pump.PostAsync(() =>
             {
                 if (Volatile.Read(ref _activeSessions) > 0) return deferred;
+                // 与预览 / 终稿一样，开跑前清掉上一段会话可能留下的中止标志（见 IAsrEngine.Abort）。
+                engine.ResetAbort();
                 var silence = new float[5 * AppConstants.TargetSampleRate];
                 engine.Recognize(silence); // 预热
                 var sw = Stopwatch.StartNew();

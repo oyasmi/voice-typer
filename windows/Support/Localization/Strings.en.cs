@@ -448,5 +448,12 @@ internal static partial class L10n
         ["该服务不支持关闭深度思考的参数，已自动改为不带该参数请求。"] =
             "This service does not accept the parameter that turns off deep thinking; requests now omit it automatically.",
         ["已带上关闭深度思考的参数（服务接受）。"] = "The parameter that turns off deep thinking was sent (accepted by the service).",
+
+        // ── 2026-10 第五轮评审修复 ────────────────────────────
+        ["将在这段听写结束后暂停"] = "Dictation will pause once this one finishes",
+        ["配置文件无法解析"] = "Couldn't read the settings file",
+        ["已暂时改用默认设置，原文件已另存为 {0}。"] =
+            "Default settings are in use for now. The original file was saved as {0}.",
+        ["打开麦克风超时（{0:F0}s 无响应）"] = "Opening the microphone timed out (no response for {0:F0} s)",
     };
 }

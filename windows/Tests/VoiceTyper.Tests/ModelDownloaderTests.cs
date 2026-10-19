@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -359,6 +360,27 @@ public class ModelDownloaderTests : IDisposable
         Assert.NotNull(bundle);
         Assert.Equal(_dir, bundle.ModelDir);
         using var engine = new SenseVoiceEngine(bundle, Core.AsrLanguage.Auto, threads: 2);
+    }
+
+    [Fact]
+    public void ModelLocator_ParsesFrontendNumbers_IndependentOfSystemCulture()
+    {
+        foreach (var name in new[] { "model_quant.onnx", "tokens.json", "am.mvn" }) File.WriteAllText(Path.Combine(_dir, name), "");
+        File.WriteAllText(Path.Combine(_dir, "config.yaml"),
+            "frontend_conf:\n  fs: 16000\n  frame_length: 25.0\n  frame_shift: 10\n  n_mels: 80\n  lfr_m: 7\n  lfr_n: 6\n");
+        var previous = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-DE"); // '.' 是千分位：按当前区域解析会得到 250
+        try
+        {
+            var bundle = ModelLocator.Locate(_dir);
+            Assert.NotNull(bundle);
+            Assert.Equal(25.0, bundle.FbankOptions.FrameLengthMs);
+            Assert.Equal(7, bundle.LfrM);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     [Fact]

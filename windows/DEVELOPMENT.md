@@ -8,7 +8,10 @@
 
 ## 架构概览
 
+模块所有权与完整线程表见 [DESIGN.md §0](DESIGN.md#0-当前架构与线程归属2026-10-19以本节为准)。
+
 ```
+AppCoordinator（装配与显示状态；就绪判定 ReadinessPolicy、下载编排 ModelDownloadOrchestrator）
 VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting）
   ├── HotkeyService / AudioCaptureService / TextInsertionService
   │     （经 IHotkeyListening / IAudioCapturing / ITextInserting 注入，状态机可脱离真实钩子与麦克风单测）
@@ -134,13 +137,15 @@ ui:
   interface_language: "zh"   # zh / en，重启后生效
 ```
 
-越界或非法的值会在加载 / 保存时夹逼回合法范围并记 warning 日志。API Key 不在配置文件里，用 DPAPI
+越界或非法的值会在加载 / 保存时夹逼回合法范围并记 warning 日志。整个文件无法解析时回落默认值，原文件另存为同目录的
+`config.yaml.broken`（覆盖上一份）并弹托盘通知；在设置页保存之前原文件不会被改写。API Key 不在配置文件里，用 DPAPI
 （当前用户范围）加密后存 `%APPDATA%\VoiceTyper\llm_api_key.dat`。其他本地数据：模型在
 `%LOCALAPPDATA%\VoiceTyper\models\`（刻意不放漫游目录），日志在 `%LOCALAPPDATA%\VoiceTyper\logs\`。
 
 ## 日志与耗时摘要
 
-日志文件 `%LOCALAPPDATA%\VoiceTyper\logs\app.log`，按 2MB 滚动、保留 3 份备份。
+日志文件 `%LOCALAPPDATA%\VoiceTyper\logs\app.log`，按 2MB 滚动、保留 3 份备份。带异常的 ERROR 行包含完整异常链与
+调用栈；写入失败（例如文件被短暂锁住）时暂停写入，1 分钟后自动重试。
 
 ```powershell
 Get-Content "$env:LOCALAPPDATA\VoiceTyper\logs\app.log" -Wait -Tail 50

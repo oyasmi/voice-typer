@@ -58,36 +58,21 @@ internal sealed class AppCoordinator : IDisposable
     private bool _userOpenedSetup;
     /// <summary>用户是否已从托盘菜单主动暂停听写。暂停时不监听热键（W-28）。</summary>
     private bool _isPaused;
+    /// <summary>听写进行中点了「暂停听写」：等这一段收尾（<see cref="VoiceTyperController.MetricsReported"/>）再暂停，
+    /// 不打断用户正在说、正在识别或纠错的内容。</summary>
+    private bool _pauseRequested;
 
     /// <summary>已经"强制弹窗"过的理由。每个理由在一次未就绪期内只抢一次焦点。
     ///
-    /// 此前 <see cref="ReevaluateReadinessAsync"/> 的 ModelMissing 分支每次重评估都会
+    /// 此前 <see cref="ReevaluateReadiness"/> 的 ModelMissing 分支每次重评估都会
     /// 无条件 <see cref="OpenSetup"/>——用户刚点完"取消下载"，窗口反而抢焦点跳到最前面
     /// （VW-11，对齐 macOS 的 B7）。恢复就绪时清空（见 <see cref="ActivateReadyState"/>），
     /// 这样"就绪 → 又不就绪"仍然会再提醒一次。</summary>
     private readonly HashSet<ForcedPresentation> _forcedPresentations = new();
     private enum ForcedPresentation { Permissions, Model }
 
-    private ModelDownloader? _modelDownloader;
-    private bool _isDownloadingModel;
-    private double _downloadProgress;
-    private readonly DownloadSpeedTracker _downloadSpeed = new();
-    /// <summary>下载进度的文字（已下载 / 速度 / 剩余时间）；不在下载时为 null。</summary>
-    private string? DownloadStatusLine => _isDownloadingModel
-        ? DownloadStatusText.Format(_downloadProgress, ModelDownloader.TotalBytes,
-            _downloadSpeed.BytesPerSecond(ModelDownloader.TotalBytes))
-        : null;
-    /// <summary>最近一次下载失败的说明（含自动重试进度），成功或重新开始时清空。展示在设置页与引导页。</summary>
-    private string? _modelDownloadError;
-    private string? _modelDownloadDetails;
-    /// <summary>
-    /// 模型下载失败后的自动重试退避序列（秒）。网络抖动时用户什么都不用做；重试的成本只是续上而不是
-    /// 从头再来（<see cref="ModelDownloader"/> 保留 .part 数据）。也不能无限重试：真的没网时那会变成一个
-    /// 用户看不见的死循环，所以给定次数用完后停下来，把手动重试交还给用户。
-    /// </summary>
-    private static readonly int[] DownloadRetryDelaysSeconds = { 5, 20, 60 };
-    private int _downloadRetryAttempt;
-    private System.Windows.Forms.Timer? _downloadRetryTimer;
+    /// <summary>模型下载与失败后的自动重试；下载态与说明文案以它为准。</summary>
+    private readonly ModelDownloadOrchestrator _download;
     /// <summary>未就绪时按热键会把设置窗口摆到面前；连按只在窗口期内做一次，避免反复抢焦点。</summary>
     private long _lastBlockedGuidanceTicks;
     private static readonly TimeSpan BlockedGuidanceThrottle = TimeSpan.FromSeconds(5);
@@ -114,6 +99,15 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnCheckForUpdates = () => _ = CheckForUpdatesAsync();
 
         _asrService.OnStateChange = OnAsrStateChanged;
+
+        _download = new ModelDownloadOrchestrator(shouldRetry: () => _asrService.State == AsrState.ModelMissing)
+        {
+            Changed = OnDownloadChanged,
+            Completed = () => _ = FinishModelDownloadAsync(),
+            // 用户主动取消：回到「需要下载」原地重试，而不是显示为红色失败态。
+            Cancelled = ReevaluateReadiness,
+            Failed = OnDownloadFailed,
+        };
     }
 
     // ─── 锁屏 / 睡眠 / 会话切换 ───────────────────────────────
@@ -149,8 +143,12 @@ internal sealed class AppCoordinator : IDisposable
 
     private void HandleSystemResumed() => _controller?.HandleSystemResumed();
 
-    /// <summary>ASR 状态变化的统一入口：具名方法避免 lambda 形参名为 `_` 时把 Task 误赋给 AsrState（R0-1）。</summary>
-    private void OnAsrStateChanged(AsrState state) => _ = ReevaluateReadinessAsync();
+    /// <summary>
+    /// ASR 状态变化的统一入口。<see cref="AsrService"/> 在自己的方法中途同步触发状态变化，而重评估本身又会调用
+    /// <see cref="AsrService"/>（预加载 / 确认模型文件）——同步处理会让重评估重入，外层随后用过期的判定覆盖内层结果；
+    /// 重评估抛出的异常也会被算到引擎头上。所以一律投递到 UI 线程稍后执行，异常由 <see cref="UiDispatcher"/> 记录。
+    /// </summary>
+    private void OnAsrStateChanged(AsrState state) => UiDispatcher.PostAsync(ReevaluateReadiness);
 
     public void Start()
     {
@@ -179,7 +177,8 @@ internal sealed class AppCoordinator : IDisposable
 
         // 权限与模型是两条互不依赖的准备线：麦克风探测要听半秒钟，模型准备不必等它。
         PrepareEngineForLaunch();
-        _ = ReevaluateReadinessAsync();
+        // 投递而不是直接调用：启动阶段的重评估失败只记录，不让整个应用起不来。
+        UiDispatcher.PostAsync(ReevaluateReadiness);
         // 探测要真的打开一次麦克风：系统托盘的"麦克风使用中"指示会闪一下，"隐私 → 麦克风"里也会留下记录。
         // 引导已走完的老用户每次开机都来这一下没有必要（真正听写时的失败有明确提示），改为在用户打开设置页
         // 或引导页时按需探测（见 ProbeMicrophoneIfUnknown）。
@@ -190,14 +189,12 @@ internal sealed class AppCoordinator : IDisposable
     {
         _dictationErrorRecoveryTimer?.Stop();
         _dictationErrorRecoveryTimer?.Dispose();
-        _downloadRetryTimer?.Stop();
-        _downloadRetryTimer?.Dispose();
         Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
         Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _micTest?.Dispose();
         _hudShowTimer?.Stop();
         _hudShowTimer?.Dispose();
-        _modelDownloader?.Dispose();
+        _download.Dispose();
         _controller?.Dispose();
         _textInsertion.FlushPendingRestore();
         _hud?.Dispose();
@@ -211,9 +208,16 @@ internal sealed class AppCoordinator : IDisposable
 
     private void ReloadConfigurationFromDisk()
     {
-        _config = _configStore.LoadOrCreate();
+        _config = _configStore.LoadOrCreate(out var brokenConfigBackup);
         // config.yaml 是界面语言的事实来源（Program.Main 里的 Bootstrap 只是启动期的快照）。
         L10n.Apply(_config.UI.InterfaceLanguageValue);
+        if (brokenConfigBackup is not null)
+        {
+            // 用户手改出错的配置被默认值顶替了：必须让他知道，否则下次在设置页保存就会覆盖掉原来的设置。
+            _tray.ShowBalloonTip(L10n.T("配置文件无法解析"),
+                L10n.F("已暂时改用默认设置，原文件已另存为 {0}。", System.IO.Path.GetFileName(brokenConfigBackup)),
+                ToolTipIcon.Warning);
+        }
         // HUD 是长生命周期组件：配置变更就地生效，不重建。此前每次保存非 UI 配置
         // （例如改热键）都会丢弃整个 HUD 实例、连带丢弃窗口句柄与几何状态（VW-15，
         // 对齐 macOS 的 B8）。界面语言文案在每次 Show*() 调用时通过 L10n.T 现取，
@@ -236,7 +240,7 @@ internal sealed class AppCoordinator : IDisposable
     /// 不出现"密钥已落盘但提示保存失败"，也不出现"只改密钥后实际听写仍用旧密钥"
     /// （密钥变化被当作显式更新信号，走控制器重建路径，让新密钥立即在下次听写生效）。
     /// </summary>
-    private async Task SaveRecognitionAsync(AppConfig draft, string? newApiKey)
+    private void SaveRecognition(AppConfig draft, string? newApiKey)
     {
         if (draft.Llm.Enabled)
         {
@@ -277,7 +281,7 @@ internal sealed class AppCoordinator : IDisposable
         if (keyChanged || sectionsChanged)
         {
             // 走重建路径：控制器构造时会重新从 SecretStore 读密钥，新密钥立即生效。
-            await ReloadAndReevaluateAsync().ConfigureAwait(true);
+            ReloadAndReevaluate();
             // 换了输入设备：之前的探测结果测的是旧设备，重新测一次。
             if (audioChanged) ProbeMicrophone(isFirstProbe: false);
         }
@@ -303,7 +307,7 @@ internal sealed class AppCoordinator : IDisposable
 
     private static bool AudioConfigEquals(AudioConfig a, AudioConfig b) => a.InputDevice == b.InputDevice;
 
-    private async Task ReloadAndReevaluateAsync()
+    private void ReloadAndReevaluate()
     {
         _controller?.Stop();
         _controller?.Dispose();
@@ -313,7 +317,7 @@ internal sealed class AppCoordinator : IDisposable
         _asrService.UpdateConfig(_config.Asr);
         _setupForm?.LoadEditableContent(_config);
         UpdateTray();
-        await ReevaluateReadinessAsync().ConfigureAwait(true);
+        ReevaluateReadiness();
     }
 
     // ─── 麦克风探测 ────────────────────────────────────────────
@@ -394,115 +398,65 @@ internal sealed class AppCoordinator : IDisposable
         else _asrService.PrepareWithoutLoading();
     }
 
-    private async Task ReevaluateReadinessAsync()
+    private ReadinessSnapshot ReadinessSnapshot() => new(
+        Asr: _asrService.State,
+        AsrFailureMessage: _asrService.FailureMessage,
+        Paused: _isPaused,
+        Downloading: _download.IsDownloading,
+        DownloadProgress: _download.Progress,
+        DownloadError: _download.Error,
+        PreloadOnLaunch: _config.Asr.PreloadOnLaunch,
+        AutoDownloadAttempted: _hasAttemptedAutomaticModelDownload,
+        Dictating: IsDictating,
+        Current: _currentState);
+
+    /// <summary>按 <see cref="ReadinessPolicy"/> 的判定刷新显示状态、热键门禁与引擎准备。必须在 UI 线程调用。</summary>
+    private void ReevaluateReadiness()
     {
-        // 模型准备与暂停状态完全独立。首次定位到模型缺失后立即下载，用户暂停听写也不
-        // 阻断后台准备（W-29）。
-        if (!_hasAttemptedAutomaticModelDownload && !_isDownloadingModel && _asrService.State == AsrState.ModelMissing)
+        var decision = ReadinessPolicy.Decide(ReadinessSnapshot());
+        if (decision.StartAutomaticDownload)
         {
+            // 每个进程对缺失模型自动尝试一次；开始下载后按"下载中"的事实重新判定。
             _hasAttemptedAutomaticModelDownload = true;
-            StartModelDownload();
+            _download.Start();
+            decision = ReadinessPolicy.Decide(ReadinessSnapshot());
         }
 
-        if (_isPaused)
+        switch (decision.Engine)
         {
-            _currentState = AppStateInfo.Paused;
-            SyncSetupWindow();
-            UpdateTray();
-            await Task.CompletedTask;
-            return;
+            case EngineStep.Preload:
+                _ = _asrService.PreloadAsync();
+                break;
+            case EngineStep.PrepareWithoutLoading:
+                _asrService.PrepareWithoutLoading();
+                break;
         }
-
-        var previous = _currentState;
-        if (_isDownloadingModel)
+        if (decision.StopDictation)
         {
-            _currentState = AppStateInfo.DownloadingModelWith(_downloadProgress);
-            GateHotkeyListening(CurrentBlockedReason());
-            SyncSetupWindow();
-            UpdateTray();
-            return;
+            _controller?.Stop();
+            // 被拆掉的听写不会再上报收尾，登记过的暂停在这里兑现，否则会拖到以后某次听写结束才突然生效。
+            if (_pauseRequested) UiDispatcher.PostAsync(ApplyRequestedPause);
         }
-
-        switch (_asrService.State)
+        _currentState = decision.State;
+        if (decision.HideHud) _hud?.HideHud();
+        switch (decision.Gate)
         {
-            case AsrState.Unloaded:
-                // 「启动时预加载」关闭时不借机把引擎拉进内存，只确认文件在不在。
-                if (_config.Asr.PreloadOnLaunch)
-                {
-                    _ = _asrService.PreloadAsync();
-                    _currentState = AppStateInfo.ModelLoading;
-                    GateHotkeyListening(CurrentBlockedReason());
-                }
-                else
-                {
-                    _asrService.PrepareWithoutLoading();
-                    _currentState = AppStateInfo.ModelLoading;
-                }
-                break;
-            case AsrState.Loading:
-                // 空闲卸载后首次按热键：MakeSession() 会一边异步加载模型、一边立刻开始录音，
-                // 因此模型进入 Loading 时上一轮状态已经是活动听写态（Recording/Recognizing/
-                // Inserting）。若这里无条件覆盖成 ModelLoading，托盘状态会被"未就绪"覆盖，
-                // 而 LocalAsrSession 已支持引擎未就绪时缓存 pendingAudio 并在就绪后回灌，
-                // 录音本身并未受影响——只是状态显示被错误地打断（VW-13，对齐 macOS
-                // computeTargetState 对 .loading 分支的 previous 保护）。
-                // Unloaded（引擎从未加载）不做同样的保护：那是真正需要等待的情形。
-                if (!_currentState.State.IsActiveDictation())
-                {
-                    _currentState = AppStateInfo.ModelLoading;
-                    GateHotkeyListening(CurrentBlockedReason());
-                }
-                break;
-            case AsrState.ModelMissing:
-                // 一段进行中的听写被"未就绪"覆盖（例如运行中模型被重载）：必须把它正常拆掉，
-                // 否则会留下一段永远收不了尾的会话。
-                if (previous.State.IsActiveDictation()) _controller?.Stop();
-                _currentState = AppStateInfo.ModelMissing;
-                _hud?.HideHud();
-                GateHotkeyListening(CurrentBlockedReason());
-                PresentBlockingGuidance(ForcedPresentation.Model, SetupTab.Recognition);
-                break;
-            case AsrState.Failed:
-                if (previous.State.IsActiveDictation()) _controller?.Stop();
-                _currentState = AppStateInfo.ErrorWith(_asrService.FailureMessage ?? L10n.T("未知错误"));
-                _hud?.HideHud();
+            case HotkeyGate.Block:
                 GateHotkeyListening(CurrentBlockedReason());
                 break;
-            case AsrState.Ready:
-            case AsrState.SuspendedForIdle:
-                // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
-                // 由 MakeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
+            case HotkeyGate.Release:
                 ActivateReadyState();
                 break;
         }
+        if (decision.PresentModelGuidance) PresentBlockingGuidance(ForcedPresentation.Model, SetupTab.Recognition);
 
         SyncSetupWindow();
         UpdateTray();
-        await Task.CompletedTask;
     }
 
-    /// <summary>
-    /// 未就绪的原因文案：具体说出缺什么，而不是笼统的"无法使用"。热键照常监听，
-    /// 按下时把这句话交给用户，而不是让他对着一个毫无反应的热键猜。
-    /// 下载失败后的退避等待期：优先给"将在 N 秒后自动重试"，而不是让他以为要自己去处理
-    /// （重试文案里已带原因与进度，REVIEW_UX F-04）。
-    /// </summary>
-    private string? CurrentBlockedReason()
-    {
-        if (_isDownloadingModel)
-        {
-            return L10n.F("语音模型正在下载（{0}%），完成后即可开始听写。", (int)(_downloadProgress * 100));
-        }
-        return _asrService.State switch
-        {
-            AsrState.ModelMissing => _modelDownloadError is { } downloadError
-                ? downloadError
-                : L10n.T("语音模型还没有下载，无法开始听写。"),
-            AsrState.Failed => L10n.F("语音模型加载失败：{0}", _asrService.FailureMessage ?? L10n.T("未知错误")),
-            AsrState.Loading or AsrState.Unloaded => L10n.T("识别引擎正在加载，请稍候再试。"),
-            _ => null,
-        };
-    }
+    /// <summary>未就绪的原因文案（见 <see cref="ReadinessPolicy.BlockedReason"/>）。热键照常监听，
+    /// 按下时把这句话交给用户，而不是让他对着一个毫无反应的热键猜。</summary>
+    private string? CurrentBlockedReason() => ReadinessPolicy.BlockedReason(ReadinessSnapshot());
 
     /// <summary>门禁态：热键照常监听，但按下时只给提示、不开始录音。</summary>
     private void GateHotkeyListening(string? reason)
@@ -523,23 +477,45 @@ internal sealed class AppCoordinator : IDisposable
         }
     }
 
-    /// <summary>托盘菜单"暂停/恢复听写"。暂停时停掉热键监听与 HUD，恢复时重新走一遍就绪判定（W-28）。</summary>
+    /// <summary>
+    /// 托盘菜单"暂停/恢复听写"。暂停时停掉热键监听与 HUD，恢复时重新走一遍就绪判定（W-28）。
+    /// 听写进行中不立即暂停（那会丢掉正在说、正在识别或纠错的内容），而是登记下来，等这一段收尾后再暂停。
+    /// </summary>
     private void TogglePause()
     {
         if (_isPaused)
         {
             _isPaused = false;
-            _ = ReevaluateReadinessAsync();
+            ReevaluateReadiness();
+        }
+        else if (IsDictating)
+        {
+            _pauseRequested = true;
+            _hud?.FlashWarning(L10n.T("将在这段听写结束后暂停"));
         }
         else
         {
-            _isPaused = true;
-            _controller?.Stop();
-            _hud?.HideHud();
-            _currentState = AppStateInfo.Paused;
-            UpdateTray();
-            SyncSetupWindow();
+            Pause(hideHud: true);
         }
+    }
+
+    /// <summary>登记过的暂停：这段听写收尾后执行。期间又开始了新的一段（推迟的插入被新听写接替）就等下一次收尾。</summary>
+    private void ApplyRequestedPause()
+    {
+        if (!_pauseRequested || _isPaused || IsDictating) return;
+        // 不收起浮窗：刚才那段的结果提示（已输入 / 已复制……）让它照常显示完。
+        Pause(hideHud: false);
+    }
+
+    private void Pause(bool hideHud)
+    {
+        _pauseRequested = false;
+        _isPaused = true;
+        _controller?.Stop();
+        if (hideHud) _hud?.HideHud();
+        _currentState = AppStateInfo.Paused;
+        UpdateTray();
+        SyncSetupWindow();
     }
 
     /// <summary>托盘"复制上一次识别结果"：把最近一次的最终文本放回剪贴板，供插入未生效时手动粘贴。</summary>
@@ -556,9 +532,10 @@ internal sealed class AppCoordinator : IDisposable
         else _hud?.ShowNotice(L10n.T("复制失败"), L10n.T("复制到剪贴板失败，请重试。"));
     }
 
+    /// <summary>解除门禁并确保热键在监听；显示状态已由 <see cref="ReevaluateReadiness"/> 定好，启动失败时改为错误态。</summary>
     private void ActivateReadyState()
     {
-        // 就绪：解除门禁，并允许"下次再不就绪时"重新提醒一次（VW-11）。
+        // 就绪：允许"下次再不就绪时"重新提醒一次（VW-11）。
         _forcedPresentations.Clear();
         EnsureController();
         _controller!.BlockedReason = null;
@@ -575,11 +552,6 @@ internal sealed class AppCoordinator : IDisposable
                 _hud?.HideHud();
                 return;
             }
-        }
-
-        if (_currentState.State is not (AppState.Recording or AppState.Recognizing or AppState.Inserting))
-        {
-            _currentState = AppStateInfo.Idle;
         }
         HideSetupWindowIfVisible();
     }
@@ -617,7 +589,7 @@ internal sealed class AppCoordinator : IDisposable
                     break;
                 case AppState.Error:
                     _hud?.ShowError(state.Message ?? "");
-                    ScheduleDictationErrorRecovery();
+                    ScheduleDictationErrorRecovery(state);
                     ForwardToOnboarding(new OnboardingDictationEvent.Failed(state.Message ?? ""));
                     break;
                 case AppState.Idle:
@@ -689,6 +661,8 @@ internal sealed class AppCoordinator : IDisposable
             AppLog.Info("metrics", metrics.SummaryLine());
             _history.Add(DateTime.Now, metrics);
             _setupForm?.UpdateRecentDictations(_history.NewestFirst());
+            // 每段听写恰好上报一次且是收尾的最后一步；投递出去，不在控制器的收尾流程里停掉它。
+            if (_pauseRequested) UiDispatcher.PostAsync(ApplyRequestedPause);
         };
     }
 
@@ -732,7 +706,7 @@ internal sealed class AppCoordinator : IDisposable
         _hud?.ShowNotice(L10n.T("还不能听写"), reason);
         ForwardToOnboarding(new OnboardingDictationEvent.Blocked(reason));
 
-        if (_asrService.State is not (AsrState.ModelMissing or AsrState.Failed) || _isDownloadingModel) return;
+        if (_asrService.State is not (AsrState.ModelMissing or AsrState.Failed) || _download.IsDownloading) return;
         if (_onboardingForm is { Visible: true }) return;
         var now = Environment.TickCount64;
         if (_lastBlockedGuidanceTicks != 0 && now - _lastBlockedGuidanceTicks < BlockedGuidanceThrottle.TotalMilliseconds) return;
@@ -742,7 +716,9 @@ internal sealed class AppCoordinator : IDisposable
 
     /// <summary>与 <see cref="UI.RecordingHud.ShowError"/> 的自动隐藏时长（2.5s）保持一致，
     /// 让托盘状态与 HUD 同步回落，而不是一直停在红色错误态直到下一次听写（R3-04）。</summary>
-    private void ScheduleDictationErrorRecovery()
+    /// <param name="errorState">这次听写的错误态。到点时只回落它本身：期间换成了别的错误
+    /// （模型加载失败、下载失败）就不能被改成"就绪"。</param>
+    private void ScheduleDictationErrorRecovery(AppStateInfo errorState)
     {
         CancelDictationErrorRecovery();
         var timer = new System.Windows.Forms.Timer { Interval = 2500 };
@@ -751,7 +727,7 @@ internal sealed class AppCoordinator : IDisposable
             timer.Stop();
             timer.Dispose();
             _dictationErrorRecoveryTimer = null;
-            if (_currentState.State == AppState.Error)
+            if (_currentState == errorState)
             {
                 _currentState = AppStateInfo.Idle;
                 UpdateTray();
@@ -770,97 +746,24 @@ internal sealed class AppCoordinator : IDisposable
 
     // ─── 模型下载 ──────────────────────────────────────────────
 
-    /// <param name="isAutomaticRetry">由退避重试触发时为 true。用户手动点「重试下载」算作一次新的尝试序列，
-    /// 会把退避计数清零——那是明确的"我要它继续试"的信号。</param>
-    private void StartModelDownload() => StartModelDownload(isAutomaticRetry: false);
-
-    private void StartModelDownload(bool isAutomaticRetry)
+    /// <summary>下载开始或进度变化（<see cref="ModelDownloadOrchestrator.Changed"/>）。</summary>
+    private void OnDownloadChanged()
     {
-        if (_isDownloadingModel) return;
-        CancelDownloadRetry();
-        if (!isAutomaticRetry) _downloadRetryAttempt = 0;
-        _isDownloadingModel = true;
-        _downloadProgress = 0;
-        _downloadSpeed.Reset();
-        _modelDownloadError = null;
-        _modelDownloadDetails = null;
-        if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(0);
+        if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(_download.Progress);
         GateHotkeyListeningIfRunning();
         UpdateTray();
         SyncSetupWindow();
-
-        var downloader = new ModelDownloader();
-        _modelDownloader = downloader;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await downloader.DownloadAllAsync(progress =>
-                {
-                    UiDispatcher.Post(() =>
-                    {
-                        if (!_isDownloadingModel || !ReferenceEquals(_modelDownloader, downloader)) return;
-                        _downloadProgress = progress;
-                        _downloadSpeed.Add(System.Diagnostics.Stopwatch.GetTimestamp(), progress);
-                        if (!_isPaused) _currentState = AppStateInfo.DownloadingModelWith(progress);
-                        UpdateTray();
-                        SyncSetupWindow();
-                    });
-                }).ConfigureAwait(false);
-
-                UiDispatcher.Post(() => _ = FinishModelDownloadAsync(downloader));
-            }
-            catch (OperationCanceledException)
-            {
-                UiDispatcher.Post(() =>
-                {
-                    ReleaseDownloader(downloader);
-                    // 用户主动取消：回到「需要下载」原地重试，而不是显示为红色失败态；
-                    // .part 数据已由 ModelDownloader 保留。
-                    _ = ReevaluateReadinessAsync();
-                });
-            }
-            catch (Exception ex)
-            {
-                AppLog.Error("model", "模型下载失败: " + DownloadFailure.Diagnostics(ex));
-                UiDispatcher.Post(() =>
-                {
-                    ReleaseDownloader(downloader);
-                    HandleModelDownloadFailure(ex);
-                });
-            }
-        });
     }
 
-    private void ReleaseDownloader(ModelDownloader downloader)
+    /// <param name="reason">失败原因摘要。</param>
+    /// <param name="gaveUp">已放弃自动重试：此后不会再有任何主动信号。</param>
+    private void OnDownloadFailed(string reason, bool gaveUp)
     {
-        if (!ReferenceEquals(_modelDownloader, downloader)) return;
-        _isDownloadingModel = false;
-        _modelDownloader?.Dispose();
-        _modelDownloader = null;
-    }
-
-    private void HandleModelDownloadFailure(Exception error)
-    {
-        var reason = DownloadFailure.Summary(error);
-        _modelDownloadDetails = DownloadFailure.Diagnostics(error);
-        if (DownloadFailure.CanRetry(error) && _downloadRetryAttempt < DownloadRetryDelaysSeconds.Length)
+        if (gaveUp)
         {
-            var delay = DownloadRetryDelaysSeconds[_downloadRetryAttempt];
-            _downloadRetryAttempt++;
-            _modelDownloadError = L10n.F("{0} 将在 {1} 秒后自动重试（第 {2}/{3} 次）。",
-                reason, delay, _downloadRetryAttempt, DownloadRetryDelaysSeconds.Length);
-            ScheduleDownloadRetry(TimeSpan.FromSeconds(delay));
-        }
-        else
-        {
-            _modelDownloadError = DownloadFailure.CanRetry(error)
-                ? L10n.F("{0} 已自动重试 {1} 次仍未成功，请检查网络后手动重试。", reason, DownloadRetryDelaysSeconds.Length)
-                : reason + "\n" + L10n.T("请处理上述问题后手动重试。");
-            // 自动重试到头了，此后不会再有任何主动信号：给一条气泡兜底。第一次失败时的强制设置窗
-            // 在同一未就绪期内已被去重（PresentBlockingGuidance），用户关掉它之后就只剩这条通知了。
-            _tray.ShowBalloonTip(L10n.T("模型下载失败"), _modelDownloadError, ToolTipIcon.Error,
+            // 给一条气泡兜底。第一次失败时的强制设置窗在同一未就绪期内已被去重（PresentBlockingGuidance），
+            // 用户关掉它之后就只剩这条通知了。
+            _tray.ShowBalloonTip(L10n.T("模型下载失败"), _download.Error ?? reason, ToolTipIcon.Error,
                 () => PresentSetupForced(SetupTab.Recognition));
         }
 
@@ -873,47 +776,20 @@ internal sealed class AppCoordinator : IDisposable
         GateHotkeyListeningIfRunning();
     }
 
-    private void ScheduleDownloadRetry(TimeSpan delay)
-    {
-        CancelDownloadRetry();
-        var timer = new System.Windows.Forms.Timer { Interval = Math.Max(1, (int)delay.TotalMilliseconds) };
-        timer.Tick += (_, _) =>
-        {
-            CancelDownloadRetry();
-            // 期间用户可能已经手动下载完、或主动取消并不想再试了。
-            if (_isDownloadingModel || _asrService.State != AsrState.ModelMissing) return;
-            AppLog.Info("model", $"模型下载自动重试（第 {_downloadRetryAttempt} 次）");
-            StartModelDownload(isAutomaticRetry: true);
-        };
-        _downloadRetryTimer = timer;
-        timer.Start();
-    }
-
-    private void CancelDownloadRetry()
-    {
-        _downloadRetryTimer?.Stop();
-        _downloadRetryTimer?.Dispose();
-        _downloadRetryTimer = null;
-    }
-
     /// <summary>下载状态变化后，若控制器已在监听，刷新它的门禁文案（不启动新的监听）。</summary>
     private void GateHotkeyListeningIfRunning()
     {
-        if (_controller is { IsRunning: true } && !_isPaused) GateHotkeyListening(CurrentBlockedReason());
+        if (_controller is { IsRunning: true } && !_isPaused && !IsDictating) GateHotkeyListening(CurrentBlockedReason());
     }
 
-    private async Task FinishModelDownloadAsync(ModelDownloader downloader)
+    private async Task FinishModelDownloadAsync()
     {
         try
         {
-            ReleaseDownloader(downloader);
-            _modelDownloadError = null;
-        _modelDownloadDetails = null;
-            _downloadRetryAttempt = 0;
             // 「启动时预加载」关闭时，下载完成只需确认文件就绪；引擎留到第一次听写再加载。
             if (_config.Asr.PreloadOnLaunch) await _asrService.ReloadAsync().ConfigureAwait(true);
             else _asrService.PrepareWithoutLoading();
-            await ReevaluateReadinessAsync().ConfigureAwait(true);
+            ReevaluateReadiness();
             // 下载是首启时最长的等待，用户多半切去干别的了：完成时给一条气泡（此前只有托盘
             // 图标变色，用户毫不知情，REVIEW_UX F-01）。被系统通知设置禁用时静默降级。
             if (_asrService.State is AsrState.Ready or AsrState.SuspendedForIdle)
@@ -929,13 +805,6 @@ internal sealed class AppCoordinator : IDisposable
             UpdateTray();
             SyncSetupWindow();
         }
-    }
-
-    /// <summary>用户主动取消下载：同时取消尚未触发的自动重试——他刚刚表达了"先不下"。</summary>
-    private void CancelModelDownload()
-    {
-        CancelDownloadRetry();
-        _modelDownloader?.Cancel();
     }
 
     /// <summary>设置页"重新加载模型"：返回非 null 表示被拒绝，内容是给用户看的原因。</summary>
@@ -1054,10 +923,14 @@ internal sealed class AppCoordinator : IDisposable
         if (_setupForm is not null && !_setupForm.IsDisposed) return;
 
         var form = new SetupForm();
-        form.OnSaveRecognition = (draft, apiKey) => SaveRecognitionAsync(draft, apiKey);
+        form.OnSaveRecognition = (draft, apiKey) =>
+        {
+            SaveRecognition(draft, apiKey);
+            return Task.CompletedTask;
+        };
         form.OnLoadLlmApiKey = () => SecretStore.LoadLlmApiKeyResult();
-        form.OnStartModelDownload = StartModelDownload;
-        form.OnCancelModelDownload = CancelModelDownload;
+        form.OnStartModelDownload = _download.Start;
+        form.OnCancelModelDownload = _download.Cancel;
         form.OnReloadModel = ReloadModel;
         form.OnTestLlmCorrection = (llmConfig, apiKey) => TestLlmCorrectionAsync(llmConfig, apiKey);
         form.OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false);
@@ -1132,14 +1005,9 @@ internal sealed class AppCoordinator : IDisposable
         if (IsDictating || string.Equals(value, _config.Audio.InputDevice, StringComparison.Ordinal)) return;
         var draft = _config.Clone();
         draft.Audio.InputDevice = value;
-        _ = SaveInputDeviceAsync(draft);
-    }
-
-    private async Task SaveInputDeviceAsync(AppConfig draft)
-    {
         try
         {
-            await SaveRecognitionAsync(draft, null).ConfigureAwait(true);
+            SaveRecognition(draft, null);
         }
         catch (Exception ex)
         {
@@ -1192,7 +1060,7 @@ internal sealed class AppCoordinator : IDisposable
         {
             // 恢复失败时控制器已把自己标记为未运行，交给就绪重评估的重试路径重新拉起。
             AppLog.Error("coordinator", "恢复热键监听失败，交由就绪重评估重试", ex);
-            _ = ReevaluateReadinessAsync();
+            ReevaluateReadiness();
         }
     }
 
@@ -1213,14 +1081,14 @@ internal sealed class AppCoordinator : IDisposable
                 micProbe: _micProbe,
                 asrState: _asrService.State,
                 asrFailureMessage: _asrService.FailureMessage,
-                downloadProgress: _isDownloadingModel ? _downloadProgress : null,
+                downloadProgress: _download.IsDownloading ? _download.Progress : null,
                 hotkeyDisplay: _config.Hotkey.DisplayString,
                 engineStatus: EngineStatusText(),
-                downloadError: _modelDownloadError,
-                downloadDetails: _modelDownloadDetails,
+                downloadError: _download.Error,
+                downloadDetails: _download.Details,
                 modelDirectory: _asrService.ModelDirectory,
                 micProbeDetail: _micProbeDetail,
-                downloadStatus: DownloadStatusLine
+                downloadStatus: _download.StatusLine
             );
         }
         SyncOnboarding();
@@ -1245,8 +1113,8 @@ internal sealed class AppCoordinator : IDisposable
         var form = new OnboardingForm(model)
         {
             OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false),
-            OnStartModelDownload = () => StartModelDownload(),
-            OnCancelModelDownload = CancelModelDownload,
+            OnStartModelDownload = _download.Start,
+            OnCancelModelDownload = _download.Cancel,
             OnSelectInputDevice = SelectInputDevice,
             OnStartMicTest = StartMicTest,
             OnStopMicTest = () => StopMicTest(),
@@ -1265,7 +1133,7 @@ internal sealed class AppCoordinator : IDisposable
                 OnboardingRecord.ResetDismissals();
             }
             // 引导期间被压住的"未就绪"引导（缺模型等）在引导结束后恢复。
-            _ = ReevaluateReadinessAsync();
+            ReevaluateReadiness();
         };
         _onboarding = model;
         _onboardingForm = form;
@@ -1282,9 +1150,9 @@ internal sealed class AppCoordinator : IDisposable
         model.Mic = _micProbe;
         model.MicDetail = _micProbeDetail;
         model.AsrState = _asrService.State;
-        model.DownloadProgress = _isDownloadingModel ? _downloadProgress : null;
-        model.DownloadStatus = DownloadStatusLine;
-        model.DownloadError = _modelDownloadError;
+        model.DownloadProgress = _download.IsDownloading ? _download.Progress : null;
+        model.DownloadStatus = _download.StatusLine;
+        model.DownloadError = _download.Error;
         model.HotkeyDisplay = _config.Hotkey.DisplayString;
         model.HotkeyMode = _config.Hotkey.ModeValue;
         model.InputDevice = _config.Audio.InputDevice;
@@ -1365,12 +1233,12 @@ internal sealed class AppCoordinator : IDisposable
 
     /// <summary>
     /// 下载态不是 <see cref="AsrState"/> 的成员——下载是 <see cref="AppCoordinator"/> 的职责
-    /// （<see cref="_isDownloadingModel"/> + <see cref="_downloadProgress"/>），不是引擎状态，
+    /// （<see cref="ModelDownloadOrchestrator"/>），不是引擎状态，
     /// 与 macOS <c>ASRService.State</c> 同样不含下载态一致（W-00）。
     /// </summary>
     private string EngineStatusText()
     {
-        if (_isDownloadingModel) return L10n.F("下载中 {0}%", (int)(_downloadProgress * 100));
+        if (_download.IsDownloading) return L10n.F("下载中 {0}%", (int)(_download.Progress * 100));
 
         return _asrService.State switch
         {

@@ -40,4 +40,25 @@ public class AppLogRotationTests : IDisposable
         Assert.True(files.Length <= 4, $"日志文件数应不超过 4 个（当前 + 3 备份），实际 {files.Length}");
         Assert.True(new FileInfo(path).Length < 4 * 1024 + 512, "当前日志文件应已被滚动到阈值以下");
     }
+
+    [Fact]
+    public void ErrorWithException_RecordsInnerExceptionAndStackTrace()
+    {
+        AppLog.ResetForTests();
+        var path = Path.Combine(_directory, "voice_typer.log");
+        AppLog.Initialize(path, maxBytes: 1024 * 1024);
+        try
+        {
+            throw new InvalidOperationException("outer", new IOException("inner cause"));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("test", "失败", ex);
+        }
+        AppLog.ResetForTests(); // 关闭 writer 才能读取
+
+        var text = File.ReadAllText(path);
+        Assert.Contains("inner cause", text);
+        Assert.Contains(nameof(ErrorWithException_RecordsInnerExceptionAndStackTrace), text);
+    }
 }

@@ -276,6 +276,23 @@ public class AsrServiceLifecycleTests
         await WaitUntil(() => rig.Engines[2].RecognizeCalls == 2);
     }
 
+    [Fact]
+    public async Task Calibration_ClearsAbortFlagLeftByPreviousSession()
+    {
+        // 上一段会话松键时中止过预览、随后被取消，终稿没来得及跑：中止标志留在引擎上。
+        // 校准若不先复位，两遍基准推理都会被中止，预览窗口永久落到默认值。
+        using var rig = new Rig();
+        rig.OnBuild = () =>
+        {
+            var engine = new FakeAsrEngine { HonorAbort = true };
+            engine.Abort();
+            return engine;
+        };
+        await rig.Service.PreloadAsync();
+        await WaitUntil(() => rig.Service.CalibratedRtf is not null);
+        Assert.Equal(2, rig.Engines[0].RecognizeCalls);
+    }
+
     // ─── 校准让位（REVIEW_UX P-01）──────────────────────────────
 
     [Fact]

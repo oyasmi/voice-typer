@@ -14,7 +14,12 @@ namespace VoiceTyper.Tests;
 /// 文案表用中文原文做键，漏翻会"静默地"退回中文——英文用户看到半个中文界面，代码却照常
 /// 编译通过。这组测试把它变成可见的失败：扫描全部源码里的 <c>L10n.T(...)</c> /
 /// <c>L10n.F(...)</c>，要求每条都能在英文表里查到，且占位符一致。
+/// 其中几项会临时切换进程级的界面语言，必须与断言中文文案的其他测试错开，所以关闭并行。
 /// </summary>
+[CollectionDefinition("UI language", DisableParallelization = true)]
+public class UiLanguageCollection { }
+
+[Collection("UI language")]
 public class LocalizationTests
 {
     /// <summary>从测试输出目录向上找到 windows/ 源码根（含 Support/Localization）。</summary>

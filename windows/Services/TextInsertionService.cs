@@ -23,7 +23,7 @@ internal enum TextInsertionResult
     /// <summary>
     /// 用户原剪贴板的备份还没读完（后台线程在读，来源应用做延迟渲染时可能要数百毫秒）。
     /// 没有改动剪贴板，调用方应稍后重试 <see cref="TextInsertionService.Insert(string, ForegroundTarget)"/>，
-    /// 而不是在 UI 线程上等——同在 UI 线程的全局键盘钩子会被一起卡住。
+    /// 而不是在 UI 线程上阻塞等待——浮窗与其他界面会一起卡住。
     /// </summary>
     BackupPending,
 }
@@ -72,8 +72,8 @@ internal sealed class TextInsertionService : ITextInserting
 
     /// <summary>
     /// 后台正在做（或已做完、尚未取用）的备份；只在 UI 线程读写。备份要逐个格式取走剪贴板数据，
-    /// 来源应用做延迟渲染（Excel / Word 的大块选区）时可能要数百毫秒；放在 UI 线程上做，
-    /// 这段时间里同在 UI 线程的全局键盘钩子也被卡住。所以在识别阶段（本来就要等推理）先在后台线程备份好，
+    /// 来源应用做延迟渲染（Excel / Word 的大块选区）时可能要数百毫秒，不能放在 UI 线程上做。
+    /// 所以在识别阶段（本来就要等推理）先在后台线程备份好，
     /// 插入时只做一次序列号核对。
     /// </summary>
     private Task<PrefetchedBackup?>? _prefetch;

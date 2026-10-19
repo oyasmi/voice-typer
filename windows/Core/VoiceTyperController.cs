@@ -17,7 +17,7 @@ namespace VoiceTyper.Core;
 /// （主流程本就是单段 Idle → Recording → Recognizing → Inserting）。
 ///
 /// <b>录音阶段分两步</b>：按下热键立即进入 Recording（HUD 显示"麦克风启动中"），麦克风在采集服务的
-/// 控制线程上异步打开（实测 0.4~1.2s，此前在 UI 线程上同步执行，HUD 与全局键鼠钩子都被它卡住）；
+/// 控制线程上异步打开（实测 0.4~1.2s，不能占用 UI 线程，否则 HUD 要等设备打开后才出现）；
 /// 收到第一段音频后触发 <see cref="MicrophoneReady"/>，HUD 才切到"录音中"——这才是用户可以开口的时刻。
 /// 启动完成前松开热键，本次没有任何音频，按 <see cref="Outcome.NotReady"/> 收尾。所有终止路径（识别完成、
 /// 出错、Esc 取消、短录音丢弃、组合手势作废、Stop）都只走 <see cref="Finish"/>：靠"先取走
@@ -565,7 +565,7 @@ internal sealed class VoiceTyperController : IDisposable
             PressedAt = pressedAt,
             EcoQosOptedOut = PowerThrottling.OptedOut,
         };
-        // 钩子与本方法同在 UI 线程，LastTrigger 就是触发这次听写的按键；时间顺序不对（理论上不会）就不报。
+        // LastTrigger 在触发本次回调的那次 UI 线程投递里刚赋值，就是触发这次听写的按键；时间顺序不对（理论上不会）就不报。
         if (_hotkey.LastTrigger is { } trigger && trigger.HookTimestamp <= pressedAt
             && Stopwatch.GetElapsedTime(trigger.HookTimestamp, pressedAt) < TimeSpan.FromSeconds(5))
         {

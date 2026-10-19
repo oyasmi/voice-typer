@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Reflection;
 using VoiceTyper.Core;
 using Xunit;
@@ -67,6 +69,30 @@ public class ConfigStoreTests
         Assert.Equal(new[] { "ctrl", "alt" }, roundTripped.Hotkey.Modifiers);
         Assert.Equal("f9", roundTripped.Hotkey.Key);
         Assert.Equal(0.77, roundTripped.UI.Opacity, 3);
+    }
+
+    [Fact]
+    public void BackupBrokenConfig_CopiesOriginal_AndReplacesPreviousBackup()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "voicetyper-config-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "config.yaml");
+            File.WriteAllText(path, "asr: [broken");
+            File.WriteAllText(path + ".broken", "older broken copy");
+
+            var backup = ConfigStore.BackupBrokenConfig(path);
+
+            Assert.Equal(path + ".broken", backup);
+            Assert.Equal("asr: [broken", File.ReadAllText(backup!));
+            Assert.Equal("asr: [broken", File.ReadAllText(path)); // 原文件保持不动
+            Assert.Null(ConfigStore.BackupBrokenConfig(Path.Combine(dir, "missing.yaml")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]

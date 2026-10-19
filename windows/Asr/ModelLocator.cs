@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using VoiceTyper.Support;
@@ -175,12 +176,13 @@ internal static class ModelLocator
         return false;
     }
 
+    /// <summary>YAML 数字与系统区域设置无关：按当前区域解析时，德语等区域会把 <c>25.0</c> 读成 250。</summary>
     private static double TryGetDouble(YamlMappingNode node, string key, double fallback)
     {
         foreach (var entry in node.Children)
         {
             if (entry.Key is YamlScalarNode s && s.Value == key && entry.Value is YamlScalarNode v
-                && double.TryParse(v.Value, out var parsed))
+                && double.TryParse(v.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
             {
                 return parsed;
             }

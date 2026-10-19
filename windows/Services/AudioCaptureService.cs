@@ -68,9 +68,8 @@ internal sealed class AudioStartTimings
 ///
 /// <b>控制线程</b>：解析输入端点、创建 <see cref="WasapiCapture"/>、<c>StartRecording</c>（内部是
 /// IAudioClient.Initialize，实测按下热键后 0.4~1.2s 都耗在这几步）、<c>StopRecording</c> 与释放，
-/// 全部串行地在专用 MTA 线程 <see cref="_controlThread"/> 上执行。此前它们在 UI 线程上同步跑完，
-/// 而全局键盘 / 鼠标钩子也装在 UI 线程：打开麦克风的这段时间里整机键鼠输入都要等钩子返回，
-/// HUD 也只能等麦克风打开后才出现。调用方因此改为 <see cref="BeginStart"/> + 完成回调。
+/// 全部串行地在专用 MTA 线程 <see cref="_controlThread"/> 上执行，不占用 UI 线程（HUD 要在按下热键时立即出现）。
+/// 调用方因此用 <see cref="BeginStart"/> + 完成回调。
 /// 所有对 WASAPI 对象的调用都在同一线程上排队，也就不存在"Start 还没做完、Stop 已经插进来"的交错。
 ///
 /// <b>输入端点缓存</b>：「自动」策略每次都要枚举全部采集端点并读属性、再读默认播放端点。解析结果
@@ -249,17 +248,27 @@ internal sealed class AudioCaptureService : IAudioCapturing
         completed(new AudioStartResult.Failed(new AudioStartException(L10n.T("开始录音失败"), AudioStartFailureKind.DeviceFailure)));
     }
 
-    /// <summary>同步打开麦克风，阻塞调用线程直到完成。只供不在 UI 线程上的一次性探测使用（<see cref="Core.MicPermissionProbe"/>）。</summary>
+    /// <summary>同步打开的等待上限：正常 0.4~1.2s；驱动卡在 IAudioClient 初始化里时不能让调用方永远挂着。</summary>
+    internal static readonly TimeSpan SyncStartTimeout = TimeSpan.FromSeconds(8);
+
+    /// <summary>同步打开麦克风，阻塞调用线程直到完成或超时（超时撤销本次启动并按设备故障抛出）。
+    /// 只供不在 UI 线程上的一次性探测使用（<see cref="Core.MicPermissionProbe"/>）。</summary>
     public void Start(AudioInputPolicy policy)
     {
-        using var done = new ManualResetEventSlim();
+        // 不 Dispose：超时后完成回调仍可能迟到并 Set 它。未取过 WaitHandle 的 ManualResetEventSlim 不持有内核句柄。
+        var done = new ManualResetEventSlim();
         AudioStartResult? result = null;
         BeginStart(policy, r =>
         {
             result = r;
             done.Set();
         });
-        done.Wait();
+        if (!done.Wait(SyncStartTimeout))
+        {
+            StopWithoutResult();
+            throw new AudioStartException(L10n.F("打开麦克风超时（{0:F0}s 无响应）", SyncStartTimeout.TotalSeconds),
+                AudioStartFailureKind.DeviceFailure);
+        }
         if (result is AudioStartResult.Failed failed) ExceptionDispatchInfo.Capture(failed.Error).Throw();
     }
 

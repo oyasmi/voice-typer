@@ -10,17 +10,21 @@ internal enum LogLevel { Debug, Info, Warn, Error }
 /// 极简文件日志，单 writer + 同步刷盘。
 /// 启动时与运行中写入后文件达到 2MB 时，按序号重命名滚动（最多保留
 /// <see cref="BackupCount"/> 个备份），总容量上限为 8MB（2MB × (BackupCount + 1)）。
+/// 打开或写入失败（例如杀毒软件短暂锁住文件）时暂停写入，<see cref="ReopenDelay"/> 后再试，不会整个进程都没有日志。
 /// </summary>
 internal static class AppLog
 {
     private const long DefaultMaxBytes = 2 * 1024 * 1024; // 2 MB
     private const int BackupCount = 3;
+    private static readonly TimeSpan ReopenDelay = TimeSpan.FromMinutes(1);
 
     private static readonly object _lock = new();
     private static StreamWriter? _writer;
     private static bool _initialized;
     private static string _path = AppConstants.LogFilePath;
     private static long _maxBytes = DefaultMaxBytes;
+    /// <summary>写入失败后，<see cref="Environment.TickCount64"/> 到这个时刻之前不再尝试重新打开。</summary>
+    private static long _reopenNotBefore;
 
     public static void Initialize() => Initialize(AppConstants.LogFilePath, DefaultMaxBytes);
 
@@ -41,9 +45,10 @@ internal static class AppLog
             }
             catch (Exception ex)
             {
-                // 日志自身故障不能递归写日志，只留一条调试输出；后续 Write 会跳过。
+                // 日志自身故障不能递归写日志，只留一条调试输出；稍后 Write 会再试着打开。
                 System.Diagnostics.Debug.WriteLine($"[AppLog] 初始化失败: {ex.Message}");
                 _writer = null;
+                _reopenNotBefore = Environment.TickCount64 + (long)ReopenDelay.TotalMilliseconds;
             }
 
             _initialized = true;
@@ -73,8 +78,10 @@ internal static class AppLog
     public static void Info(string category, string message) => Write(LogLevel.Info, category, message);
     public static void Warn(string category, string message) => Write(LogLevel.Warn, category, message);
     public static void Error(string category, string message) => Write(LogLevel.Error, category, message);
+    /// <summary>带完整异常链与调用栈（<see cref="Exception.ToString"/>）：真机问题只能靠日志定位。
+    /// 调用栈不含用户文本；会携带响应正文的异常（LLM）在抛出处已脱敏。</summary>
     public static void Error(string category, string message, Exception ex) =>
-        Write(LogLevel.Error, category, $"{message}: {ex.GetType().Name}: {ex.Message}");
+        Write(LogLevel.Error, category, $"{message}: {ex}");
 
     private static void Write(LogLevel level, string category, string message)
     {
@@ -93,19 +100,30 @@ internal static class AppLog
         {
             try
             {
-                if (_writer is null) return;
-                _writer.WriteLine(line);
+                if (_writer is null && !TryReopenLocked()) return;
+                _writer!.WriteLine(line);
                 // 追加模式下 Position 即文件长度，不产生额外系统调用。
                 if (_writer.BaseStream.Position >= _maxBytes) RollWriterLocked();
             }
             catch (Exception ex)
             {
-                // 日志故障不能传染到调用方，也不能递归写日志：关闭写入并留一条调试输出。
-                System.Diagnostics.Debug.WriteLine($"[AppLog] 写入失败，停止写日志: {ex.Message}");
+                // 日志故障不能传染到调用方，也不能递归写日志：关闭写入、留一条调试输出，稍后再试。
+                System.Diagnostics.Debug.WriteLine($"[AppLog] 写入失败，暂停写日志: {ex.Message}");
                 try { _writer?.Dispose(); } catch { /* 已在失败路径，只求关闭 */ }
                 _writer = null;
+                _reopenNotBefore = Environment.TickCount64 + (long)ReopenDelay.TotalMilliseconds;
             }
         }
+    }
+
+    /// <summary>必须在持有 <see cref="_lock"/> 时调用：失败冷却期已过就重新打开日志文件。
+    /// 打开失败的异常交给调用方的失败路径（重新进入冷却期）。</summary>
+    private static bool TryReopenLocked()
+    {
+        if (!_initialized || Environment.TickCount64 < _reopenNotBefore) return false;
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        _writer = OpenWriter(_path);
+        return true;
     }
 
     /// <summary>必须在持有 <see cref="_lock"/> 时调用：关闭当前文件、滚动备份、重新打开。</summary>

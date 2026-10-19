@@ -526,7 +526,7 @@ internal sealed class HotkeyService : IHotkeyListening
     }
 
     /// <summary>
-    /// 按键事件的系统时间戳（GetTickCount 毫秒）到此刻的延迟，用来判断钩子回调是否被 UI 线程阻塞耽误。
+    /// 按键事件的系统时间戳（GetTickCount 毫秒）到此刻的延迟，用来判断钩子回调是否被耽误（钩子线程忙或系统繁忙）。
     /// 超过一分钟视为时间戳不可用（回绕或异常值），不报。
     /// </summary>
     private static HotkeyTriggerStamp StampOf(KBDLLHOOKSTRUCT data)
