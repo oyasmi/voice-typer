@@ -36,7 +36,9 @@ open VoiceTyper.xcodeproj
 ./build_xcode.sh                     # 命令行出包，产物在 dist/
 ```
 
-只出 **arm64** 一个变体，产物为 `VoiceTyper-<版本>-macOS-arm64.zip / .dmg`。模型不随包分发，
+只出 **arm64** 一个变体，产物为 `VoiceTyper-<版本>-macOS-arm64.dmg / .zip`。DMG 是正式分发物；ZIP 是附带产物，
+优先用 `ditto` 打包，`ditto` 失败（例如被安全软件以 `Killed: 9` 终止）时自动改用 `zip -ry`，仍失败则只告警、
+只产出 DMG。设置 `VOICETYPER_SKIP_ZIP=1` 可完全跳过 ZIP。模型不随包分发，
 首次启动由应用下载；需要离线预置（跑金标准测试、跳过首启下载）时：
 
 ```bash

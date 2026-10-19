@@ -108,6 +108,28 @@ sign_app_bundle() {
 
 sign_app_bundle
 
+# 把 .app 打成 zip（等价于 `--keepParent`：包内顶层就是 VoiceTyper.app），必须保留 framework
+# bundle 里的符号链接（Versions/Current、顶层 Headers/Resources/二进制 等）。
+#
+# 首选 `ditto -c -k --keepParent`，这是 Apple 公证文档推荐的打包方式。部分机器上的终端安全软件
+# 会直接 SIGKILL ditto（表现为 "Killed: 9"），此时退回 Info-ZIP `zip -ry`：`-y` 把符号链接按
+# 链接本身存储而不是展开成普通文件，解压后的 bundle 结构与 ditto 产物一致。ditto 额外保留的只是
+# 扩展属性，而 codesign 本就要求 bundle 不含扩展属性才能签名，签名与装订凭据都以普通文件形式存放
+# 在 bundle 内，所以这条退路不影响签名/公证有效性。
+# 参数必须是绝对路径（函数内部会 cd 到 .app 所在目录）。
+create_app_zip() {
+  local out_zip="$1"
+  local app_parent status=0
+  app_parent="$(dirname "$APP_PATH")"
+  rm -f "$out_zip"
+  (cd "$app_parent" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$out_zip") || status=$?
+  [ "$status" -eq 0 ] && return 0
+
+  echo "警告: ditto 打包失败（退出码 $status，137 即被 SIGKILL，常见于安全软件拦截），改用 zip -ry 重试" >&2
+  rm -f "$out_zip"
+  (cd "$app_parent" && /usr/bin/zip -qry "$out_zip" "$APP_NAME.app")
+}
+
 notarize_and_staple() {
   [ -n "$NOTARY_PROFILE" ] || return 0
   [ "$SIGN_IDENTITY" != "-" ] || {
@@ -117,7 +139,7 @@ notarize_and_staple() {
 
   echo "提交公证（keychain profile: $NOTARY_PROFILE）…"
   local submission_zip="$BUILD_DIR/notarize-submission.zip"
-  (cd "$(dirname "$APP_PATH")" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$submission_zip")
+  create_app_zip "$submission_zip"
 
   if ! xcrun notarytool submit "$submission_zip" --keychain-profile "$NOTARY_PROFILE" --wait; then
     echo "公证失败，尝试获取详细日志…" >&2
@@ -140,38 +162,8 @@ DMG_NAME="$APP_NAME-$VERSION-macOS-arm64.dmg"
 # 必须在装订（若有）完成之后才打最终包，否则发出去的 zip/dmg 里的 .app 不含公证凭据，
 # 用户离线时 Gatekeeper 仍会拦截。
 #
-# 用 `ditto -c -k --keepParent` 而不是 `zip -r`：与上面公证提交包完全一致的打包方式。
-# 普通 `zip -r` 会把 framework bundle 里的符号链接（Versions/Current、顶层 Headers/
-# Resources/二进制 等）按普通文件展开，解压后的 .app 因 framework 结构损坏而无法启动，
-# 也会破坏已装订的签名。`ditto -c -k` 保留符号链接与 macOS 扩展属性。
-(cd "$(dirname "$APP_PATH")" && /usr/bin/ditto -c -k --keepParent "$APP_NAME.app" "$DIST_DIR/$ZIP_NAME")
-
-# 结构自检（不依赖签名/公证环境）：把刚打好的 ZIP 解开，确认 framework bundle 的符号
-# 链接都还在且不悬空。普通 `zip -r` 打出来的包在这里会因"没有任何符号链接"而失败。
-verify_zip_symlinks() {
-  local zip_path="$1"
-  local check_dir
-  check_dir=$(mktemp -d)
-  /usr/bin/ditto -x -k "$zip_path" "$check_dir"
-  local link_count broken=0
-  link_count=$(find "$check_dir" -type l | wc -l | tr -d ' ')
-  while IFS= read -r link; do
-    [ -e "$link" ] || { echo "  悬空符号链接: ${link#"$check_dir"/}" >&2; broken=1; }
-  done < <(find "$check_dir" -type l)
-  rm -rf "$check_dir"
-  if [ "$link_count" -eq 0 ]; then
-    echo "错误: 最终 ZIP 中没有任何符号链接，framework bundle 结构已被破坏" >&2
-    return 1
-  fi
-  if [ "$broken" -ne 0 ]; then
-    echo "错误: 最终 ZIP 中存在悬空符号链接" >&2
-    return 1
-  fi
-  echo "ZIP 结构自检通过（$link_count 个符号链接完整保留）"
-}
-
-verify_zip_symlinks "$DIST_DIR/$ZIP_NAME"
-
+# DMG 是面向用户的正式分发物（README 的安装说明只用 DMG），先生成；ZIP 是附带产物，
+# 放在后面且失败不阻断构建，避免 ZIP 这一步出问题时连 DMG 都拿不到。
 DMG_STAGE="$BUILD_DIR/dmg-root"
 mkdir -p "$DMG_STAGE"
 cp -R "$APP_PATH" "$DMG_STAGE/"
@@ -191,9 +183,46 @@ if [ -n "$NOTARY_PROFILE" ] && [ "$SIGN_IDENTITY" != "-" ]; then
   xcrun stapler staple "$DIST_DIR/$DMG_NAME" || true
 fi
 
+# 结构自检（不依赖签名/公证环境）：把刚打好的 ZIP 解开，确认 framework bundle 的符号
+# 链接都还在且不悬空。普通 `zip -r`（不带 -y）打出来的包在这里会因"没有任何符号链接"而失败。
+# 用 Info-ZIP `unzip` 而不是 `ditto -x` 解包：既不依赖可能被安全软件拦截的 ditto，
+# 也让打包与校验分别走两套独立实现。
+verify_zip_symlinks() {
+  local zip_path="$1"
+  local check_dir
+  check_dir=$(mktemp -d)
+  /usr/bin/unzip -q "$zip_path" -d "$check_dir"
+  local link_count broken=0
+  link_count=$(find "$check_dir" -type l | wc -l | tr -d ' ')
+  while IFS= read -r link; do
+    [ -e "$link" ] || { echo "  悬空符号链接: ${link#"$check_dir"/}" >&2; broken=1; }
+  done < <(find "$check_dir" -type l)
+  rm -rf "$check_dir"
+  if [ "$link_count" -eq 0 ]; then
+    echo "错误: 最终 ZIP 中没有任何符号链接，framework bundle 结构已被破坏" >&2
+    return 1
+  fi
+  if [ "$broken" -ne 0 ]; then
+    echo "错误: 最终 ZIP 中存在悬空符号链接" >&2
+    return 1
+  fi
+  echo "ZIP 结构自检通过（$link_count 个符号链接完整保留）"
+}
+
+# VOICETYPER_SKIP_ZIP=1 可完全跳过 ZIP。打包失败只告警（DMG 已产出）；但打出来的 ZIP
+# 结构自检不通过仍视为构建失败——那是会发出去的坏包。
+if [ "${VOICETYPER_SKIP_ZIP:-0}" = "1" ]; then
+  echo "已设置 VOICETYPER_SKIP_ZIP=1，跳过 ZIP 打包"
+elif create_app_zip "$DIST_DIR/$ZIP_NAME"; then
+  verify_zip_symlinks "$DIST_DIR/$ZIP_NAME"
+else
+  rm -f "$DIST_DIR/$ZIP_NAME"
+  echo "警告: ZIP 打包失败，本次只产出 DMG；可设置 VOICETYPER_SKIP_ZIP=1 跳过这一步" >&2
+fi
+
 echo ""
 echo "构建完成:"
-ls -lh "$DIST_DIR"/*.zip "$DIST_DIR"/*.dmg
+ls -lh "$DIST_DIR"
 echo ""
 echo "注意: 本次构建不包含语音模型（约 230MB），首次启动时应用会引导下载。"
 echo "如需离线预置模型用于测试，参见 scripts/fetch_model.sh。"
