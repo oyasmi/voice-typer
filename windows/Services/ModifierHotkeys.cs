@@ -5,11 +5,12 @@ namespace VoiceTyper.Services;
 /// <summary>
 /// 可单独作为热键的修饰键（<c>hotkey.key</c> 的取值）。对应 macOS 的 <c>ModifierHotkey</c>。
 ///
-/// 支持<b>右 Ctrl</b>与<b>右 Alt</b>。其余修饰键仍不支持，理由是单击本身在 Windows 上就有
+/// 支持<b>右 Ctrl</b>与兼容旧配置的<b>右 Alt</b>；推荐预设为右 Ctrl / Ctrl + Tab。
+/// 其余修饰键仍不支持，理由是单击本身在 Windows 上就有
 /// 系统副作用，或误触面过大：
 /// <list type="bullet">
-/// <item>左 Alt：单独按下再松开激活前台窗口菜单栏（右 Alt 同样会——见下，但右 Alt 有掩码
-///   方案兜住）；几乎一半快捷键的前缀，误触面大；</item>
+/// <item>左 Alt：单独按下再松开激活前台窗口菜单栏（右 Alt 同样会——见下）；
+///   几乎一半快捷键的前缀，误触面大；</item>
 /// <item>Win：单击弹出开始菜单，且无右键掩码之类的系统级豁免手段；</item>
 /// <item>Shift：中文输入法里单击 Shift 切换中英文；</item>
 /// <item>左 Ctrl：几乎所有快捷键的前缀，误触面过大。</item>
@@ -19,6 +20,7 @@ namespace VoiceTyper.Services;
 /// 菜单模式。按键事件本身全部放行，AltGr（欧洲键盘的右 Alt 组合字符）与右 Alt+Tab 不受
 /// 影响。该掩码技巧 2026-10-08 在 Win10 19045 + 记事本上以 GUI_INMENUMODE 实测验证
 /// （孤立右 Alt menu=True，右 Alt+哑键 menu=False）。
+/// 2026-10-19 用户物理按键实测仍出现菜单失焦，因此不再推荐右 Alt；上述实验不代表真机行为已通过验收。
 /// </summary>
 internal static class ModifierHotkeys
 {

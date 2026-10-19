@@ -38,13 +38,14 @@ internal sealed class AppCoordinator : IDisposable
     private RecordingHud? _hud;
     private SetupForm? _setupForm;
     private OnboardingForm? _onboardingForm;
+    private RecognitionHistoryForm? _recognitionHistoryForm;
     private OnboardingModel? _onboarding;
     private VoiceTyperController? _controller;
     /// <summary>是否有一次听写正在进行。破坏性操作的门禁依据：显示状态（<see cref="_currentState"/>）
     /// 会被错误提示等覆盖，不能当作事实源。</summary>
     private bool IsDictating => _controller?.HasActiveDictation == true;
-    /// <summary>最近一次听写的最终文本，供托盘"复制上一次识别结果"。只在内存里，不落盘、不进日志。</summary>
-    private string? _lastResultText;
+    /// <summary>最近的最终识别文本，供托盘复制与历史窗口使用。不落盘、不进日志。</summary>
+    private readonly RecognitionHistory _recognitionHistory = new();
     /// <summary>最近 20 次听写的精简耗时，供设置页诊断。只在内存里，只含数字与枚举。</summary>
     private readonly DictationHistory _history = new();
     /// <summary>本次听写成功插入时附带的 HUD 副标题（纠错回落说明）；在 Idle 分支消费一次。</summary>
@@ -95,6 +96,7 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnQuit = () => Application.Exit();
         _tray.OnTogglePause = TogglePause;
         _tray.OnCopyLastResult = CopyLastResult;
+        _tray.OnOpenRecognitionHistory = OpenRecognitionHistory;
         _tray.OnOpenOnboarding = PresentOnboarding;
         _tray.OnCheckForUpdates = () => _ = CheckForUpdatesAsync();
 
@@ -200,6 +202,7 @@ internal sealed class AppCoordinator : IDisposable
         _hud?.Dispose();
         _setupForm?.Dispose();
         _onboardingForm?.Dispose();
+        _recognitionHistoryForm?.Dispose();
         _tray.Dispose();
         _asrService.Dispose();
     }
@@ -521,15 +524,30 @@ internal sealed class AppCoordinator : IDisposable
     /// <summary>托盘"复制上一次识别结果"：把最近一次的最终文本放回剪贴板，供插入未生效时手动粘贴。</summary>
     private void CopyLastResult()
     {
-        if (_lastResultText is not { } text) return;
+        if (_recognitionHistory.LatestText is not { } text) return;
+        if (CopyRecognitionText(text) is { } error) _hud?.FlashWarning(error);
+        else _hud?.ShowCopied();
+    }
+
+    /// <summary>两个复制入口共用听写门禁与剪贴板恢复保护；返回 null 表示成功。</summary>
+    private string? CopyRecognitionText(string text)
+    {
         // 听写进行中复制会和插入流程抢剪贴板（还会盖掉浮窗的录音状态），等这一段结束。
-        if (IsDictating)
+        if (IsDictating) return L10n.T("正在听写，请等这一段结束后再复制");
+        return _textInsertion.CopyToClipboard(text) ? null : L10n.T("复制到剪贴板失败，请重试。");
+    }
+
+    private void OpenRecognitionHistory()
+    {
+        if (_recognitionHistoryForm is null)
         {
-            _hud?.FlashWarning(L10n.T("正在听写，请等这一段结束后再复制"));
-            return;
+            _recognitionHistoryForm = new RecognitionHistoryForm(_recognitionHistory, CopyRecognitionText);
+            _recognitionHistoryForm.FormClosed += (_, _) => _recognitionHistoryForm = null;
+            _recognitionHistoryForm.Show();
         }
-        if (_textInsertion.CopyToClipboard(text)) _hud?.ShowCopied();
-        else _hud?.ShowNotice(L10n.T("复制失败"), L10n.T("复制到剪贴板失败，请重试。"));
+        if (_recognitionHistoryForm.WindowState == FormWindowState.Minimized)
+            _recognitionHistoryForm.WindowState = FormWindowState.Normal;
+        _recognitionHistoryForm.Activate();
     }
 
     /// <summary>解除门禁并确保热键在监听；显示状态已由 <see cref="ReevaluateReadiness"/> 定好，启动失败时改为错误态。</summary>
@@ -653,8 +671,9 @@ internal sealed class AppCoordinator : IDisposable
         // 摘要只含数字与枚举（DictationMetrics 禁止承载用户文本），可以放心落日志。
         controller.FinalTextReady = text =>
         {
-            _lastResultText = text;
-            _tray.SetLastResultAvailable(true);
+            _recognitionHistory.Add(DateTime.Now, text);
+            _tray.SetLastResultAvailable(_recognitionHistory.LatestText is not null);
+            _recognitionHistoryForm?.RefreshEntries();
         };
         controller.MetricsReported = metrics =>
         {

@@ -133,7 +133,7 @@ llm:
   timeout: 5
 hotkey:
   modifiers: []
-  key: "right_ctrl"          # 默认单独的右 Ctrl；或 right_alt，或组合键如 modifiers: ["ctrl"] + key: "f2"
+  key: "right_ctrl"          # 默认单独的右 Ctrl；次选组合键 modifiers: ["ctrl"] + key: "tab"；right_alt 仅保留兼容
   mode: "hold"               # hold = 按住说话；toggle = 按一次开始、再按一次结束
 audio:
   input_device: "auto"       # auto / system / 音频端点 ID

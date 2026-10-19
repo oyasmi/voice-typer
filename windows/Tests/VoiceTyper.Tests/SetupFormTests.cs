@@ -34,6 +34,31 @@ public class SetupFormTests
         (T)typeof(SetupForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
 
     [Fact]
+    public void HotkeyPresets_SwitchFromLegacyRightAlt_AndPreserveTriggerMode() => OnUiThread(() =>
+    {
+        using var form = new SetupForm();
+        var config = new AppConfig();
+        config.Hotkey = new HotkeyConfig { Key = ModifierHotkeys.RightAlt, Modifiers = new(), ModeValue = HotkeyMode.Toggle };
+        form.LoadEditableContent(config, refreshDevices: false);
+        form.Show();
+        form.SelectTab(SetupTab.Hotkey);
+        Field<Button>(form, "_useCtrlTabButton").PerformClick();
+        var draft = form.BuildDraft().Hotkey;
+        Assert.Equal("tab", draft.Key);
+        Assert.Equal(new[] { "ctrl" }, draft.Modifiers);
+        Assert.Equal(HotkeyMode.Toggle, draft.ModeValue);
+        Field<Button>(form, "_useRightCtrlButton").PerformClick();
+        draft = form.BuildDraft().Hotkey;
+        Assert.Equal(ModifierHotkeys.RightCtrl, draft.Key);
+        Assert.Empty(draft.Modifiers);
+        Assert.Equal(HotkeyMode.Toggle, draft.ModeValue);
+        Field<Button>(form, "_useCtrlTabButton").PerformClick();
+        Assert.Equal(new[] { "ctrl" }, form.BuildDraft().Hotkey.Modifiers);
+        form.DiscardChanges();
+        Assert.Equal(ModifierHotkeys.RightAlt, form.BuildDraft().Hotkey.Key);
+    });
+
+    [Fact]
     public void DraftSurvivesNavigationAndBackgroundReload_AndDiscardRestoresPreview() => OnUiThread(() =>
     {
         using var form = new SetupForm();

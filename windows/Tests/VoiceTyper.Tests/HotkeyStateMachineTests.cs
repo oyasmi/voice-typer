@@ -18,6 +18,24 @@ public class HotkeyStateMachineTests
 
     private static HotkeyStateMachine CtrlF2() => new(F2, HotkeyModifiers.Ctrl);
 
+    [Theory]
+    [InlineData(VK_LCONTROL, false)]
+    [InlineData(VK_LCONTROL, true)]
+    [InlineData(VK_RCONTROL, false)]
+    [InlineData(VK_RCONTROL, true)]
+    public void CtrlTab_ConsumesTab_AndEndsOnce_WithEitherReleaseOrder(int ctrl, bool releaseCtrlFirst)
+    {
+        var sm = new HotkeyStateMachine(0x09, HotkeyModifiers.Ctrl);
+        Assert.Equal((HotkeyAction.None, false), sm.OnKey(ctrl, isDown: true));
+        Assert.Equal((HotkeyAction.Press, true), sm.OnKey(0x09, isDown: true));
+        Assert.Equal((HotkeyAction.None, true), sm.OnKey(0x09, isDown: true));
+        var first = releaseCtrlFirst ? ctrl : 0x09;
+        var second = releaseCtrlFirst ? 0x09 : ctrl;
+        Assert.Equal((HotkeyAction.Release, !releaseCtrlFirst), sm.OnKey(first, isDown: false));
+        Assert.Equal((HotkeyAction.None, releaseCtrlFirst), sm.OnKey(second, isDown: false));
+        Assert.Equal((HotkeyAction.None, false), sm.OnKey(0x09, isDown: true));
+    }
+
     [Fact]
     public void Press_FiresOnlyWhenModifiersMatchExactly()
     {

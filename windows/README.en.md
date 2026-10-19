@@ -61,14 +61,18 @@ the “^” arrow; drag it out to keep it visible.
 
 Right Ctrl only starts dictation when held on its own; holding it while pressing another key (such as
 Right Ctrl + C) is still a normal shortcut, and that recording is silently discarded. If your keyboard has
-no Right Ctrl (many new laptops replace it with a Copilot key), switch to Right Alt or any key combination
-in Settings.
+no Right Ctrl (many new laptops replace it with a Copilot key), choose the second preset, **Ctrl + Tab**,
+or record a custom combination in Settings.
+Ctrl + Tab will replace tab switching in other apps. Right Alt can activate menus and move focus away
+from the input field, so it is no longer recommended.
 
 Useful details:
 
 - **Cancel**: press `Esc` while recording or recognizing; nothing is written.
-- **Recover results**: “Copy last transcription” in the tray menu copies your most recent text at any time.
-  Kept in memory only and cleared when you quit.
+- **Recover results**: “Copy last transcription” still copies the latest result. “Recent transcriptions...”
+  shows the last 20 final results, including the latest, newest first. Select an entry to read its full text
+  and copy it, or use “Copy all (oldest first)” to join all retained entries with newlines in speaking order.
+  History is kept in memory only and cleared on exit. Wait for active dictation to finish before copying.
 - **Long dictation**: switch the trigger to “press once to start, press again to stop” in Settings.
 - **Length**: up to 120 seconds per dictation, with a countdown for the last 15 seconds; at the limit the
   dictation ends and is inserted normally. Presses shorter than 0.3 seconds are ignored as accidental.
@@ -96,7 +100,8 @@ use the full content width for longer values.
 | Appearance and general | Overlay position and opacity, launch at login, interface language |
 | Diagnostics and help | Microphone check, timings of the last 20 dictations, log and config folders |
 
-- **Hotkey**: a lone **Right Ctrl** by default. You can switch to **Right Alt**, or click “Record Hotkey”
+- **Hotkey**: **Right Ctrl** is the default and first recommendation, followed by **Ctrl + Tab**. Both have
+  preset buttons in Settings. You can also click “Record Hotkey”
   and press any combination you want (such as `Ctrl + F2`); you'll be warned if it collides with a common
   shortcut such as `Ctrl + C` or `Alt + Tab`.
 - **Microphone**: “Auto” by default — when both the default input and output are Bluetooth headphones,
@@ -125,7 +130,8 @@ the original text is used automatically.
 - Once the model is downloaded, VoiceTyper works fully offline; “Check for Updates” only goes online
   when you click it.
 - No account, no usage limits.
-- Logs never contain recognized text; the last transcription lives in memory and is cleared on quit.
+- Logs never contain recognized text; the last transcription and the last 20 history entries are kept
+  in memory only and cleared on quit.
 
 ## FAQ
 

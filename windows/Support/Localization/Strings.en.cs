@@ -16,6 +16,18 @@ internal static partial class L10n
 {
     private static readonly Dictionary<string, string> EnglishTable = new()
     {
+        ["使用 Ctrl + Tab"] = "Use Ctrl + Tab",
+        ["首选右 Ctrl；没有此键时可用 Ctrl + Tab（将替代应用的切换标签页快捷键）。"] = "Right Ctrl is recommended. If unavailable, use Ctrl + Tab (replaces tab switching in apps).",
+        ["字母、数字、F1–F12、Tab 或右 Ctrl。"] = "Letters, digits, F1–F12, Tab or Right Ctrl.",
+        ["近期识别历史..."] = "Recent transcriptions...",
+        ["近期识别历史"] = "Recent transcriptions",
+        ["最近 {0} 条，新到旧排列；仅保存在内存中，退出即清除。"] = "Last {0} entries, newest first. Kept in memory only and cleared on exit.",
+        ["识别记录列表"] = "Transcription list",
+        ["所选记录全文"] = "Full text of selected transcription",
+        ["复制所选条目"] = "Copy selected entry",
+        ["全部复制（旧到新）"] = "Copy all (oldest first)",
+        ["关闭"] = "Close",
+        ["暂无识别记录"] = "No transcriptions yet",
         // ── 设置窗口与下载诊断 ────────────────────────────────
         ["API Key 已更新，但配置保存失败，请重试保存。"] = "The API key was updated, but saving the configuration failed. Please save again.",
         ["配置保存失败，请检查配置目录的写入权限。"] = "Saving the configuration failed. Check write access to the configuration folder.",
@@ -84,7 +96,6 @@ internal static partial class L10n
         ["诊断与帮助"] = "Diagnostics and help",
         ["智能纠错"] = "Text correction",
         ["主键"] = "Primary key",
-        ["字母、数字、F1–F12、右 Ctrl 或右 Alt。"] = "Letters, digits, F1–F12, Right Ctrl, or Right Alt.",
         ["自动模式优先避免蓝牙通话模式影响声音。"] = "Auto mode avoids Bluetooth call mode when possible.",
         // ── 托盘菜单 / 应用级 ────────────────────────────────
         ["启动中"] = "Starting up",
@@ -330,7 +341,6 @@ internal static partial class L10n
 
         // ── 热键 / 通用设置新增项 ───────────────────────────
         ["使用右 Ctrl"] = "Use Right Ctrl",
-        ["使用右 Alt"] = "Use Right Alt",
         ["录制热键"] = "Record Hotkey",
         ["停止录制"] = "Stop Recording",
         ["正在听写，请等这一段结束后再录制热键。"] = "A dictation is in progress; wait for it to finish before recording a hotkey.",
@@ -399,7 +409,6 @@ internal static partial class L10n
         ["复制上一次识别结果"] = "Copy last transcription",
         ["已复制"] = "Copied",
         ["上一次的识别结果已复制到剪贴板，可手动粘贴。"] = "The last transcription is on the clipboard. Paste it wherever you need it.",
-        ["复制失败"] = "Copy failed",
         ["复制到剪贴板失败，请重试。"] = "Copying to the clipboard failed. Please try again.",
         ["正在听写，请等这一段结束后再复制"] = "Dictation in progress. Wait for it to finish before copying.",
 

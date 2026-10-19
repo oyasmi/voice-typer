@@ -50,6 +50,9 @@ can type.
 
 Presses shorter than 0.3 seconds are ignored as accidental. For long passages, switch the trigger to
 “press once to start, press again to stop”.
+On Windows, Right Ctrl is recommended, with Ctrl + Tab as a second preset. The tray menu’s
+“Recent transcriptions” shows the last 20 results, with individual copying or copying all in speaking
+order, separated by newlines.
 
 ## Privacy
 

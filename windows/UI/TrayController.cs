@@ -24,6 +24,7 @@ internal sealed class TrayController : IDisposable
     public Action? OnTogglePause;
     /// <summary>用户点击"复制上一次识别结果"。</summary>
     public Action? OnCopyLastResult;
+    public Action? OnOpenRecognitionHistory;
     public Action? OnOpenOnboarding;
     public Action? OnCheckForUpdates;
 
@@ -64,6 +65,9 @@ internal sealed class TrayController : IDisposable
         _copyLastItem = new ToolStripMenuItem(L10n.T("复制上一次识别结果")) { Enabled = false };
         _copyLastItem.Click += (_, _) => OnCopyLastResult?.Invoke();
 
+        var historyItem = new ToolStripMenuItem(L10n.T("近期识别历史..."));
+        historyItem.Click += (_, _) => OnOpenRecognitionHistory?.Invoke();
+
         _startupItem = new ToolStripMenuItem(L10n.T("开机自启")) { CheckOnClick = true };
         _startupItem.Checked = StartupRegistration.IsEnabled;
         _startupItem.Click += (_, _) =>
@@ -99,6 +103,7 @@ internal sealed class TrayController : IDisposable
             setupItem,
             _pauseItem,
             _copyLastItem,
+            historyItem,
             new ToolStripSeparator(),
             _startupItem,
             onboardingItem,
