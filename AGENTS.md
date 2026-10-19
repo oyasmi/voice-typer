@@ -30,6 +30,19 @@ Windows 的识别管线是 macOS Swift 实现的 C# 对应版本。修改 fbank�
 
 ## 常用命令
 
+仓库根目录的 `Makefile` 是统一入口，只做转发，实际逻辑仍在各平台脚本里：
+
+```bash
+make              # 按本机系统构建；无法识别（含 Linux）时按 macos 处理
+make macos        # = macos/build_xcode.sh
+make windows      # Windows 上 = windows/build.bat；其他系统交叉发布到 windows/dist-cross/
+make test         # 本机平台的测试
+make clean        # 删除两个平台的构建产物
+make help         # 列出全部目标
+```
+
+新增或修改平台构建命令时，同步更新根 `Makefile`。
+
 ### macOS
 
 ```bash

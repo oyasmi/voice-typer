@@ -40,6 +40,10 @@ dotnet run          :: 开发调试
 build.bat           :: 构建全部发布产物到 dist\
 ```
 
+也可在仓库根目录用 `make windows`（Windows 上直接 `make` 即可）：它以非交互方式调用 `build.bat`，需要 GNU
+make 与 Git Bash/MSYS2。`make windows-check`、`make windows-test`、`make clean-windows` 分别对应编译检查、
+测试与清理。在 macOS/Linux 上 `make windows` 改为交叉发布到 `dist-cross/`，见下文「在 macOS / Linux 上开发」。
+
 ```
 VoiceTyper-<版本>-win-x64-setup.exe       安装包（per-user，不弹 UAC）
 VoiceTyper-<版本>-win-x64-portable.zip     便携版
@@ -72,9 +76,11 @@ build.bat
 .NET SDK 可交叉编译 Windows 目标，能验证「能否编译、产物结构是否正确」和大部分纯逻辑：
 
 ```bash
+make windows-check                    # 在仓库根目录：交叉编译
+make windows                          # 交叉发布 x64 + arm64 到 windows/dist-cross/（只验证结构，不能运行）
+make windows WINDOWS_RID=win-arm64    # 只交叉发布一个架构
+
 cd windows
-make cross-check      # 交叉编译
-make cross-publish    # 交叉发布到 dist-cross/（只验证结构，不能运行）
 
 # 在非 Windows 主机跑测试：不带 RID 构建，再删掉运行时配置里的 WindowsDesktop 框架依赖
 dotnet build Tests/VoiceTyper.Tests/VoiceTyper.Tests.csproj -c Debug \

@@ -96,7 +96,9 @@ voice-typer/
 └── client-server/   # 旧的客户端—服务端架构，用于 Linux、远程与共享服务端场景
 ```
 
-两个平台共享同一套产品架构与识别管线，用同一套金标准夹具校验数值一致性。构建、测试与架构说明：
+两个平台共享同一套产品架构与识别管线，用同一套金标准夹具校验数值一致性。在仓库根目录可用 `make`
+统一构建：`make` 按本机系统出包（无法识别时按 macOS 处理），也可显式 `make macos`、`make windows`、
+`make test`、`make clean`，`make help` 列出全部目标。构建、测试与架构说明：
 
 - macOS：[开发说明](macos/DEVELOPMENT.md) · [设计文档](macos/DESIGN.md) · [更新日志](macos/CHANGELOG.md)
 - Windows：[开发说明](windows/DEVELOPMENT.md) · [设计文档](windows/DESIGN.md) · [变更记录](windows/CHANGELOG.md)

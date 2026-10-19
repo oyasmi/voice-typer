@@ -115,7 +115,9 @@ voice-typer/
 ```
 
 Both platforms share the same product architecture and recognition pipeline, checked for numerical
-consistency against one set of golden fixtures. Build, test and architecture docs (in Chinese):
+consistency against one set of golden fixtures. From the repository root, `make` builds for the host OS
+(falling back to macOS when it can't tell); `make macos`, `make windows`, `make test` and `make clean` are
+explicit targets, and `make help` lists them all. Build, test and architecture docs (in Chinese):
 
 - macOS: [Development](macos/DEVELOPMENT.md) · [Design](macos/DESIGN.md) · [Changelog](macos/CHANGELOG.md)
 - Windows: [Development](windows/DEVELOPMENT.md) · [Design](windows/DESIGN.md) · [Changelog](windows/CHANGELOG.md)
