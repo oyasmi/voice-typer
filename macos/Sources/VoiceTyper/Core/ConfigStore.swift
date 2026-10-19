@@ -8,8 +8,16 @@ import Yams
 /// `AppConfig.validated()` 之外的全部 UI 校验（例如热键必须搭配修饰键），且应用在运行期
 /// 不监听该文件，改了也要重启才生效，是一条只会制造困惑的路径。
 /// 保留容错解析（缺字段回落默认、越界夹逼）是为了历史配置与手工误改能自愈，
-/// 不代表鼓励手改。
+/// 不代表鼓励手改。整份文件读不出来时也不让应用停在错误态：另存一份备份、回落默认配置，
+/// 由调用方告知用户（与 Windows 的 W5-04 一致）。
 final class ConfigStore {
+    /// 读不出来的配置文件另存为这个名字（与 config.yaml 同目录，覆盖上一份）。
+    static let brokenBackupFileName = AppConstants.configFileName + ".broken"
+
+    /// 最近一次 `loadOrCreate()` 是否因为 config.yaml 读不出来而回落了默认配置。
+    /// 原文件保持不动，直到用户在设置里保存一次。
+    private(set) var lastLoadFellBackToDefaults = false
+
     private let fileManager: FileManager
     private let legacyConfigURLOverride: URL?
     let configDirectoryURL: URL
@@ -33,6 +41,7 @@ final class ConfigStore {
     }
 
     func loadOrCreate() throws -> AppConfig {
+        lastLoadFellBackToDefaults = false
         if !fileManager.fileExists(atPath: configURL.path) {
             try ensureDefaultFiles()
             if let migrated = ConfigMigrator.migrateFromLegacyClientConfig(
@@ -44,19 +53,29 @@ final class ConfigStore {
             }
         }
         try ensureDefaultFiles()
-        let content = try String(contentsOf: configURL, encoding: .utf8)
 
         do {
+            let content = try String(contentsOf: configURL, encoding: .utf8)
             return try YAMLDecoder().decode(AppConfig.self, from: content).validated()
         } catch {
-            throw NSError(
-                domain: AppConstants.bundleIdentifier,
-                code: 1002,
-                userInfo: [
-                    NSLocalizedDescriptionKey: LF("配置文件解析失败，请检查 %@", configURL.path),
-                    NSUnderlyingErrorKey: error,
-                ]
-            )
+            // 错误详情可能带出配置原文片段，日志里只记类型。
+            AppLog.app.error("config.yaml 无法读取（\(String(describing: type(of: error)), privacy: .public)），已回落默认配置")
+            backUpBrokenConfig()
+            lastLoadFellBackToDefaults = true
+            return AppConfig().validated()
+        }
+    }
+
+    /// 把读不出来的 config.yaml 原样另存一份，供用户找回之前的设置。失败只记日志。
+    private func backUpBrokenConfig() {
+        let backupURL = configDirectoryURL.appendingPathComponent(Self.brokenBackupFileName)
+        do {
+            if fileManager.fileExists(atPath: backupURL.path) {
+                try fileManager.removeItem(at: backupURL)
+            }
+            try fileManager.copyItem(at: configURL, to: backupURL)
+        } catch {
+            AppLog.app.error("备份无法读取的配置文件失败: \(error.localizedDescription, privacy: .public)")
         }
     }
 

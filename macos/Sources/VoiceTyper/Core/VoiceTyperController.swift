@@ -3,31 +3,107 @@ import Foundation
 
 @MainActor
 final class VoiceTyperController {
-    private enum Phase {
-        case recording
-        case recognizing
+    /// 一段听写的结局，随 `Event.finished` 恰好发出一次（`stop()` 收尾的除外）。
+    enum Completion: Equatable {
+        /// 已上屏。`note` 是校对回落 / 被跳过的说明（R8-C1/C2），`nil` 表示一切正常。
+        case inserted(text: String, note: InsertionNote?)
+        /// 识别链路跑通但一个字都没有：几乎总是没说话、麦克风静音或选错输入设备（B4）。
+        case empty
+        /// 用户按 Esc 主动取消。
+        case cancelled
+        /// 静默结束：短录音误触、单独修饰键被用作组合快捷键、锁屏 / 睡眠打断（R8-B3）。
+        case silent
+        /// 失败或没能输入；参数是给用户看的说明（例如「目标窗口已变化，结果已复制到剪贴板」）。
+        case error(String)
+    }
+
+    /// 控制器对外的全部通知，经唯一出口 `onEvent` 按发生顺序在主线程送达。
+    ///
+    /// 一段听写的事件序列：`phaseChanged(.recording)` → 过程事件 → `phaseChanged(.recognizing)`
+    /// →（可能）`phaseChanged(.inserting)` →（可能）`resultAvailable` → `finished` → `metrics`。
+    /// 结局要用到的信息（上屏文本、校对说明）都在 `finished` 里，消费方不必依赖事件之间的先后约定。
+    enum Event {
+        case phaseChanged(DictationPhase)
+        /// 预览：上屏用的格式化全量文本，整体替换（R8-F2）；空串表示清空。
+        case preview(String)
+        /// 非致命提示（预览失败、设备变化、上一段尚未完成…），不打断录音。
+        case warning(String)
+        /// 录音期间的实时音量电平（0…1 量级），供浮窗波形显示。
+        case audioLevel(Float)
+        /// 本地识别已出结果、开始等 LLM 校对：浮窗据此把「识别中」改成「校对中」（R6-03）。
+        case correctionStarted
+        /// 引擎未就绪而用户在等待（R8-A1）。
+        case engineWait(EngineWaitStage)
+        /// 未就绪时按下热键，参数是 `blockedReason`（B3）。
+        case blocked(String)
+        /// 焦点在密码输入框，已拒绝开始听写（R8-B2）。
+        case secureFieldRefused
+        /// 值得留存的结果（R8-A2）：已输入、没输进去（已复制）、被取消但有预览、失败 / 超时但有已识别部分。
+        /// 文本是上屏用的格式化文本。
+        case resultAvailable(String, DictationHistory.Kind)
+        case finished(Completion)
+        /// 每段听写恰好一次（`stop()` 收尾的除外），只含数字与枚举。走 AX 插入时要等回读，
+        /// 会比 `finished` 晚约 50ms（R8-A3a）。
+        case metrics(DictationMetrics)
     }
 
     /// 一次听写的全部状态。控制器是它的唯一强持有者：一旦被下一段听写覆盖，
     /// 旧值必须先经过 `finish(_:)` 收尾，绝不能被静默替换（R2-01）。
+    ///
+    /// 只属于这一段听写的东西（预览兜底文本、电平、定时器）都放在这里：新的一段天然从干净状态开始，
+    /// 迟到的回调凭 `id` 判断自己是否还属于当前听写。
+    @MainActor
     private final class Utterance {
+        let id: UInt64
         let session: LocalASRSession
         /// 录音开始时的前台应用 pid；插入前据此判断焦点是否已变化（F-10）。
         let expectedFrontmostPID: pid_t?
-        let startedAt: Date
-        var phase: Phase = .recording
+        /// 只会是 `.recording` 或 `.recognizing`：插入在 `finish(_:)` 里同步完成。
+        var phase: DictationPhase = .recording
         var metrics: DictationMetrics
         /// 松键后的补录窗口（R8-D2b）：音频仍在采集，但用户视角已经进入「识别中」。
         var isStoppingCapture = false
         /// 「识别中」状态是否已经对外宣布过（补录时松键即宣布，尾音到达时不再重复）。
         var announcedRecognizing = false
         var pendingStop: DispatchWorkItem?
+        /// 最近一次预览的原始文本（未格式化）：识别失败 / 取消时用户唯一能找回的内容（R8-A1/A2）。
+        var previewText = ""
+        /// 本次录音出现过的最大线性 RMS 电平（静音探测用）。
+        var peakLevel: Float = 0
+        /// 最近 150ms 的带时间戳电平样本，松键时据此判断用户是否仍在说话（R8-D2a）。
+        var recentLevels: [(at: UInt64, level: Float)] = []
+        var silenceProbes: [DispatchWorkItem] = []
+        /// 卡键看门狗（R8-B3）：按住模式录音期间定期读热键的物理状态。
+        var stuckKeyTimer: Timer?
+        var stuckKeyReleasedPolls = 0
+        /// 本次录音是否至少有一次观察到「物理上按着」。从没观察到过，说明这条信号在当前机器上不可靠
+        /// （或用户在第一个轮询前就松了手，那由短录音过滤处理）——此时绝不据此结束录音，宁可不救卡键也不误杀正常录音。
+        var stuckKeyObservedHeld = false
 
-        init(session: LocalASRSession, expectedFrontmostPID: pid_t?, startedAt: Date, metrics: DictationMetrics) {
+        init(id: UInt64, session: LocalASRSession, expectedFrontmostPID: pid_t?, metrics: DictationMetrics) {
+            self.id = id
             self.session = session
             self.expectedFrontmostPID = expectedFrontmostPID
-            self.startedAt = startedAt
             self.metrics = metrics
+        }
+
+        func stopStuckKeyWatchdog() {
+            stuckKeyTimer?.invalidate()
+            stuckKeyTimer = nil
+            stuckKeyReleasedPolls = 0
+        }
+
+        func cancelSilenceProbes() {
+            silenceProbes.forEach { $0.cancel() }
+            silenceProbes.removeAll()
+        }
+
+        /// 收尾时撤掉这段听写挂着的全部定时器。
+        func cancelTimers() {
+            pendingStop?.cancel()
+            pendingStop = nil
+            cancelSilenceProbes()
+            stopStuckKeyWatchdog()
         }
     }
 
@@ -38,7 +114,7 @@ final class VoiceTyperController {
         case discarded
         /// 单独修饰键被用作组合快捷键：静默丢弃，不弹"已取消"。
         case gestureDiscarded
-        /// stop()：控制器整体停止，不发任何状态变化。
+        /// stop()：控制器整体停止，不发任何事件。
         case shutdown
         /// 锁屏 / 睡眠 / 切换用户打断了录音：静默丢弃，不弹「已取消」（R8-B3）。
         case interrupted
@@ -59,15 +135,11 @@ final class VoiceTyperController {
     private let now: MonotonicClock
 
     private var active: Utterance?
+    private var nextUtteranceID: UInt64 = 0
     private var isRunning = false
-    private var previewText = ""
 
     /// 非 nil 表示"热键监听已启动，但现在还不能听写"，字符串是给用户看的原因
-    /// （缺权限、模型还在下载…）。
-    ///
-    /// 存在的意义：此前只要没完全就绪，`AppCoordinator` 就干脆不启动控制器，于是按下
-    /// 热键**什么都不会发生**——用户得到的反馈与"应用挂了"完全一致，无从判断缺什么。
-    /// 现在只要输入监控权限具备，热键就照常监听，按下时把缺什么明确说出来（B3）。
+    /// （缺权限、模型还在下载…）。只要输入监控权限具备，热键就照常监听，按下时把缺什么明确说出来（B3）。
     var blockedReason: String? {
         didSet {
             // 门禁期间不可能有进行中的听写，顺手关掉识别阶段的 Esc 取消窗口。
@@ -75,13 +147,11 @@ final class VoiceTyperController {
         }
     }
 
-    /// 派生自 `active`，不再是独立事实源：不支持重叠听写，同一时刻只可能有
-    /// 一段录音在进行（AGENTS.md 的主流程本就是单段 Idle→Recording→Recognizing→Inserting）。
+    /// 派生自 `active`：不支持重叠听写，同一时刻只可能有一段录音在进行。
     private var isRecording: Bool { active?.phase == .recording }
 
-    /// 录音时长低于此阈值的会话直接丢弃，避免处理误触产生的无意义音频。
-    /// 单进程架构下这不再是"省流量"的约定，纯粹是防误触。
-    private static let minimumRecordingDuration: TimeInterval = 0.3
+    /// 录音时长低于此阈值的会话直接丢弃，避免处理误触产生的无意义音频（按下到松开，单调时钟）。
+    private static let minimumRecordingNanos: UInt64 = 300_000_000
 
     /// 录音开始后的两次"是不是根本没采到声音"探测时刻（秒）。
     ///
@@ -96,52 +166,11 @@ final class VoiceTyperController {
     /// 设备变化、达到上限、卡键看门狗触发的收尾不补录；补录期间 Esc 仍可取消。
     nonisolated static let defaultReleaseTailCapture: TimeInterval = 0.15
 
-    /// 本次录音出现过的最大线性 RMS 电平。
-    private var recordingPeakLevel: Float = 0
-    private var silenceProbeWorkItems: [DispatchWorkItem] = []
-
-    /// 最近 150ms 的电平样本（带时间戳的小环形缓冲），松键时据此判断用户是否仍在说话（R8-D2a）。
-    private var recentLevels: [(at: UInt64, level: Float)] = []
     private static let recentLevelWindowNanos: UInt64 = 150_000_000
     private nonisolated static let tailSpeechWindowNanos: UInt64 = 100_000_000
 
-    /// 卡键看门狗（R8-B3）：按住模式录音期间定期读热键的物理状态。
-    private var stuckKeyTimer: Timer?
-    private var stuckKeyReleasedPolls = 0
-    /// 本次录音是否至少有一次观察到「物理上按着」。从没观察到过，说明这条信号在当前机器上不可靠
-    /// （或用户在第一个轮询前就松了手，那由短录音过滤处理）——此时绝不据此结束录音，宁可不救卡键也不误杀正常录音。
-    private var stuckKeyObservedHeld = false
-
-    var onStateChange: ((AppState) -> Void)?
-    var onRecognizedText: ((String) -> Void)?
-    var onPreviewUpdate: ((String) -> Void)?
-    /// 非致命提示（预览失败等），UI 可短暂闪烁状态但不打断录音。
-    var onPreviewWarning: ((String) -> Void)?
-    /// 用户主动取消（录音中或识别中按 Esc）。与 .idle 区分，便于 UI 给出"已取消"提示。
-    var onCancelled: (() -> Void)?
-    /// 识别成功但结果为空（没说话、麦克风静音、环境噪声被判为无语音）。
-    /// 与"插入成功"和"识别失败"都要区分：此前这条路径直接静默回到 `.idle`，
-    /// HUD 一声不响地消失，用户分不清是没识别到还是插进去了没看见（B4）。
-    var onEmptyRecognition: (() -> Void)?
-    /// 未就绪时按下热键。参数是 `blockedReason` 的内容，UI 据此引导用户。
-    var onBlockedAttempt: ((String) -> Void)?
-    /// ASR 已出结果、开始等待 LLM 校对。UI 据此把"识别中"改成"校对中"——
-    /// 否则用户分不清自己在等本地推理还是在等网络（后者可能长达 `llm.timeout` 秒）。
-    var onCorrectionStarted: (() -> Void)?
-    /// 录音期间的实时音量电平（0…1 量级），供 HUD 波形显示。保证在主线程触发。
-    var onAudioLevel: ((Float) -> Void)?
-    /// 每次听写收尾时恰好触发一次（`stop()` 除外），参数只含数字与枚举。
-    var onMetrics: ((DictationMetrics) -> Void)?
-    /// 一段听写产生了值得留存的结果（R8-A2）：已输入、没输进去（已复制）、被取消但有预览、
-    /// 失败 / 超时但有已识别部分。文本是上屏用的格式化后文本。
-    var onResultAvailable: ((String, DictationHistory.Kind) -> Void)?
-    /// 成功上屏时的附加说明（R8-C1/C2）：校对回落或被用户跳过。`nil` 表示一切正常。
-    /// 在 `onStateChange(.idle)` 之前触发，让「已输入」提示能带上这行说明。
-    var onInsertedWithNote: ((InsertionNote?) -> Void)?
-    /// 引擎未就绪而用户在等待（R8-A1）。
-    var onEngineWait: ((EngineWaitStage) -> Void)?
-    /// 焦点在密码输入框，已拒绝开始听写（R8-B2）。
-    var onSecureFieldRefused: (() -> Void)?
+    /// 全部事件的唯一出口（见 `Event`），保证在主线程触发。
+    var onEvent: ((Event) -> Void)?
     var isStarted: Bool { isRunning }
 
     /// 「已输入」之后的附加说明。
@@ -181,6 +210,8 @@ final class VoiceTyperController {
         return name
     }
 
+    /// - Parameter llmAPIKey: 校对用的 API Key。传 nil 时从 Keychain 读取；协调器传入它读到的值，
+    ///   以便之后判断 Key 是否被改过（只改 Key 也要重建控制器才能生效）。
     init(
         config: AppConfig,
         asrService: ASRService,
@@ -188,6 +219,7 @@ final class VoiceTyperController {
         audioCaptureService: AudioCapturing = AudioCaptureService(),
         textInsertionService: TextInserting = TextInsertionService(),
         focusInspector: FocusInspecting = AXFocusInspector(),
+        llmAPIKey: String? = nil,
         llmCorrectorOverride: LLMCorrector? = nil,
         finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
         releaseTailCapture: TimeInterval = VoiceTyperController.defaultReleaseTailCapture,
@@ -213,7 +245,7 @@ final class VoiceTyperController {
         } else if config.llm.enabled, let chatURL = LLMEndpoint.chatCompletionsURL(from: config.llm.baseURL) {
             self.llmCorrector = LLMCorrector(config: LLMCorrector.Config(
                 chatCompletionsURL: chatURL,
-                apiKey: KeychainStore.loadLLMAPIKey(),
+                apiKey: llmAPIKey ?? KeychainStore.loadLLMAPIKey(),
                 model: config.llm.model,
                 temperature: config.llm.temperature,
                 maxTokens: config.llm.maxTokens,
@@ -230,51 +262,38 @@ final class VoiceTyperController {
     func start() throws {
         guard !isRunning else { return }
 
+        // 热键回调保证在主线程触发（见 `HotkeyListening`）：同步处理，按键顺序即处理顺序。
         hotkeyService.onPress = { [weak self] in
-            Task { @MainActor [weak self] in self?.handleHotkeyPress() }
+            MainActor.assumeIsolated { self?.handleHotkeyPress() }
         }
         hotkeyService.onRelease = { [weak self] in
-            Task { @MainActor [weak self] in self?.handleHotkeyRelease() }
+            MainActor.assumeIsolated { self?.handleHotkeyRelease() }
         }
         hotkeyService.onCancel = { [weak self] in
-            Task { @MainActor [weak self] in self?.cancelByUser() }
+            MainActor.assumeIsolated { self?.cancelByUser() }
         }
         hotkeyService.onGestureCancelled = { [weak self] in
-            Task { @MainActor [weak self] in self?.discardByGesture() }
+            MainActor.assumeIsolated { self?.discardByGesture() }
         }
-        // 电平回调在音频线程触发，跳回主线程再转发给 UI。
+        // 电平回调在音频线程触发：首帧时间必须在那里取，跳到主线程之后再取会把调度延迟算进去。
         // 音频引擎仅在录音期间运行，故无需按会话单独装卸此回调。
         let clock = now
         audioCaptureService.onLevel = { [weak self] level in
-            // 首帧时间必须在音频线程上取，跳到主线程之后再取会把调度延迟算进去。
             let receivedAt = clock()
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let utterance = self.active, utterance.metrics.firstBufferAt == nil,
-                   receivedAt >= utterance.metrics.pressedAt {
-                    utterance.metrics.firstBufferAt = receivedAt
-                }
-                self.recordingPeakLevel = max(self.recordingPeakLevel, level)
-                self.recordLevelSample(at: receivedAt, level: level)
-                self.onAudioLevel?(level)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.handleLevel(level, receivedAt: receivedAt) }
             }
         }
+        // 设备变化通知本来就在主线程触发。
         audioCaptureService.onDeviceChanged = { [weak self] in
-            Task { @MainActor [weak self] in self?.handleDeviceChanged() }
+            MainActor.assumeIsolated { self?.handleDeviceChanged() }
         }
         try hotkeyService.start(with: config.hotkey)
         isRunning = true
-        // 被门禁时不能发 `.idle`：那会把 AppCoordinator 的 currentState 从"待授权/下载中"
-        // 覆盖成"就绪"，菜单栏显示与真实能力脱节。就绪后由协调器自己置 `.idle`。
-        if blockedReason == nil {
-            onStateChange?(.idle)
-        }
     }
 
     func stop() {
         hotkeyService.acceptsCancelWhenInactive = false
-        cancelSilenceProbes()
-        stopStuckKeyWatchdog()
         hotkeyService.stop()
         audioCaptureService.stopWithoutResult()
         if active != nil {
@@ -285,7 +304,7 @@ final class VoiceTyperController {
 
     /// 暂停全局热键监听但不销毁进行中的听写（R2-04）：设置页录制新热键、重新加载
     /// 模型等操作只应停掉按键 tap，不应该销毁用户正在说的内容。调用方须先确认
-    /// 当前没有进行中的听写（`AppState.isActiveDictation`），否则应拒绝暂停请求。
+    /// 当前没有进行中的听写，否则应拒绝暂停请求。
     func suspendHotkeyListening() {
         hotkeyService.stop()
     }
@@ -306,11 +325,21 @@ final class VoiceTyperController {
         }
     }
 
+    private func emit(_ event: Event) {
+        onEvent?(event)
+    }
+
+    /// `id` 仍是当前这段听写时返回它；迟到的回调凭此判断，不能作用到下一段听写上。
+    private func activeUtterance(_ id: UInt64) -> Utterance? {
+        guard let utterance = active, utterance.id == id else { return nil }
+        return utterance
+    }
+
     // MARK: - 录音流程
 
     /// 热键按下的唯一入口，按 `hotkey.mode` 分发。
     ///
-    /// - `.hold`：按下开始，交给 `handleHotkeyRelease()` 结束（原有行为，默认）。
+    /// - `.hold`：按下开始，交给 `handleHotkeyRelease()` 结束（默认）。
     /// - `.toggle`：按下开始，**再按一次**结束；松开事件被忽略。
     private func handleHotkeyPress() {
         let pressedAt = now()
@@ -318,7 +347,7 @@ final class VoiceTyperController {
         if let blockedReason {
             // 单独修饰键会在每次组合快捷键时"按下"，此时提示会变成骚扰；
             // 改为在干净的单击（松开）时才说明原因，见 `handleHotkeyRelease`。
-            if !config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
+            if !config.hotkey.isModifierOnly { emit(.blocked(blockedReason)) }
             return
         }
         // 校对中再按热键 = 跳过校对（R8-C2）。单独修饰键只认干净的单击（在松开时处理），
@@ -345,11 +374,11 @@ final class VoiceTyperController {
         }
     }
 
-    /// 热键松开。仅 `.hold` 模式有意义；`.toggle` 模式下松开不是结束信号。
+    /// 热键松开。仅 `.hold` 模式与单独修饰键的 `.toggle` 模式有意义。
     private func handleHotkeyRelease() {
         guard isRunning else { return }
         if let blockedReason {
-            if config.hotkey.isModifierOnly { onBlockedAttempt?(blockedReason) }
+            if config.hotkey.isModifierOnly { emit(.blocked(blockedReason)) }
             return
         }
         // 干净单击且正在校对：跳过校对（R8-C2）。
@@ -387,7 +416,7 @@ final class VoiceTyperController {
     private func beginRecording(pressedAt: UInt64, announcesRefusal: Bool = true) {
         guard isRunning else { return }
         guard active == nil else {
-            onPreviewWarning?(L("上一段听写尚未完成"))
+            emit(.warning(L("上一段听写尚未完成")))
             return
         }
         // 密码框里不听写：开了智能校对会把口述内容发给第三方服务，口述密码本身也不安全（R8-D-3）。
@@ -410,8 +439,8 @@ final class VoiceTyperController {
         metrics.outcome = .secureField
         metrics.doneAt = now()
         AppLog.app.info("焦点在密码输入框，拒绝开始听写")
-        onSecureFieldRefused?()
-        onMetrics?(metrics)
+        emit(.secureFieldRefused)
+        emit(.metrics(metrics))
         return true
     }
 
@@ -423,29 +452,32 @@ final class VoiceTyperController {
     /// - Parameter captureTail: 是否在松键后补录 `releaseTailCapture`。卡键看门狗触发时用户早已松手，不补录。
     private func finishRecording(captureTail: Bool = true) {
         guard let utterance = active, utterance.phase == .recording, !utterance.isStoppingCapture else { return }
-        utterance.metrics.releasedAt = now()
-        stopStuckKeyWatchdog()
-        // 只采数据：松键时是否仍在说话，决定以后要不要补录约 150ms（R8-D2b，数据驱动）。
-        if let releasedAt = utterance.metrics.releasedAt {
-            utterance.metrics.tailSpeech = Self.tailSpeechDetected(
-                levels: recentLevels, releasedAt: releasedAt, threshold: AppConstants.silenceRMSThreshold
-            )
-        }
+        let releasedAt = now()
+        utterance.metrics.releasedAt = releasedAt
+        utterance.stopStuckKeyWatchdog()
+        // 只采数据：松键时是否仍在说话（R8-D2a）。
+        utterance.metrics.tailSpeech = Self.tailSpeechDetected(
+            levels: utterance.recentLevels, releasedAt: releasedAt, threshold: AppConstants.silenceRMSThreshold
+        )
 
         // 短录音过滤：低于阈值的录音视为误触，立即取消。
-        if Date().timeIntervalSince(utterance.startedAt) < Self.minimumRecordingDuration {
+        let pressedAt = utterance.metrics.pressedAt
+        if releasedAt >= pressedAt, releasedAt - pressedAt < Self.minimumRecordingNanos {
             AppLog.audio.info("录音时长低于阈值，已丢弃")
             audioCaptureService.stopWithoutResult()
             finish(.discarded)
             return
         }
 
+        // 松键之后发起的预览，结果反正会被丢弃，却会占住串行的 asrQueue、让终稿排在它后面。
+        utterance.session.stopPreviews()
+
         if captureTail, releaseTailCapture > 0 {
             beginTailCapture(for: utterance)
             return
         }
 
-        // stop() 触发 onTailChunk → sendAudio(tail) + finalize()，phase 在那里推进到 .recognizing。
+        // stop() 触发 onTailChunk → handleCaptureEnded：phase 在那里推进到 .recognizing 并 finalize。
         audioCaptureService.stop()
     }
 
@@ -456,7 +488,7 @@ final class VoiceTyperController {
         utterance.isStoppingCapture = true
         utterance.announcedRecognizing = true
         hotkeyService.acceptsCancelWhenInactive = true
-        onStateChange?(.recognizing)
+        emit(.phaseChanged(.recognizing))
         let item = DispatchWorkItem { [weak self, weak utterance] in
             guard let self, let utterance, self.active === utterance,
                   utterance.isStoppingCapture, utterance.phase == .recording else { return }
@@ -483,75 +515,74 @@ final class VoiceTyperController {
         }
     }
 
-    private func recordLevelSample(at time: UInt64, level: Float) {
-        recentLevels.append((time, level))
-        recentLevels.removeAll { time &- $0.at > Self.recentLevelWindowNanos && time >= $0.at }
+    private func handleLevel(_ level: Float, receivedAt: UInt64) {
+        guard let utterance = active else { return }
+        if utterance.metrics.firstBufferAt == nil, receivedAt >= utterance.metrics.pressedAt {
+            utterance.metrics.firstBufferAt = receivedAt
+        }
+        utterance.peakLevel = max(utterance.peakLevel, level)
+        utterance.recentLevels.append((receivedAt, level))
+        utterance.recentLevels.removeAll { receivedAt &- $0.at > Self.recentLevelWindowNanos && receivedAt >= $0.at }
+        emit(.audioLevel(level))
     }
 
     // MARK: 卡键看门狗（R8-B3）
 
-    private func startStuckKeyWatchdog() {
-        stopStuckKeyWatchdog()
+    private func startStuckKeyWatchdog(for utterance: Utterance) {
         guard config.hotkey.mode == .hold else { return }
-        stuckKeyTimer = Timer.scheduledTimer(withTimeInterval: stuckKeyPollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.pollHotkeyPhysicalState() }
+        let id = utterance.id
+        let timer = Timer(timeInterval: stuckKeyPollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollHotkeyPhysicalState(utteranceID: id) }
         }
+        // common 模式：菜单栏菜单展开（事件跟踪）期间也照常轮询。
+        RunLoop.main.add(timer, forMode: .common)
+        utterance.stuckKeyTimer = timer
     }
 
-    private func stopStuckKeyWatchdog() {
-        stuckKeyTimer?.invalidate()
-        stuckKeyTimer = nil
-        stuckKeyReleasedPolls = 0
-        stuckKeyObservedHeld = false
-    }
-
-    private func pollHotkeyPhysicalState() {
-        guard isRecording else { stopStuckKeyWatchdog(); return }
+    private func pollHotkeyPhysicalState(utteranceID: UInt64) {
+        guard let utterance = activeUtterance(utteranceID), utterance.phase == .recording,
+              !utterance.isStoppingCapture else { return }
         if HotkeyPhysicalState.isHeld(config.hotkey, flags: physicalHotkeyFlags()) {
-            stuckKeyObservedHeld = true
-            stuckKeyReleasedPolls = 0
+            utterance.stuckKeyObservedHeld = true
+            utterance.stuckKeyReleasedPolls = 0
             return
         }
-        guard stuckKeyObservedHeld else { return }
-        stuckKeyReleasedPolls += 1
-        guard stuckKeyReleasedPolls >= 2 else { return }
+        guard utterance.stuckKeyObservedHeld else { return }
+        utterance.stuckKeyReleasedPolls += 1
+        guard utterance.stuckKeyReleasedPolls >= 2 else { return }
         // 连续两次判定已松开：松键事件丢了。按松键处理，并让热键服务复位，避免下一次按下被当成重复。
         AppLog.hotkey.warning("热键物理上已松开但没收到松开事件，按松键处理")
-        stopStuckKeyWatchdog()
+        utterance.stopStuckKeyWatchdog()
         hotkeyService.resetActiveState()
         finishRecording(captureTail: false)
     }
 
-    /// 用户按 Esc 主动取消，通过 `onCancelled` 让 UI 给出"已取消"提示。
+    /// 用户按 Esc 主动取消。
     ///
     /// 录音中与识别中都受理。识别中取消**不会**中断已经在 asrQueue 上跑的那次推理
     /// （ORT 的 ObjC 绑定没暴露 `SetTerminate`，见 DESIGN.md §11.1），但会丢弃它的
     /// 结果、不插入任何文本——用户真正要的是"别把这段写进去"，而不是省下几百毫秒 CPU。
     private func cancelByUser() {
         guard let utterance = active else { return }
-        switch utterance.phase {
-        case .recording:
+        if utterance.phase == .recording {
             audioCaptureService.stopWithoutResult()
-        case .recognizing:
-            // 采集早已在松键时停止；这里只需要走收尾，让 session.close() 抑制迟到回调。
-            break
         }
+        // 识别中：采集早已停止，收尾时 session.close() 会抑制迟到回调。
         finish(.cancelled)
     }
 
     /// 录音期间输入设备变化：`AudioCaptureService` 已自行走过 `stop()` → `onTailChunk`
-    /// 把已采到的音频交给当前会话继续识别（phase 已在那条路径推进到 .recognizing），
-    /// 这里只需要把"设备变了"这件事明确告知用户（R2-03）。
+    /// 把已采到的音频交给当前会话继续识别，这里只需要把"设备变了"这件事明确告知用户（R2-03）。
     private func handleDeviceChanged() {
         guard active != nil else { return }
-        onPreviewWarning?(L("输入设备已变化，本次录音已结束"))
+        emit(.warning(L("输入设备已变化，本次录音已结束")))
     }
 
     /// 会话达到单段录音上限：不能任由用户继续说下去而内容被静默丢弃，主动走一次与
-    /// 松键完全相同的收尾路径——`audioCaptureService.stop()` 会触发 `onTailChunk`，
+    /// 松键相同的收尾路径——`audioCaptureService.stop()` 会触发 `onTailChunk`，
     /// 把已录到的内容正常推进到 `.recognizing` 并 finalize 上屏（R3-03）。
-    private func handleSessionCapped() {
-        guard active?.phase == .recording else { return }
+    private func handleSessionCapped(utteranceID: UInt64) {
+        guard activeUtterance(utteranceID)?.phase == .recording else { return }
         audioCaptureService.stop()
     }
 
@@ -559,83 +590,64 @@ final class VoiceTyperController {
 
     private func beginDictationSession(pressedAt: UInt64) {
         let session = asrService.makeSession(llmCorrector: llmCorrector, now: now)
-        let expectedFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let metrics = DictationMetrics(
-            sessionID: UInt16.random(in: .min ... .max),
-            mode: config.hotkey.mode,
-            hotkey: config.hotkey.kind,
-            pressedAt: pressedAt
-        )
+        nextUtteranceID &+= 1
+        let id = nextUtteranceID
         let utterance = Utterance(
-            session: session, expectedFrontmostPID: expectedFrontmostPID, startedAt: Date(), metrics: metrics
+            id: id,
+            session: session,
+            expectedFrontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            metrics: DictationMetrics(
+                sessionID: UInt16.random(in: .min ... .max),
+                mode: config.hotkey.mode,
+                hotkey: config.hotkey.kind,
+                pressedAt: pressedAt
+            )
         )
 
         // partial 是全量预览文本，直接替换：本地识别引擎对已累积音频整段/滑窗重跑，
         // 后一次结果会修正前一次的文字，增量语义无法表达这种回溯修改。
         session.onPartial = { [weak self] text in
-            guard let self else { return }
+            guard let self, let utterance = self.activeUtterance(id) else { return }
             // previewText 保存原始文本（供识别失败时兜底）；浮窗显示的是上屏用的格式化文本（R8-F2）。
-            self.previewText = text
-            self.onPreviewUpdate?(OutputFormatter.formatForOutput(text))
+            utterance.previewText = text
+            self.emit(.preview(OutputFormatter.formatForOutput(text)))
         }
-
         session.onFinal = { [weak self] text in
-            self?.finish(.text(text))
+            guard let self, self.activeUtterance(id) != nil else { return }
+            self.finish(.text(text))
         }
-
         session.onWarning = { [weak self] message in
-            self?.onPreviewWarning?(message)
+            guard let self, self.activeUtterance(id) != nil else { return }
+            self.emit(.warning(message))
         }
-
         session.onError = { [weak self] message in
-            // 具体识别异常已由 LocalASRSession 在产生错误的位置记录；控制器只负责
-            // 把错误转换为统一的会话收尾状态，避免同一故障重复写入系统日志。
-            self?.finish(.failed(message))
+            // 具体识别异常已由 LocalASRSession 在产生错误的位置记录；这里只负责
+            // 把错误转换为统一的会话收尾，避免同一故障重复写入系统日志。
+            guard let self, self.activeUtterance(id) != nil else { return }
+            self.finish(.failed(message))
         }
-
         session.onSessionCapped = { [weak self] in
-            self?.handleSessionCapped()
+            self?.handleSessionCapped(utteranceID: id)
         }
-
         session.onCorrectionStarted = { [weak self] in
-            self?.onCorrectionStarted?()
+            guard let self, self.activeUtterance(id) != nil else { return }
+            self.emit(.correctionStarted)
         }
-
         session.onEngineWait = { [weak self] stage in
-            self?.onEngineWait?(stage)
+            guard let self, self.activeUtterance(id) != nil else { return }
+            self.emit(.engineWait(stage))
         }
 
+        // 采集回调来自音频投递队列：按序投递到主线程（DispatchQueue.main 严格先进先出），
+        // 样本顺序与尾音在最后都由此保证。
         audioCaptureService.onChunk = { [weak session] samples in
-            Task { @MainActor [weak session] in
-                session?.sendAudio(samples)
+            DispatchQueue.main.async { [weak session] in
+                MainActor.assumeIsolated { session?.sendAudio(samples) }
             }
         }
-
-        audioCaptureService.onTailChunk = { [weak self, weak session] samples in
-            Task { @MainActor [weak self, weak session] in
-                guard let self else { return }
-                if !samples.isEmpty {
-                    session?.sendAudio(samples)
-                }
-                self.active?.pendingStop?.cancel()
-                self.active?.phase = .recognizing
-                // 设备变化 / 达到会话上限时没有"松手"，以尾音到达的时刻作为收音结束点。
-                let tailAt = self.now()
-                if self.active?.metrics.releasedAt == nil { self.active?.metrics.releasedAt = tailAt }
-                self.active?.metrics.finalizeCalledAt = tailAt
-                // 松手之后到结果上屏之前，Esc 仍可取消（HotkeyService 默认只在按住期间
-                // 受理 Esc）。收尾时由 finish(_:) 统一关闭这个窗口。
-                self.hotkeyService.acceptsCancelWhenInactive = true
-                // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
-                // 时长随录音长度放大（R8-A1）。
-                let audioSeconds = Double(session?.timings.receivedSamples ?? 0) / 16_000
-                session?.finalize(timeout: self.finalizeWatchdogTimeoutProvider(audioSeconds))
-                // 与 asrQueue 上的推理并行，不在「松键 → 出字」的关键路径上（R8-A5）。
-                self.active?.metrics.clipBackupNanos = self.textInsertionService.prepareForInsert()
-                if self.active?.announcedRecognizing != true {
-                    self.active?.announcedRecognizing = true
-                    self.onStateChange?(.recognizing)
-                }
+        audioCaptureService.onTailChunk = { [weak self] samples in
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.handleCaptureEnded(utteranceID: id, tail: samples) }
             }
         }
 
@@ -650,8 +662,8 @@ final class VoiceTyperController {
             var failed = utterance.metrics
             failed.outcome = .startFailed
             failed.doneAt = now()
-            onMetrics?(failed)
-            onStateChange?(.error(L("开始录音失败")))
+            emit(.finished(.error(L("开始录音失败"))))
+            emit(.metrics(failed))
             return
         }
 
@@ -661,12 +673,42 @@ final class VoiceTyperController {
             utterance.metrics.inputSwitchedByAuto = device.switchedByAuto
         }
         active = utterance
-        previewText = ""
-        recordingPeakLevel = 0
-        recentLevels.removeAll()
-        scheduleSilenceProbes()
-        startStuckKeyWatchdog()
-        onStateChange?(.recording)
+        scheduleSilenceProbes(for: utterance)
+        startStuckKeyWatchdog(for: utterance)
+        emit(.phaseChanged(.recording))
+    }
+
+    /// 采集结束（松键、补录到点、设备变化、达到上限）：送入尾音，进入识别阶段并 finalize。
+    private func handleCaptureEnded(utteranceID: UInt64, tail: [Float]) {
+        guard let utterance = activeUtterance(utteranceID), utterance.phase == .recording else { return }
+        let session = utterance.session
+        utterance.pendingStop?.cancel()
+        utterance.pendingStop = nil
+        utterance.phase = .recognizing
+        utterance.stopStuckKeyWatchdog()
+        utterance.cancelSilenceProbes()
+        // 先停预览再送尾音：送入尾音会触发一次预览调度，排在终稿前面只会拖慢出字。
+        session.stopPreviews()
+        if !tail.isEmpty {
+            session.sendAudio(tail)
+        }
+        // 设备变化 / 达到会话上限时没有"松手"，以尾音到达的时刻作为收音结束点。
+        let tailAt = now()
+        if utterance.metrics.releasedAt == nil { utterance.metrics.releasedAt = tailAt }
+        utterance.metrics.finalizeCalledAt = tailAt
+        // 松手之后到结果上屏之前，Esc 仍可取消（HotkeyService 默认只在按住期间受理 Esc）。
+        // 收尾时由 finish(_:) 统一关闭这个窗口。
+        hotkeyService.acceptsCancelWhenInactive = true
+        // 本地推理没有网络往返，但仍设看门狗防止模型卡死导致 HUD 永久停在"识别中"。
+        // 时长随录音长度放大（R8-A1）。
+        let audioSeconds = Double(session.timings.receivedSamples) / 16_000
+        session.finalize(timeout: finalizeWatchdogTimeoutProvider(audioSeconds))
+        // 与 asrQueue 上的推理并行，不在「松键 → 出字」的关键路径上（R8-A5）。
+        utterance.metrics.clipBackupNanos = textInsertionService.prepareForInsert()
+        if !utterance.announcedRecognizing {
+            utterance.announcedRecognizing = true
+            emit(.phaseChanged(.recognizing))
+        }
     }
 
     /// 录音开始后若迟迟采不到声音，主动提示检查输入设备。
@@ -674,36 +716,27 @@ final class VoiceTyperController {
     /// 麦克风被静音、系统选中了错误的输入设备、蓝牙耳机走了错误的输入端——这几种情况下
     /// 用户会对着一个什么都没录到的会话一直说，直到松手才发现结果是空的。这段录音时间
     /// 是白花的，而信号（电平一直为 0）在第一秒就已经有了。
-    private func scheduleSilenceProbes() {
-        cancelSilenceProbes()
+    private func scheduleSilenceProbes(for utterance: Utterance) {
         for delay in Self.silenceProbeDelays {
-            let item = DispatchWorkItem { [weak self] in
-                guard let self, self.isRecording else { return }
-                guard self.recordingPeakLevel < AppConstants.silenceRMSThreshold else { return }
+            let item = DispatchWorkItem { [weak self, weak utterance] in
+                guard let self, let utterance, self.active === utterance, utterance.phase == .recording else { return }
+                guard utterance.peakLevel < AppConstants.silenceRMSThreshold else { return }
                 AppLog.audio.warning("录音已进行 \(delay, privacy: .public)s 仍未检测到声音")
-                self.onPreviewWarning?(L("没有检测到声音，请检查麦克风与输入设备"))
+                self.emit(.warning(L("没有检测到声音，请检查麦克风与输入设备")))
             }
-            silenceProbeWorkItems.append(item)
+            utterance.silenceProbes.append(item)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
-    }
-
-    private func cancelSilenceProbes() {
-        silenceProbeWorkItems.forEach { $0.cancel() }
-        silenceProbeWorkItems.removeAll()
     }
 
     // MARK: - 唯一收尾入口
 
     /// 所有终止路径（onFinal、onError、Esc 取消、短录音丢弃、stop()）都只调用这里。
-    /// 靠"先取走 active 再处理"保证幂等：任何重复到达（例如已关闭会话的迟到回调）
-    /// 直接返回，不会二次收尾。
+    /// 靠"先取走 active 再处理"保证幂等：任何重复到达直接返回，不会二次收尾。
     private func finish(_ outcome: Outcome) {
         guard let utterance = active else { return }
         active = nil
-        utterance.pendingStop?.cancel()
-        cancelSilenceProbes()
-        stopStuckKeyWatchdog()
+        utterance.cancelTimers()
         hotkeyService.acceptsCancelWhenInactive = false
         // 必须在 close() 之前取：这是会话内分阶段打点的唯一读取点。
         var metrics = utterance.metrics
@@ -712,10 +745,9 @@ final class VoiceTyperController {
         asrService.sessionEnded()
         audioCaptureService.onChunk = nil
         audioCaptureService.onTailChunk = nil
-        // 清空之前取走：识别失败 / 取消时，已识别出的预览是用户唯一能找回的内容（R8-A1/A2）。
-        let partial = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        previewText = ""
-        onPreviewUpdate?("")
+        // 识别失败 / 取消时，已识别出的预览是用户唯一能找回的内容（R8-A1/A2）。
+        let partial = utterance.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        emit(.preview(""))
 
         let result: DictationMetrics.Outcome
         switch outcome {
@@ -728,24 +760,21 @@ final class VoiceTyperController {
             if isRunning {
                 AppLog.audio.info("用户取消录音")
                 if !partial.isEmpty {
-                    onResultAvailable?(OutputFormatter.formatForOutput(partial), .cancelled)
+                    emit(.resultAvailable(OutputFormatter.formatForOutput(partial), .cancelled))
                 }
-                onCancelled?()
+                emit(.finished(.cancelled))
             }
             result = .cancelled
-        case .discarded, .gestureDiscarded:
-            if isRunning {
-                onStateChange?(.idle)
-            }
-            if case .gestureDiscarded = outcome {
-                result = .gestureCancelled
-            } else {
-                result = .discarded
-            }
+        case .discarded:
+            if isRunning { emit(.finished(.silent)) }
+            result = .discarded
+        case .gestureDiscarded:
+            if isRunning { emit(.finished(.silent)) }
+            result = .gestureCancelled
         case .interrupted:
             if isRunning {
                 AppLog.audio.info("系统锁屏 / 睡眠，已静默丢弃录音")
-                onStateChange?(.idle)
+                emit(.finished(.silent))
             }
             result = .interrupted
         case .shutdown:
@@ -757,40 +786,51 @@ final class VoiceTyperController {
 
         metrics.outcome = result
         metrics.doneAt = now()
-        onMetrics?(metrics)
+        guard result == .inserted, metrics.insertPath == .accessibility else {
+            emit(.metrics(metrics))
+            return
+        }
+        // AX 回读在插入约 50ms 后异步完成，度量行随之延后（R8-A3a）。直接持有出口：
+        // 这期间控制器即使被重建，这一行度量也不会丢。
+        let sink = onEvent
+        let reported = metrics
+        textInsertionService.verifyLastInsertion { verification in
+            var completed = reported
+            completed.insertVerify = verification
+            sink?(.metrics(completed))
+        }
     }
 
     /// 识别失败的兜底（R8-A1，对应 R8-D-5）：只有**超时**才把已识别的部分复制到剪贴板；
     /// 其他失败只放进「最近结果」，不覆盖用户的剪贴板。无预览文本时两者都不发生。
     private func handleRecognitionFailure(_ message: String, partial: String, timedOut: Bool) {
         guard !partial.isEmpty else {
-            onStateChange?(.error(message))
+            emit(.finished(.error(message)))
             return
         }
         let output = OutputFormatter.formatForOutput(partial)
         if timedOut {
             textInsertionService.copyToClipboard(text: output)
-            onResultAvailable?(output, .partialAfterTimeout)
-            onStateChange?(.error(L("识别超时，已把识别出的部分复制到剪贴板")))
+            emit(.resultAvailable(output, .partialAfterTimeout))
+            emit(.finished(.error(L("识别超时，已把识别出的部分复制到剪贴板"))))
         } else {
-            onResultAvailable?(output, .partialAfterFailure)
+            emit(.resultAvailable(output, .partialAfterFailure))
             let base = message.trimmingCharacters(in: CharacterSet(charactersIn: "。.！!，, ").union(.whitespaces))
-            onStateChange?(.error(LF("%@。%@", base, L("可在菜单栏「最近结果」里找回已识别的部分"))))
+            emit(.finished(.error(LF("%@。%@", base, L("可在菜单栏「最近结果」里找回已识别的部分")))))
         }
     }
 
-    /// 插入最终文本并更新状态，返回本次听写的结局。调用方（`finish(_:)`）负责在调用前完成会话拆解。
+    /// 插入最终文本并发出结局，返回本次听写的度量结局。调用方（`finish(_:)`）负责在调用前完成会话拆解。
     private func handleFinalText(
         _ text: String, expectedFrontmostPID: pid_t?, metrics: inout DictationMetrics
     ) -> DictationMetrics.Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            // 识别链路跑通了但一个字都没有：几乎总是"没说话/麦克风静音/选错输入设备"。
-            // 必须给一个可见反馈，否则 HUD 静默消失，与"插进去了但没看见"无法区分（B4）。
+            // 识别链路跑通了但一个字都没有：必须给一个可见反馈，否则 HUD 静默消失，
+            // 与"插进去了但没看见"无法区分（B4）。
             AppLog.asr.info("识别结果为空，未插入任何文本")
-            onEmptyRecognition?()
-            onStateChange?(.idle)
+            emit(.finished(.empty))
             return .empty
         }
 
@@ -803,37 +843,40 @@ final class VoiceTyperController {
         if focusInspector.isFocusedElementSecure() {
             textInsertionService.copyToClipboard(text: output)
             AppLog.app.warning("目标是密码输入框，插入已取消，改为复制到剪贴板")
-            onResultAvailable?(output, .copiedFocusChanged)
-            onStateChange?(.error(L("目标是密码输入框，结果已复制到剪贴板")))
+            emit(.resultAvailable(output, .copiedFocusChanged))
+            emit(.finished(.error(L("目标是密码输入框，结果已复制到剪贴板"))))
             return .focusChanged
         }
 
-        onStateChange?(.inserting)
+        emit(.phaseChanged(.inserting))
         let insertStartedAt = now()
         let insertResult = textInsertionService.insert(text: output, expectedFrontmostPID: expectedFrontmostPID)
         metrics.insertNanos = now() &- insertStartedAt
-        metrics.insertVerify = textInsertionService.lastInsertVerification
         switch insertResult {
         case .inserted(let path):
             metrics.insertPath = path
-            onResultAvailable?(output, .inserted)
-            onRecognizedText?(output)
-            onInsertedWithNote?(Self.insertionNote(for: metrics.timings))
-            onStateChange?(.idle)
+            emit(.resultAvailable(output, .inserted))
+            emit(.finished(.inserted(text: output, note: Self.insertionNote(for: metrics.timings))))
             return .inserted
         case .focusChanged:
             // 录音开始到插入之间前台应用已切换：不写入用户未预期的窗口，只复制到剪贴板。
             textInsertionService.copyToClipboard(text: output)
             AppLog.app.warning("目标窗口已变化，插入已取消，改为复制到剪贴板")
-            onResultAvailable?(output, .copiedFocusChanged)
-            onStateChange?(.error(L("目标窗口已变化，结果已复制到剪贴板")))
+            emit(.resultAvailable(output, .copiedFocusChanged))
+            emit(.finished(.error(L("目标窗口已变化，结果已复制到剪贴板"))))
             return .focusChanged
+        case .unconfirmed:
+            // 写入请求已发出但目标应用没及时回复：文字可能稍后出现，不能再粘贴一遍。
+            textInsertionService.copyToClipboard(text: output)
+            emit(.resultAvailable(output, .copiedInsertFailed))
+            emit(.finished(.error(L("目标应用响应太慢，文字可能稍后出现；结果已复制到剪贴板"))))
+            return .insertFailed
         case .failed:
             // 插入失败兜底：把结果写入剪贴板，避免长听写内容彻底丢失。
             textInsertionService.copyToClipboard(text: output)
             AppLog.app.error("文本插入失败，已复制到剪贴板")
-            onResultAvailable?(output, .copiedInsertFailed)
-            onStateChange?(.error(L("插入失败，已复制到剪贴板，可手动粘贴")))
+            emit(.resultAvailable(output, .copiedInsertFailed))
+            emit(.finished(.error(L("插入失败，已复制到剪贴板，可手动粘贴"))))
             return .insertFailed
         }
     }

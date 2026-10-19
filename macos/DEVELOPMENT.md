@@ -121,6 +121,9 @@ ui:
 
 「引导是否完成」等一次性状态存在 `UserDefaults`，不在配置文件里。
 
+文件读不出来（语法错误、编码损坏）时，应用另存一份 `config.yaml.broken`、以默认设置启动并弹出说明；
+原文件保持不动，直到在设置里保存一次。
+
 ## 日志与耗时摘要
 
 日志走系统统一日志（`os.Logger`），subsystem 为 `com.voicetyper.app`，category 有 `app`、
@@ -133,7 +136,7 @@ log show   --predicate 'subsystem == "com.voicetyper.app"' --last 10m
 log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metrics"'
 ```
 
-`metrics` 每次听写输出一行，只含数字与枚举，不含识别文本。常用字段：
+`metrics` 每次听写输出一行，只含数字与枚举，不含识别文本；走 AX 插入时要等回读，这一行比上屏晚约 50ms。常用字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -144,7 +147,7 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metri
 | `finalize_timeout` | 终稿看门狗是否触发 |
 | `preview_avg` / `final_wait` | 预览平均耗时 / 终稿等待推理开始 |
 | `tail_speech` | 松键那一刻是否仍在说话 |
-| `insert_verify` / `clip_backup` | AX 插入回读判定 / 提前备份剪贴板耗时 |
+| `insert_verify` / `clip_backup` | AX 插入回读判定（按写入前后的字符数）/ 提前备份剪贴板耗时（预判走 AX 不备份时为 `-`） |
 | `input` / `cold` | 实际输入设备类别（`builtin*` 表示自动改用内置麦克风）/ 引擎是否冷加载 |
 
 重置权限（调试授权流程时）：

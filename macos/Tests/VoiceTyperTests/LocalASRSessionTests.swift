@@ -586,4 +586,37 @@ final class LocalASRSessionTests: XCTestCase {
         XCTAssertEqual(engine.callCount, 2)
     }
 
+    // MARK: - 松键后不再预览
+
+    /// 松键后送来的音频（补录、尾音）不再发起预览，终稿是 asrQueue 上的第一件事。
+    func testStopPreviewsBlocksNewPreviewsButFinalizeStillSeesAllAudio() async {
+        let engine = GatedFakeEngine()
+        let session = LocalASRSession(asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil)
+        var finalText: String?
+        session.onFinal = { finalText = $0 }
+
+        session.stopPreviews()
+        session.sendAudio(speech(count: 20_000))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(engine.callCount, 0, "停止预览后不应再发起预览")
+
+        session.finalize(timeout: 2)
+        await poll { finalText != nil }
+        XCTAssertEqual(engine.callSampleCounts, [20_000], "终稿仍对全部音频识别一次")
+    }
+
+    /// 已入队、还没开跑的预览在停止后直接放弃，不再占用 asrQueue。
+    func testQueuedPreviewIsSkippedAfterStopPreviews() async {
+        let engine = GatedFakeEngine()
+        let queue = makeQueue()
+        let session = LocalASRSession(asrQueue: queue, engineAccessor: { engine }, llmCorrector: nil)
+        let blocker = DispatchSemaphore(value: 0)
+        queue.async { _ = blocker.wait(timeout: .now() + 5) } // 先把队列占住，让预览只能排队
+
+        session.sendAudio(speech(count: 20_000)) // 预览入队
+        session.stopPreviews()
+        blocker.signal()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(engine.callCount, 0, "排队中的预览应被跳过")
+    }
 }

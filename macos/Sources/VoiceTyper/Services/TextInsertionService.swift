@@ -19,19 +19,22 @@ enum InsertionPath: String {
     case paste
 }
 
-/// AX 写入成功后的回读判定（R8-A3a）。本批只记录、不据此回退粘贴。
+/// AX 写入成功后的回读判定（R8-A3a）。只记录、不据此回退粘贴。
+///
+/// 比较的是写入前后的字符数（`kAXNumberOfCharacters`，UTF-16 计），而不是整段值：
+/// 读整段值是一次把整篇文档跨进程拷过来的调用，长文档下代价远高于这条度量的价值。
 enum InsertionVerification: String, Equatable {
-    /// 值变了且包含插入的文本。
+    /// 字符数恰好按预期变化（插入文本长度 − 被替换的选区长度）。
     case ok
-    /// 值完全没变——AX 报告成功，但控件可能没有真正接受（网页里由前端框架接管的输入框）。
+    /// 字符数完全没变——AX 报告成功，但控件可能没有真正接受（网页里由前端框架接管的输入框）。
     case unchanged
-    /// 写入前后的值读不到（或变了但不含插入文本）。
+    /// 读不到字符数，或变化量与预期不符（控件自行改写了换行、自动补全等）。
     case unknown
 
-    nonisolated static func classify(before: String?, after: String?, inserted: String) -> InsertionVerification {
+    nonisolated static func classify(before: Int?, after: Int?, expectedDelta: Int) -> InsertionVerification {
         guard let before, let after else { return .unknown }
-        if after == before { return .unchanged }
-        return after.contains(inserted) ? .ok : .unknown
+        if after == before { return expectedDelta == 0 ? .ok : .unchanged }
+        return after - before == expectedDelta ? .ok : .unknown
     }
 }
 
@@ -40,7 +43,43 @@ enum TextInsertionResult: Equatable {
     /// 录音开始到插入之间前台应用已切换：为避免写入用户未预期的窗口（最坏情况是
     /// 密码框），不再插入，只把结果复制到剪贴板（F-10）。
     case focusChanged
+    /// AX 写入在超时内没有得到目标应用的回复：文字可能稍后仍会出现，也可能没有。
+    /// 此时绝不能再走粘贴兜底，否则目标应用随后处理完那条写入，同一段文字会出现两次；
+    /// 调用方只把结果复制到剪贴板并说明情况。
+    case unconfirmed
     case failed
+}
+
+/// 辅助功能（AX）跨进程消息的超时约定。
+///
+/// `AXUIElementSetMessagingTimeout` 作用在 system-wide 元素上时，改的是**整个进程**的默认超时，
+/// 会悄悄影响其他所有 AX 调用（包括插入文字）。因此进程级默认值只在启动时设一次，
+/// 其余需要更短或更长超时的地方一律设在具体元素上。
+enum AXMessaging {
+    /// 进程级默认超时（秒）。目标应用无响应时，系统默认要等约 6 秒。
+    static let processDefaultTimeout: Float = 1.0
+    /// 探测类查询（密码框判定、插入点几何、预判插入路径）：取不到就按「不知道」处理。
+    static let probeTimeout: Float = 0.25
+    /// 插入文字：给忙碌的目标应用更多时间回复，减少「结果未确认」。
+    static let insertionTimeout: Float = 1.5
+
+    /// 应用启动时调用一次。
+    static func configureProcessDefault() {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), processDefaultTimeout)
+    }
+
+    /// 取当前焦点元素，并把 `timeout` 设在这个元素上。取不到返回 nil。
+    static func focusedElement(timeout: Float) -> AXUIElement? {
+        var focusedObject: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &focusedObject
+        ) == .success, let focusedObject, CFGetTypeID(focusedObject) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        let element = focusedObject as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, timeout)
+        return element
+    }
 }
 
 @MainActor
@@ -58,6 +97,7 @@ final class TextInsertionService {
     private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
     /// AX 写入后到回读之间的等待：异步更新的控件需要一点时间才会反映到辅助功能层。
+    /// 回读在这段延迟之后异步进行，不占用「松键 → 出字」的关键路径。
     private static let verifyDelay: TimeInterval = 0.05
     /// 沿 `kAXParentAttribute` 向上查找 `AXWebArea` 的最大层数。
     private static let maxWebAreaAncestorDepth = 20
@@ -65,8 +105,13 @@ final class TextInsertionService {
     private let pasteboard = NSPasteboard.general
     private var pendingRestoreTask: Task<Void, Never>?
 
-    /// 最近一次 `insert` 的 AX 回读判定；未走 AX 为 nil。内容只在判定函数内比较，不写日志。
-    private(set) var lastInsertVerification: InsertionVerification?
+    /// 最近一次 AX 写入的回读素材，由 `verifyLastInsertion` 取走。只有字符数，没有文本内容。
+    private struct PendingVerification {
+        let element: AXUIElement
+        let countBefore: Int?
+        let expectedDelta: Int
+    }
+    private var pendingVerification: PendingVerification?
 
     /// 识别阶段提前备份的剪贴板（R8-A5）。粘贴兜底时若 `changeCount` 未变就直接使用，
     /// 不再在「松键 → 出字」的关键路径上同步读取剪贴板全部类型。
@@ -99,26 +144,65 @@ final class TextInsertionService {
     /// - Parameter expectedFrontmostPID: 录音开始时记录的前台应用 pid；插入前若与
     ///   当前前台应用不一致，说明用户已切换焦点，直接放弃插入、只复制到剪贴板。
     func insert(text: String, expectedFrontmostPID: pid_t?) -> TextInsertionResult {
-        lastInsertVerification = nil
+        pendingVerification = nil
         if let expectedFrontmostPID,
            NSWorkspace.shared.frontmostApplication?.processIdentifier != expectedFrontmostPID {
             return .focusChanged
         }
-        if insertUsingAccessibility(text: text) {
+        switch insertUsingAccessibility(text: text) {
+        case .inserted:
             return .inserted(.accessibility)
+        case .unconfirmed:
+            AppLog.app.warning("AX 写入超时未得到回复，结果未确认，不再走粘贴兜底")
+            return .unconfirmed
+        case .notApplicable:
+            return insertUsingPasteboard(text: text) ? .inserted(.paste) : .failed
         }
-        return insertUsingPasteboard(text: text) ? .inserted(.paste) : .failed
     }
 
-    /// 进入识别阶段时提前备份用户剪贴板（主线程，与 asrQueue 上的推理并行）。
+    /// 最近一次 AX 写入的回读判定，约 50ms 后在主线程回调；最近一次没走 AX 时立即回调 nil。
+    func verifyLastInsertion(_ completion: @escaping (InsertionVerification?) -> Void) {
+        guard let pending = pendingVerification else {
+            completion(nil)
+            return
+        }
+        pendingVerification = nil
+        let item = DispatchWorkItem {
+            let after = pending.countBefore == nil ? nil : Self.characterCount(of: pending.element)
+            completion(.classify(before: pending.countBefore, after: after, expectedDelta: pending.expectedDelta))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.verifyDelay, execute: item)
+    }
+
+    /// 进入识别阶段时，预判会走粘贴兜底才提前备份用户剪贴板（主线程，与 asrQueue 上的推理并行）。
+    ///
+    /// AX 直接写入是最常见的路径，那时备份完全用不上；而备份要逐个读出剪贴板里的全部类型，
+    /// 会迫使来源应用把延迟提供的数据（大图、表格选区、文件承诺）当场生成出来。预判错了也不要紧：
+    /// 真走到粘贴时，`insertUsingPasteboard` 会当场补一次快照。
     /// 仍有待恢复的粘贴（`pendingRestore`）时不备份：此刻剪贴板里是我们写的临时文本，
-    /// 插入时由继承逻辑取回用户的原始快照。返回备份耗时（纳秒）。
+    /// 插入时由继承逻辑取回用户的原始快照。返回备份耗时（纳秒）；没有备份返回 nil。
     @discardableResult
     func prepareForInsert() -> UInt64? {
-        guard pendingRestore == nil else { return nil }
+        guard pendingRestore == nil, Self.predictsPasteFallback() else { return nil }
         let started = DispatchTime.now().uptimeNanoseconds
         preparedBackup = snapshotPasteboard()
         return DispatchTime.now().uptimeNanoseconds &- started
+    }
+
+    /// 当前焦点是否大概率要走粘贴兜底。与 `insertUsingAccessibility` 的判断顺序一致；
+    /// 任何一步查询失败都按「要粘贴」处理（多备份一次，比漏备份安全）。
+    private static func predictsPasteFallback() -> Bool {
+        guard AXIsProcessTrusted(), let element = AXMessaging.focusedElement(timeout: AXMessaging.probeTimeout) else {
+            return true
+        }
+        if isAttributeSettable(element, kAXSelectedTextAttribute) { return false }
+        if hasWebAreaAncestor(element, timeout: AXMessaging.probeTimeout) { return true }
+        return !isAttributeSettable(element, kAXValueAttribute)
+    }
+
+    private static func isAttributeSettable(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success && settable.boolValue
     }
 
     /// 本次听写不再插入（取消、失败、空结果…）时丢弃提前备份。
@@ -148,103 +232,109 @@ final class TextInsertionService {
         return pasteboard.writeObjects([item])
     }
 
-    private func insertUsingAccessibility(text: String) -> Bool {
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedObject: CFTypeRef?
-        let focusedResult = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedObject)
-        guard focusedResult == .success, let focusedObject else {
-            return false
+    private enum AXAttempt {
+        case inserted
+        /// 写入请求发出了，但目标应用没在超时内回复（`kAXErrorCannotComplete`）。
+        case unconfirmed
+        /// 这个控件不走 AX（不可写、网页控件、超长文本…），交给粘贴。
+        case notApplicable
+    }
+
+    private func insertUsingAccessibility(text: String) -> AXAttempt {
+        guard let element = AXMessaging.focusedElement(timeout: AXMessaging.insertionTimeout) else {
+            return .notApplicable
         }
 
-        let element = focusedObject as! AXUIElement
-
-        // 写入前先读一次值，用于写入后的回读判定。读不到或超长就不判定（unknown）。
-        let valueBefore = Self.readValue(of: element)
+        // 回读素材：写入前的字符数与选区长度（都是便宜的查询，不读整段值）。
+        let countBefore = Self.characterCount(of: element)
+        let selectedRange = selectedTextRange(for: element)
+        let insertedLength = (text as NSString).length
+        let expectedDelta = insertedLength - max(0, selectedRange?.length ?? 0)
 
         // 优先走标准的"替换选区"接口：天然保留富文本与 undo 语义，不是整字段重建，
         // 也不需要手动计算插入后的新光标位置（F-10）。
-        var isSelectedTextSettable = DarwinBoolean(false)
-        let selectedTextSettableResult = AXUIElementIsAttributeSettable(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &isSelectedTextSettable
-        )
-        if selectedTextSettableResult == .success, isSelectedTextSettable.boolValue,
-           AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success {
-            recordVerification(element: element, before: valueBefore, inserted: text)
-            return true
+        if Self.isAttributeSettable(element, kAXSelectedTextAttribute) {
+            switch AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) {
+            case .success:
+                recordPendingVerification(element: element, countBefore: countBefore, expectedDelta: expectedDelta)
+                return .inserted
+            case .cannotComplete:
+                return .unconfirmed
+            default:
+                break
+            }
         }
 
         // 网页控件（前端框架接管的输入框）整值替换可能只改到辅助功能层，下一次按键文字就消失：
         // 不做整值替换，直接走粘贴（R8-A3a）。`kAXSelectedText` 路径不受影响。
-        if Self.hasWebAreaAncestor(element) {
-            return false
+        if Self.hasWebAreaAncestor(element, timeout: AXMessaging.insertionTimeout) {
+            return .notApplicable
         }
 
-        var isValueSettable = DarwinBoolean(false)
-        let settableResult = AXUIElementIsAttributeSettable(
-            element,
-            kAXValueAttribute as CFString,
-            &isValueSettable
-        )
-        guard settableResult == .success, isValueSettable.boolValue else {
-            return false
+        guard Self.isAttributeSettable(element, kAXValueAttribute) else {
+            return .notApplicable
+        }
+        // 已知超长就别再把整篇文档跨进程读过来。
+        if let countBefore, countBefore > Self.maxAXValueLengthForFullReplace {
+            return .notApplicable
         }
 
         var valueObject: CFTypeRef?
         let valueResult = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueObject)
         guard valueResult == .success, let currentValue = valueObject as? String else {
-            return false
-        }
-        guard currentValue.count <= Self.maxAXValueLengthForFullReplace else {
-            return false
+            return .notApplicable
         }
 
         let currentNSString = currentValue as NSString
-        let selectedRange = selectedTextRange(for: element) ?? CFRange(location: currentNSString.length, length: 0)
-        guard let nsRange = Self.validInsertionRange(selectedRange, in: currentNSString.length) else {
+        guard currentNSString.length <= Self.maxAXValueLengthForFullReplace else {
+            return .notApplicable
+        }
+        let range = selectedRange ?? CFRange(location: currentNSString.length, length: 0)
+        guard let nsRange = Self.validInsertionRange(range, in: currentNSString.length) else {
             // AX 控件返回的 CFRange 不可信：kCFNotFound、负值、越界都可能出现，直接喂给
             // NSString.replacingCharacters 会抛 NSRangeException（Swift 无法捕获，直接崩溃）。
             // 放弃 AX 全量替换、回退到粘贴，而不是猜一个位置写进用户没预期的地方（R2-05a）。
             AppLog.app.warning("AX 选区越界，放弃 AX 插入，回退到粘贴")
-            return false
+            return .notApplicable
         }
         let updatedValue = currentNSString.replacingCharacters(in: nsRange, with: text)
-        let setResult = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef)
-
-        guard setResult == .success else {
-            return false
+        switch AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updatedValue as CFTypeRef) {
+        case .success:
+            break
+        case .cannotComplete:
+            return .unconfirmed
+        default:
+            return .notApplicable
         }
 
-        let insertedLength = (text as NSString).length
         var newRange = CFRange(location: nsRange.location + insertedLength, length: 0)
         if let axRange = AXValueCreate(.cfRange, &newRange) {
             _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
         }
 
-        recordVerification(element: element, before: valueBefore, inserted: text)
-        return true
+        recordPendingVerification(
+            element: element, countBefore: countBefore, expectedDelta: insertedLength - nsRange.length
+        )
+        return .inserted
     }
 
-    /// 写入成功后等一小会儿再读一次值，得到回读判定（R8-A3a）。日志里只有判定结果，没有任何文本。
-    private func recordVerification(element: AXUIElement, before: String?, inserted: String) {
-        Thread.sleep(forTimeInterval: Self.verifyDelay)
-        let after = before == nil ? nil : Self.readValue(of: element)
-        lastInsertVerification = .classify(before: before, after: after, inserted: inserted)
+    private func recordPendingVerification(element: AXUIElement, countBefore: Int?, expectedDelta: Int) {
+        pendingVerification = PendingVerification(element: element, countBefore: countBefore, expectedDelta: expectedDelta)
     }
 
-    /// 读控件的整个值；读不到、不是字符串或超过上限（100k 字符）返回 nil。
-    private static func readValue(of element: AXUIElement) -> String? {
+    /// 控件的字符数（UTF-16 计）；读不到返回 nil。
+    nonisolated private static func characterCount(of element: AXUIElement) -> Int? {
         var object: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &object) == .success,
-              let value = object as? String, value.count <= maxAXValueLengthForFullReplace else {
+        guard AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &object) == .success,
+              let number = object as? NSNumber else {
             return nil
         }
-        return value
+        return number.intValue
     }
 
     /// 焦点元素自身或其祖先（最多 20 层）是否为 `AXWebArea`，即处于网页内容里。
-    private static func hasWebAreaAncestor(_ element: AXUIElement) -> Bool {
+    /// 每一层祖先都是新取到的元素，超时要逐个设上，否则用的是进程默认值。
+    private static func hasWebAreaAncestor(_ element: AXUIElement, timeout: Float) -> Bool {
         var current: AXUIElement? = element
         for _ in 0..<maxWebAreaAncestorDepth {
             guard let node = current else { return false }
@@ -258,7 +348,9 @@ final class TextInsertionService {
                   let parentObject, CFGetTypeID(parentObject) == AXUIElementGetTypeID() else {
                 return false
             }
-            current = (parentObject as! AXUIElement)
+            let parent = parentObject as! AXUIElement
+            AXUIElementSetMessagingTimeout(parent, timeout)
+            current = parent
         }
         return false
     }

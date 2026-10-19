@@ -1,7 +1,7 @@
 import Foundation
 
-/// 单次录音会话的音频累积与滑窗预览。移植自服务端 `recognizer.SenseVoiceSession`
-/// （见 macos/DESIGN.md §5.2），逻辑原样搬运，不做"改进"：
+/// 单次录音会话的音频累积与滑窗预览。滑窗思路来自服务端 `recognizer.SenseVoiceSession`
+/// （见 macos/DESIGN.md §5.2）：
 ///
 /// SenseVoice 本身非流式，预览靠"对已累积音频整段重跑"实现。但对全部音频重跑的成本
 /// 随录音时长线性增长而预览频率固定，于是单会话累计 CPU 会随录音时长呈平方增长。
@@ -20,11 +20,11 @@ final class RecognitionBuffer: @unchecked Sendable {
 
     private let engine: any SenseVoiceRecognizing
     private let lock = NSLock()
-    /// 单条扁平缓冲：旧实现是 `chunks: [[Float]]` + `joined` 缓存，`append` 每次都会让
-    /// `joined` 失效——预览节奏固定在 ~600ms 一次，但每次都要把**全部**已累积音频重新
-    /// 拼接一遍，是一个和总录音时长成正比的隐藏开销（DESIGN.md 的稳态 CPU 估算没有
-    /// 把它算进去）。改成单条持续追加的扁平数组后，`append` 退化成 O(chunk 大小) 的
-    /// 均摊操作，不再有这个隐藏的 O(N) 重拼接（R3-08）。
+    /// 单条持续追加的扁平缓冲，`append` 是 O(chunk 大小) 的均摊操作（R3-08）。
+    ///
+    /// 预览期间不能持有它的整份快照：`append` 跑在主线程，只要快照还活着，下一次追加就会触发
+    /// 写时复制，在主线程上把整段音频（120s 时 7.7MB）拷一遍。预览因此只在锁内拷贝尚未固化的
+    /// 那一段（`unsettledSamples`），终稿时采集已停止、不会再追加，才整段共享。
     private var samples: [Float] = []
 
     /// 窗口左侧已固化的预览文本；只在 asrQueue 上读写。
@@ -35,8 +35,8 @@ final class RecognitionBuffer: @unchecked Sendable {
     ///   `reserveCapacity` 分配的是虚拟地址空间，物理页要等真正写入才提交，因此按上限
     ///   预留几乎不花内存，却能把整段录音期间的重新分配次数降到零。
     ///
-    ///   为什么值得做：`append` 跑在主线程（`sendAudio` 经
-    ///   `Task { @MainActor }` 派发），120 秒上限下数组最终 7.7MB，按倍增策略扩容时
+    ///   为什么值得做：`append` 跑在主线程（`sendAudio` 由采集回调投递到主线程），
+    ///   120 秒上限下数组最终 7.7MB，按倍增策略扩容时
     ///   最大的一次要在主线程上 memcpy 整个缓冲区——这发生在用户正在说话、
     ///   HUD 正在刷新预览的时候，是能被感知的卡顿来源。
     init(engine: any SenseVoiceRecognizing, reservedSampleCapacity: Int = 0) {
@@ -63,33 +63,25 @@ final class RecognitionBuffer: @unchecked Sendable {
 
     /// 返回全量预览文本 = 已固化前缀 + 当前窗口的识别结果。只应在 asrQueue 上调用。
     func preview() throws -> String {
-        let audio = audioSnapshot()
-        // 用 while 而不是 if：`LocalASRSession` 现在会跳过"这一轮全是静音"的预览
-        // （见那里的 VAD 说明），于是两次预览之间可能积累了超过一个窗口的音频。
-        // 只滚一次会让窗口右侧持续超长，推理耗时随之失控。
-        // 循环必然终止：`roll` 的切点落在 `committedN + 窗口/2` 附近（搜索半径仅
-        // 100ms，远小于半个窗口），每轮都严格推进 `committedN`。
-        while audio.count - committedN > Self.previewWindowSamples {
-            try roll(audio)
+        var pending = unsettledSamples()
+        // 用 while 而不是 if：`LocalASRSession` 会跳过"这一轮全是静音"的预览，
+        // 于是两次预览之间可能积累了超过一个窗口的音频。只滚一次会让窗口右侧持续超长，
+        // 推理耗时随之失控。循环必然终止：切点落在窗口一半附近（搜索半径仅 100ms，
+        // 远小于半个窗口），每轮都严格推进 `committedN`。
+        while pending.count > Self.previewWindowSamples {
+            let cut = Self.findSeam(pending, target: Self.previewWindowSamples / 2)
+            committedText += try engine.recognize(Array(pending[..<cut]))
+            committedN += cut
+            pending = Array(pending[cut...])
         }
-        let tail = Array(audio[committedN...])
-        return committedText + (try engine.recognize(tail))
+        return committedText + (try engine.recognize(pending))
     }
 
     /// 松手后调用：对完整音频重新整段识别。刻意不复用 preview 的拼接结果——
     /// 窗口边界处的固化文本可能有接缝瑕疵，finalize 产出的是要上屏的最终文本，
-    /// 必须整段重跑。只应在 asrQueue 上调用。
+    /// 必须整段重跑。只应在 asrQueue 上调用，且调用时不再有新的 `append`。
     func finalize() throws -> String {
         try engine.recognize(audioSnapshot())
-    }
-
-    /// 把窗口前半段识别成文本固化，之后的预览不再重复识别这段音频。
-    private func roll(_ audio: [Float]) throws {
-        let target = committedN + Self.previewWindowSamples / 2
-        let cut = Self.findSeam(audio, target: target)
-        let segment = Array(audio[committedN..<cut])
-        committedText += try engine.recognize(segment)
-        committedN = cut
     }
 
     /// 在 target 附近找能量（RMS）最低的一小段作为切点，尽量避免把一个字切在正中间。
@@ -118,8 +110,15 @@ final class RecognitionBuffer: @unchecked Sendable {
         return lo + bestOffset
     }
 
-    /// 返回当前已累积音频的一份值语义快照。得益于 Swift Array 的写时复制，只要期间没有
-    /// 新的 `append` 与这份快照的生命周期重叠，就不会发生真正的内存拷贝。
+    /// 尚未固化进 `committedText` 的音频的拷贝。在锁内拷贝，不与主线程的 `append` 共享存储。
+    private func unsettledSamples() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard committedN < samples.count else { return [] }
+        return Array(samples[committedN...])
+    }
+
+    /// 全部已累积音频，与缓冲共享存储（写时复制）。只在不会再有 `append` 时使用（终稿）。
     private func audioSnapshot() -> [Float] {
         lock.lock()
         defer { lock.unlock() }

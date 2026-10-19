@@ -19,8 +19,8 @@ final class AppCoordinator {
     private let permissionCenter = PermissionCenter()
     private let statusBarController = StatusBarController()
     private let asrService = ASRService()
-    /// 全应用唯一的文本插入服务（R8-A2）。`pendingRestore`（待恢复的用户原剪贴板）住在它里面：
-    /// 此前每次保存设置重建控制器都会新建一个，待恢复的原剪贴板随之丢失。
+    /// 全应用唯一的文本插入服务（R8-A2）。`pendingRestore`（待恢复的用户原剪贴板）住在它里面，
+    /// 重建控制器时不能跟着换掉。
     let textInsertionService = TextInsertionService()
     /// 最近的听写结果，只在内存（R8-D-2）：退出即清，不落盘、不进日志。
     private let dictationHistory = DictationHistory()
@@ -36,29 +36,42 @@ final class AppCoordinator {
         accessibility: .denied,
         inputMonitoring: .denied
     )
-    private var currentState: AppState = .booting
+    /// 就绪度：权限、模型、下载、暂停决定的"现在能不能听写"。由 `computeReadiness` 推出，
+    /// 少数失败（热键监听起不来、模型下载失败）直接写入，下次重评时会被重新推出。
+    private var readiness: AppState = .booting
+    /// 进行中的听写阶段，只由控制器事件写入；nil 表示没有进行中的听写。
+    /// 与就绪度分开存放：就绪度的变化不会把它覆盖掉，反之亦然。
+    private var dictationPhase: DictationPhase?
+    /// 刚结束的那段听写的错误说明，菜单栏短暂显示后回落（R3-04）。只影响显示，不影响就绪度。
+    private var dictationError: String?
+    /// 当前控制器里校对器所用的 API Key，用来发现"只改了 Key"的保存。
+    private var appliedLLMAPIKey: String?
     /// 用户是否已从菜单主动暂停听写。暂停时不监听热键。
     private var isPaused = false
     /// 用户是否主动打开了设置窗口。为 true 时保存设置不会自动关闭窗口。
     private var userOpenedSetup = false
+
+    private var isDictating: Bool { dictationPhase != nil }
+
+    /// 菜单栏、设置窗口展示的合成状态。
+    private var displayState: AppState {
+        Self.displayState(readiness: readiness, phase: dictationPhase, dictationError: dictationError)
+    }
 
     private var modelDownloader: ModelDownloader?
     private var isDownloadingModel = false
     private var modelDownloadProgress = 0.0
     private var modelDownloadError: String?
     private var automaticModelDownloadPolicy = AutomaticModelDownloadPolicy()
-    /// 听写流程内的一次性错误（识别失败/插入失败/焦点变化）超时自愈到 `.idle`。
-    /// HUD 早已在 2.5s 后自动隐藏该提示（`RecordingHUDController.showError`），但此前
-    /// 菜单栏状态没有对应的回落，会一直停留在红色错误态直到下一次听写（R3-04）。
+    /// 听写流程内的一次性错误（识别失败/插入失败/焦点变化）2.5s 后从菜单栏回落，
+    /// 与 HUD 的自动隐藏同步（R3-04）。
     private var dictationErrorRecoveryWorkItem: DispatchWorkItem?
-    /// 单独修饰键热键下延迟出现的录音浮窗；状态离开 `.recording` 时取消。
+    /// 单独修饰键热键下延迟出现的录音浮窗；离开录音阶段时取消。
     private var pendingRecordingHUDItem: DispatchWorkItem?
 
-    /// 已经"强制弹窗"过的理由。每个理由在一次未就绪期内只抢一次焦点。
-    ///
-    /// 此前 `.modelMissing` 分支每次 `reevaluateReadiness()` 都会 `forceShow` +
-    /// `NSApp.activate(ignoringOtherApps:)`——用户刚点完「取消下载」，窗口反而抢焦点
-    /// 跳到最前面（B7）。恢复就绪时清空，这样"就绪 → 又不就绪"仍然会再提醒一次。
+    /// 已经"强制弹窗"过的理由。每个理由在一次未就绪期内只抢一次焦点（B7）：
+    /// 用户刚点完「取消下载」，窗口不该又抢焦点跳到最前面。恢复就绪时清空，
+    /// 这样"就绪 → 又不就绪"仍然会再提醒一次。
     private var forcedPresentations: Set<ForcedPresentation> = []
     private enum ForcedPresentation: Hashable {
         case permissions
@@ -96,27 +109,28 @@ final class AppCoordinator {
     private var reauthorizationNotice: String?
     /// 系统唤醒 / 解锁等通知常常成串到达，1 秒内只重装一次热键监听。
     private var lastHotkeyReinstall: Date?
-    /// 校对回落 / 跳过的说明，由 `onInsertedWithNote` 先到、`.idle` 状态后到时消费。
-    private var pendingInsertionNote: VoiceTyperController.InsertionNote?
 
     func start() {
+        // 必须先于任何 AX 调用：之后各处只在具体元素上设超时（见 `AXMessaging`）。
+        AXMessaging.configureProcessDefault()
         bindStatusBarActions()
         asrService.onStateChange = { [weak self] _ in
-            Task { @MainActor in await self?.reevaluateReadiness() }
+            // 状态变化发生在 ASRService 自己的流程中间，同步重入会让外层拿着过期判断覆盖结果。
+            self?.reevaluateReadinessSoon()
         }
 
         do {
             try reloadConfigurationFromDisk()
         } catch {
             AppLog.app.error("配置加载失败: \(error.localizedDescription, privacy: .public)")
-            currentState = .error(L("配置加载失败"))
+            readiness = .error(L("配置加载失败"))
             updateStatusUI()
             return
         }
 
         permissions = permissionCenter.snapshot()
         if !permissions.allRequiredGranted {
-            currentState = .setupRequired
+            readiness = .setupRequired
         }
         evaluateReauthorization()
         observeSystemEvents()
@@ -137,8 +151,27 @@ final class AppCoordinator {
         asrService.updateConfig(config.asr)
         Task {
             await prepareEngineForLaunch()
-            await reevaluateReadiness()
+            reevaluateReadiness()
         }
+
+        if configStore.lastLoadFellBackToDefaults {
+            // 放到下一轮：启动流程先走完，再用模态提示打断用户。
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.presentBrokenConfigNotice() }
+            }
+        }
+    }
+
+    /// 配置文件读不出来、已回落默认设置时告诉用户一次：他之前的设置暂时不在了，原文件还留着。
+    private func presentBrokenConfigNotice() {
+        presentAlert(
+            title: L("配置文件无法读取"),
+            message: LF(
+                "已暂时使用默认设置。原配置文件已另存为 %@，在设置里保存一次后会写入新的配置。",
+                ConfigStore.brokenBackupFileName
+            ),
+            openURL: nil
+        )
     }
 
     // MARK: - 更新后重新授权（R8-H1）
@@ -203,8 +236,7 @@ final class AppCoordinator {
 
     /// 睡眠唤醒 / 解锁后事件 tap 可能已失效：重新安装一次。失败走既有的就绪重评。
     private func systemDidResume() {
-        guard !isPaused, let controller = voiceTyperController, controller.isStarted,
-              !currentState.isActiveDictation else { return }
+        guard !isPaused, let controller = voiceTyperController, controller.isStarted, !isDictating else { return }
         if let last = lastHotkeyReinstall, Date().timeIntervalSince(last) < 1 { return }
         lastHotkeyReinstall = Date()
         controller.suspendHotkeyListening()
@@ -213,7 +245,7 @@ final class AppCoordinator {
             AppLog.hotkey.info("系统唤醒 / 解锁，已重新安装热键监听")
         } catch {
             AppLog.hotkey.error("系统唤醒后重新安装热键监听失败，交由就绪重评重试: \(error.localizedDescription, privacy: .public)")
-            Task { await self.reevaluateReadiness() }
+            reevaluateReadiness()
         }
     }
 
@@ -225,22 +257,19 @@ final class AppCoordinator {
             inputDevice: config.audio.inputDevice,
             llmEnabled: config.llm.enabled,
             llmConfigured: !config.llm.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            isBusy: currentState.isActiveDictation
+            isBusy: isDictating
         )
     }
 
-    /// 与设置页同一事务（`applyConfig`）：保存、重建控制器、重新评估就绪。
+    /// 与设置页同一事务（`applyConfig`）：保存、按需重建控制器、重新评估就绪。
     private func applyQuickSetting(_ mutate: (inout AppConfig) -> Void) {
         var updated = config
         mutate(&updated)
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.applyConfig(updated)
-            } catch {
-                AppLog.app.error("菜单栏快捷切换保存失败: \(error.localizedDescription, privacy: .public)")
-                self.recordingHUDController?.showError(error.localizedDescription)
-            }
+        do {
+            try applyConfig(updated)
+        } catch {
+            AppLog.app.error("菜单栏快捷切换保存失败: \(error.localizedDescription, privacy: .public)")
+            recordingHUDController?.showError(error.localizedDescription)
         }
     }
 
@@ -251,8 +280,8 @@ final class AppCoordinator {
 
     /// 启动 / 尚未加载时如何准备引擎：尊重「启动时预加载模型」这项设置。
     ///
-    /// 关闭时（默认）只确认模型文件在不在，不把 ~510MB 的引擎拉进内存——首次按热键
-    /// 才加载，且加载与录音并行（`ASRService.makeSession`），用户通常正在说第一句话。
+    /// 开启时（默认）直接加载；关闭时只确认模型文件在不在，不把 ~510MB 的引擎拉进内存——
+    /// 首次按热键才加载，且加载与录音并行（`ASRService.makeSession`）。
     private func prepareEngineForLaunch() async {
         if config.asr.preloadOnLaunch {
             await asrService.preload()
@@ -333,25 +362,25 @@ final class AppCoordinator {
                     guard let self else { return }
                     _ = await self.permissionCenter.request(kind)
                     self.permissions = self.permissionCenter.snapshot()
-                    await self.reevaluateReadiness()
+                    self.reevaluateReadiness()
                 }
             }
             controller.onOpenSystemSettings = { [weak self] kind in
                 self?.permissionCenter.openSystemSettings(for: kind)
             }
             controller.onRetryReadinessCheck = { [weak self] in
-                Task { await self?.refreshPermissionsWithoutStealingFocus() }
+                self?.refreshPermissionsWithoutStealingFocus()
             }
             controller.onSaveConfig = { [weak self] updatedConfig in
                 guard let self else { return }
-                try await self.applyConfig(updatedConfig)
+                try self.applyConfig(updatedConfig)
             }
             controller.onSuspendHotkey = { [weak self] suspend -> Bool in
                 guard let self else { return false }
                 if suspend {
                     // 录制热键期间停掉全局监听，避免按 Fn 当场触发录音——但绝不能销毁
                     // 一段正在进行的听写（R2-04）：那样会在用户毫无察觉的情况下丢内容。
-                    guard !self.currentState.isActiveDictation else { return false }
+                    guard !self.isDictating else { return false }
                     self.voiceTyperController?.suspendHotkeyListening()
                     return true
                 } else {
@@ -360,10 +389,10 @@ final class AppCoordinator {
                     } catch {
                         // 恢复失败：控制器已把自己复位成未运行，reevaluateReadiness() 会
                         // 通过 activateReadyState() 的 start() 重试路径重新拉起，仍失败则落
-                        // 到 .error 让用户看到，而不是"显示就绪但热键已死"（R4-xx）。
+                        // 到 .error 让用户看到，而不是"显示就绪但热键已死"。
                         AppLog.hotkey.error("恢复热键监听失败，交由就绪重评重试: \(error.localizedDescription, privacy: .public)")
                     }
-                    Task { await self.reevaluateReadiness() }
+                    self.reevaluateReadinessSoon()
                     return true
                 }
             }
@@ -383,7 +412,7 @@ final class AppCoordinator {
                 self?.cancelModelDownload()
             }
             controller.onReloadModel = { [weak self] in
-                guard let self, !self.currentState.isActiveDictation else { return }
+                guard let self, !self.isDictating else { return }
                 Task { await self.asrService.reload() }
             }
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
@@ -401,10 +430,7 @@ final class AppCoordinator {
         // 引导窗口在前时绝不抢焦点：两个窗口互相往前抢会让用户什么都点不了。
         guard onboardingWindowController?.window?.isVisible != true else { return }
 
-        // 是否抢焦点**只**由 forceShow 决定。此前这里还有
-        // `|| !permissions.allRequiredGranted || !isModelReady`，意味着只要还没就绪，
-        // 任何一次"顺手同步一下窗口内容"的调用都会把窗口抢到最前——这正是"点了取消下载，
-        // 窗口反而跳出来"的成因（B7）。所有需要弹窗的调用点都已显式传 forceShow: true。
+        // 是否抢焦点**只**由 forceShow 决定：顺手同步一下窗口内容的调用不能把窗口抢到最前（B7）。
         guard forceShow else { return }
 
         if let preferredTab {
@@ -424,7 +450,7 @@ final class AppCoordinator {
                     guard let self else { return }
                     _ = await self.permissionCenter.request(kind)
                     self.permissions = self.permissionCenter.snapshot()
-                    await self.reevaluateReadiness()
+                    self.reevaluateReadiness()
                 }
             }
             controller.onOpenSystemSettings = { [weak self] kind in
@@ -434,7 +460,7 @@ final class AppCoordinator {
                 NSWorkspace.shared.open(SystemSettingsURL.keyboard)
             }
             controller.onRefreshStatus = { [weak self] in
-                Task { await self?.refreshPermissionsWithoutStealingFocus() }
+                self?.refreshPermissionsWithoutStealingFocus()
             }
             controller.onStartModelDownload = { [weak self] in
                 self?.startModelDownload()
@@ -443,9 +469,8 @@ final class AppCoordinator {
                 self?.cancelModelDownload()
             }
             controller.onClose = { [weak self] in
-                guard let self else { return }
-                // 引导结束后可能仍有未完成的准备工作，这时才轮到设置窗口出场。
-                Task { await self.reevaluateReadiness() }
+                // 引导结束后可能仍有未完成的准备工作，这时才轮到设置窗口出场；等窗口关完再重评。
+                self?.reevaluateReadinessSoon()
             }
             onboardingWindowController = controller
         }
@@ -475,12 +500,14 @@ final class AppCoordinator {
     private func togglePause() {
         if isPaused {
             isPaused = false
-            Task { await reevaluateReadiness() }
+            reevaluateReadiness()
         } else {
             isPaused = true
+            // 菜单在听写进行中禁用了「暂停」，这里的 stop() 不会丢掉正在说的内容。
+            interruptActiveDictation()
             voiceTyperController?.stop()
+            readiness = .paused
             recordingHUDController?.hideHUD()
-            currentState = .paused
             updateStatusUI()
         }
     }
@@ -489,43 +516,22 @@ final class AppCoordinator {
         asrService.state == .ready || asrService.state == .suspendedForIdle
     }
 
-    /// 纯函数：只依据已知信息决定"应该进入的状态"，不产生任何副作用。从
-    /// `reevaluateReadiness()` 里拆出来是为了可单测（不需要构造 `AppCoordinator` 的全部
-    /// 依赖），并让"决定状态"与"执行副作用"两件事在代码里分开——此前二者揉在一起，
-    /// 每次任何触发点（下载进度、空闲卸载、权限变化…）调用这个函数都会无条件重跑一遍
-    /// 全部副作用，这正是 R3-02 那类重入 bug 的滋生土壤（R3-12）。
-    ///
-    /// `previous` 只在 `.ready`/`.suspendedForIdle` 分支起作用：正在进行中的听写
-    /// （`.recording`/`.recognizing`/`.inserting`）不应被模型状态变化覆盖回 `.idle`。
-    static func computeTargetState(
+    /// 纯函数：只依据已知信息推出就绪度，不产生任何副作用（R3-12）。
+    /// 优先级：暂停 > 权限缺失 > 下载中 > 模型状态。不涉及进行中的听写——那是另一个维度（`DictationPhase`）。
+    static func computeReadiness(
         permissions: PermissionSnapshot,
         isPaused: Bool,
         isDownloadingModel: Bool,
         downloadProgress: Double,
-        asrState: ASRService.State,
-        previous: AppState
+        asrState: ASRService.State
     ) -> AppState {
         if isPaused { return .paused }
         guard permissions.allRequiredGranted else { return .setupRequired }
         if isDownloadingModel { return .downloadingModel(downloadProgress) }
 
         switch asrState {
-        case .unloaded:
+        case .unloaded, .loading:
             return .modelLoading
-        case .loading:
-            // 空闲卸载后首次按热键：makeSession() 会一边异步加载模型、一边立刻开始录音，
-            // 因此模型进入 .loading 时上一轮 AppState 已稳定为活动听写态。若这里无条件
-            // 返回 .modelLoading，reevaluateReadiness() 会判定"进行中的听写被未就绪覆盖"
-            // 而调用 voiceTyperController.stop()，把首段录音音频丢掉（F-xx）。
-            // LocalASRSession 已支持引擎未就绪时缓存 pendingAudio 并在就绪后回灌，
-            // 所以听写期间的 .loading 应保留活动态，让加载与录音并行完成。
-            // .unloaded（引擎从未加载）不做同样的保护：那是真正需要等待的情形。
-            switch previous {
-            case .recording, .recognizing, .inserting:
-                return previous
-            default:
-                return .modelLoading
-            }
         case .modelMissing:
             return .modelMissing
         case .failed(let message):
@@ -533,40 +539,57 @@ final class AppCoordinator {
         case .ready, .suspendedForIdle:
             // 空闲卸载后的状态保持"就绪"：热键监听继续运行，真正的重新加载
             // 由 makeSession() 在下次按热键时按需触发，不在这里主动 preload（F-04）。
-            switch previous {
-            case .recording, .recognizing, .inserting:
-                return previous
-            default:
-                return .idle
-            }
+            return .idle
         }
+    }
+
+    /// 纯函数：就绪度变成 `readiness` 时，进行中的听写是否必须拆掉。
+    ///
+    /// 只有一种未就绪可以与听写共存：空闲卸载后首次按热键，`makeSession()` 一边加载模型一边录音，
+    /// `LocalASRSession` 会在引擎就绪后回灌已录的音频（`.loading`）。其余情形（权限被撤销、模型被
+    /// 重新加载或移除、加载失败、暂停）都必须正常拆掉，否则会留下一段永远收不了尾的会话。
+    static func shouldInterruptDictation(readiness: AppState, asrState: ASRService.State) -> Bool {
+        switch readiness {
+        case .idle:
+            return false
+        case .modelLoading:
+            return asrState != .loading
+        default:
+            return true
+        }
+    }
+
+    /// 纯函数：菜单栏显示的状态。进行中的听写优先；刚结束那段的错误只在就绪时显示。
+    static func displayState(readiness: AppState, phase: DictationPhase?, dictationError: String?) -> AppState {
+        if let phase { return phase.appState }
+        if let dictationError, readiness == .idle { return .error(dictationError) }
+        return readiness
     }
 
     /// 权限页轮询、以及页面上的「重新检测」按钮共用的入口：只重新探测权限状态、刷新界面
     /// 上的勾选显示，不触发 `reevaluateReadiness()` 里"权限未齐全就 `NSApp.activate` + 置顶
-    /// 设置窗口"的副作用。那条副作用是为"首次检测到缺权限，弹窗引导用户"设计的——用在
-    /// 每 2 秒一次的后台轮询上，会导致用户正在系统设置里勾选权限时，本窗口每 2 秒抢一次
-    /// 焦点、盖到系统设置上面，实际操作系统设置的窗口变得几乎不可用（R4-14）。
+    /// 设置窗口"的副作用——用在每 2 秒一次的后台轮询上，用户正在系统设置里勾选权限时，
+    /// 本窗口会每 2 秒抢一次焦点（R4-14）。
     ///
     /// 只有权限已经**全部**授权时才转交给完整的 `reevaluateReadiness()`：那种情况下它会
     /// 正常收起设置窗、把控制器切到就绪态，是用户期望看到的收尾，不属于"抢焦点"。
-    private func refreshPermissionsWithoutStealingFocus() async {
+    private func refreshPermissionsWithoutStealingFocus() {
         permissions = permissionCenter.snapshot()
         // 用户很可能刚从系统设置切回来，「按下🌐键」也可能是刚改的。
         refreshFnConflictWarning()
         syncAuxiliaryWindows()
         if permissions.allRequiredGranted {
-            await reevaluateReadiness()
+            reevaluateReadiness()
         }
     }
 
-    /// 重新评估权限与模型就绪状态，并驱动状态机。
+    /// 重新评估权限与模型就绪状态，并驱动控制器与窗口。
     ///
     /// - 权限缺失：必须用户介入，强制弹出设置窗口（权限页）。
     /// - 模型缺失：不等待权限，每次应用启动自动尝试下载一次。
     /// - 权限齐全但模型加载中/失败：进入对应状态。
     /// - 权限齐全且模型就绪：启动热键监听并进入 `.idle`。
-    private func reevaluateReadiness() async {
+    private func reevaluateReadiness() {
         // 模型准备与 TCC 授权完全独立。首次定位到模型缺失后立即下载，
         // 用户只需处理必须亲自确认的系统权限；用户暂停听写也不阻断后台准备。
         if automaticModelDownloadPolicy.shouldStart(
@@ -579,26 +602,25 @@ final class AppCoordinator {
         permissions = permissionCenter.snapshot()
         noteCurrentPermissionsForReauthorization()
 
-        let previousState = currentState
-        let target = Self.computeTargetState(
+        readiness = Self.computeReadiness(
             permissions: permissions,
             isPaused: isPaused,
             isDownloadingModel: isDownloadingModel,
             downloadProgress: modelDownloadProgress,
-            asrState: asrService.state,
-            previous: currentState
+            asrState: asrService.state
         )
-        currentState = target
 
-        // 一段进行中的听写被"未就绪"覆盖（例如运行中权限被撤销、模型被重新加载）：
-        // 必须把它正常拆掉，否则会留下一段永远收不了尾的会话。此前 `.setupRequired`
-        // 分支靠无条件 `stop()` 顺带做到了这件事，现在门禁态要保留热键监听（B3），
-        // 就得把"拆会话"这个意图显式写出来。
-        if previousState.isActiveDictation, !target.isActiveDictation {
-            voiceTyperController?.stop()
+        if isDictating {
+            guard Self.shouldInterruptDictation(readiness: readiness, asrState: asrService.state) else {
+                // 加载与录音并行：控制器维持现状（不挂门禁，否则松键会被当成"未就绪时按键"），只刷新界面。
+                syncAuxiliaryWindows()
+                updateStatusUI()
+                return
+            }
+            interruptActiveDictation()
         }
 
-        switch target {
+        switch readiness {
         case .setupRequired:
             recordingHUDController?.hideHUD()
             // 只要输入监控权限具备就继续监听热键：按下时明确告知还缺什么，
@@ -616,21 +638,40 @@ final class AppCoordinator {
             if asrService.state == .unloaded {
                 Task { await prepareEngineForLaunch() }
             }
-        case .idle, .recording, .recognizing, .inserting:
+        case .idle:
             activateReadyState()
         default:
             break
         }
 
-        showModelReadyNoticeIfNeeded(target: target)
+        showModelReadyNoticeIfNeeded()
         syncAuxiliaryWindows()
         updateStatusUI()
     }
 
+    /// 投递到主线程下一轮再重评：调用方正处在别的对象的流程中间（窗口关闭、引擎状态变化）时用它。
+    private func reevaluateReadinessSoon() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.reevaluateReadiness() }
+        }
+    }
+
+    /// 一段进行中的听写被"未就绪"覆盖（运行中权限被撤销、模型被重新加载…）：正常拆掉它。
+    /// `stop()` 收尾不发事件，听写阶段与浮窗由这里复位。
+    private func interruptActiveDictation() {
+        guard isDictating else { return }
+        AppLog.app.warning("就绪状态变化，进行中的听写已中止")
+        voiceTyperController?.stop()
+        dictationPhase = nil
+        pendingRecordingHUDItem?.cancel()
+        pendingRecordingHUDItem = nil
+        recordingHUDController?.hideHUD()
+    }
+
     /// 下载完成且模型加载就绪后，引导和设置窗口都不可见、权限已齐全时，浮窗告诉用户可以用了（R8-C5）。
     /// 权限未齐不提示——引导 / 设置窗口会接手。
-    private func showModelReadyNoticeIfNeeded(target: AppState) {
-        guard pendingReadyNotice, isModelReady, !isDownloadingModel, target == .idle else { return }
+    private func showModelReadyNoticeIfNeeded() {
+        guard pendingReadyNotice, isModelReady, !isDownloadingModel, readiness == .idle, !isDictating else { return }
         if isOnboardingVisible || setupWindowController?.window?.isVisible == true { return }
         pendingReadyNotice = false
         let display = config.hotkey.displayString
@@ -692,32 +733,30 @@ final class AppCoordinator {
             do {
                 try controller.start()
             } catch {
-                currentState = .error(LF("热键监听失败: %@", error.localizedDescription))
+                readiness = .error(LF("热键监听失败: %@", error.localizedDescription))
                 AppLog.hotkey.error("热键监听启动失败: \(error.localizedDescription, privacy: .public)")
                 recordingHUDController?.hideHUD()
                 return
             }
         }
-
-        switch currentState {
-        case .recording, .recognizing, .inserting:
-            break
-        default:
-            currentState = .idle
-        }
         hideSetupWindowIfVisible()
     }
 
     private func ensureController() {
-        if voiceTyperController == nil {
-            voiceTyperController = makeController()
-            bindControllerEvents()
+        guard voiceTyperController == nil else { return }
+        let apiKey = config.llm.enabled ? KeychainStore.loadLLMAPIKey() : ""
+        appliedLLMAPIKey = apiKey
+        voiceTyperController = makeController(llmAPIKey: apiKey)
+        voiceTyperController?.onEvent = { [weak self] event in
+            self?.handleControllerEvent(event)
         }
     }
 
     /// 总是注入同一个文本插入服务（R8-A2）；单独成函数以便测试断言。
-    func makeController() -> VoiceTyperController {
-        VoiceTyperController(config: config, asrService: asrService, textInsertionService: textInsertionService)
+    func makeController(llmAPIKey: String? = nil) -> VoiceTyperController {
+        VoiceTyperController(
+            config: config, asrService: asrService, textInsertionService: textInsertionService, llmAPIKey: llmAPIKey
+        )
     }
 
     // MARK: - 模型下载
@@ -736,7 +775,7 @@ final class AppCoordinator {
         modelDownloadError = nil
         downloadStats.reset()
         if !isPaused, permissions.allRequiredGranted {
-            currentState = .downloadingModel(0)
+            readiness = .downloadingModel(0)
         }
         updateStatusUI()
         syncAuxiliaryWindows()
@@ -751,7 +790,7 @@ final class AppCoordinator {
                     self.modelDownloadProgress = progress
                     self.downloadStats.record(progress: progress, at: ProcessInfo.processInfo.systemUptime)
                     if !self.isPaused, self.permissions.allRequiredGranted {
-                        self.currentState = .downloadingModel(progress)
+                        self.readiness = .downloadingModel(progress)
                     }
                     self.updateStatusUI()
                     self.syncAuxiliaryWindows()
@@ -762,14 +801,14 @@ final class AppCoordinator {
                 self.downloadRetryAttempt = 0
                 self.pendingReadyNotice = true
                 await self.asrService.reload()
-                await self.reevaluateReadiness()
+                self.reevaluateReadiness()
             } catch let error as ModelDownloader.DownloadError {
                 self.isDownloadingModel = false
                 self.modelDownloader = nil
                 if case .cancelled = error {
                     // 用户主动取消：回到 .modelMissing 原地重试，而不是显示为红色失败态；
                     // resume 数据已由 ModelDownloader 落盘保留（F-11）。
-                    await self.reevaluateReadiness()
+                    self.reevaluateReadiness()
                 } else {
                     self.handleModelDownloadFailure(error)
                 }
@@ -804,9 +843,11 @@ final class AppCoordinator {
             }
         }
 
-        currentState = permissions.allRequiredGranted
-            ? .error(LF("模型下载失败: %@", reason))
-            : .setupRequired
+        if !isPaused {
+            readiness = permissions.allRequiredGranted
+                ? .error(LF("模型下载失败: %@", reason))
+                : .setupRequired
+        }
         if permissions.allRequiredGranted {
             forcedPresentations.insert(.model)
             setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
@@ -916,7 +957,7 @@ final class AppCoordinator {
         }
     }
 
-    // MARK: - 事件绑定
+    // MARK: - 听写事件
 
     /// 单独修饰键（右 ⌘ 等）作为组合快捷键使用时也会短暂进入录音，浮窗若立即出现会闪烁，
     /// 因此延迟 150ms 再显示；录音本身不延迟，不影响开头的字。其他热键立即显示。
@@ -927,7 +968,7 @@ final class AppCoordinator {
             return
         }
         let item = DispatchWorkItem { [weak self] in
-            guard let self, self.currentState == .recording else { return }
+            guard let self, self.dictationPhase == .recording else { return }
             self.recordingHUDController?.showHUD(inputDeviceName: deviceName, hint: self.nextRecordingHint())
         }
         pendingRecordingHUDItem = item
@@ -948,112 +989,81 @@ final class AppCoordinator {
         return text
     }
 
-    private func bindControllerEvents() {
-        // 摘要只含数字与枚举（DictationMetrics 禁止承载用户文本），因此可以安全地标 .public，
-        // 否则 `log show` 里会显示成 <private>，失去排障价值。
-        voiceTyperController?.onMetrics = { metrics in
-            AppLog.metrics.notice("\(metrics.summaryLine(), privacy: .public)")
-        }
-        voiceTyperController?.onStateChange = { [weak self] state in
-            guard let self else { return }
-            let previous = self.currentState
-            self.currentState = state
-            self.pendingRecordingHUDItem?.cancel()
-            self.pendingRecordingHUDItem = nil
-            switch state {
+    private func handleControllerEvent(_ event: VoiceTyperController.Event) {
+        switch event {
+        case .phaseChanged(let phase):
+            dictationPhase = phase
+            pendingRecordingHUDItem?.cancel()
+            pendingRecordingHUDItem = nil
+            switch phase {
             case .recording:
-                self.dictationErrorRecoveryWorkItem?.cancel()
-                self.showRecordingHUD()
-                self.forwardToOnboarding(.recordingStarted)
+                clearDictationError()
+                showRecordingHUD()
+                forwardToOnboarding(.recordingStarted)
             case .recognizing:
-                self.recordingHUDController?.setRecognizing()
-                self.forwardToOnboarding(.recognizing)
+                recordingHUDController?.setRecognizing()
+                forwardToOnboarding(.recognizing)
             case .inserting:
                 break
-            case .error(let message):
-                self.recordingHUDController?.showError(message)
-                self.forwardToOnboarding(.failed(message))
-                self.scheduleDictationErrorRecovery()
-            case .idle:
-                self.dictationErrorRecoveryWorkItem?.cancel()
-                if previous == .inserting {
-                    let note = self.pendingInsertionNote
-                    self.pendingInsertionNote = nil
-                    self.recordingHUDController?.showSuccess(note: note)
-                } else {
-                    self.pendingInsertionNote = nil
-                    self.recordingHUDController?.hideHUD()
-                }
-            default:
-                self.recordingHUDController?.hideHUD()
             }
-            self.updateStatusUI()
+            updateStatusUI()
+        case .preview(let text):
+            recordingHUDController?.showPreview(text)
+        case .warning(let message):
+            recordingHUDController?.flashWarning(message)
+        case .audioLevel(let level):
+            recordingHUDController?.updateLevel(level)
+            forwardToOnboarding(.level(level))
+        case .correctionStarted:
+            // 菜单栏保持「识别中」：细分到底在等本地推理还是网络是 HUD 的职责。
+            recordingHUDController?.setCorrecting(hotkeyDisplay: config.hotkey.displayString)
+        case .engineWait(let stage):
+            recordingHUDController?.setEngineWait(stage)
+        case .blocked(let reason):
+            handleBlockedHotkeyAttempt(reason: reason)
+        case .secureFieldRefused:
+            recordingHUDController?.showSecureFieldRefusal()
+            forwardToOnboarding(.blocked(L("当前是密码输入框，VoiceTyper 不会在这里听写")))
+        case .resultAvailable(let text, let kind):
+            dictationHistory.record(text, kind: kind)
+        case .finished(let completion):
+            handleDictationFinished(completion)
+        case .metrics(let metrics):
+            // 摘要只含数字与枚举（DictationMetrics 禁止承载用户文本），因此可以安全地标 .public，
+            // 否则 `log show` 里会显示成 <private>，失去排障价值。
+            AppLog.metrics.notice("\(metrics.summaryLine(), privacy: .public)")
         }
+    }
 
-        voiceTyperController?.onPreviewUpdate = { [weak self] accumulated in
-            self?.recordingHUDController?.showPreview(accumulated)
-        }
-
-        voiceTyperController?.onAudioLevel = { [weak self] level in
-            guard let self else { return }
-            self.recordingHUDController?.updateLevel(level)
-            self.forwardToOnboarding(.level(level))
-        }
-
-        // 识别跑通但一个字都没有：给一个明确的、指向输入设备的提示，
-        // 而不是让 HUD 静默消失（B4）。
-        voiceTyperController?.onEmptyRecognition = { [weak self] in
-            guard let self else { return }
-            self.recordingHUDController?.showNoSpeech()
-            self.forwardToOnboarding(.emptyResult)
-        }
-
-        voiceTyperController?.onBlockedAttempt = { [weak self] reason in
-            self?.handleBlockedHotkeyAttempt(reason: reason)
-        }
-
-        // 本地识别已出结果、开始等 LLM 校对：把 HUD 从"识别中"切到"校对中"。
-        // 菜单栏状态保持 .recognizing——这一层的粒度就到"正在处理"为止，
-        // 细分到底在等本地推理还是网络是 HUD 的职责。
-        voiceTyperController?.onCorrectionStarted = { [weak self] in
-            guard let self else { return }
-            self.recordingHUDController?.setCorrecting(hotkeyDisplay: self.config.hotkey.displayString)
-        }
-
-        voiceTyperController?.onEngineWait = { [weak self] stage in
-            self?.recordingHUDController?.setEngineWait(stage)
-        }
-
-        voiceTyperController?.onInsertedWithNote = { [weak self] note in
-            self?.pendingInsertionNote = note
-        }
-
-        voiceTyperController?.onResultAvailable = { [weak self] text, kind in
-            self?.dictationHistory.record(text, kind: kind)
-        }
-
-        voiceTyperController?.onSecureFieldRefused = { [weak self] in
-            guard let self else { return }
-            self.recordingHUDController?.showSecureFieldRefusal()
-            self.forwardToOnboarding(.blocked(L("当前是密码输入框，VoiceTyper 不会在这里听写")))
-        }
-
-        voiceTyperController?.onPreviewWarning = { [weak self] message in
-            self?.recordingHUDController?.flashWarning(message)
-        }
-
-        voiceTyperController?.onCancelled = { [weak self] in
-            guard let self else { return }
-            self.currentState = .idle
-            self.recordingHUDController?.showCanceled()
-            self.forwardToOnboarding(.cancelled)
-            self.updateStatusUI()
-        }
-
-        voiceTyperController?.onRecognizedText = { [weak self] text in
+    private func handleDictationFinished(_ completion: VoiceTyperController.Completion) {
+        dictationPhase = nil
+        pendingRecordingHUDItem?.cancel()
+        pendingRecordingHUDItem = nil
+        switch completion {
+        case .inserted(let text, let note):
+            clearDictationError()
             AppLog.app.info("识别完成 chars=\(text.count, privacy: .public)")
-            self?.forwardToOnboarding(.inserted(text))
+            recordingHUDController?.showSuccess(note: note)
+            forwardToOnboarding(.inserted(text))
+        case .empty:
+            // 识别跑通但一个字都没有：给一个明确的、指向输入设备的提示（B4）。
+            clearDictationError()
+            recordingHUDController?.showNoSpeech()
+            forwardToOnboarding(.emptyResult)
+        case .cancelled:
+            clearDictationError()
+            recordingHUDController?.showCanceled()
+            forwardToOnboarding(.cancelled)
+        case .silent:
+            clearDictationError()
+            recordingHUDController?.hideHUD()
+        case .error(let message):
+            dictationError = message
+            recordingHUDController?.showError(message)
+            forwardToOnboarding(.failed(message))
+            scheduleDictationErrorRecovery()
         }
+        updateStatusUI()
     }
 
     /// 未就绪时按下热键。给两层反馈：HUD 立刻说明原因（用户的视线就在屏幕上），
@@ -1074,25 +1084,33 @@ final class AppCoordinator {
     }
 
     /// 与 `RecordingHUDController.showError` 的自动隐藏时长（2.5s）保持一致，让菜单栏
-    /// 状态与 HUD 同步回落，而不是一直停在红色错误态直到下一次听写（R3-04）。
+    /// 状态与 HUD 同步回落（R3-04）。只回落听写错误本身，不碰就绪度。
     private func scheduleDictationErrorRecovery() {
         dictationErrorRecoveryWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            guard let self, case .error = self.currentState else { return }
-            self.currentState = .idle
+            guard let self, self.dictationError != nil else { return }
+            self.dictationError = nil
             self.updateStatusUI()
         }
         dictationErrorRecoveryWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: item)
     }
 
+    private func clearDictationError() {
+        dictationErrorRecoveryWorkItem?.cancel()
+        dictationErrorRecoveryWorkItem = nil
+        dictationError = nil
+    }
+
     private func updateStatusUI() {
         statusBarController.update(
-            state: currentState,
+            state: displayState,
             hotkeyDisplay: config.hotkey.displayString,
             engineStatus: engineStatusText()
         )
     }
+
+    // MARK: - 配置
 
     private func reloadConfigurationFromDisk() throws {
         config = try configStore.loadOrCreate()
@@ -1101,8 +1119,7 @@ final class AppCoordinator {
         L10n.apply(config.ui.interfaceLanguage)
         // 热键可能刚被改成组合键，那样就不再有 Fn 冲突可言。
         refreshFnConflictWarning()
-        // HUD 是长生命周期组件：配置变更就地生效，不重建。此前每次保存非 UI 配置
-        // （例如改热键）都会丢弃整个 HUD 实例，连带丢掉已构建的视图层与几何状态（B8）。
+        // HUD 是长生命周期组件：配置变更就地生效，不重建（B8）。
         if let recordingHUDController {
             recordingHUDController.updateConfig(config.ui)
         } else {
@@ -1122,38 +1139,51 @@ final class AppCoordinator {
         }
     }
 
-    private func applyConfig(_ updatedConfig: AppConfig) async throws {
-        let previousConfig = config
-        let onlyUIChanged = previousConfig.asr == updatedConfig.asr
-            && previousConfig.llm == updatedConfig.llm
-            && previousConfig.hotkey == updatedConfig.hotkey
-        // 会破坏性重建控制器/热键监听的保存（非 UI-only）在听写进行中会丢已录制内容，
-        // 拒绝而不是静默销毁；HUD 透明度等 UI-only 改动不受影响，可随时保存。
-        if !onlyUIChanged, currentState.isActiveDictation {
+    /// 纯函数：从 `old` 改到 `new` 是否需要重建控制器。控制器在构造时拿走一份配置
+    /// （识别、校对、热键、输入设备），这几段任何一处变化都只有重建才会生效。
+    static func requiresControllerRebuild(from old: AppConfig, to new: AppConfig, llmAPIKeyChanged: Bool) -> Bool {
+        old.asr != new.asr
+            || old.llm != new.llm
+            || old.hotkey != new.hotkey
+            || old.audio != new.audio
+            || (new.llm.enabled && llmAPIKeyChanged)
+    }
+
+    private func applyConfig(_ updatedConfig: AppConfig) throws {
+        let rebuildsController = Self.requiresControllerRebuild(
+            from: config, to: updatedConfig,
+            llmAPIKeyChanged: updatedConfig.llm.enabled && llmAPIKeyChangedSinceControllerBuilt()
+        )
+        // 重建控制器会丢掉进行中的听写：拒绝而不是静默销毁；HUD 透明度等纯界面改动可随时保存。
+        if rebuildsController, isDictating {
             throw ConfigSaveError.dictationInProgress
         }
 
         try configStore.save(config: updatedConfig)
-        if onlyUIChanged {
-            // 只有 ui 段变化：不销毁/重建控制器，只更新内存配置与 HUD/设置窗口显示。
+        if rebuildsController {
+            try reloadAndReevaluateAfterSettingsChange()
+        } else {
+            // 只有 ui 段变化：不重建控制器，只更新内存配置与 HUD/设置窗口显示。
             config = updatedConfig.validated()
-            // 必须显式下发给 HUD：此前透明度是靠滑杆的实时预览回调"顺手"生效的，
-            // HUD 位置这类没有实时预览通道的设置不会有那份运气（保存后要到下次
-            // 听写才生效，且换台机器/重启后行为不一致）。
             recordingHUDController?.updateConfig(config.ui)
             refreshSetupWindowEditorContent()
-        } else {
-            try await reloadAndReevaluateAfterSettingsChange()
         }
     }
 
-    private func reloadAndReevaluateAfterSettingsChange() async throws {
+    /// API Key 存在 Keychain 里、不在配置中：只改 Key 时配置看起来没变，但控制器里的校对器还拿着旧 Key。
+    private func llmAPIKeyChangedSinceControllerBuilt() -> Bool {
+        guard voiceTyperController != nil, let appliedLLMAPIKey else { return false }
+        return KeychainStore.loadLLMAPIKey() != appliedLLMAPIKey
+    }
+
+    private func reloadAndReevaluateAfterSettingsChange() throws {
         voiceTyperController?.stop()
         voiceTyperController = nil
+        appliedLLMAPIKey = nil
         try reloadConfigurationFromDisk()
         asrService.updateConfig(config.asr)
         refreshSetupWindowEditorContent()
-        await reevaluateReadiness()
+        reevaluateReadiness()
     }
 
     private func syncAuxiliaryWindows() {
@@ -1194,9 +1224,8 @@ final class AppCoordinator {
     /// 菜单栏下拉里那行副标题。
     ///
     /// 必须自己感知下载进度：下载期间 `asrService.state` 仍是 `.modelMissing`，
-    /// 而权限没给全时 `computeTargetState` 又会直接返回 `.setupRequired`——两者叠加的
-    /// 结果是首次安装的用户在最想知道"它在下载吗、还要多久"的时刻，菜单里完全看不到
-    /// 下载进度（B2）。
+    /// 而权限没给全时就绪度又是 `.setupRequired`——两者叠加，首次安装的用户在最想知道
+    /// "它在下载吗、还要多久"的时刻，菜单里会完全看不到下载进度（B2）。
     private func engineStatusText() -> String {
         if isDownloadingModel {
             return downloadDetailText() ?? LF("模型下载中 %d%%", Int(modelDownloadProgress * 100))

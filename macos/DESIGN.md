@@ -1322,6 +1322,84 @@ Windows 影响：同一套参数已同步，见 windows/DESIGN.md §29。
 
 ---
 
+## 11.6 R9：架构与实现审查修复（2026-10-19，未发布）
+
+一轮针对设计合理性、健壮性与关键路径性能的代码审查，编号 `R9-xx`。识别契约（fbank / LFR-CMVN / CTC / 文本后处理 /
+模型 I/O）与共享夹具均未改动。
+
+**验证口径**：本轮在 Linux 上完成编码，**未经 macOS 编译与运行**；单元测试已按新接口更新并补充（见各项），需在 macOS 上跑
+全量 `xcodebuild … test` 后再定稿。涉及 AX、剪贴板、热键、下载的行为**均未在真机验证**。
+
+### 改了什么
+
+| # | 问题 | 改动 | 落点 |
+| --- | --- | --- | --- |
+| R9-01 | 只改 API Key 时配置看起来没变，协调器不重建控制器，校对器一直拿旧 Key；「测试校对」用的是输入框里的新 Key，会通过，界面也提示「已保存并生效」 | 协调器记住构建控制器时读到的 Key（`appliedLLMAPIKey`），保存时 Key 变了也重建（与 Windows `SaveRecognition` 的 `keyChanged` 一致） | `AppCoordinator.requiresControllerRebuild` |
+| R9-02 | 是否重建控制器只比较 asr / llm / hotkey，漏了 `audio`：菜单栏「麦克风」快捷切换与设置里的输入设备改动要到重启才生效 | 重建判定加入 `audio` | 同上 |
+| R9-03 | `AXFocusInspector` / `FocusGeometry` 在 system-wide 元素上设 0.25s 超时，按 AX 头文件语义这改的是**整个进程**的默认超时，插入文字也被压到 0.25s。忙碌的应用没及时回复 `kAXSelectedText` 写入时，代码当作失败去粘贴，而那条写入稍后仍被处理——同一段文字可能出现两次（依据 API 语义推断，未真机复现） | 新增 `AXMessaging`：进程默认超时只在启动时设一次（1s），探测类查询在具体元素上设 0.25s，插入设 1.5s；AX 写入返回 `kAXErrorCannotComplete` 视为「未确认」（`TextInsertionResult.unconfirmed`），不再粘贴，只复制到剪贴板并说明 | `TextInsertionService.swift`、`FocusInspector.swift`、`FocusGeometry.swift` |
+| R9-04 | 空识别结果时控制器先发 `onEmptyRecognition`，紧接着又发 `onStateChange(.idle)`，协调器在后者里 `hideHUD()`，「没有识别到内容」提示一出现就被收起（B4 实际失效）。根源是十几个回调之间的隐式顺序契约 | 控制器对外改为唯一出口 `onEvent(Event)`；结局 `finished(Completion)` 每段恰好一次，带上屏文本与校对说明，协调器不再靠 `pendingInsertionNote` 之类拼接先后到达的回调 | `VoiceTyperController.Event / Completion`、`AppCoordinator.handleControllerEvent` |
+| R9-05 | 协调器的 `currentState` 同时承载"就绪度"与"听写阶段"，约 10 处写入；`computeTargetState` 需要传 `previous` 才不覆盖进行中的听写；模型下载失败会无条件覆盖它 | 拆成 `readiness`（纯函数 `computeReadiness`）、`dictationPhase`（只由控制器事件写入）、`dictationError`（2.5s 回落）；显示状态由 `displayState` 合成；是否拆掉进行中的听写由 `shouldInterruptDictation` 判定（只有"加载与录音并行"可共存）。`reevaluateReadiness()` 改为同步（原先声明为 async 却没有任何 await，所有调用方都要套一层 Task） | `AppCoordinator` |
+| R9-06 | 尾音回调用的是"当前" `active` 而不是发起它的那段听写：Esc 取消后立刻再按热键，迟到的尾音会把新录音推进到「识别中」，松键被忽略，麦克风一直开到 120 秒上限（低概率竞态） | 单段听写的全部状态（预览兜底文本、电平、静音探测、卡键看门狗）移进 `Utterance`，每段带 `id`；所有会话 / 采集回调先确认 `id` 仍是当前听写 | `VoiceTyperController` |
+| R9-07 | 回调线程切换混用 `Task { @MainActor }` 与 `DispatchQueue.main.async`（热键路径先 main.async 再套一层 Task） | 热键回调本就在主线程，直接 `MainActor.assumeIsolated` 同步处理；采集回调经 `DispatchQueue.main.async` 投递（严格先进先出）；卡键看门狗加入 common 模式（菜单展开时也轮询）；短录音判定改用注入的单调时钟 | 同上 |
+| R9-08 | 松键后（150ms 补录期间、送入尾音时）仍会发起预览，结果注定被丢弃，却占住串行的 asrQueue，终稿要排在它后面（`final_wait`） | `LocalASRSession.stopPreviews()`：松键与采集结束时调用，已入队未开跑的预览也跳过 | `LocalASRSession`、`VoiceTyperController` |
+| R9-09 | 预览期间持有整段音频快照，主线程每 200ms 追加一次就触发一次写时复制，在主线程上拷贝整段音频（120s 时 7.7MB），抵消了 R6-07 预留容量的初衷 | 预览只在锁内拷贝尚未固化的那一段；终稿时采集已停，仍整段共享 | `RecognitionBuffer` |
+| R9-10 | AX 插入回读在主线程同步 `sleep(50ms)`，写入前后还各读一次整段值（长文档是一次跨进程整篇拷贝）——只为一条度量，却在「松键 → 出字」关键路径上 | 回读改为比较写入前后的 `kAXNumberOfCharacters`（预期变化 = 插入长度 − 被替换选区长度），50ms 后异步完成；度量行随之晚约 50ms 输出 | `TextInsertionService.verifyLastInsertion`、`InsertionVerification.classify` |
+| R9-11 | 每次听写都在识别阶段完整快照剪贴板，而最常见的 AX 路径根本用不上；逐类型读取还会迫使来源应用当场生成延迟提供的数据（大图、表格选区、文件承诺） | 识别阶段先做一次便宜的 AX 探测（与插入路径同序：`kAXSelectedText` 可写 → 不备份；网页控件或不可写 → 备份），只在预判要粘贴时备份；预判错了由粘贴路径当场补快照 | `TextInsertionService.prepareForInsert` |
+| R9-12 | `config.yaml` 读不出来时应用停在「配置加载失败」，热键、引导、设置都不启动，而菜单里早已没有打开配置目录的入口（B9），用户无从自救 | 另存为 `config.yaml.broken`（覆盖上一份）、回落默认配置，启动后弹一次说明；原文件保持不动，直到用户在设置里保存（与 Windows W5-04 一致） | `ConfigStore.loadOrCreate`、`AppCoordinator.presentBrokenConfigNotice` |
+| R9-13 | 分段下载每段是一次完整请求，断网时这次已收到的字节随临时文件丢弃，分段文件只在请求完整结束后才增长，"按已有字节续传"实际是整段（约 60MB）重来；且一次失败就整体回落单连接、从 0 开始 | 每段按 8MB 分块请求、每块完成即追加落盘；单块网络失败本地重试 2 次（1s / 2s 退避），状态码或区间不对才放弃分段 | `ModelDownloader.runSegments` |
+| R9-14 | 校对器自建的 URLSession 从不失效（每次重建控制器、每次「测试校对」各留一个）；`timeoutIntervalForRequest` 只是空闲超时，不是总时长 | 自建会话在释放时 `finishTasksAndInvalidate()`；补设 `timeoutIntervalForResource` | `LLMCorrector` |
+| R9-15 | 若干注释与现状不符（「启动时不预加载」是默认、菜单有「打开配置目录」、600ms 采集块、"逻辑原样搬运"） | 改为描述现状 | 各文件 |
+
+接口变更：`VoiceTyperController` 的十余个 `onXxx` 回调合并为 `onEvent`；`TextInserting.lastInsertVerification` →
+`verifyLastInsertion(_:)`；`TextInsertionResult` 新增 `.unconfirmed`；`InsertionVerification.classify` 改为按字符数；
+`AppCoordinator.computeTargetState` → `computeReadiness` + `shouldInterruptDictation` + `displayState` +
+`requiresControllerRebuild`；`LocalASRSession.stopPreviews()`；`ConfigStore.lastLoadFellBackToDefaults`；
+`AppState.swift` 新增 `DictationPhase`。无配置字段变更。
+
+度量字段语义变更：`insert_verify` 改为按字符数判定；`clip_backup` 在预判走 AX 时为 `-`（没有备份）；走 AX 插入时
+整行度量晚约 50ms 输出。字段顺序不变。
+
+自动化测试（新增 / 改写）：控制器测试改用事件记录器，新增空结果只收尾一次、迟到尾音不影响下一段、松键后不再预览、
+度量等待回读、未确认插入不重试共 5 项；`AppCoordinatorReadinessTests` 改写为就绪度 / 打断判定 / 显示合成 / 重建判定
+四组；`LocalASRSessionTests` 新增停止预览 2 项；`ConfigStoreTests` 新增坏配置回落 1 项；`TextInsertionServiceTests`
+新增回读判定 1 项；`SegmentedDownloadTests` 新增单块失败重试 1 项。**均未在 macOS 上运行。**
+
+### 刻意没做的（性价比不高或另有取舍）
+
+- **测试去掉 sleep**：控制器测试仍有约 50 处按墙钟等待。热键与采集回调已改为确定的主线程投递，进一步把
+  `asyncAfter` / `Timer` 抽成可注入的调度器才能彻底去掉等待，改动面大、收益只在测试时长，暂不做。
+- **拆分大文件**（`RecordingHUDController` 约 1500 行、`AppCoordinator` 约 1250 行）：新增文件需要在 macOS 上重新生成
+  工程，本轮在 Linux 上无法验证，留待下一轮（可参照 Windows 第五轮的 `ModelDownloadOrchestrator` 拆法）。
+- **fbank 增量缓存**、**校对请求预热 TLS 连接**：前者在推理占大头时收益有限，需 profiling 证明；后者会在用户开口时
+  就联网，与"不说话不联网"的直觉相悖，暂不做。
+- **听写中暂停推迟到收尾后**（Windows W5-01）：macOS 菜单在听写进行中本就禁用「暂停」，不存在丢内容的路径。
+- **注释里的历史叙述**（"此前…"）只清理了与现状矛盾的几处，其余保留，评审编号可在本文反查。
+
+### 待真机验证
+
+1. **R9-01 / R9-02**：开启智能校对，填错 API Key 听写一次（应提示鉴权失败）；改成正确 Key 保存后立即再听写，应完成校对，
+   无需重启。菜单栏「麦克风」在「自动 / 跟随系统」间切换后立即听写，浮窗状态行的设备名应随之变化（戴蓝牙耳机时最明显）。
+2. **R9-03**：在 TextEdit、备忘录、Safari、Chrome、VS Code、Slack、微信、终端里各听写一次，确认只出现一次文字；
+   让目标应用繁忙（例如 VS Code 打开大工程正在索引）时听写，确认不会出现两次，未确认时浮窗提示并已复制到剪贴板。
+   `log stream … category == "app"` 中「AX 写入超时未得到回复」的出现频率需要记录。
+3. **R9-04**：对着静音的麦克风按住热键 1 秒再松开，「没有识别到内容」提示应停留约 2.5 秒。
+4. **R9-06 / R9-08**：按住热键说话、松开后立即按 Esc、再立即按住说下一句，第二句应正常出字；对比改动前后
+   `final_wait`（同一段 20s 口述，松键时仍在说话）。
+5. **R9-10 / R9-11**：剪贴板里放一张大图后在 TextEdit（AX 路径）听写，`clip_backup` 应为 `-`、原剪贴板不变；在终端
+   （粘贴路径）听写，`clip_backup` 有值、原剪贴板被恢复。`insert_verify` 在 TextEdit 应为 `ok`。
+6. **R9-12**：退出应用，把 `config.yaml` 改成非法 YAML（如 `asr: [`）后启动：弹出说明，热键可用，目录里出现
+   `config.yaml.broken` 且内容与改坏的文件一致；在设置里保存后 `config.yaml` 恢复为合法内容。
+7. **R9-13**：删除模型后开始下载，中途断网 10 秒再恢复，应从断点继续而不是整段重来；下到一半退出应用再打开，应从
+   各分段已有长度续传。
+
+### Windows 影响
+
+识别契约与共享夹具未变。R9-01 Windows 已有（`SaveRecognition` 的 `keyChanged`），R9-12 已有（W5-04）。
+其余需要 Windows 侧另行评估：R9-08（`LocalAsrSession.SchedulePreview` 同样只看 `_isFinalizing`，送入尾音时仍会排一次预览）；
+R9-09 不适用（Windows 的 `RecognitionBuffer` 用定长数组加计数，无写时复制）；R9-03 / R9-10 / R9-11 是 macOS AX 专属。
+
+---
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |

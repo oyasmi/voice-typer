@@ -54,11 +54,9 @@ struct AppConfig: Codable {
     }
 
     /// `SettingsViewModel.applyHotkey` 已经在 UI 路径校验过"主键是否支持"与"非 fn 主键
-    /// 必须搭配至少一个修饰键"，但设置窗口不是改配置的唯一入口——菜单里就有「打开配置
-    /// 目录」，README 也鼓励手改 YAML。不经 UI 直接写一个 `key: "d"` 且不带修饰键的配置
-    /// 完全可达：`HotkeyService` 只检查键名是否受支持，不要求修饰键非空，结果是在任何
-    /// App 里正常打字敲字母 d 都会触发一次录音（R4-05）。这里补上手改配置文件绕过 UI
-    /// 校验的第二道防线，越界回落到默认热键 fn，不静默接受。
+    /// 必须搭配至少一个修饰键"，但手改过的 config.yaml 会绕过 UI：一个 `key: "d"` 且不带修饰键的
+    /// 配置会让任何 App 里正常敲字母 d 都触发一次录音（`HotkeyService` 只检查键名是否受支持，
+    /// R4-05）。这里是第二道防线，越界回落到默认热键 fn，不静默接受。
     private static func validatedHotkey(_ hotkey: HotkeyConfig) -> HotkeyConfig {
         let key = hotkey.key.lowercased()
         // 回落只针对"按哪个键"这件事；`mode`（按住 / 切换）是独立且始终合法的用户选择，
@@ -234,7 +232,7 @@ struct LLMConfig: Codable, Equatable {
 /// 手指不必一直按着，按一次开始、再按一次结束。
 ///
 /// 刻意**不做**"短按 toggle / 长按 hold"的自动判别：那会把今天被
-/// `VoiceTyperController.minimumRecordingDuration` 当成误触丢弃的一次轻碰，变成一段
+/// `VoiceTyperController.minimumRecordingNanos` 当成误触丢弃的一次轻碰，变成一段
 /// 用户毫无察觉就开始了的持续录音——误触的代价从"什么都没发生"升级为"一直在录"，
 /// 这是比手指累更糟的失败模式。宁可让用户显式选一次模式。
 enum HotkeyMode: String, Codable, CaseIterable {

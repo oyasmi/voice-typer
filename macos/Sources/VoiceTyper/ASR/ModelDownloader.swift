@@ -53,6 +53,11 @@ final class ModelDownloader: NSObject {
     static let segmentCount = 4
     /// 拼接分段文件时的搬运块大小。固定 1MB，让内存占用与文件大小无关。
     nonisolated private static let fileCopyChunkSize = 1 << 20
+    /// 每个分段再按这个大小切成多次请求，每次请求完成就追加进分段文件：
+    /// 中途断网最多丢一个块，续传从分段文件已有的长度接着要，而不是整段（约 60MB）重来。
+    nonisolated static let segmentRequestBytes: Int64 = 8 << 20
+    /// 单个块请求失败后的本地重试次数（不含第一次），用完才放弃分段、回落单连接。
+    nonisolated static let segmentRequestRetries = 2
 
     private var session: URLSession!
     /// 分段并行下载专用的会话：**不设 delegate**，与上面那个 delegate 驱动的
@@ -351,7 +356,7 @@ final class ModelDownloader: NSObject {
     /// 文件字节数；不存在或读不到属性时返回 0。
     /// 单独抽出来是因为 `attributesOfItem` 返回 `[FileAttributeKey: Any]`，
     /// 内联写成 `try?` + 下标 + `as?` 三连很容易在可选层数上出错。
-    static func fileSize(at url: URL) -> Int64 {
+    nonisolated static func fileSize(at url: URL) -> Int64 {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber else {
             return 0
@@ -373,7 +378,7 @@ final class ModelDownloader: NSObject {
     ///
     /// 续传靠的是各分段文件已有的字节数，而不是 `URLSession` 的不透明 resume data——
     /// 后者的畸形数据会直接让 CFNetwork 把进程 abort（见 `didCompleteWithError` 的注释）。
-    /// 自己按 Range 续传是完全透明的：磁盘上有多少就从多少继续要。
+    /// 每个分段按 `segmentRequestBytes` 分块请求、每块完成即落盘，磁盘上有多少就从多少继续要。
     private func runSegments(
         _ spec: FileSpec,
         totalBytes: Int64,
@@ -422,20 +427,47 @@ final class ModelDownloader: NSObject {
                 guard resumed < expected else { continue } // 这段上次已经下完了
 
                 let segmentURL = Self.segmentURL(for: spec, index: index, in: dir)
+                let fileName = spec.name
                 group.addTask {
-                    var request = URLRequest(url: remoteURL)
-                    request.setValue("bytes=\(range.lowerBound + resumed)-\(range.upperBound)",
-                                     forHTTPHeaderField: "Range")
-                    let delegate = SegmentProgressDelegate { received in
-                        progress.update(segment: index, received: received)
+                    var onDisk = resumed
+                    var failures = 0
+                    while onDisk < expected {
+                        try Task.checkCancellation()
+                        let start = range.lowerBound + onDisk
+                        let end = min(range.upperBound, start + Self.segmentRequestBytes - 1)
+                        var request = URLRequest(url: remoteURL)
+                        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+                        // 进度按"本次运行新收到的字节"上报（已在磁盘上的部分由 resumedBytes 计入）。
+                        let receivedBeforeRequest = onDisk - resumed
+                        let delegate = SegmentProgressDelegate { received in
+                            progress.update(segment: index, received: receivedBeforeRequest + received)
+                        }
+                        do {
+                            let (temporaryURL, response) = try await session.download(for: request, delegate: delegate)
+                            guard let http = response as? HTTPURLResponse, http.statusCode == 206 else {
+                                try? FileManager.default.removeItem(at: temporaryURL)
+                                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                                throw DownloadError.httpStatus(fileName, code)
+                            }
+                            // 服务端没按请求的区间回：拼进去只会得到一个校验不过的文件，直接放弃分段。
+                            let size = Self.fileSize(at: temporaryURL)
+                            guard size == end - start + 1 else {
+                                try? FileManager.default.removeItem(at: temporaryURL)
+                                throw DownloadError.checksumMismatch(fileName)
+                            }
+                            try Self.appendFile(at: temporaryURL, to: segmentURL)
+                            onDisk += size
+                            failures = 0
+                        } catch let error as DownloadError {
+                            // 状态码不对、区间不对：重试也不会变，交给调用方回落单连接。
+                            throw error
+                        } catch {
+                            if Task.isCancelled { throw CancellationError() }
+                            failures += 1
+                            guard failures <= Self.segmentRequestRetries else { throw error }
+                            try await Task.sleep(nanoseconds: UInt64(failures) * 1_000_000_000)
+                        }
                     }
-                    let (temporaryURL, response) = try await session.download(for: request, delegate: delegate)
-                    guard let http = response as? HTTPURLResponse, http.statusCode == 206 else {
-                        try? FileManager.default.removeItem(at: temporaryURL)
-                        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        throw DownloadError.httpStatus(spec.name, code)
-                    }
-                    try Self.appendFile(at: temporaryURL, to: segmentURL)
                 }
             }
             try await group.waitForAll()

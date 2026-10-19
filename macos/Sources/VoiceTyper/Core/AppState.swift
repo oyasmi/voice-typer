@@ -1,5 +1,22 @@
 import Foundation
 
+/// 一段听写进行中的阶段，只由 `VoiceTyperController` 的事件驱动；没有进行中的听写时不存在。
+/// 与「是否就绪」（权限、模型、暂停…）是两个独立维度，`AppCoordinator` 显示时再合成 `AppState`。
+enum DictationPhase: Equatable {
+    case recording
+    case recognizing
+    case inserting
+
+    var appState: AppState {
+        switch self {
+        case .recording: return .recording
+        case .recognizing: return .recognizing
+        case .inserting: return .inserting
+        }
+    }
+}
+
+/// 菜单栏与设置窗口展示用的合成状态。
 enum AppState: Equatable {
     case booting
     case setupRequired

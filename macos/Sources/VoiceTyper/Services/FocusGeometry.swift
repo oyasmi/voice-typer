@@ -48,9 +48,7 @@ enum FocusGeometry {
         return CGPoint(x: x, y: caret.maxY + gap)
     }
 
-    // MARK: - AX 读取（主线程，单次查询 250ms 超时）
-
-    private static let messagingTimeout: Float = 0.25
+    // MARK: - AX 读取（主线程，超时见 `AXMessaging.probeTimeout`）
 
     /// 前台应用焦点窗口的位置与尺寸（Cocoa 坐标）。取不到返回 nil。
     @MainActor
@@ -59,7 +57,7 @@ enum FocusGeometry {
               let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
               let primaryHeight = NSScreen.screens.first?.frame.height else { return nil }
         let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        AXUIElementSetMessagingTimeout(app, AXMessaging.probeTimeout)
 
         var windowObject: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowObject) == .success,
@@ -87,15 +85,8 @@ enum FocusGeometry {
     /// 长度 0 取不到时依次试选区后一个字符、前一个字符（取其后沿）。取不到或不可信返回 nil。
     @MainActor
     static func caretRect() -> CGRect? {
-        guard AXIsProcessTrusted(), let primaryHeight = NSScreen.screens.first?.frame.height else { return nil }
-        let systemWide = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(systemWide, messagingTimeout)
-
-        var focusedObject: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedObject) == .success,
-              let focusedObject, CFGetTypeID(focusedObject) == AXUIElementGetTypeID() else { return nil }
-        let element = focusedObject as! AXUIElement
-        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        guard AXIsProcessTrusted(), let primaryHeight = NSScreen.screens.first?.frame.height,
+              let element = AXMessaging.focusedElement(timeout: AXMessaging.probeTimeout) else { return nil }
 
         var rangeObject: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeObject) == .success,

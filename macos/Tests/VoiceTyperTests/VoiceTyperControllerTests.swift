@@ -75,7 +75,20 @@ final class VoiceTyperControllerTests: XCTestCase {
         private(set) var discardCount = 0
         var prepareResult: UInt64? = 5_000_000
         var verification: InsertionVerification?
-        var lastInsertVerification: InsertionVerification? { verification }
+        /// 为 true 时回读回调先攒着，由测试调用 `completeVerification()` 再送出（模拟真实的 50ms 延迟）。
+        var defersVerification = false
+        private var pendingVerification: ((InsertionVerification?) -> Void)?
+        func verifyLastInsertion(_ completion: @escaping (InsertionVerification?) -> Void) {
+            if defersVerification {
+                pendingVerification = completion
+            } else {
+                completion(verification)
+            }
+        }
+        func completeVerification() {
+            pendingVerification?(verification)
+            pendingVerification = nil
+        }
         func prepareForInsert() -> UInt64? { prepareCount += 1; return prepareResult }
         func discardPreparedBackup() { discardCount += 1 }
         var result: TextInsertionResult = .inserted(.accessibility)
@@ -163,11 +176,17 @@ final class VoiceTyperControllerTests: XCTestCase {
         var notes: [VoiceTyperController.InsertionNote?] { recorder.notes }
         var secureRefusals: Int { recorder.secureRefusals }
         var previews: [String] { recorder.previews }
+        var completions: [VoiceTyperController.Completion] { recorder.completions }
+        var correctionStartedCount: Int { recorder.correctionStartedCount }
     }
 
-    /// 引用类型：`onStateChange` 等回调需要跨 `makeHarness()` 的返回边界持续可见的
-    /// 可变状态，值类型的 `Harness` 本身做不到（闭包捕获的是局部变量的一份拷贝）。
+    /// 引用类型：事件需要跨 `makeHarness()` 的返回边界持续可见的可变状态，
+    /// 值类型的 `Harness` 本身做不到（闭包捕获的是局部变量的一份拷贝）。
+    ///
+    /// `states` 把事件折算成菜单栏会看到的状态序列：阶段变化原样记录，结局里除「已取消」外
+    /// 都折算成 `.idle` / `.error`（「已取消」由 `cancelledCount` 单独记录）。
     private final class Recorder {
+        var events: [String] = []
         var states: [AppState] = []
         var warnings: [String] = []
         var cancelledCount = 0
@@ -178,6 +197,55 @@ final class VoiceTyperControllerTests: XCTestCase {
         var notes: [VoiceTyperController.InsertionNote?] = []
         var secureRefusals = 0
         var previews: [String] = []
+        var completions: [VoiceTyperController.Completion] = []
+        var recognizedTexts: [String] = []
+        var correctionStartedCount = 0
+
+        func record(_ event: VoiceTyperController.Event) {
+            switch event {
+            case .phaseChanged(let phase):
+                events.append("phase:\(phase)")
+                states.append(phase.appState)
+            case .preview(let text):
+                previews.append(text)
+            case .warning(let message):
+                warnings.append(message)
+            case .audioLevel:
+                break
+            case .correctionStarted:
+                correctionStartedCount += 1
+            case .engineWait:
+                break
+            case .blocked(let reason):
+                blockedReasons.append(reason)
+            case .secureFieldRefused:
+                secureRefusals += 1
+            case .resultAvailable(let text, let kind):
+                events.append("result")
+                results.append((text, kind))
+            case .finished(let completion):
+                events.append("finished")
+                completions.append(completion)
+                switch completion {
+                case .inserted(let text, let note):
+                    recognizedTexts.append(text)
+                    notes.append(note)
+                    states.append(.idle)
+                case .empty:
+                    emptyRecognitionCount += 1
+                    states.append(.idle)
+                case .cancelled:
+                    cancelledCount += 1
+                case .silent:
+                    states.append(.idle)
+                case .error(let message):
+                    states.append(.error(message))
+                }
+            case .metrics(let value):
+                events.append("metrics")
+                metrics.append(value)
+            }
+        }
     }
 
     private func makeHarness(
@@ -232,16 +300,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         )
 
         let recorder = Recorder()
-        controller.onMetrics = { recorder.metrics.append($0) }
-        controller.onStateChange = { recorder.states.append($0) }
-        controller.onPreviewWarning = { recorder.warnings.append($0) }
-        controller.onCancelled = { recorder.cancelledCount += 1 }
-        controller.onEmptyRecognition = { recorder.emptyRecognitionCount += 1 }
-        controller.onBlockedAttempt = { recorder.blockedReasons.append($0) }
-        controller.onResultAvailable = { recorder.results.append(($0, $1)) }
-        controller.onInsertedWithNote = { recorder.notes.append($0) }
-        controller.onSecureFieldRefused = { recorder.secureRefusals += 1 }
-        controller.onPreviewUpdate = { recorder.previews.append($0) }
+        controller.onEvent = { recorder.record($0) }
         controller.blockedReason = blockedReasonBeforeStart
         try? controller.start()
 
@@ -256,7 +315,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 50_000_000)
     }
 
-    /// 按住超过 `VoiceTyperController.minimumRecordingDuration`（300ms），避免被短录音
+    /// 按住超过 `VoiceTyperController.minimumRecordingNanos`（300ms），避免被短录音
     /// 过滤逻辑当成误触丢弃——测试里除非明确想验证短录音丢弃，否则按下后都要等这个。
     private func holdPastMinimumDuration() async {
         try? await Task.sleep(nanoseconds: 350_000_000)
@@ -772,8 +831,6 @@ final class VoiceTyperControllerTests: XCTestCase {
     func testInsertedAndRecognizedTextAreFormatted() async {
         let harness = await makeHarness()
         harness.engine.script(text: "我用Python写代码")
-        var recognized: [String] = []
-        harness.controller.onRecognizedText = { recognized.append($0) }
 
         harness.hotkey.onPress?()
         await holdPastMinimumDuration()
@@ -781,7 +838,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 300_000_000)
 
         XCTAssertEqual(harness.textInsertion.insertedTexts, ["我用 Python 写代码"])
-        XCTAssertEqual(recognized, ["我用 Python 写代码"])
+        XCTAssertEqual(harness.recorder.recognizedTexts, ["我用 Python 写代码"])
         XCTAssertEqual(harness.results.map(\.text), ["我用 Python 写代码"])
         XCTAssertEqual(harness.results.map(\.kind), [.inserted])
         XCTAssertFalse(harness.hotkey.acceptsCancelWhenInactive, "正常收尾后必须关闭 Esc 取消窗口")
@@ -974,14 +1031,12 @@ final class VoiceTyperControllerTests: XCTestCase {
         defer { StubURLProtocol.handler = nil }
         let harness = await makeHarness(llmCorrector: makeGatedCorrector(gate: gate))
         harness.engine.script(text: "识别原文")
-        var correctionStarted = 0
-        harness.controller.onCorrectionStarted = { correctionStarted += 1 }
 
         harness.hotkey.onPress?()
         await holdPastMinimumDuration()
         harness.hotkey.onRelease?()
         try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(correctionStarted, 1)
+        XCTAssertEqual(harness.correctionStartedCount, 1)
         XCTAssertTrue(harness.textInsertion.insertedTexts.isEmpty)
 
         harness.hotkey.onPress?() // 校对中再按：跳过
@@ -1267,5 +1322,97 @@ final class VoiceTyperControllerTests: XCTestCase {
         XCTAssertEqual(harness.audio.stopWithoutResultCallCount, 1)
         XCTAssertEqual(harness.audio.stopCallCount, 0)
         XCTAssertEqual(harness.metrics.map(\.outcome), [.discarded])
+    }
+
+    // MARK: - R9：事件出口、会话身份与关键路径
+
+    /// 每段听写恰好一个结局：空结果只发 `.empty`，不再额外发一个会让浮窗立刻收起的「回到就绪」。
+    func testEmptyRecognitionFinishesExactlyOnceWithEmpty() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.completions, [.empty])
+        XCTAssertEqual(harness.states, [.recording, .recognizing, .idle])
+    }
+
+    /// 上一段被取消后，它迟到的尾音不能把新开始的这一段推进到「识别中」：
+    /// 否则新录音的松键被忽略，麦克风一直开到 120 秒上限。
+    func testStaleTailFromCancelledUtteranceDoesNotAffectNextRecording() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "第二段")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        let staleTail = harness.audio.onTailChunk
+        harness.hotkey.onCancel?()
+        harness.hotkey.onPress?()
+        staleTail?([])
+        await settle()
+
+        XCTAssertEqual(harness.states.last, .recording, "迟到的尾音不属于当前这段听写")
+        XCTAssertEqual(harness.audio.stopCallCount, 0)
+
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(harness.audio.stopCallCount, 1)
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["第二段"])
+    }
+
+    /// 松键后（补录期间）送来的音频不再发起预览：那次预览的结果反正会被丢弃，
+    /// 却会占住 asrQueue，让终稿排在它后面。
+    func testNoPreviewIsStartedAfterRelease() async {
+        let harness = await makeHarness(releaseTailCapture: 0.25)
+        harness.engine.script(text: "松键后不预览")
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?() // 进入补录，采集还在继续
+        harness.audio.onChunk?([Float](repeating: 0.3, count: 9_600))
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["松键后不预览"])
+        XCTAssertEqual(harness.metrics.first?.timings.previewRuns, 0)
+        XCTAssertTrue(harness.previews.allSatisfy(\.isEmpty), "不应出现任何预览文字：\(harness.previews)")
+    }
+
+    /// AX 回读在插入之后异步完成：结局先到，度量随回读结果后到，且恰好一条。
+    func testMetricsWaitForAsynchronousInsertVerification() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "回读")
+        harness.textInsertion.defersVerification = true
+        harness.textInsertion.verification = .ok
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.completions, [.inserted(text: "回读", note: nil)])
+        XCTAssertTrue(harness.metrics.isEmpty, "回读完成前不输出度量")
+
+        harness.textInsertion.completeVerification()
+        XCTAssertEqual(harness.metrics.count, 1)
+        XCTAssertEqual(harness.metrics.first?.insertVerify, .ok)
+        XCTAssertEqual(harness.recorder.events.suffix(2), ["finished", "metrics"])
+    }
+
+    /// AX 写入超时未确认：不能再粘贴一遍（目标应用随后处理完会出现两次），只复制到剪贴板并说明。
+    func testUnconfirmedInsertionCopiesToClipboardWithoutRetrying() async {
+        let harness = await makeHarness()
+        harness.engine.script(text: "可能稍后出现")
+        harness.textInsertion.result = .unconfirmed
+        harness.hotkey.onPress?()
+        await holdPastMinimumDuration()
+        harness.hotkey.onRelease?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(harness.textInsertion.insertedTexts, ["可能稍后出现"], "只尝试插入一次")
+        XCTAssertEqual(harness.textInsertion.copiedTexts, ["可能稍后出现"])
+        XCTAssertEqual(harness.results.map(\.kind), [.copiedInsertFailed])
+        XCTAssertEqual(harness.metrics.map(\.outcome), [.insertFailed])
+        guard case .error(let message) = harness.states.last else { return XCTFail("应以 .error 收尾") }
+        XCTAssertEqual(message, "目标应用响应太慢，文字可能稍后出现；结果已复制到剪贴板")
     }
 }

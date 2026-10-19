@@ -224,7 +224,8 @@ final class AttemptCounter: @unchecked Sendable {
 final class DownloadStubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
     /// 需要自定义响应头（分段下载要读 `Content-Range`）时用这个，优先于 `handler`。
-    nonisolated(unsafe) static var responseHandler: ((URLRequest) -> (Int, Data, [String: String]))?
+    /// 返回 nil 表示这次请求以网络错误失败。
+    nonisolated(unsafe) static var responseHandler: ((URLRequest) -> (Int, Data, [String: String])?)?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }

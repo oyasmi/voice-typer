@@ -11,25 +11,12 @@ protocol FocusInspecting: AnyObject {
 
 @MainActor
 final class AXFocusInspector: FocusInspecting {
-    /// 辅助功能查询是跨进程调用，目标应用无响应时默认要等数秒；这里在主线程上做，
-    /// 把单次查询压到 250ms 以内，超时按「取不到」处理。
-    private static let messagingTimeout: Float = 0.25
-
+    /// 辅助功能查询是跨进程调用，这里在主线程上做；超时（`AXMessaging.probeTimeout`）按「取不到」处理。
     func isFocusedElementSecure() -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-        let systemWide = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(systemWide, Self.messagingTimeout)
-
-        var focusedObject: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedObject) == .success,
-              let focusedObject,
-              CFGetTypeID(focusedObject) == AXUIElementGetTypeID() else {
+        guard AXIsProcessTrusted(),
+              let element = AXMessaging.focusedElement(timeout: AXMessaging.probeTimeout) else {
             return false
         }
-        // 上面已校验类型，强转是安全的。
-        let element = focusedObject as! AXUIElement
-        AXUIElementSetMessagingTimeout(element, Self.messagingTimeout)
-
         var subroleObject: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleObject) == .success,
               let subrole = subroleObject as? String else {

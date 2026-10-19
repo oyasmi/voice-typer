@@ -1,7 +1,6 @@
 import Foundation
 
-/// 跨线程读写的取消标志：`close()` 在 MainActor 上置位，asrQueue 上的推理闭包
-/// 在跑之前查询，用锁而非 `nonisolated(unsafe)` 做同步（N-01）。
+/// 跨线程读写的一次性标志：在 MainActor 上置位，asrQueue 上的推理闭包在跑之前查询（N-01）。
 private final class CancelFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false
@@ -30,7 +29,7 @@ enum EngineWaitStage: Equatable {
 /// 行为：
 /// - 有预览在跑就跳过（`previewInFlight`），跳过的音频在下次预览一并处理
 /// - partial 只在文本变化时下发
-/// - `isFinalizing` 后不再补发 partial
+/// - `stopPreviews()` / `isFinalizing` 后不再发起、也不再补发 partial
 /// - 预览异常 → `onWarning`，会话继续
 /// - 单段会话上限 → 一次性 `onWarning`，之后静默丢弃新音频
 /// - finalize → 离线整段识别 → （可选）LLM 校对 → `onFinal`
@@ -91,12 +90,16 @@ final class LocalASRSession {
     private static let previewMinimumNewSamples = 4_800
     /// 自上一次预览以来，是否收到过能量高于静音阈值的音频。
     ///
-    /// SenseVoice 非流式，预览靠"对已累积音频重跑"实现；如果这 600ms 全是静音，
-    /// 重跑一遍窗口只会得到和上次一样的结果——稳态下这是约 28% 单核的纯浪费，
-    /// 而用户思考停顿在口述里占比并不低。跳过它对结果没有任何影响：
-    /// 松手后的 `finalize()` 永远对完整音频整段重跑。
+    /// SenseVoice 非流式，预览靠"对已累积音频重跑"实现；两次预览之间全是静音时，
+    /// 重跑一遍窗口只会得到和上次一样的结果，纯属浪费，而用户思考停顿在口述里占比并不低。
+    /// 跳过它对结果没有任何影响：松手后的 `finalize()` 永远对完整音频整段重跑。
     private var hasSpeechSinceLastPreview = false
     private var isFinalizing = false
+    /// 用户已松键（或采集已结束），不再发起新的预览：此后的预览结果反正会被丢弃，
+    /// 却会占住串行的 asrQueue，让终稿排在它后面（`final_wait`）。
+    private var previewsStopped = false
+    /// 与 `previewsStopped` 同步置位，供已入队、尚未开跑的预览闭包短路。
+    private let previewStopFlag = CancelFlag()
     private var capped = false
     private var closed = false
     /// 与 `closed` 同步置位，供 asrQueue 闭包在跑推理前短路判断（F-07d）：
@@ -205,10 +208,19 @@ final class LocalASRSession {
         runFinalize(on: buffer)
     }
 
+    /// 松键（含补录开始）或采集结束时调用：不再发起新的预览，已入队但还没开跑的那次也跳过。
+    /// 已经在跑的预览无法中断（ORT 绑定没有 `SetTerminate`，见 DESIGN.md §11.1）。
+    func stopPreviews() {
+        guard !previewsStopped else { return }
+        previewsStopped = true
+        previewStopFlag.set()
+    }
+
     func close() {
         guard !closed else { return }
         closed = true
         cancelFlag.set()
+        previewStopFlag.set()
         finalizeWatchdog?.cancel()
         finalizeWatchdog = nil
         correctionTask?.cancel()
@@ -258,7 +270,7 @@ final class LocalASRSession {
     }
 
     private func schedulePreview() {
-        guard !isFinalizing, !previewInFlight, let buffer else { return }
+        guard !isFinalizing, !previewsStopped, !previewInFlight, let buffer else { return }
         // 这一轮没有新的语音：跳过整窗重跑，HUD 保持上一次的预览文本。
         guard hasSpeechSinceLastPreview else {
             timings.previewSkipped += 1
@@ -273,8 +285,10 @@ final class LocalASRSession {
         previewInFlight = true
         let clock = now
         let requestedAt = clock()
+        let stopFlag = previewStopFlag
         asrQueue.async { [weak self] in
-            if self?.cancelFlag.isSet == true { return }
+            // 松键后才轮到的预览直接放弃：previewInFlight 不必复位，此后不会再发起预览。
+            if stopFlag.isSet { return }
             let startedAt = clock()
             let result = Result { try buffer.preview() }
             let elapsed = clock() &- startedAt
@@ -287,7 +301,7 @@ final class LocalASRSession {
                 self.timings.previewMaxNanos = max(self.timings.previewMaxNanos, elapsed)
                 self.timings.previewDeliveredNanos &+= deliveredAt &- requestedAt
                 self.timings.previewDeliveredCount += 1
-                guard !self.closed, !self.isFinalizing else { return }
+                guard !self.closed, !self.isFinalizing, !self.previewsStopped else { return }
                 switch result {
                 case .success(let text):
                     if !text.isEmpty, text != self.lastPreview {

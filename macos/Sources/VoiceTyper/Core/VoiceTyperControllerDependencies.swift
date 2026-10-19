@@ -34,16 +34,16 @@ protocol AudioCapturing: AnyObject {
 protocol TextInserting: AnyObject {
     func insert(text: String, expectedFrontmostPID: pid_t?) -> TextInsertionResult
     func copyToClipboard(text: String)
-    /// 最近一次插入的 AX 回读判定（R8-A3a）；未走 AX 为 nil。
-    var lastInsertVerification: InsertionVerification? { get }
-    /// 进入识别阶段时提前备份剪贴板，返回耗时（纳秒）（R8-A5）。
+    /// 最近一次插入的 AX 回读判定（R8-A3a），稍后在主线程回调；未走 AX 时回调 nil。
+    func verifyLastInsertion(_ completion: @escaping (InsertionVerification?) -> Void)
+    /// 进入识别阶段时按需提前备份剪贴板，返回耗时（纳秒）；没有备份返回 nil（R8-A5）。
     @discardableResult func prepareForInsert() -> UInt64?
     /// 不再插入时丢弃提前备份。
     func discardPreparedBackup()
 }
 
 extension TextInserting {
-    var lastInsertVerification: InsertionVerification? { nil }
+    func verifyLastInsertion(_ completion: @escaping (InsertionVerification?) -> Void) { completion(nil) }
     func prepareForInsert() -> UInt64? { nil }
     func discardPreparedBackup() {}
 }

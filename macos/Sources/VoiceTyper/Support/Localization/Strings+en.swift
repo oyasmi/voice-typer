@@ -322,13 +322,17 @@ extension L10n {
 
         // MARK: - 听写流程 / 协调器
         "配置加载失败": "Failed to load configuration",
-        "配置文件解析失败，请检查 %@": "Could not parse the configuration file; please check %@",
+        "配置文件无法读取": "Could not read the configuration file",
+        "已暂时使用默认设置。原配置文件已另存为 %@，在设置里保存一次后会写入新的配置。":
+            "Default settings are in use for now. The original file was saved as %@; saving once in Settings writes a new configuration.",
         "应用未就绪": "The app is not ready",
         "上一段听写尚未完成": "The previous dictation is not finished",
         "输入设备已变化，本次录音已结束": "The input device changed; this recording has ended",
         "开始录音失败": "Failed to start recording",
         "没有检测到声音，请检查麦克风与输入设备": "No sound detected — check the microphone and input device",
         "目标窗口已变化，结果已复制到剪贴板": "The target window changed; the result was copied to the clipboard",
+        "目标应用响应太慢，文字可能稍后出现；结果已复制到剪贴板":
+            "The target app responded too slowly, so the text may still appear; the result was also copied to the clipboard",
         "插入失败，已复制到剪贴板，可手动粘贴":
             "Insertion failed; the result is on the clipboard and can be pasted manually",
         "语音模型还没准备好，无法开始听写。": "The speech model is not ready, so dictation cannot start.",

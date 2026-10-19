@@ -16,6 +16,24 @@ final class TextInsertionServiceTests: XCTestCase {
         }
     }
 
+    // MARK: - R8-A3a：回读判定（按字符数）
+
+    func testVerificationClassifiesByCharacterCountDelta() {
+        // 在插入点插入 4 个字符。
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: 14, expectedDelta: 4), .ok)
+        // 替换 2 个字符的选区：净增 2。
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: 12, expectedDelta: 2), .ok)
+        // AX 报告成功但控件没接受。
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: 10, expectedDelta: 4), .unchanged)
+        // 变了但不是预期的量（控件改写了换行、自动补全…）。
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: 20, expectedDelta: 4), .unknown)
+        // 读不到字符数。
+        XCTAssertEqual(InsertionVerification.classify(before: nil, after: 14, expectedDelta: 4), .unknown)
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: nil, expectedDelta: 4), .unknown)
+        // 等长替换选区：字符数不变也是成功。
+        XCTAssertEqual(InsertionVerification.classify(before: 10, after: 10, expectedDelta: 0), .ok)
+    }
+
     // MARK: - 连续粘贴兜底：pending 快照继承（避免覆盖用户最初的剪贴板）
 
     /// 临时恢复窗口内再次粘贴兜底，且剪贴板仍是上一段听写写入的临时文本、changeCount 未变：

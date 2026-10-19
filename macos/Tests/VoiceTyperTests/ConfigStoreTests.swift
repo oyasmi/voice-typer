@@ -113,4 +113,25 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(config.ui.hudPosition, .bottomCenter)
         XCTAssertEqual(config.asr.preloadOnLaunch, true)
     }
+
+    /// 读不出来的配置文件：另存一份备份、回落默认配置，而不是让应用停在错误态（与 Windows W5-04 一致）。
+    /// 原文件保持不动，直到下一次保存。
+    func testUnparsableConfigFallsBackToDefaultsAndKeepsBackup() throws {
+        try store.ensureDefaultFiles()
+        let broken = "asr: [\nthis is not yaml: : :\n"
+        try broken.write(to: store.configURL, atomically: true, encoding: .utf8)
+
+        let config = try store.loadOrCreate()
+
+        XCTAssertTrue(store.lastLoadFellBackToDefaults)
+        XCTAssertEqual(config.hotkey.key, "fn", "回落默认配置")
+        let backupURL = store.configDirectoryURL.appendingPathComponent(ConfigStore.brokenBackupFileName)
+        XCTAssertEqual(try String(contentsOf: backupURL, encoding: .utf8), broken, "备份与坏文件内容一致")
+        XCTAssertEqual(try String(contentsOf: store.configURL, encoding: .utf8), broken, "保存之前不动原文件")
+
+        // 用户保存一次之后，再读就正常了。
+        try store.save(config: config)
+        _ = try store.loadOrCreate()
+        XCTAssertFalse(store.lastLoadFellBackToDefaults)
+    }
 }

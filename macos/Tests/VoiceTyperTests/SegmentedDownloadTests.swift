@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import VoiceTyper
 
@@ -133,6 +134,71 @@ final class SegmentedDownloadTests: XCTestCase {
         XCTAssertEqual(rangeRequests.count, 0, "小文件不应该发起 Range 探测")
     }
 
+    // MARK: - 分块续传
+
+    /// 分段里的某次请求断了：只重试这一块，不放弃分段、也不从头再来。
+    func testFailedSegmentRequestIsRetriedWithoutFallingBack() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let content = Data((0..<100).map { UInt8($0) })
+        let digest = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
+        let spec = ModelDownloader.FileSpec(
+            name: "model_quant.onnx", sha256: digest, sizeHint: ModelDownloader.segmentedDownloadMinimumBytes + 1
+        )
+
+        let requestedRanges = RangeLog()
+        DownloadStubURLProtocol.responseHandler = { request in
+            guard let header = request.value(forHTTPHeaderField: "Range"),
+                  let bounds = Self.parseRange(header) else {
+                return (200, content, [:]) // 不该走到：分段成功时不会回落单连接
+            }
+            let isFirstAttempt = requestedRanges.record(header)
+            if header != "bytes=0-0", bounds.lowerBound == 50, isFirstAttempt {
+                return nil // 第三段的第一次请求断网
+            }
+            let body = content.subdata(in: Int(bounds.lowerBound)..<Int(bounds.upperBound + 1))
+            return (206, body, ["Content-Range": "bytes \(bounds.lowerBound)-\(bounds.upperBound)/\(content.count)"])
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        let downloader = ModelDownloader(sessionConfiguration: configuration, fileSpecs: [spec], downloadDestination: dir)
+
+        try await downloader.downloadAll { _ in }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(spec.name)), content)
+        XCTAssertEqual(requestedRanges.count(of: "bytes=50-74"), 2, "断掉的那一块重试一次")
+        XCTAssertEqual(requestedRanges.count(of: "bytes=0-24"), 1, "其他分段不受影响")
+    }
+
+    private nonisolated static func parseRange(_ header: String) -> ClosedRange<Int64>? {
+        let parts = header.replacingOccurrences(of: "bytes=", with: "").split(separator: "-")
+        guard parts.count == 2, let lower = Int64(parts[0]), let upper = Int64(parts[1]), lower <= upper else {
+            return nil
+        }
+        return lower...upper
+    }
+
     // MARK: - 常量自洽
 
+}
+
+/// 记录每个 Range 请求头出现的次数（URLProtocol 回调在后台线程）。
+private final class RangeLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    /// 记一次，返回这是不是该区间的第一次请求。
+    func record(_ header: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        counts[header, default: 0] += 1
+        return counts[header] == 1
+    }
+
+    func count(of header: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return counts[header] ?? 0
+    }
 }

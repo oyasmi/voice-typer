@@ -19,6 +19,8 @@ actor LLMCorrector {
     private let config: Config
     private let systemPrompt: String
     private let session: URLSession
+    /// 会话是不是自己建的：自己建的要在释放时失效，否则 URLSession 会一直留到进程退出。
+    private let ownsSession: Bool
     private let capabilityStore: any LLMCapabilityStoring
 
     /// 把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。
@@ -72,10 +74,20 @@ actor LLMCorrector {
         self.systemPrompt = Self.loadSystemPrompt()
         if let urlSession {
             self.session = urlSession
+            self.ownsSession = false
         } else {
             let sessionConfig = URLSessionConfiguration.ephemeral
+            // Request 超时只管"多久没收到数据"，Resource 超时才是单次请求的总时长上限。
             sessionConfig.timeoutIntervalForRequest = config.timeout
+            sessionConfig.timeoutIntervalForResource = config.timeout
             self.session = URLSession(configuration: sessionConfig)
+            self.ownsSession = true
+        }
+    }
+
+    deinit {
+        if ownsSession {
+            session.finishTasksAndInvalidate()
         }
     }
 
