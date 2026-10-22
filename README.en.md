@@ -34,6 +34,8 @@ can type.
   Chinese and English needs no switching.
 - **Stays out of the way**: never steals focus; press `Esc` to cancel at any time; recover what you said
   from the menu.
+- **Knows your words**: add names, product names and terms that keep getting misrecognized to a custom
+  vocabulary, and recognition leans toward those spellings — all on your machine.
 - **Optional AI proofreading**: connect any OpenAI-compatible service to fix homophones and slips of the
   tongue. Off by default.
 
@@ -98,9 +100,11 @@ this once.
 
 ### Can I switch models or add hotwords?
 
-The standalone apps focus on SenseVoice-Small; switching models and hotwords are not supported — a clear,
-dependable default matters more than a pile of unpolished options. For other models, use the
-[client–server version](client-server/README.md).
+You can add hotwords: on macOS, list the words that keep getting misrecognized in Settings → Vocabulary (see the
+[macOS guide](macos/README.en.md#custom-vocabulary)); the Windows app already supports the same recognition and
+replacement, with its settings page still in development. The standalone apps focus on SenseVoice-Small and do not
+support switching models — a clear, dependable default matters more than a pile of unpolished options. For other
+models, use the [client–server version](client-server/README.md).
 
 ### Is the Windows version stable?
 

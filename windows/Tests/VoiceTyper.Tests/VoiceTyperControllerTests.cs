@@ -139,7 +139,7 @@ public class VoiceTyperControllerTests
         public readonly List<FakeSession> Sessions = new();
         public int EndedCount;
 
-        public IDictationSession MakeSession(LlmCorrector? corrector)
+        public IDictationSession MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary)
         {
             var session = new FakeSession();
             Sessions.Add(session);

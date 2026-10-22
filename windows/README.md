@@ -142,7 +142,8 @@ API Key 用 Windows DPAPI 加密保存，只有当前用户能解密。
 
 ### 已知限制
 
-只使用 CPU 推理；只使用 SenseVoice-Small 模型，不支持更换模型或热词；左 Alt、Win、Shift 不能单独作为热键；
+只使用 CPU 推理；只使用 SenseVoice-Small 模型，不支持更换模型；自定义词汇（热词）的识别能力已就绪，但设置界面尚未提供
+（macOS 版已有，Windows 版后续补上；急需的高级用户可按 [开发说明](DEVELOPMENT.md#配置文件) 在配置文件里手写，重启生效）；左 Alt、Win、Shift 不能单独作为热键；
 识别始终在本机运行，不支持远程服务端（有这类需求请使用[客户端—服务端版本](../client-server/README.md)）。
 
 ## 卸载

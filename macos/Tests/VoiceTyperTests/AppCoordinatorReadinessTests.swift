@@ -145,4 +145,15 @@ final class AppCoordinatorReadinessTests: XCTestCase {
             XCTAssertTrue(AppCoordinator.requiresControllerRebuild(from: AppConfig(), to: updated, llmAPIKeyChanged: false))
         }
     }
+
+    /// 替换层在控制器构造时编译（VOC-7）：改词条或偏置强度都要重建才会生效。
+    func testVocabularyChangeRebuildsController() {
+        var entries = AppConfig()
+        entries.vocabulary.entries = [VocabularyEntry(term: "Claude", aliases: ["克劳德"])]
+        var bias = AppConfig()
+        bias.vocabulary.bias = .strong
+        for updated in [entries, bias] {
+            XCTAssertTrue(AppCoordinator.requiresControllerRebuild(from: AppConfig(), to: updated, llmAPIKeyChanged: false))
+        }
+    }
 }

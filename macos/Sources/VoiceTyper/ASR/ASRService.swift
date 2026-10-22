@@ -55,6 +55,14 @@ final class ASRService {
     private nonisolated(unsafe) var _engine: (any SenseVoiceRecognizing)?
 
     private var config = ASRConfig()
+    private var vocabulary = VocabularyConfig()
+    /// 只接受最新一次编译的报告：两次编辑的报告可能交错回到主线程。
+    private var vocabularyGeneration = 0
+    /// 最近一次词汇编译报告；引擎还没加载过时为 nil（设置页状态列显示「—」）。
+    private(set) var vocabularyReport: HotwordCompileReport? {
+        didSet { onVocabularyReport?(vocabularyReport) }
+    }
+    var onVocabularyReport: ((HotwordCompileReport?) -> Void)?
     private let idleScheduler: IdleUnloadScheduling
     private var loadGeneration = 0
     /// `preload()`/`reload()` 的互斥标志：两者都可能各自触发 `load()`，若不guard，
@@ -110,6 +118,23 @@ final class ASRService {
             }
         } else {
             scheduleIdleUnloadIfNeeded()
+        }
+    }
+
+    /// 词汇表变化时调用：与语言一样热更新到已加载的引擎，不重新加载模型（VOC-2）。
+    /// 引擎未加载时只记下，`load()` 完成时补一次。编译在 asrQueue 上执行，报告回到主线程。
+    func updateVocabulary(_ newVocabulary: VocabularyConfig) {
+        guard newVocabulary != vocabulary else { return }
+        vocabulary = newVocabulary
+        vocabularyGeneration += 1
+        let generation = vocabularyGeneration
+        asrQueue.async { [weak self] in
+            guard let self, let engine = self.currentEngine() else { return }
+            let report = engine.setVocabulary(newVocabulary)
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.vocabularyGeneration else { return }
+                self.vocabularyReport = report
+            }
         }
     }
 
@@ -216,9 +241,17 @@ final class ASRService {
             // 最新 config.language 重放一次，保证无论期间发生过什么，最终生效的语言
             // 一定是最新配置。
             let latestLanguage = config.language
+            // 词汇同理：加载期间的 `updateVocabulary` 可能作用在 nil 引擎上，这里用最新值重放一次。
+            let latestVocabulary = vocabulary
+            let vocabularyGeneration = vocabularyGeneration
             asrQueue.async { [weak self] in
                 self?.setEngine(built)
                 built.setLanguage(latestLanguage)
+                let report = built.setVocabulary(latestVocabulary)
+                Task { @MainActor [weak self] in
+                    guard let self, vocabularyGeneration == self.vocabularyGeneration else { return }
+                    self.vocabularyReport = report
+                }
             }
             state = .ready
             scheduleIdleUnloadIfNeeded()
@@ -258,7 +291,11 @@ final class ASRService {
     /// 创建一次录音会话。若引擎当前未加载（首次使用、或刚从空闲卸载中恢复），
     /// 会异步触发重新加载并与录音并行——用户通常正在说第一句话，
     /// 加载耗时（约 0.85s）对感知延迟几乎不可见。
-    func makeSession(llmCorrector: LLMCorrector?, now: @escaping MonotonicClock = systemMonotonicClock) -> LocalASRSession {
+    func makeSession(
+        llmCorrector: LLMCorrector?,
+        vocabulary: VocabularyReplacer = .empty,
+        now: @escaping MonotonicClock = systemMonotonicClock
+    ) -> LocalASRSession {
         if state != .ready && state != .loading {
             Task { await preload() }
         }
@@ -267,6 +304,7 @@ final class ASRService {
             asrQueue: asrQueue,
             engineAccessor: { [weak self] in self?.currentEngine() },
             llmCorrector: llmCorrector,
+            vocabulary: vocabulary,
             engineUnavailable: { [weak self] in
                 // 加载失败或模型缺失时引擎不可能自己变好，终稿不必空等（R8-A1）。
                 switch self?.state {

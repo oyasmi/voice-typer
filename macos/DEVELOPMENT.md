@@ -15,7 +15,10 @@ VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting）
                        ├── FbankFrontend（Accelerate/vDSP，Kaldi 兼容 fbank）
                        ├── LFRCMVN
                        ├── ORTSession（onnxruntime-swift-package-manager）
-                       └── CTCDecoder + TextPostprocessor
+                       ├── CTCDecoder（无词汇时，贪心）
+                       ├── Hotword/：HotwordCompiler + ContextGraph + CTCPrefixBeamSearch（有词汇时，热词偏置束搜索）
+                       └── TextPostprocessor
+VocabularyReplacer（词汇替换层，LocalASRSession 与 OutputFormatter 各调用一次）
 ```
 
 识别管线（fbank → LFR/CMVN → CTC 解码）移植自
@@ -87,7 +90,23 @@ xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platfo
 - 端到端测试用编辑距离而非逐字相等验收：Python 与 macOS 使用两套独立编译的 ONNX Runtime，
   个别模棱两可的 token 可能因浮点求和顺序翻转（如英文大小写），详见 [`DESIGN.md`](DESIGN.md) §8。
 - 中英文空格规则读共享夹具 `Fixtures/text_format_cases.json`，修改规则时两个平台同步。
+- 自定义词汇的替换层与束搜索读共享夹具 `Fixtures/vocabulary_cases.json`、`Fixtures/ctc_hotword_cases.json`，
+  Windows 同读这两份；规则变更先改 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)。
+  `EndToEndRecognitionTests.testIrrelevantVocabularyKeepsOutputIdentical` 钉死「50 条无关词汇、最强档时输出与贪心逐字相同」。
 - 涉及热键、权限、麦克风、剪贴板、浮窗的改动，单测之外还要给出手工验证步骤（记录在 `DESIGN.md`）。
+
+### 热词离线评估（调参用，默认跳过）
+
+`HotwordEvaluationTests` 用来校准识别偏向的三档参数。准备一个目录（不入库）：若干 16kHz 单声道
+`*.wav` 与同名 `*.txt`（期望文本），外加一份 `vocabulary.yaml`（顶层写 `entries:`，格式见下文「配置文件」的 `vocabulary` 段）：
+
+```bash
+VT_HOTWORD_EVAL_DIR=~/vt-eval xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper \
+  -destination 'platform=macOS' test -only-testing:VoiceTyperTests/HotwordEvaluationTests
+```
+
+对关 / 轻 / 标准 / 强四档输出召回、误触发、字错误率与平均解码耗时（只含数字与文件名）。建议挑 10–20 个真实会
+认错的词，每个各录 3 句含它的话，另录 30 句不含任何词条的日常话测误触发；校准目标是标准档误触发为 0、召回尽量高。
 
 ## 配置文件
 
@@ -122,7 +141,17 @@ ui:
   opacity: 0.85
   hud_position: "bottom_center"   # bottom_center / bottom_right / near_cursor / hidden
   interface_language: "zh"        # zh / en，重启后生效
+vocabulary:                       # 自定义词汇（docs/VOCABULARY_SPEC.md），Windows 同一 schema
+  bias: "standard"                # off / light / standard / strong；未知值回落 standard
+  entries:
+    - term: "Claude"              # 正确写法；≤ 50 字符
+      aliases: ["克劳德"]          # 听起来像，≤ 10 个；可省略
+    - term: "张三丰"
 ```
+
+`vocabulary` 段手写时可以简写：`- 张三丰`（只有 term），`aliases: "克劳德"`（单个字符串）。读取时逐条规整：
+去首尾空白、内部空白收敛为一个空格，空 term 丢弃，与 term 相同或重复的 alias 丢弃（不区分大小写），同名 term
+合并，超过 200 条截断。日志只记条数，不记词条文本。
 
 「引导是否完成」等一次性状态存在 `UserDefaults`，不在配置文件里。
 
@@ -154,6 +183,9 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metri
 | `tail_speech` | 松键那一刻是否仍在说话 |
 | `insert_verify` / `clip_backup` | AX 插入回读判定（按写入前后的字符数）/ 提前备份剪贴板耗时（预判走 AX 不备份时为 `-`） |
 | `input` / `cold` | 实际输入设备类别（`builtin*` 表示自动改用内置麦克风）/ 引擎是否冷加载 |
+| `decode_mode` / `vocab_hits` / `decode_ms` | 终稿解码方式（`greedy` = 无词汇，`beam` = 热词束搜索）/ 最优路径上的热词命中次数 / CTC 解码耗时（一位小数） |
+
+词汇编译另有一行 `asr` 日志：`词汇已编译：entries=… sequences=… biased=… too_short=… unsupported=… truncated=… bias=… 耗时=…ms`。
 
 重置权限（调试授权流程时）：
 

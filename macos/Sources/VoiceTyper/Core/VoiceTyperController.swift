@@ -123,6 +123,8 @@ final class VoiceTyperController {
     private let config: AppConfig
     private let asrService: ASRService
     private let llmCorrector: LLMCorrector?
+    /// 由 `config.vocabulary` 编译；词汇变化会重建控制器（`AppCoordinator.requiresControllerRebuild`）。
+    private let vocabularyReplacer: VocabularyReplacer
     private let hotkeyService: HotkeyListening
     private let audioCaptureService: AudioCapturing
     /// 内部可见仅为测试断言「协调器重建控制器后仍是同一个插入服务」（R8-A2）。
@@ -234,6 +236,7 @@ final class VoiceTyperController {
         self.focusInspector = focusInspector
         self.finalizeWatchdogTimeoutProvider = finalizeWatchdogTimeout
         self.config = config
+        self.vocabularyReplacer = VocabularyReplacer(config.vocabulary)
         self.asrService = asrService
         self.hotkeyService = hotkeyService
         self.audioCaptureService = audioCaptureService
@@ -589,7 +592,7 @@ final class VoiceTyperController {
     // MARK: - 识别路径
 
     private func beginDictationSession(pressedAt: UInt64) {
-        let session = asrService.makeSession(llmCorrector: llmCorrector, now: now)
+        let session = asrService.makeSession(llmCorrector: llmCorrector, vocabulary: vocabularyReplacer, now: now)
         nextUtteranceID &+= 1
         let id = nextUtteranceID
         let utterance = Utterance(
@@ -610,7 +613,7 @@ final class VoiceTyperController {
             guard let self, let utterance = self.activeUtterance(id) else { return }
             // previewText 保存原始文本（供识别失败时兜底）；浮窗显示的是上屏用的格式化文本（R8-F2）。
             utterance.previewText = text
-            self.emit(.preview(OutputFormatter.formatForOutput(text)))
+            self.emit(.preview(OutputFormatter.formatForOutput(text, vocabulary: self.vocabularyReplacer)))
         }
         session.onFinal = { [weak self] text in
             guard let self, self.activeUtterance(id) != nil else { return }
@@ -760,7 +763,7 @@ final class VoiceTyperController {
             if isRunning {
                 AppLog.audio.info("用户取消录音")
                 if !partial.isEmpty {
-                    emit(.resultAvailable(OutputFormatter.formatForOutput(partial), .cancelled))
+                    emit(.resultAvailable(OutputFormatter.formatForOutput(partial, vocabulary: vocabularyReplacer), .cancelled))
                 }
                 emit(.finished(.cancelled))
             }
@@ -808,7 +811,7 @@ final class VoiceTyperController {
             emit(.finished(.error(message)))
             return
         }
-        let output = OutputFormatter.formatForOutput(partial)
+        let output = OutputFormatter.formatForOutput(partial, vocabulary: vocabularyReplacer)
         if timedOut {
             textInsertionService.copyToClipboard(text: output)
             emit(.resultAvailable(output, .partialAfterTimeout))
@@ -837,7 +840,7 @@ final class VoiceTyperController {
         guard isRunning else { return .discarded }
 
         // 上屏用的最终文本：位于识别契约之后的确定性格式化（R8-F2），与是否启用 LLM 无关。
-        let output = OutputFormatter.formatForOutput(trimmed)
+        let output = OutputFormatter.formatForOutput(trimmed, vocabulary: vocabularyReplacer)
 
         // toggle 模式录音中途焦点可能移到了密码框：同一应用内的切换 PID 校验发现不了（R8-B2）。
         if focusInspector.isFocusedElementSecure() {

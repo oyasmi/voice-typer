@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "description": "自定义词汇替换层（VocabularyReplacer）的共享用例（macOS Swift 与 Windows C# 两边的测试读同一份）。input 是 TextPostprocessor 之后的文本，expected 是替换后、加中英文空格之前的文本；formatted 若给出，是 formatForOutput 的完整输出。规则变更须先改 macos/docs/VOCABULARY_SPEC.md；既有用例的期望值不得删改。",
+  "groups": [
+    {
+      "name": "spec_examples",
+      "vocabulary": [
+        {"term": "Claude", "aliases": ["克劳德"]},
+        {"term": "VoiceTyper"},
+        {"term": "GPT-4o"},
+        {"term": "张三丰", "aliases": ["张三峰"]}
+      ],
+      "cases": [
+        {"input": "用克劳德写一个voice typer的插件", "expected": "用Claude写一个VoiceTyper的插件", "formatted": "用 Claude 写一个 VoiceTyper 的插件", "note": "规格示例：alias→term，英文空格与大小写归一"},
+        {"input": "voice-typer", "expected": "VoiceTyper", "note": "拆词处允许连字符"},
+        {"input": "Voice Typer", "expected": "VoiceTyper", "note": "拆词处允许空格"},
+        {"input": "voicetyper", "expected": "VoiceTyper", "note": "合写、小写"},
+        {"input": "VOICETYPER真好用", "expected": "VoiceTyper真好用", "note": "全大写"},
+        {"input": "试试gpt 4o", "expected": "试试GPT-4o", "note": "原写法的连字符处允许空格"},
+        {"input": "GPT4o的价格", "expected": "GPT-4o的价格", "note": "原写法的连字符处允许省略"},
+        {"input": "我是张三峰", "expected": "我是张三丰", "note": "同音别字 alias"},
+        {"input": "张三丰来了", "expected": "张三丰来了", "note": "已经正确，原样"},
+        {"input": "Claudette和claude", "expected": "Claudette和Claude", "note": "词边界：Claudette 不替换"},
+        {"input": "myclaude", "expected": "myclaude", "note": "词边界：前面紧跟字母不替换"},
+        {"input": "claude3", "expected": "claude3", "note": "词边界：后面紧跟数字不替换"},
+        {"input": "克劳德code", "expected": "Claude code", "note": "汉字 alias 换成英文 term 时不与相邻英文粘连"},
+        {"input": "克劳德克劳德", "expected": "Claude Claude", "note": "两个相邻替换之间同样补空格"},
+        {"input": "", "expected": "", "note": "空串"}
+      ]
+    },
+    {
+      "name": "term_protection",
+      "vocabulary": [
+        {"term": "Claude Code", "aliases": ["Claude"]}
+      ],
+      "cases": [
+        {"input": "Claude Code 很好用", "expected": "Claude Code 很好用", "note": "已是 term 时 alias 不再命中，不会变成 Claude Code Code"},
+        {"input": "打开claude", "expected": "打开Claude Code", "note": "alias→term"},
+        {"input": "claudecode", "expected": "Claude Code", "note": "term 自身的空格可省略"}
+      ]
+    },
+    {
+      "name": "cross_entry",
+      "vocabulary": [
+        {"term": "Claude", "aliases": ["克劳德"]},
+        {"term": "Claude Code"},
+        {"term": "飞书", "aliases": ["非书"]},
+        {"term": "Lark", "aliases": ["飞书"]}
+      ],
+      "cases": [
+        {"input": "克劳德code", "expected": "Claude Code", "note": "替换产生的新相邻关系在下一轮统一（结果是不动点）"},
+        {"input": "发到非书", "expected": "发到飞书", "note": "不链式替换：飞书 是 term，同长度时 term 优先，不会再变成 Lark"},
+        {"input": "发到飞书", "expected": "发到飞书", "note": "同上：别的词条的 alias 不改动已是 term 的文本"}
+      ]
+    },
+    {
+      "name": "mixed_script",
+      "vocabulary": [
+        {"term": "小米SU7"},
+        {"term": "C++"},
+        {"term": "iPhone 15", "aliases": ["爱疯15"]}
+      ],
+      "cases": [
+        {"input": "小米 su7", "expected": "小米SU7", "note": "汉字与 ASCII 交界处允许 0–1 个空白"},
+        {"input": "小米su 7", "expected": "小米SU7", "note": "字母↔数字处允许空格"},
+        {"input": "学c++", "expected": "学C++", "note": "标点逐字匹配"},
+        {"input": "iphone15和爱疯15", "expected": "iPhone 15和iPhone 15", "note": "term 的空格可省略；alias 替换"},
+        {"input": "iphone  15", "expected": "iphone  15", "note": "最多允许 1 个空白"}
+      ]
+    },
+    {
+      "name": "empty_vocabulary",
+      "vocabulary": [],
+      "cases": [
+        {"input": "用克劳德写voice typer", "expected": "用克劳德写voice typer", "note": "空词汇表原样返回"}
+      ]
+    }
+  ]
+}

@@ -11,7 +11,11 @@ internal sealed class ConfigStore
 {
     private static readonly IDeserializer _deserializer = new DeserializerBuilder()
         .IgnoreUnmatchedProperties()
+        .WithTypeConverter(new VocabularyEntryYamlConverter())
         .Build();
+
+    /// <summary>与 <see cref="LoadOrCreate"/> 同一套反序列化规则（含词条的容错读取），供测试复用。</summary>
+    internal static IDeserializer Deserializer => _deserializer;
 
     public string ConfigDirectory => AppConstants.ConfigDirectory;
     public string ConfigPath => AppConstants.ConfigFilePath;
@@ -43,6 +47,7 @@ internal sealed class ConfigStore
             cfg.Hotkey ??= new HotkeyConfig();
             cfg.Audio ??= new AudioConfig();
             cfg.UI ??= new UIConfig();
+            cfg.Vocabulary ??= new VocabularyConfig();
             return cfg.Validated();
         }
         catch (Exception ex)
@@ -99,6 +104,10 @@ internal sealed class ConfigStore
         var modifiersBlock = config.Hotkey.Modifiers.Count == 0
             ? "  modifiers: []"
             : "  modifiers:\n" + string.Join("\n", config.Hotkey.Modifiers.Select(m => $"    - {YamlString(m)}"));
+        var entriesBlock = config.Vocabulary.Entries.Count == 0
+            ? "  entries: []"
+            : "  entries:\n" + string.Join("\n", config.Vocabulary.Entries.Select(e =>
+                $"    - term: {YamlString(e.Term)}\n      aliases: [{string.Join(", ", e.Aliases.Select(YamlString))}]"));
 
         return string.Join("\n",
             "asr:",
@@ -125,6 +134,9 @@ internal sealed class ConfigStore
             $"  opacity: {YamlNumber(config.UI.Opacity)}",
             $"  hud_position: {YamlString(config.UI.HudPosition)}",
             $"  interface_language: {YamlString(config.UI.InterfaceLanguage)}",
+            "vocabulary:",
+            $"  bias: {YamlString(config.Vocabulary.Bias)}",
+            entriesBlock,
             ""
         );
     }

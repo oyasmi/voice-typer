@@ -45,5 +45,10 @@
          两平台规则只能一起改。不同于上面的金标准，这份是必需的——缺失时测试直接失败，而不是跳过。 -->
     <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\text_format_cases.json"
           Link="Fixtures\text_format_cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 自定义词汇（VOC-7 替换层、VOC-5 束搜索）的共享用例，规则见 macos/docs/VOCABULARY_SPEC.md。同样是必需夹具。 -->
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\vocabulary_cases.json"
+          Link="Fixtures\vocabulary_cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\ctc_hotword_cases.json"
+          Link="Fixtures\ctc_hotword_cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

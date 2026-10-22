@@ -26,6 +26,13 @@ actor LLMCorrector {
     /// 把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。
     private static func wrap(_ text: String) -> String { "<asr_text>\n\(text)\n</asr_text>" }
 
+    /// 最后一条 user 消息：有词表时放在 `<asr_text>` 之前（VOC-8）。system prompt 与 few-shot 不变，保住前缀缓存；
+    /// 空词表时与没有这项功能时逐字节相同。
+    static func userMessage(_ text: String, glossary: [String]) -> String {
+        guard !glossary.isEmpty else { return wrap(text) }
+        return "<glossary>\(glossary.joined(separator: "、"))</glossary>\n" + wrap(text)
+    }
+
     /// few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束模型行为。
     /// 内容固定，可命中 LLM 前缀缓存；每次请求只有末尾一条 user 消息变化。
     ///
@@ -172,10 +179,11 @@ actor LLMCorrector {
         await correctWithReport(text).outcome
     }
 
-    func correctWithReport(_ text: String) async -> CorrectionReport {
+    /// - Parameter glossary: 用户词汇表的 term（VOC-8），只放 term、不放 aliases（aliases 已被替换层处理）。
+    func correctWithReport(_ text: String, glossary: [String] = []) async -> CorrectionReport {
         var usage = ThinkingParameterUsage.sent
         do {
-            let outcome = try await correctOrThrow(text, probeFresh: false, usage: &usage)
+            let outcome = try await correctOrThrow(text, glossary: glossary, probeFresh: false, usage: &usage)
             if case .fellBack = outcome {
                 return CorrectionReport(outcome: outcome, thinkingParameter: usage, fallbackReason: .emptyResult)
             }
@@ -195,14 +203,14 @@ actor LLMCorrector {
     /// 总是忽略缓存、先带 `thinking` 字段探测：用户换了服务或服务升级后，点一次测试就能纠正缓存。
     func test(_ text: String) async throws -> TestResult {
         var usage = ThinkingParameterUsage.sent
-        let outcome = try await correctOrThrow(text, probeFresh: true, usage: &usage)
+        let outcome = try await correctOrThrow(text, glossary: [], probeFresh: true, usage: &usage)
         return TestResult(text: outcome.text, thinkingParameter: usage)
     }
 
     /// 请求体。`thinking: {"type": "disabled"}` 是火山方舟、智谱等服务的混合推理模型
     /// 关闭深度思考的写法；不支持的服务会以 400/422 拒绝，由 `correctOrThrow` 去掉字段重发。
     static func buildPayload(
-        config: Config, systemPrompt: String, text: String, includeThinking: Bool
+        config: Config, systemPrompt: String, text: String, includeThinking: Bool, glossary: [String] = []
     ) -> [String: Any] {
         // 校对输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         // 中文大致 1 字 ≈ 1~2 token，留足冗余。
@@ -210,7 +218,7 @@ actor LLMCorrector {
 
         var messages: [[String: String]] = [["role": "system", "content": systemPrompt]]
         messages.append(contentsOf: fewShotMessages)
-        messages.append(["role": "user", "content": wrap(text)])
+        messages.append(["role": "user", "content": userMessage(text, glossary: glossary)])
 
         var payload: [String: Any] = [
             "model": config.model,
@@ -228,7 +236,7 @@ actor LLMCorrector {
     /// - `.corrected` 模型给出非空校对文本；
     /// - `.fellBack` 语义回落原文（`finish_reason==length` 截断、空 content、剥标签后为空）。
     private func correctOrThrow(
-        _ text: String, probeFresh: Bool, usage: inout ThinkingParameterUsage
+        _ text: String, glossary: [String], probeFresh: Bool, usage: inout ThinkingParameterUsage
     ) async throws -> CorrectionOutcome {
         let fingerprint = LLMCapabilityFingerprint.make(chatURL: config.chatCompletionsURL, model: config.model)
         let startedAt = Date()
@@ -236,11 +244,11 @@ actor LLMCorrector {
 
         if !probeFresh, capabilityStore.isThinkingParameterUnsupported(fingerprint: fingerprint) {
             usage = .omittedByCache
-            data = try await send(text: text, includeThinking: false, timeout: config.timeout)
+            data = try await send(text: text, glossary: glossary, includeThinking: false, timeout: config.timeout)
         } else {
             usage = .sent
             do {
-                data = try await send(text: text, includeThinking: true, timeout: config.timeout)
+                data = try await send(text: text, glossary: glossary, includeThinking: true, timeout: config.timeout)
                 if probeFresh {
                     capabilityStore.setThinkingParameterUnsupported(false, fingerprint: fingerprint)
                 }
@@ -249,7 +257,7 @@ actor LLMCorrector {
                 usage = .rejectedThenOmitted
                 // 重发只吃"剩余预算"，保证整体不会比用户设置的超时多出太多。
                 let remaining = max(1, config.timeout - Date().timeIntervalSince(startedAt))
-                data = try await send(text: text, includeThinking: false, timeout: remaining)
+                data = try await send(text: text, glossary: glossary, includeThinking: false, timeout: remaining)
             }
         }
         return try Self.parseOutcome(data, original: text)
@@ -258,9 +266,11 @@ actor LLMCorrector {
     /// 发送一次请求并返回 2xx 响应体。
     /// 400/422 且响应体提到 `thinking`（只在本次确实带了该字段时判定）→ `thinkingParameterRejected`。
     /// 响应体只用于判定，绝不写日志。
-    private func send(text: String, includeThinking: Bool, timeout: TimeInterval) async throws -> Data {
+    private func send(
+        text: String, glossary: [String], includeThinking: Bool, timeout: TimeInterval
+    ) async throws -> Data {
         let payload = Self.buildPayload(
-            config: config, systemPrompt: systemPrompt, text: text, includeThinking: includeThinking
+            config: config, systemPrompt: systemPrompt, text: text, includeThinking: includeThinking, glossary: glossary
         )
         var request = URLRequest(url: config.chatCompletionsURL)
         request.httpMethod = "POST"

@@ -43,4 +43,10 @@ final class OutputFormatterTests: XCTestCase {
         }
     }
 
+    /// VOC-7 处理链：词汇替换在中英文空格之前，否则 `用克劳德写` 换成 `用Claude写` 后就没人补空格了。
+    func testVocabularyReplacementRunsBeforeSpacing() {
+        let vocabulary = VocabularyReplacer(VocabularyConfig(entries: [VocabularyEntry(term: "Claude", aliases: ["克劳德"])]))
+        XCTAssertEqual(OutputFormatter.formatForOutput("用克劳德写", vocabulary: vocabulary), "用 Claude 写")
+        XCTAssertEqual(OutputFormatter.formatForOutput("用Python写", vocabulary: .empty), "用 Python 写", "空词汇表时与此前一致")
+    }
 }

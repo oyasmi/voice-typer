@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using VoiceTyper.Asr.Hotword;
 using VoiceTyper.Core;
 using VoiceTyper.Llm;
 using VoiceTyper.Support;
@@ -36,6 +37,8 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// 找不到模型时为 null。设置页据此显示真实路径，而不是一律显示下载目录。</summary>
     public string? ModelDirectory { get; private set; }
     public Action<AsrState>? OnStateChange;
+    /// <summary>最近一次词汇编译报告；引擎还没加载过时为 null。在 UI 线程更新。</summary>
+    public HotwordCompileReport? VocabularyReport { get; private set; }
 
     private readonly AsrPump _pump;
     private readonly Func<string, ModelBundle?> _locate;
@@ -49,6 +52,9 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     private readonly object _engineLock = new();
     private IAsrEngine? _engine;
     private AsrConfig _config = new();
+    private VocabularyConfig _vocabulary = new();
+    /// <summary>只接受最新一次编译的报告：两次更新的报告可能交错回到 UI 线程。只在 UI 线程读写。</summary>
+    private int _vocabularyGeneration;
     private IDisposable? _idleTimer;
     private int _loadGeneration;
     /// <summary>当前存活（尚未 Close）的会话数。UI 线程写、pump 线程读，所以用 Volatile/Interlocked。
@@ -114,6 +120,27 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         rtf > 0
             ? Math.Clamp((int)(PreviewBudgetSeconds / rtf + 1e-6), PreviewWindowMinSeconds, PreviewWindowMaxSeconds)
             : PreviewWindowMaxSeconds;
+
+    /// <summary>
+    /// 词汇表变化时调用：与语言一样热更新到已加载的引擎，不重新加载模型（VOC-2）。引擎未加载时只记下，
+    /// <see cref="LoadAsync"/> 完成时补一次。编译在 AsrPump 上执行，报告回到 UI 线程。
+    /// </summary>
+    public void UpdateVocabulary(VocabularyConfig newVocabulary)
+    {
+        if (_vocabulary.ContentEquals(newVocabulary)) return;
+        _vocabulary = newVocabulary.Clone();
+        var snapshot = _vocabulary.Clone();
+        var generation = ++_vocabularyGeneration;
+        _pump.Post(() =>
+        {
+            if (CurrentEngine() is not { } engine) return;
+            var report = engine.SetVocabulary(snapshot);
+            UiDispatcher.Post(() =>
+            {
+                if (generation == _vocabularyGeneration) VocabularyReport = report;
+            });
+        });
+    }
 
     /// <summary>配置变化时调用：语言变化直接热更新引擎；模型目录/线程数变化触发重新加载。</summary>
     public void UpdateConfig(AsrConfig newConfig)
@@ -255,7 +282,8 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// 创建一次录音会话。若引擎当前未加载（首次使用、或刚从空闲卸载中恢复），会异步触发
     /// 重新加载并与录音并行——用户通常正在说第一句话，加载耗时对感知延迟几乎不可见。
     /// </summary>
-    public LocalAsrSession MakeSession(LlmCorrector? llmCorrector)
+    /// <param name="vocabulary">替换层快照（VOC-7）；听写中不会改配置，快照即可。</param>
+    public LocalAsrSession MakeSession(LlmCorrector? llmCorrector, VocabularyReplacer? vocabulary = null)
     {
         // SuspendedForIdle 下引擎已被 Dispose 且引用置 null，必须真正发起加载，
         // 否则空闲十分钟后每一次听写都拿不到引擎（R2-2）。
@@ -267,6 +295,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         CancelIdleTimer();
         Interlocked.Increment(ref _activeSessions);
         return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, EffectivePreviewWindowSamples,
+            vocabulary: vocabulary ?? VocabularyReplacer.Empty,
             engineLoadError: () => State switch
             {
                 AsrState.Failed => FailureMessage ?? L10n.T("模型加载失败"),
@@ -276,7 +305,8 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
             onClosed: () => Interlocked.Decrement(ref _activeSessions));
     }
 
-    IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector) => MakeSession(corrector);
+    IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary) =>
+        MakeSession(corrector, vocabulary);
 
     /// <summary>录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。</summary>
     public void SessionEnded()
@@ -334,11 +364,16 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
             // reload 才会生效（R4-13）。用装载完成这一刻的最新 _config.LanguageValue 重放一次，
             // 保证无论期间发生过什么，最终生效的语言一定是最新配置。
             var latestLanguage = _config.LanguageValue;
-            await _pump.PostAsync(() =>
+            // 词汇同理：加载期间的 UpdateVocabulary 可能作用在 null 引擎上，这里用最新值重放一次。
+            var latestVocabulary = _vocabulary.Clone();
+            var vocabularyGeneration = _vocabularyGeneration;
+            var report = await _pump.PostAsync(() =>
             {
                 SetEngine(built);
                 built.SetLanguage(latestLanguage);
+                return built.SetVocabulary(latestVocabulary);
             }).ConfigureAwait(true);
+            if (vocabularyGeneration == _vocabularyGeneration) VocabularyReport = report;
 
             _ = CalibratePreviewWindowIfNeededAsync(built, $"{bundle.OnnxFilePath}|{threads}");
             SetState(AsrState.Ready);

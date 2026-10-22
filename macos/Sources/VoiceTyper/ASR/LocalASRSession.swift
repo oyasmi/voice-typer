@@ -66,6 +66,8 @@ final class LocalASRSession {
     private let asrQueue: DispatchQueue
     private let engineAccessor: () -> (any SenseVoiceRecognizing)?
     private let llmCorrector: LLMCorrector?
+    /// 词汇替换层快照（VOC-7）。听写中不会改配置（`applyConfig` 会拒绝重建控制器），快照即可。
+    private let vocabulary: VocabularyReplacer
     /// 引擎已确定不可能就绪（加载失败 / 模型缺失）。为 true 时 finalize 立即失败，不再空等。
     private let engineUnavailable: () -> Bool
     /// 单调时钟；会在 asrQueue 上被调用，必须线程安全（默认实现满足）。
@@ -121,12 +123,14 @@ final class LocalASRSession {
         asrQueue: DispatchQueue,
         engineAccessor: @escaping () -> (any SenseVoiceRecognizing)?,
         llmCorrector: LLMCorrector?,
+        vocabulary: VocabularyReplacer = .empty,
         engineUnavailable: @escaping () -> Bool = { false },
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.asrQueue = asrQueue
         self.engineAccessor = engineAccessor
         self.llmCorrector = llmCorrector
+        self.vocabulary = vocabulary
         self.engineUnavailable = engineUnavailable
         self.now = now
     }
@@ -359,9 +363,14 @@ final class LocalASRSession {
             if self?.cancelFlag.isSet == true { return }
             let inferenceStartedAt = clock()
             let result = Result { try buffer.finalize() }
+            // 同在 asrQueue 上、紧跟终稿推理之后读取，不会被预览覆盖（预览已在松键时停止）。
+            let decodeStats = buffer.lastDecodeStats
             Task { @MainActor [weak self] in
                 guard let self, !self.closed else { return }
                 self.timings.finalizeInferenceStartedAt = inferenceStartedAt
+                self.timings.decodeMode = decodeStats.mode
+                self.timings.hotwordHits = decodeStats.hotwordHits
+                self.timings.decodeNanos = decodeStats.decodeNanos
                 self.finalizeWatchdog?.cancel()
                 self.finalizeWatchdog = nil
 
@@ -390,10 +399,14 @@ final class LocalASRSession {
         }
     }
 
-    /// 拿到 ASR 原文后：若启用了 LLM 校对，先把原文通过 onPartial 顶到 HUD 上
+    /// 拿到 ASR 原文后：先做词汇替换（VOC-7），若启用了 LLM 校对，再把文本通过 onPartial 顶到 HUD 上
     /// （让用户立刻看到结果，校对中不会像"卡住"），再异步校对，最终以校对结果调用 onFinal。
     /// 这一步在跨进程架构下没有意义（要多一次网络往返），进程内是免费的。
-    private func completeWithASRText(_ text: String) {
+    ///
+    /// LLM 收到的是替换后的文本（有意放宽 R8「LLM 输入保持 ASR 原貌」）：替换只改词条，
+    /// few-shot 示例描述的「中英文紧挨着」的形态不受影响。
+    private func completeWithASRText(_ asrText: String) {
+        let text = vocabulary.apply(asrText)
         guard let llmCorrector, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             timings.llmResult = .off
             onFinal?(text)
@@ -407,7 +420,7 @@ final class LocalASRSession {
         isCorrecting = true
         correctionTask = Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
-            let report = await llmCorrector.correctWithReport(text)
+            let report = await llmCorrector.correctWithReport(text, glossary: self.vocabulary.terms)
             // 已被用户跳过（skipCorrection 已用原文收尾）或会话已关闭：迟到的结果一律忽略。
             guard !self.closed, self.isCorrecting else { return }
             self.isCorrecting = false

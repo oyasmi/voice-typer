@@ -446,5 +446,51 @@ extension L10n {
         "无法创建热键事件源": "Could not create the hotkey event source",
         "没有可用的音频输入设备，请检查麦克风连接": "No audio input device is available; check your microphone connection",
         "无法创建音频格式转换器": "Could not create the audio format converter",
+
+        // MARK: - 自定义词汇（VOC-9）
+        "词汇": "Vocabulary",
+        "关": "Off",
+        "轻": "Light",
+        "标准": "Standard",
+        "强": "Strong",
+        "列出容易认错的人名、产品名和术语，识别时会优先往这些写法靠。全部在本机完成。":
+            "List names, product names and terms that tend to be misrecognized; recognition will lean toward these spellings. Everything stays on this Mac.",
+        "识别偏向": "Recognition bias",
+        "越强越容易认出表里的词，也越可能把读音相近的普通词认成它。发音明显不同的词不会被改。觉得被误改时调低一档。":
+            "Stronger settings recognize listed words more readily, but are also more likely to turn similar-sounding ordinary words into them. Words that sound clearly different are never changed. If you see unwanted changes, go down one level.",
+        "写法": "Spelling",
+        "正确写法": "Correct spelling",
+        "听起来像（可选，逗号分隔）": "Sounds like (optional, comma-separated)",
+        "听起来像": "Sounds like",
+        "例如：克劳德": "e.g. klod",
+        "状态": "Status",
+        "已生效": "Active",
+        "模型加载后检查": "Checked once the model is loaded",
+        "识别偏向已关闭，仍会做替换": "Recognition bias is off; replacements still apply",
+        "只有一个字 / 一个词片，不参与识别偏向，仍会做替换":
+            "Only one character or word piece, so it is not used for recognition bias; replacements still apply",
+        "含无法识别的字符，不参与识别偏向，仍会做替换":
+            "Contains characters the model cannot output, so it is not used for recognition bias; replacements still apply",
+        "词汇过多，本条未参与识别偏向，仍会做替换":
+            "Too many vocabulary entries; this one is not used for recognition bias, but replacements still apply",
+        "添加词汇": "Add entry",
+        "删除选中的词汇": "Remove selected entries",
+        "%d / %d 条": "%d / %d entries",
+        "最多 %d 条词汇。": "Up to %d vocabulary entries.",
+        "从最近结果添加…": "Add from Recent Results…",
+        "从最近结果添加词汇": "Add Vocabulary from Recent Results",
+        "试一试替换": "Try replacement",
+        "输入一句识别结果，例如：用克劳德写一个voice typer的插件":
+            "Type a recognition result, e.g. write a voice typer plugin with klod",
+        "这里只演示替换；识别偏向的效果请直接听写体验。":
+            "This only previews replacements; to try recognition bias, just dictate.",
+        "正在听写，结束后可以继续编辑词汇。": "Dictation in progress; you can edit the vocabulary when it finishes.",
+        "词汇保存失败：%@": "Could not save the vocabulary: %@",
+        "还没有最近结果。听写一次后再来；最近结果只保存在内存里，退出应用即清空。":
+            "No recent results yet. Dictate something first; recent results are kept in memory only and are cleared when you quit.",
+        "在下面的文字里选中被认错的部分：": "Select the misrecognized part in the text below:",
+        "（先在上面选中片段）": "(select a fragment above first)",
+        "添加": "Add",
+        "，": ", ",
     ]
 }

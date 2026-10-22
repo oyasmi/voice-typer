@@ -389,6 +389,13 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
   `▁`→空格 → 剥 `<\|...\|>` → 空白收敛 → 去掉与 CJK 相邻的空格 → 无"实字"则返回空串
   （静音时 SenseVoice 常吐一个孤立句号，必须丢弃）
 
+#### 热词偏置解码分支（VOC，§11.7）
+词汇表为空或强度为「关」时，`SenseVoiceEngine` 仍走上面的贪心 `CTCDecoder`，一行不改；有词汇时整句改走
+`ASR/Hotword/` 的带偏置前缀束搜索（`HotwordCompiler` 用词表前缀树把写法切成 token、`ContextGraph` 做 Aho–Corasick
+打分、`CTCPrefixBeamSearch` 解码），产出的 token 串同样交给 `TextPostprocessor`。词汇经
+`ASRService.updateVocabulary` 在 asrQueue 上热更新到引擎（与语言一样，不重载模型）。规格见
+[`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)，实施记录见 §11.7。
+
 #### `RecognitionBuffer`（= 服务端 `SenseVoiceSession` 的移植）
 **这是服务端最有价值的一段设计，原样搬运，不做"改进"：**
 
@@ -1401,6 +1408,98 @@ Windows 影响：同一套参数已同步，见 windows/DESIGN.md §29。
 识别契约与共享夹具未变。R9-01 Windows 已有（`SaveRecognition` 的 `keyChanged`），R9-12 已有（W5-04）。
 其余需要 Windows 侧另行评估：R9-08（`LocalAsrSession.SchedulePreview` 同样只看 `_isFinalizing`，送入尾音时仍会排一次预览）；
 R9-09 不适用（Windows 的 `RecognitionBuffer` 用定长数组加计数，无写时复制）；R9-03 / R9-10 / R9-11 是 macOS AX 专属。
+
+## 11.7 自定义词汇（VOC，2026-10-22，未发布）
+
+按 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md) 四个阶段全部实施：配置（VOC-1）、识别层偏置（VOC-2–6）、
+替换层（VOC-7）、LLM 词表（VOC-8）、设置页与「从最近结果添加」（VOC-9）、度量（VOC-10）、测试与离线评估工具（VOC-11），
+以及 Windows 移植（阶段 4，设置页除外，见下文）。
+
+**验证口径**：本轮在 Linux 上完成。
+
+- **已运行**：用 Swift 6.1.2 Linux 工具链（Swift 6 语言模式）编译并运行不依赖 AppKit / Accelerate / ORT 的部分——
+  `HotwordCompiler`、`ContextGraph`、`CTCPrefixBeamSearch`、`VocabularyReplacer`、`OutputFormatter`、`VocabularyConfig`
+  及其 XCTest（34 项），另把 `LocalASRSession`、`LLMCorrector`、`DictationMetrics`、`SettingsViewModel`、`AppConfig`、
+  `ConfigStore`（真实 Yams）在桩之上编译并运行了与本功能相关的用例（全部通过）。`SenseVoiceEngine`、`ASRService` 在 ORT /
+  前端桩之上通过了类型检查。
+- **独立参考实现**：同一算法另写了 Python 版，对 23 个写法的编译结果、对 `speech_zh_en_mixed.wav` 真实 `ctc_logits`
+  （本机 ONNX Runtime 1.31 跑出）的 12 组解码结果，Swift 与 Python 逐 token 相同；共享夹具的期望值同样由它核对。
+- **未做**：没有在 macOS 上编译（`VocabularySettingsView` 与 `SetupWindowController` / `AppCoordinator` 的接线没有任何
+  编译验证），没有跑 `xcodebuild … test`，没有真机听写，没有用真实录音校准参数。
+
+### 实施结果
+
+| 编号 | 落点 |
+| --- | --- |
+| VOC-1 | `AppConfig.vocabulary`（`VocabularyConfig` / `VocabularyEntry` / `VocabularyBias`），`ConfigStore` 写回 `vocabulary` 段 |
+| VOC-2–6 | `ASR/Hotword/HotwordCompiler.swift`、`ContextGraph.swift`、`CTCPrefixBeamSearch.swift`；`SenseVoiceRecognizing.setVocabulary` / `lastDecodeStats`；`ASRService.updateVocabulary` / `vocabularyReport` |
+| VOC-7 | `Text/VocabularyReplacer.swift`；`LocalASRSession.completeWithASRText` 与 `OutputFormatter.formatForOutput(_:vocabulary:)` 各调用一次 |
+| VOC-8 | `LLMCorrector.correctWithReport(_:glossary:)`、`userMessage(_:glossary:)`；三份 `correction.md` 同步新增一条规则 |
+| VOC-9 | `UI/Settings/VocabularySettingsView.swift`（表格、强度、试一试、从最近结果添加 sheet）、`SettingsViewModel` 词汇段、`SetupTab.vocabulary` |
+| VOC-10 | `ASRSessionTimings.decodeMode / hotwordHits / decodeNanos`，度量行末尾追加 `decode_mode vocab_hits decode_ms` |
+| VOC-11 | `HotwordCompilerTests`、`ContextGraphTests`、`CTCPrefixBeamSearchTests`、`VocabularyReplacerTests`、`SettingsViewModelVocabularyTests`、`HotwordEvaluationTests` 与既有测试的补充；共享夹具 `vocabulary_cases.json`（27 例）、`ctc_hotword_cases.json`（11 例） |
+
+词汇变化走「重建控制器」路径（`requiresControllerRebuild` 加入 `vocabulary`）：替换层在控制器构造时编译，听写中保存会被
+拒绝，设置页在听写中整体禁用。
+
+### 与规格的差异（均已回写规格）
+
+| # | 规格原文 | 实施 | 依据 |
+| --- | --- | --- | --- |
+| 1 | §5.2：只有「汉字之后」的 ASCII 段两种 `▁` 都生成 | **写法开头**的 ASCII 段也两种都生成；变体顺序改为每种大小写 / 拆词形式先带 `▁` 再不带 | 真实 logits：中文句子里英文词跟在汉字或全角标点后时模型不输出 `▁`（`，audio▁driven▁text`）。只按规格生成时，`Audio` 等词在中文语境里根本匹配不上 |
+| 2 | VOC-D6：只有 1 个 token 的序列丢弃 | 写法的**原样合写**变体本身就是 1 个 token 时，整个写法记为 `tooShort`、不参与偏置 | 真实 logits 上 `issues`（`▁issues` 是单 token）的首字母大写变体 `▁I s s ue s` 在强档把 `isue` 改成了 `▁issuesue`。模型能直接输出的词，偏置别的大小写只会制造误改 |
+| 3 | §5.4 候选集 = TopK ∪ 热词首 token ∪ 当前热词下一 token | 另加入**前缀末 token**（停留），同样受门限约束；停在图根上的假设不再重复检查热词首 token | 前者保证门限内的「停留」不会因为没进前 K 名而被剪掉（贪心的 argmax 总在 TopK 里，对夹具无影响）；后者是纯优化，结果不变（停在根上时「下一个 token」就是全部热词首 token，本帧公共候选里已有） |
+| 4 | §5.4 每帧线性扫描 | 按 256 个 token 分块，先求块最大值，整块在门限外就跳过 | 门限内的 token 每帧通常只有个位数；分块后扫描成本从逐个比较 25k 次降到约 100 次向量化求最大值 |
+| 5 | §6.2 一次性拼出结果、不链式替换 | 一轮内仍不链式；**整轮重复到不动点**（最多 4 轮）；同起点同长度时 **term 模式优先于 alias 模式**；汉字 alias 换成英文 term 时若与相邻英文粘连，补一个空格 | 单轮无法保证幂等：`克劳德code` → `Claude code`，第二轮才被 `Claude Code` 统一（处理链里替换跑两次，结果会不一致）。term 优先保证已是某个 term 的文本不会被别的词条的 alias 再改（「不链式替换」的本意）。粘连：`克劳德code` 单轮会变成 `Claudecode` |
+| 6 | §4.2 校验 | 另把写法内部的换行、制表等空白收敛为一个空格 | 写回 YAML 时不必转义控制字符；词条本来就不该含换行 |
+| 7 | §5.1 `setVocabulary` 在 `bias == .off` 时置空 | 置空图，但**照常编译并返回报告** | 设置页在「关」时仍能显示哪些词条只做替换 |
+
+### 真实 logits 上的观察（证据 S，参数仍是 E）
+
+对 `speech_zh_en_mixed.wav`（TTS 合成，`你好，欢迎使用语音输入法……isue编号是123，版本号是251。`）：
+
+- 50 条无关词汇在轻 / 标准 / 强三档下，束搜索结果与贪心**逐 token 相同**（Swift、Python、C# 三方一致）。没有触发
+  §5.8 的「贪心锚定」退路。
+- `一二三`（原文 `123`）：三个字的声学分差合计约 16.4，大于强档的 `3b = 7.5`，**不采用**——符合「没听到的不硬塞」。
+- `Audio` / `i自动`：命中在贪心路径上已有的写法（`au d io`、`I自动`），输出不变，由替换层统一大小写。
+- 这段 TTS 音频里所有字的第二名都比第一名低 4–12，几乎没有可翻盘的同音字；**同音替换的效果只能用真实录音评估**。
+- 帧统计：约 67%（G=5）的帧走跳帧捷径，与 §5.6 的估计（大部分帧）一致。
+
+### 性能（开发机实测，不代表 Apple Silicon）
+
+Intel i5-8260U / Linux，合成 2000 帧（≈120s）× 25055、约 75% blank 帧、200 条词汇（最坏情况：每帧都扫描）：
+
+| 实现 | 贪心 | 束搜索（空图） | 束搜索（200 条） | 编译 200 条 |
+| --- | --- | --- | --- | --- |
+| C#（.NET 10 Release，`Vector<float>` 求最大值） | 43ms | 41ms | 49ms | 17–24ms |
+| Swift（-O，求最大值用手写循环替代 vDSP） | — | 32–39ms | 35–42ms | 11ms |
+
+Swift 一栏里约 20ms 是整行求最大值，macOS 上由 `vDSP_maxv` 完成会显著更快；真实 15.8s 音频（10 条词汇）C# Release 解码
+8–11ms。**Apple Silicon 上的真实数值以度量日志 `decode_ms` 为准**，须在真机上记录 10s / 120s 两档后回写本节。
+XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug 实测约 0.4s）。
+
+### 参数校准（未做）
+
+三档参数仍是规格 §5.6 的初值。`HotwordEvaluationTests` 已就绪（用法见 `DEVELOPMENT.md`），需要按 §10.5 录一批真实
+语音（10–20 个会认错的词各 3 句 + 30 句日常话）跑一轮，以「标准档误触发为 0、召回尽量高」为目标调整，并把结果写回这里。
+差异 #2 修正前观察到的 `issuesue` 说明：强档在「词表里的词与原文读音相近、模型又能直接输出」时有误改风险，校准时
+优先检查强档。
+
+### 待真机验证
+
+1. 编译：`ruby scripts/generate_xcodeproj.rb` 已运行（工程文件已更新），在 macOS 上 `./build_xcode.sh` 与
+   `xcodebuild … test` 全量通过；重点看 `VocabularySettingsView`（本轮唯一完全未经编译的文件）。
+2. 规格 §10.6 的手工步骤 1–8。
+3. 设置页：增删行、回车与切换输入框后状态列刷新（模型已加载时 ✓ / ⚠，未加载时「—」）；「试一试替换」即时更新；
+   听写中整页禁用；改强度后下一次听写生效。
+4. 「从最近结果添加」：在 sheet 的文本里拖选片段，「听起来像」随之更新，「正确写法」预填片段；添加后词条出现在表里。
+5. `log stream … category == "asr"` 出现「词汇已编译」一行，不含任何词条文本；度量行末尾有 `decode_mode`。
+
+### Windows 影响
+
+阶段 4 已移植（见 `windows/DESIGN.md` 与 `windows/docs/REVIEW_HISTORY.md` 的 VOC 条目）：配置 schema、编译器、上下文图、
+束搜索、替换层、LLM 词表、度量字段，读同一份共享夹具。C# 测试在 Linux 的 net10.0 工程里通过（含真实模型 + ORT 的
+无关词汇回归）；**Windows 真机未验证**。Windows 设置页未做，词汇只能手写 `config.yaml`（重启生效）。
 
 ---
 

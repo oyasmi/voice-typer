@@ -104,6 +104,6 @@ internal interface IDictationSession
 
 internal interface IDictationSessionFactory
 {
-    IDictationSession MakeSession(LlmCorrector? corrector);
+    IDictationSession MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary);
     void SessionEnded();
 }

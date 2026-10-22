@@ -96,4 +96,65 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(validated.llm.temperature, 0)
         XCTAssertEqual(validated.ui.opacity, 0.1)
     }
+
+    // MARK: - VOC-1：自定义词汇
+
+    func testVocabularyDefaultsWhenSectionMissing() throws {
+        let decoded = try YAMLDecoder().decode(AppConfig.self, from: "hotkey:\n  key: fn\n")
+        XCTAssertEqual(decoded.vocabulary, VocabularyConfig())
+        XCTAssertEqual(decoded.vocabulary.bias, .standard)
+        XCTAssertTrue(decoded.vocabulary.entries.isEmpty)
+    }
+
+    func testVocabularyDecodingIsTolerant() throws {
+        let yaml = """
+        vocabulary:
+          bias: extreme
+          entries:
+            - 张三丰
+            - term: "Claude"
+              aliases: "克劳德"
+            - term: "VoiceTyper"
+            - aliases: ["没有 term"]
+        """
+        let vocabulary = try YAMLDecoder().decode(AppConfig.self, from: yaml).validated().vocabulary
+        XCTAssertEqual(vocabulary.bias, .standard, "未知强度回落 standard")
+        XCTAssertEqual(vocabulary.entries, [
+            VocabularyEntry(term: "张三丰"),
+            VocabularyEntry(term: "Claude", aliases: ["克劳德"]),
+            VocabularyEntry(term: "VoiceTyper"),
+        ], "简写、单个字符串 alias 都能读；没有 term 的条目丢弃")
+    }
+
+    func testVocabularyValidationNormalizesEntries() {
+        let vocabulary = VocabularyConfig(bias: .light, entries: [
+            VocabularyEntry(term: "  Claude  ", aliases: ["克劳德", " claude ", "", "克劳德", "KLD"]),
+            VocabularyEntry(term: "   "),
+            VocabularyEntry(term: "claude", aliases: ["kld", "可劳德"]),
+            VocabularyEntry(term: "a\nb\tc"),
+        ]).validated()
+        XCTAssertEqual(vocabulary.bias, .light)
+        XCTAssertEqual(vocabulary.entries, [
+            // 与 term 相同、重复（不区分大小写）的 alias 丢弃；同名 term 合并 aliases、保留首次写法。
+            VocabularyEntry(term: "Claude", aliases: ["克劳德", "KLD", "可劳德"]),
+            VocabularyEntry(term: "a b c"),
+        ])
+    }
+
+    func testVocabularyValidationTruncatesOverflow() {
+        let long = String(repeating: "长", count: 60)
+        let vocabulary = VocabularyConfig(entries: [
+            VocabularyEntry(term: long, aliases: (0..<15).map { "别名\($0)" }),
+        ] + (0..<250).map { VocabularyEntry(term: "词\($0)") }).validated()
+        XCTAssertEqual(vocabulary.entries.count, VocabularyConfig.maxEntries)
+        XCTAssertEqual(vocabulary.entries[0].term.count, VocabularyConfig.maxSurfaceLength)
+        XCTAssertEqual(vocabulary.entries[0].aliases.count, VocabularyConfig.maxAliasesPerEntry)
+        XCTAssertEqual(vocabulary.entries.last?.term, "词198")
+    }
+
+    func testVocabularyBiasesRecognitionOnlyWithEntriesAndBias() {
+        XCTAssertFalse(VocabularyConfig().biasesRecognition)
+        XCTAssertFalse(VocabularyConfig(bias: .off, entries: [VocabularyEntry(term: "Claude")]).biasesRecognition)
+        XCTAssertTrue(VocabularyConfig(bias: .light, entries: [VocabularyEntry(term: "Claude")]).biasesRecognition)
+    }
 }

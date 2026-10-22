@@ -60,6 +60,11 @@ internal sealed class LlmCorrector : IDisposable
     /// <summary>把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。</summary>
     private static string Wrap(string text) => $"<asr_text>\n{text}\n</asr_text>";
 
+    /// <summary>最后一条 user 消息：有词表时放在 <c>&lt;asr_text&gt;</c> 之前（VOC-8）。system prompt 与 few-shot 不变，
+    /// 保住前缀缓存；空词表时与没有这项功能时逐字节相同。</summary>
+    internal static string UserMessage(string text, IReadOnlyList<string>? glossary) =>
+        glossary is { Count: > 0 } ? $"<glossary>{string.Join("、", glossary)}</glossary>\n" + Wrap(text) : Wrap(text);
+
     /// <summary>
     /// few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束模型行为。
     /// 内容固定，可命中 LLM 前缀缓存；每次请求只有末尾一条 user 消息变化。
@@ -215,12 +220,17 @@ internal sealed class LlmCorrector : IDisposable
     public async Task<CorrectionOutcome> CorrectAsync(string text, CancellationToken cancellationToken = default) =>
         (await CorrectWithReportAsync(text, cancellationToken).ConfigureAwait(false)).Outcome;
 
-    public async Task<CorrectionReport> CorrectWithReportAsync(string text, CancellationToken cancellationToken = default)
+    public Task<CorrectionReport> CorrectWithReportAsync(string text, CancellationToken cancellationToken = default) =>
+        CorrectWithReportAsync(text, Array.Empty<string>(), cancellationToken);
+
+    /// <param name="glossary">用户词汇表的 term（VOC-8），只放 term、不放 aliases（aliases 已被替换层处理）。</param>
+    public async Task<CorrectionReport> CorrectWithReportAsync(string text, IReadOnlyList<string> glossary,
+        CancellationToken cancellationToken = default)
     {
         var usage = ThinkingParameterUsage.Sent;
         try
         {
-            var outcome = await CorrectOrThrowAsync(text, probeFresh: false, cancellationToken, u => usage = u).ConfigureAwait(false);
+            var outcome = await CorrectOrThrowAsync(text, glossary, probeFresh: false, cancellationToken, u => usage = u).ConfigureAwait(false);
             return new CorrectionReport(outcome, usage);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -244,7 +254,7 @@ internal sealed class LlmCorrector : IDisposable
     public async Task<TestResult> TestWithReportAsync(string text)
     {
         var usage = ThinkingParameterUsage.Sent;
-        var outcome = await CorrectOrThrowAsync(text, probeFresh: true, CancellationToken.None, u => usage = u).ConfigureAwait(false);
+        var outcome = await CorrectOrThrowAsync(text, Array.Empty<string>(), probeFresh: true, CancellationToken.None, u => usage = u).ConfigureAwait(false);
         return new TestResult(outcome.Text, usage);
     }
 
@@ -254,7 +264,8 @@ internal sealed class LlmCorrector : IDisposable
     /// 请求体。<c>thinking: {"type": "disabled"}</c> 是火山方舟、智谱等服务的混合推理模型
     /// 关闭深度思考的写法；不支持的服务会以 400/422 拒绝，由 <see cref="CorrectOrThrowAsync"/> 去掉字段重发。
     /// </summary>
-    internal static Dictionary<string, object> BuildPayload(Config config, string systemPrompt, string text, bool includeThinking)
+    internal static Dictionary<string, object> BuildPayload(Config config, string systemPrompt, string text, bool includeThinking,
+        IReadOnlyList<string>? glossary = null)
     {
         // 纠错输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         var dynamicMaxTokens = Math.Max(config.MaxTokens, text.Length * 2 + 128);
@@ -264,7 +275,7 @@ internal sealed class LlmCorrector : IDisposable
         {
             messages.Add(new { role, content });
         }
-        messages.Add(new { role = "user", content = Wrap(text) });
+        messages.Add(new { role = "user", content = UserMessage(text, glossary) });
 
         var payload = new Dictionary<string, object>
         {
@@ -290,7 +301,8 @@ internal sealed class LlmCorrector : IDisposable
     /// 空 content、剥标签后为空）。
     /// </summary>
     private async Task<CorrectionOutcome> CorrectOrThrowAsync(
-        string text, bool probeFresh, CancellationToken cancellationToken, Action<ThinkingParameterUsage> reportUsage)
+        string text, IReadOnlyList<string> glossary, bool probeFresh, CancellationToken cancellationToken,
+        Action<ThinkingParameterUsage> reportUsage)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -302,14 +314,14 @@ internal sealed class LlmCorrector : IDisposable
         if (!probeFresh && _capabilityStore.IsThinkingParameterUnsupported(fingerprint))
         {
             reportUsage(ThinkingParameterUsage.OmittedByCache);
-            body = await SendAsync(text, includeThinking: false, timeout, cancellationToken).ConfigureAwait(false);
+            body = await SendAsync(text, glossary, includeThinking: false, timeout, cancellationToken).ConfigureAwait(false);
         }
         else
         {
             reportUsage(ThinkingParameterUsage.Sent);
             try
             {
-                body = await SendAsync(text, includeThinking: true, timeout, cancellationToken).ConfigureAwait(false);
+                body = await SendAsync(text, glossary, includeThinking: true, timeout, cancellationToken).ConfigureAwait(false);
                 if (probeFresh) _capabilityStore.SetThinkingParameterUnsupported(false, fingerprint);
             }
             catch (ThinkingParameterRejectedException)
@@ -318,7 +330,7 @@ internal sealed class LlmCorrector : IDisposable
                 reportUsage(ThinkingParameterUsage.RejectedThenOmitted);
                 // 重发只吃"剩余预算"，保证整体不会比用户设置的超时多出太多。
                 var remaining = Math.Max(1, timeout - Stopwatch.GetElapsedTime(startedAt).TotalSeconds);
-                body = await SendAsync(text, includeThinking: false, remaining, cancellationToken).ConfigureAwait(false);
+                body = await SendAsync(text, glossary, includeThinking: false, remaining, cancellationToken).ConfigureAwait(false);
             }
         }
         return ParseOutcome(body, text);
@@ -328,9 +340,10 @@ internal sealed class LlmCorrector : IDisposable
     /// 发送一次请求并返回 2xx 响应体。400/422 且响应体提到 <c>thinking</c>（只在本次确实带了该字段时判定）
     /// → <see cref="ThinkingParameterRejectedException"/>。响应体只用于判定，绝不写日志（W-02）。
     /// </summary>
-    private async Task<string> SendAsync(string text, bool includeThinking, double timeoutSeconds, CancellationToken cancellationToken)
+    private async Task<string> SendAsync(string text, IReadOnlyList<string> glossary, bool includeThinking, double timeoutSeconds,
+        CancellationToken cancellationToken)
     {
-        var payload = BuildPayload(_config, _systemPrompt, text, includeThinking);
+        var payload = BuildPayload(_config, _systemPrompt, text, includeThinking, glossary);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _config.ChatCompletionsUrl);
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");

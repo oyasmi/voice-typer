@@ -64,8 +64,21 @@ internal static class OutputFormatter
         return output.ToString();
     }
 
-    /// <summary>上屏前的完整格式化链。后续批次（自定义词汇、衔接空格）会在这里扩展。</summary>
-    public static string FormatForOutput(string text) => ApplyCjkLatinSpacing(text);
+    /// <summary>
+    /// 上屏前的完整格式化链（与 macOS 相同）：
+    /// <code>
+    /// CTC 解码（VOC-5）→ TextPostprocessor（识别契约，不变）
+    ///   → VocabularyReplacer.Apply        —— LocalAsrSession.CompleteWithAsrText，LLM 之前
+    ///   → LLM 纠错（附词表，VOC-8）
+    ///   → FormatForOutput：
+    ///         VocabularyReplacer.Apply    —— LLM 可能改回去；幂等，未启用 LLM 时是空操作
+    ///       → ApplyCjkLatinSpacing（R8-F2）
+    /// </code>
+    /// 替换必须在加空格之前：<c>用克劳德写</c> 先变成 <c>用Claude写</c>，才能再补成 <c>用 Claude 写</c>。
+    /// 预览不经过 CompleteWithAsrText，只在这里替换一次。
+    /// </summary>
+    public static string FormatForOutput(string text, VocabularyReplacer vocabulary) =>
+        ApplyCjkLatinSpacing(vocabulary.Apply(text));
 
     private static bool IsHan(char c) =>
         (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF);

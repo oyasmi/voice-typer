@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using VoiceTyper.Asr.Hotword;
 using VoiceTyper.Core;
 using VoiceTyper.Support;
 
@@ -26,6 +28,13 @@ internal interface IAsrEngine : ISenseVoiceRecognizing, IDisposable
 {
     void SetLanguage(AsrLanguage language);
 
+    /// <summary>只在 <see cref="AsrPump"/> 线程上调用。编译在调用线程同步完成，返回报告（VOC-2）。
+    /// 默认空实现：测试替身不需要。</summary>
+    HotwordCompileReport? SetVocabulary(VocabularyConfig vocabulary) => null;
+
+    /// <summary>最近一次 <see cref="ISenseVoiceRecognizing.Recognize"/> 的解码统计，只在 AsrPump 线程上读。</summary>
+    DecodeStats LastDecodeStats => DecodeStats.Greedy;
+
     /// <summary>
     /// 请求中止正在进行的 <see cref="ISenseVoiceRecognizing.Recognize"/>（被中止的那次调用抛异常）。
     /// <b>唯一可以跨线程调用的成员</b>，用于松键时让终稿不必等一次已经没人要的预览。
@@ -39,7 +48,7 @@ internal interface IAsrEngine : ISenseVoiceRecognizing, IDisposable
 }
 
 /// <summary>
-/// SenseVoice-Small ONNX 推理封装：fbank → LFR/CMVN → ORT session → CTC 贪心解码。
+/// SenseVoice-Small ONNX 推理封装：fbank → LFR/CMVN → ORT session → CTC 解码（无词汇时贪心，有词汇时带热词偏置的束搜索）。
 /// 对外只有一个方法 <see cref="Recognize"/>，非线程安全——只应在 <see cref="AsrPump"/> 的
 /// 专用线程上使用（与服务端单 worker executor 的约束一致：ONNX session 与前端状态都有可变缓冲）。
 ///
@@ -74,6 +83,15 @@ internal sealed class SenseVoiceEngine : IAsrEngine
     /// <summary>每次推理共用的运行选项；唯一用途是让 <see cref="Abort"/> 能从别的线程设置终止标志。
     /// 构造函数末尾才创建：前面的契约校验失败时没有原生资源需要释放。</summary>
     private readonly RunOptions _runOptions;
+
+    /// <summary>词表前缀树与 token 类别：第一次 <see cref="SetVocabulary"/> 时懒构建，之后复用（与具体词汇无关）。</summary>
+    private TokenTrie? _tokenTrie;
+    private CtcPrefixBeamSearch.TokenClasses? _tokenClasses;
+    /// <summary>当前词汇的上下文图；null = 走贪心解码，金标准与既有输出逐字节不变（VOC-D4）。</summary>
+    private ContextGraph? _contextGraph;
+    private CtcPrefixBeamSearch.Parameters? _beamParameters;
+
+    public DecodeStats LastDecodeStats { get; private set; } = DecodeStats.Greedy;
 
     /// <summary>
     /// 侧载模型（<c>asr.model_dir</c>）的 config.yaml / am.mvn 相互独立，解析失败时各自静默
@@ -173,6 +191,41 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         _languageId = language.TokenId();
     }
 
+    public HotwordCompileReport? SetVocabulary(VocabularyConfig vocabulary)
+    {
+        if (vocabulary.Entries.Count == 0)
+        {
+            _contextGraph = null;
+            _beamParameters = null;
+            return new HotwordCompileReport();
+        }
+        if (_tokenTrie is null)
+        {
+            _tokenTrie = new TokenTrie(_tokens);
+            _tokenClasses = new CtcPrefixBeamSearch.TokenClasses(_tokens);
+        }
+        // 强度为「关」时也编译：报告照样说明哪些词条能参与偏置，只是不建图。
+        var compiled = HotwordCompiler.Compile(vocabulary, _tokenTrie);
+        var report = compiled.Report;
+        if (CtcPrefixBeamSearch.Parameters.Preset(vocabulary.BiasValue) is { } parameters && compiled.Sequences.Count > 0)
+        {
+            _contextGraph = new ContextGraph(compiled.Sequences, parameters.PerTokenBias, parameters.MaxScoredDepth);
+            _beamParameters = parameters;
+        }
+        else
+        {
+            _contextGraph = null;
+            _beamParameters = null;
+        }
+        AppLog.Info("asr",
+            $"词汇已编译：entries={report.Entries.Count} sequences={report.SequenceCount} "
+            + $"biased={report.CountOf(HotwordCompileReport.Status.Biased)} too_short={report.CountOf(HotwordCompileReport.Status.TooShort)} "
+            + $"unsupported={report.CountOf(HotwordCompileReport.Status.UnsupportedCharacters)} "
+            + $"truncated={report.CountOf(HotwordCompileReport.Status.Truncated)} bias={vocabulary.BiasValue.ToYamlValue()} "
+            + $"耗时={Stopwatch.GetElapsedTime(0, report.CompileTicks).TotalMilliseconds:F0}ms");
+        return report;
+    }
+
     public void Abort()
     {
         // 释放与中止可能交错（重载模型时旧引擎被释放）：此时推理早已结束，忽略即可。
@@ -190,6 +243,9 @@ internal sealed class SenseVoiceEngine : IAsrEngine
     /// <returns>识别文本；样本不足一帧或识别为纯静音/纯标点时返回空字符串。</returns>
     public string Recognize(ReadOnlySpan<float> samples)
     {
+        // 提前返回（样本不足、静音）时不能留着上一次的统计。
+        LastDecodeStats = new DecodeStats(
+            _contextGraph is null ? DecodeStats.DecodeMode.Greedy : DecodeStats.DecodeMode.Beam, 0, 0);
         if (samples.Length < FbankFrontend.MinimumSamples) return "";
 
         var feats = _frontend.Compute(samples);
@@ -251,7 +307,38 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         }
         logitsSpan = logitsSpan[..Math.Min(needed, logitsSpan.Length)];
 
-        return CtcDecoder.Decode(logitsSpan, validFrames, vocabSize, _tokens);
+        return Decode(logitsSpan, validFrames, vocabSize);
+    }
+
+    /// <summary>无词汇走贪心（一行不改）；有词汇走带偏置的束搜索。两条路径都把拼好的原始串交给 <see cref="TextPostprocessor"/>。</summary>
+    private string Decode(ReadOnlySpan<float> logits, int numFrames, int vocabSize)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        if (_contextGraph is not { } graph || _beamParameters is not { } parameters || _tokenClasses is not { } classes)
+        {
+            var greedy = CtcDecoder.Decode(logits, numFrames, vocabSize, _tokens);
+            LastDecodeStats = new DecodeStats(DecodeStats.DecodeMode.Greedy, 0, Stopwatch.GetTimestamp() - startedAt);
+            return greedy;
+        }
+        try
+        {
+            var result = CtcPrefixBeamSearch.Decode(logits, numFrames, vocabSize, graph, classes, parameters);
+            var raw = new System.Text.StringBuilder();
+            foreach (var id in result.Tokens)
+            {
+                if (id >= 0 && id < _tokens.Count) raw.Append(_tokens[id]);
+            }
+            LastDecodeStats = new DecodeStats(DecodeStats.DecodeMode.Beam, result.HotwordHits, Stopwatch.GetTimestamp() - startedAt);
+            return TextPostprocessor.Process(raw.ToString());
+        }
+        catch (CtcPrefixBeamSearch.DecodeException ex)
+        {
+            // 束搜索的内部不一致不应让本次听写失败：记录后回退贪心结果（§5.8）。
+            AppLog.Error("asr", "热词束搜索失败，回退贪心解码", ex);
+            var greedy = CtcDecoder.Decode(logits, numFrames, vocabSize, _tokens);
+            LastDecodeStats = new DecodeStats(DecodeStats.DecodeMode.Greedy, 0, Stopwatch.GetTimestamp() - startedAt);
+            return greedy;
+        }
     }
 
     public void Dispose()

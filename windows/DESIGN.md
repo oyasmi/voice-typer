@@ -2093,3 +2093,52 @@ Windows 真机手工验收（尚未执行）：
    不显示已复制，解除占用后可成功。刚上屏后立刻从历史主动复制，等待超过原剪贴板恢复窗口，复制文本仍保留。
 6. 多次打开入口只出现一个历史窗口，最小化后可恢复；关闭重开历史仍在，退出重启后为空；
    「复制上一次识别结果」仍复制最新一段，日志与「复制诊断信息」不含识别正文。
+
+## 33. 2026-10-22 自定义词汇（VOC，与 macOS 同步，阶段 4 移植）
+
+规格见 [`macos/docs/VOCABULARY_SPEC.md`](../macos/docs/VOCABULARY_SPEC.md)，macOS 侧实施记录见
+[`macos/DESIGN.md`](../macos/DESIGN.md) §11.7（含与规格初稿的 7 处差异及依据，两平台一致）。本节只记 Windows 落点与验证状态。
+
+### 33.1 落点
+
+| 编号 | C# | 对应 Swift |
+| --- | --- | --- |
+| VOC-1 | `Core/VocabularyConfig.cs`（`VocabularyConfig` / `VocabularyEntry` / `VocabularyBias`、`VocabularyEntryYamlConverter`）；`AppConfig.Vocabulary`（`Clone` 一并复制，设置窗口以 Clone 的草稿保存）；`ConfigStore` 写回 `vocabulary` 段 | `AppConfig.swift`、`ConfigStore.swift` |
+| VOC-3–5 | `Asr/Hotword/HotwordCompiler.cs`、`ContextGraph.cs`、`CtcPrefixBeamSearch.cs` | `ASR/Hotword/*.swift` |
+| VOC-2 | `IAsrEngine.SetVocabulary` / `LastDecodeStats`（默认接口实现，测试替身无需改动）；`SenseVoiceEngine.Decode` 分支；`AsrService.UpdateVocabulary` / `VocabularyReport`，加载完成时重放 | `SenseVoiceEngine.swift`、`ASRService.swift` |
+| VOC-7 | `Core/VocabularyReplacer.cs`；`LocalAsrSession.CompleteWithAsrText`（LLM 之前）与 `OutputFormatter.FormatForOutput(text, vocabulary)` 各一次；`IDictationSessionFactory.MakeSession` 增加替换层参数 | `VocabularyReplacer.swift`、`OutputFormatter.swift` |
+| VOC-8 | `LlmCorrector.CorrectWithReportAsync(text, glossary, ct)`、`UserMessage`；`Resources/correction.md` 与另两份同步 | `LLMCorrector.swift` |
+| VOC-10 | `AsrSessionTimings.DecodeMode / HotwordHits / DecodeTicks`，摘要行末尾追加 `decode_mode vocab_hits decode_ms` | `DictationMetrics.swift` |
+
+实现要点（与 Swift 的对应关系）：
+
+- 字符串一律按 Unicode 标量（`Rune`）处理，与 Swift 的 `unicodeScalars` 一致；空白判定用 `Rune.IsWhiteSpace`（与 Swift
+  `properties.isWhitespace` 同为 Unicode White_Space 集合）。
+- 行最大值用 `Vector<float>`（相当于 macOS 的 `vDSP_maxv`），没有新增包依赖；argmax 沿用 `CtcDecoder` 的严格大于比较。
+- `LogAddExp` 用 `Math.Log(1 + Math.Exp(-d))`：.NET 没有精确的 log1p，这里 `d ≥ 0`，误差远小于任何有意义的分差。
+  同一平台结果可复现；跨平台 exp/log 的末位差异只可能影响分数完全相等的情形，共享夹具的分差都远大于它。
+- 词汇变化按其余配置段的规则走重建控制器（`SaveRecognition` 的 `sectionsChanged` 加入词汇比较）；目前没有设置界面能改它，
+  实际只在启动时从 `config.yaml` 读入。
+
+### 33.2 自动化与验证证据
+
+- Linux 主机 .NET 10 SDK 交叉编译主工程与测试工程（0 警告 / 0 错误）。按 [DEVELOPMENT.md](DEVELOPMENT.md#在-macos--linux-上开发)
+  去掉 WindowsDesktop 依赖后运行完整测试工程：**425 通过、6 跳过（真实模型 / 联网条件）、12 失败**，12 项全部是
+  `COM Interop is not supported on this platform` 的 WinForms 界面用例（已知基线）。
+- 新增 `HotwordDecodingTests`（共享夹具 11 例、尖锐分布下与贪心一致的性质测试、可复现、NaN 回退、性能宽松上限、
+  编译与上下文图规则）与 `VocabularyTests`（共享夹具 27 例、随机拼接幂等、配置规整与 YAML 容错、写回往返与 Clone、
+  LLM 词表、度量字段），共 24 项，Linux 上全部通过（真实模型一项因 Windows 模型路径不存在而跳过）。
+- 另在 Linux 上用临时 net10.0 工程链接同一批源文件，指定本机模型目录，跑通了真实 ONNX Runtime 推理：50 条无关词汇在
+  三档下与贪心逐字相同，`Audio` 命中 1 次，与 Swift / Python 一致（该工程不入库）。
+- 性能（Intel i5-8260U / Linux，Release，合成 2000 帧 × 25055、200 条词汇，9 次取最小）：贪心 43ms、束搜索 49ms、
+  编译 17–24ms；真实 15.8s 音频解码 8–11ms。**不代表 Windows 真机**。
+- Windows CI、x64 / arm64 真机均未验证。
+
+### 33.3 待办与手工验证（Windows，尚未执行）
+
+1. 不配词汇听写若干句：结果与升级前一致，摘要行 `decode_mode=greedy`。
+2. 在 `config.yaml` 写入几条会被认错的词（同音人名、英文合成词、按中文读的英文名各一个），重启后听写：命中时
+   `decode_mode=beam vocab_hits≥1`，结果为表中写法；日志里「词汇已编译」一行只有条数。
+3. 50 条无关词汇、`bias: strong`，听写 20 句日常话：不应出现被改动的字。
+4. 打开设置窗口改任意一项并保存：`config.yaml` 里的 `vocabulary` 段保持不变。
+5. 设置页「词汇」未实现，登记为遗留项（[REVIEW_HISTORY](docs/REVIEW_HISTORY.md) §3 L3）。

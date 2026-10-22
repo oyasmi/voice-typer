@@ -112,6 +112,17 @@ final class ConfigStore {
             hotkeyModifiersBlock = "  modifiers:\n\(modifiers)"
         }
 
+        let vocabularyEntriesBlock: String
+        if config.vocabulary.entries.isEmpty {
+            vocabularyEntriesBlock = "  entries: []"
+        } else {
+            let entries = config.vocabulary.entries.map { entry -> String in
+                let aliases = entry.aliases.map(yamlString).joined(separator: ", ")
+                return "    - term: \(yamlString(entry.term))\n      aliases: [\(aliases)]"
+            }
+            vocabularyEntriesBlock = "  entries:\n" + entries.joined(separator: "\n")
+        }
+
         return """
         asr:
           language: \(yamlString(config.asr.language.rawValue))
@@ -136,6 +147,9 @@ final class ConfigStore {
           opacity: \(yamlNumber(config.ui.opacity))
           hud_position: \(yamlString(config.ui.hudPosition.rawValue))
           interface_language: \(yamlString(config.ui.interfaceLanguage.rawValue))
+        vocabulary:
+          bias: \(yamlString(config.vocabulary.bias.rawValue))
+        \(vocabularyEntriesBlock)
         """
     }
 

@@ -140,6 +140,8 @@ internal sealed class VoiceTyperController : IDisposable
     private readonly IAudioCapturing _audio;
     private readonly ITextInserting _text;
     private readonly LlmCorrector? _llm;
+    /// <summary>由 <c>config.Vocabulary</c> 编译；词汇变化会重建控制器（与其余配置段一致）。</summary>
+    private readonly VocabularyReplacer _vocabulary;
     private readonly Func<long> _now;
     private readonly Action<Action> _post;
     private readonly Func<TimeSpan, Action, IDisposable> _schedule;
@@ -218,6 +220,7 @@ internal sealed class VoiceTyperController : IDisposable
         _audio = audio;
         _text = text;
         _llm = llmCorrector;
+        _vocabulary = new VocabularyReplacer(config.Vocabulary);
         _now = now ?? Stopwatch.GetTimestamp;
         _post = post ?? UiDispatcher.Post;
         _schedule = schedule ?? DefaultSchedule;
@@ -554,7 +557,7 @@ internal sealed class VoiceTyperController : IDisposable
 
     private void BeginDictationSession(long pressedAt)
     {
-        var session = _sessions.MakeSession(_llm);
+        var session = _sessions.MakeSession(_llm, _vocabulary);
         // 说话期间并行建好纠错服务的连接，识别完成后的请求直接复用。
         _llm?.WarmUp();
         var metrics = new DictationMetrics
@@ -591,7 +594,7 @@ internal sealed class VoiceTyperController : IDisposable
             if (!IsCurrent()) return;
             // _previewText 保存原始文本（供终稿超时兜底）；浮窗显示的是上屏用的格式化文本（R8-F2）。
             _previewText = text;
-            PreviewUpdate?.Invoke(OutputFormatter.FormatForOutput(_previewText));
+            PreviewUpdate?.Invoke(OutputFormatter.FormatForOutput(_previewText, _vocabulary));
         };
         session.OnFinal = text =>
         {
@@ -772,7 +775,7 @@ internal sealed class VoiceTyperController : IDisposable
                 // 不让用户说了很久的话一个字都找不回来（REVIEW_UX W-01 的第二层防护）。
                 if (metrics.Timings.FinalizeTimedOut && !string.IsNullOrWhiteSpace(lastPreview))
                 {
-                    var salvaged = _text.CopyToClipboard(OutputFormatter.FormatForOutput(lastPreview.Trim()));
+                    var salvaged = _text.CopyToClipboard(OutputFormatter.FormatForOutput(lastPreview.Trim(), _vocabulary));
                     if (salvaged) failed = new Outcome.Failed(
                         L10n.T("识别超时，已把已识别的部分复制到剪贴板"));
                 }
@@ -845,7 +848,7 @@ internal sealed class VoiceTyperController : IDisposable
 
         // 上屏用的最终文本：位于识别契约之后的确定性格式化（R8-F2），与是否启用 LLM 无关。
         // 插入、复制兜底、重试、RecognizedText、FinalTextReady 一律用它；LLM 收到的仍是识别原文。
-        var output = OutputFormatter.FormatForOutput(trimmed);
+        var output = OutputFormatter.FormatForOutput(trimmed, _vocabulary);
         FinalTextReady?.Invoke(output);
         StateChanged?.Invoke(AppStateInfo.Inserting);
         return TryInsertFinalText(new PendingInsert(output, target, metrics, _now(), Attempt: 0));

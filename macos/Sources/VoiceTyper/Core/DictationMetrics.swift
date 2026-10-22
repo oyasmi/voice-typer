@@ -41,6 +41,10 @@ struct ASRSessionTimings: Equatable {
     /// `finalize` 派发到 asrQueue 的时刻，与推理真正开始的时刻（R8-D1，二者之差即 `final_wait`）。
     var finalizeDispatchedAt: UInt64?
     var finalizeInferenceStartedAt: UInt64?
+    /// 终稿的解码方式、最优路径上的热词命中次数与解码耗时（VOC-10）；没有终稿推理为 nil / 0。
+    var decodeMode: DecodeStats.Mode?
+    var hotwordHits = 0
+    var decodeNanos: UInt64 = 0
 }
 
 /// 一次听写的耗时与结果摘要，收尾时以一行日志输出（`summaryLine()`）。
@@ -145,6 +149,11 @@ struct DictationMetrics {
             ("tail_speech", tailSpeech.map { $0 ? "1" : "0" } ?? "-"),
             ("insert_verify", insertVerify?.rawValue ?? "-"),
             ("clip_backup", Self.ms(clipBackupNanos)),
+            // VOC-10：解码耗时通常不足 1ms，保留一位小数。
+            ("decode_mode", timings.decodeMode?.rawValue ?? "-"),
+            ("vocab_hits", timings.decodeMode == nil ? "-" : String(timings.hotwordHits)),
+            ("decode_ms", timings.decodeMode == nil
+                ? "-" : String(format: "%.1f", Double(timings.decodeNanos) / 1_000_000)),
         ]
         return "dictation " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
     }

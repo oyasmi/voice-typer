@@ -168,6 +168,7 @@ internal sealed class AppCoordinator : IDisposable
 
         UpdateTray();
         _asrService.UpdateConfig(_config.Asr);
+        _asrService.UpdateVocabulary(_config.Vocabulary);
 
         // 订阅在 Start 里、退订在 Dispose 里；这两个事件由系统在专用线程上触发，处理一律转回 UI 线程。
         Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -255,7 +256,8 @@ internal sealed class AppCoordinator : IDisposable
         bool keyChanged = newApiKey is not null;
         bool audioChanged = !AudioConfigEquals(_config.Audio, draft.Audio);
         bool sectionsChanged = !(AsrConfigEquals(_config.Asr, draft.Asr) && LlmConfigEquals(_config.Llm, draft.Llm)
-            && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey) && AudioConfigEquals(_config.Audio, draft.Audio));
+            && HotkeyConfigEquals(_config.Hotkey, draft.Hotkey) && AudioConfigEquals(_config.Audio, draft.Audio)
+            && _config.Vocabulary.ContentEquals(draft.Vocabulary));
 
         if ((keyChanged || sectionsChanged) && IsDictating)
         {
@@ -318,6 +320,7 @@ internal sealed class AppCoordinator : IDisposable
 
         ReloadConfigurationFromDisk();
         _asrService.UpdateConfig(_config.Asr);
+        _asrService.UpdateVocabulary(_config.Vocabulary);
         _setupForm?.LoadEditableContent(_config);
         UpdateTray();
         ReevaluateReadiness();

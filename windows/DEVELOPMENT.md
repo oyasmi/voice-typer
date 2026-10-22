@@ -21,7 +21,10 @@ VoiceTyperController（状态机，Idle→Recording→Recognizing→Inserting）
                        ├── FbankFrontend（自写 512 点 radix-2 FFT，Kaldi 兼容 fbank）
                        ├── LfrCmvn
                        ├── InferenceSession（Microsoft.ML.OnnxRuntime，CPU EP）
-                       └── CtcDecoder + TextPostprocessor
+                       ├── CtcDecoder（无词汇时，贪心）
+                       ├── Hotword/：HotwordCompiler + ContextGraph + CtcPrefixBeamSearch（有词汇时，热词偏置束搜索）
+                       └── TextPostprocessor
+VocabularyReplacer（词汇替换层，LocalAsrSession 与 OutputFormatter 各调用一次）
 ```
 
 识别管线从 [`macos/`](../macos/) 的 Swift 实现直译而来。两个平台共用
@@ -104,7 +107,9 @@ dotnet test
 - 绝大多数用例是纯逻辑测试，不需要模型、麦克风或网络。
 - `FbankParityTests`（LFR/CMVN 部分）与 `EndToEndRecognitionTests` 需要本机模型，缺失时通过
   `Xunit.SkippableFact` 显示为「已跳过」并写明原因，不会变成假通过。
-- 中英文空格规则读与 macOS 共享的 `text_format_cases.json`（从 `macos/` 链接）。
+- 中英文空格规则读与 macOS 共享的 `text_format_cases.json`（从 `macos/` 链接）；自定义词汇的替换层与束搜索读共享的
+  `vocabulary_cases.json`、`ctc_hotword_cases.json`（`VocabularyTests`、`HotwordDecodingTests`），规则变更先改
+  `macos/docs/VOCABULARY_SPEC.md`。
 - 涉及热键、麦克风、剪贴板、浮窗的改动，单测之外还要给出手工验证步骤，并区分
   「代码审查通过」与「真机验证通过」。
 - Windows CI 会额外输出设置窗口中英文预览与 TRX 结果，下载该次运行的 `voicetyper-windows-ui-check`
@@ -141,7 +146,16 @@ ui:
   opacity: 0.85
   hud_position: "bottom_center"  # bottom_center / bottom_right / near_cursor / hidden
   interface_language: "zh"   # zh / en，重启后生效
+vocabulary:                  # 自定义词汇，与 macOS 同一 schema（macos/docs/VOCABULARY_SPEC.md）；暂无设置界面
+  bias: "standard"           # off / light / standard / strong；未知值回落 standard
+  entries:
+    - term: "Claude"         # 正确写法；≤ 50 字符
+      aliases: ["克劳德"]     # 听起来像，≤ 10 个；可省略
+    - 张三丰                  # 简写：只有 term
 ```
+
+`vocabulary` 段在 Windows 上只能手写，运行期不监听文件，**改完要重启应用**。读取时逐条规整（去空白、去重、合并同名
+term、超过 200 条截断），日志只记条数不记词条文本。设置窗口保存时以加载的配置为底稿，不会清掉手写的词汇。
 
 越界或非法的值会在加载 / 保存时夹逼回合法范围并记 warning 日志。整个文件无法解析时回落默认值，原文件另存为同目录的
 `config.yaml.broken`（覆盖上一份）并弹托盘通知；在设置页保存之前原文件不会被改写。API Key 不在配置文件里，用 DPAPI
@@ -164,7 +178,9 @@ dictation session=3fa1 outcome=inserted mode=hold hotkey=combo input=builtin cap
 release_to_finalize=8 asr=310 llm=- llm_result=off insert=24 release_to_done=352 previews=5 preview_avg=240 cold=0
 ```
 
-`input=bluetooth*` 的星号表示由「自动」策略从系统默认输入切换而来。`key_lag` 至 `hud_ready` 拆解
+`input=bluetooth*` 的星号表示由「自动」策略从系统默认输入切换而来。行末的 `decode_mode` / `vocab_hits` / `decode_ms`
+是终稿解码方式（`greedy` = 无词汇，`beam` = 热词束搜索）、最优路径上的热词命中次数与 CTC 解码耗时（一位小数）；
+词汇编译另有一行 `[asr] 词汇已编译：entries=… sequences=… biased=…`。`key_lag` 至 `hud_ready` 拆解
 「按下热键到可以开口」的耗时，见 [DESIGN.md §18.3](DESIGN.md#183-新增耗时字段)；`final_wait` 等字段见
 [DESIGN.md §23.5](DESIGN.md#235-新增耗时字段)。设置窗口「诊断与帮助」页可查看最近 20 次听写的精简版。
 

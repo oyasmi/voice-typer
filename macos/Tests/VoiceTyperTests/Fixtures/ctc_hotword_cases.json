@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "description": "CTC 热词偏置束搜索的共享用例（macOS Swift 与 Windows C# 两边的测试读同一份）。每帧未列出的 token 分数为 floor；热词直接给 token 序列，偏置参数按 preset 取 CTCPrefixBeamSearch.Parameters 的三档。规则变更须先改 macos/docs/VOCABULARY_SPEC.md；既有用例的期望值不得删改。",
+  "tokens": ["<unk>", "<s>", "</s>", "A", "B", "C", "D", "X", "Y", "Z", "张", "三", "丰", "峰", "<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>"],
+  "floor": -20.0,
+  "cases": [
+    {
+      "name": "homophone_adopted",
+      "note": "同音替换：原字 0、热词字 −1.2，分差远小于偏置 → 采用热词（②）",
+      "preset": "standard",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -1.2, "<unk>": -6.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>", "张", "三", "丰"],
+      "expected_hits": 1
+    },
+    {
+      "name": "homophone_no_hotword_control",
+      "note": "对照：热词与本句无关时与贪心一致",
+      "preset": "standard",
+      "hotwords": [["X", "Y", "Z"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -1.2, "<unk>": -6.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>", "张", "三", "峰"],
+      "expected_hits": 0
+    },
+    {
+      "name": "gate_blocks_far_token",
+      "note": "声学门限：热词字 −9，超出最强档 G=7 → 不变（③）",
+      "preset": "strong",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -9.0, "<unk>": -6.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>", "张", "三", "峰"],
+      "expected_hits": 0
+    },
+    {
+      "name": "partial_match_no_leak",
+      "note": "部分匹配：对上 AB 却以 Z 收尾的路径拿不到任何净收益 → 原文 XYZ（④）",
+      "preset": "strong",
+      "hotwords": [["A", "B", "C"]],
+      "frames": [
+        {"X": 0.0, "A": -0.5},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -0.5},
+        {"<unk>": 0.0},
+        {"Z": 0.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y", "Z"],
+      "expected_hits": 0
+    },
+    {
+      "name": "repeat_needs_blank_absent",
+      "note": "重复 token：两帧连续 A 之间没有 blank，热词 AA 无法成立 → A（⑤）",
+      "preset": "strong",
+      "hotwords": [["A", "A"]],
+      "frames": [
+        {"A": 0.0},
+        {"A": 0.0}
+      ],
+      "expected": ["A"],
+      "expected_hits": 0
+    },
+    {
+      "name": "repeat_needs_blank_present",
+      "note": "重复 token：中间一帧 blank −1，偏置让 A·blank·A 成立 → AA（⑤）",
+      "preset": "strong",
+      "hotwords": [["A", "A"]],
+      "frames": [
+        {"A": 0.0},
+        {"A": 0.0, "<unk>": -1.0},
+        {"A": 0.0}
+      ],
+      "expected": ["A", "A"],
+      "expected_hits": 1
+    },
+    {
+      "name": "repeat_control_greedy",
+      "note": "对照：同一段 logits 无相关热词 → A",
+      "preset": "strong",
+      "hotwords": [["X", "Y"]],
+      "frames": [
+        {"A": 0.0},
+        {"A": 0.0, "<unk>": -1.0},
+        {"A": 0.0}
+      ],
+      "expected": ["A"],
+      "expected_hits": 0
+    },
+    {
+      "name": "leading_tags_greedy_and_mid_special_ignored",
+      "note": "开头标签帧按贪心取值；中途 argmax 是特殊 token 的帧不展开特殊 token（⑥）",
+      "preset": "standard",
+      "hotwords": [["X", "Y"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"X": 0.0},
+        {"<|Speech|>": 0.0, "Y": -1.0, "<unk>": -0.5},
+        {"Y": 0.0}
+      ],
+      "expected": ["<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>", "X", "Y"],
+      "expected_hits": 1
+    },
+    {
+      "name": "skip_frames",
+      "note": "跳帧：blank 领先超过 G 的帧只做 blank 扩展，结果与逐帧展开一致（⑦）",
+      "preset": "light",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"<unk>": 0.0, "三": -8.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"丰": 0.0, "峰": -0.5}
+      ],
+      "expected": ["张", "三", "丰"],
+      "expected_hits": 1
+    },
+    {
+      "name": "tie_lexicographic",
+      "note": "同分：A 与 B 分数完全相同，按 token id 字典序取 A，可复现（⑧）",
+      "preset": "standard",
+      "hotwords": [["X", "Y"]],
+      "frames": [
+        {"A": 0.0, "B": 0.0}
+      ],
+      "expected": ["A"],
+      "expected_hits": 0
+    },
+    {
+      "name": "nested_hotwords",
+      "note": "嵌套：张三 与 张三丰 同时在表，完整匹配 张三 后仍可走到 张三丰",
+      "preset": "standard",
+      "hotwords": [["张", "三"], ["张", "三", "丰"]],
+      "frames": [
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -1.2, "<unk>": -6.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["张", "三", "丰"],
+      "expected_hits": 2
+    }
+  ]
+}

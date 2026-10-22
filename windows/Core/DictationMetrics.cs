@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using VoiceTyper.Asr.Hotword;
 using VoiceTyper.Services;
 
 namespace VoiceTyper.Core;
@@ -39,6 +40,10 @@ internal sealed class AsrSessionTimings
     public bool FinalizeTimedOut;
     /// <summary>松键前最后 100ms 是否仍有语音能量；缓冲区尚未建立（引擎未就绪）时为 null。</summary>
     public bool? TailSpeech;
+    /// <summary>终稿的解码方式、最优路径上的热词命中次数与解码耗时（VOC-10）；没有终稿推理为 null / 0。</summary>
+    public DecodeStats.DecodeMode? DecodeMode;
+    public int HotwordHits;
+    public long DecodeTicks;
 }
 
 internal enum DictationOutcome
@@ -201,6 +206,16 @@ internal sealed class DictationMetrics
             ("tail_speech", Timings.TailSpeech is { } tail ? (tail ? "1" : "0") : "-"),
             ("qos", EcoQosOptedOut is { } qos ? (qos ? "1" : "0") : "-"),
             ("cold", Timings.ColdAtStart ? "1" : "0"),
+            // VOC-10：追加在末尾；解码耗时通常不足 1ms，保留一位小数。
+            ("decode_mode", Timings.DecodeMode switch
+            {
+                DecodeStats.DecodeMode.Beam => "beam",
+                DecodeStats.DecodeMode.Greedy => "greedy",
+                _ => "-",
+            }),
+            ("vocab_hits", Timings.DecodeMode is null ? "-" : Timings.HotwordHits.ToString(inv)),
+            ("decode_ms", Timings.DecodeMode is null
+                ? "-" : Stopwatch.GetElapsedTime(0, Timings.DecodeTicks).TotalMilliseconds.ToString("F1", inv)),
         };
         return "dictation " + string.Join(" ", fields.ConvertAll(f => f.Key + "=" + f.Value));
     }

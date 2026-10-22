@@ -172,7 +172,9 @@ together.
 
 ### Known limitations
 
-CPU inference only; only the SenseVoice-Small model, with no model switching or hotwords; Left Alt, Win
+CPU inference only; only the SenseVoice-Small model, with no model switching; custom vocabulary (hotwords) works in
+recognition but has no settings page yet (the macOS app has one; Windows will follow — advanced users can write it in the
+config file as described in [DEVELOPMENT.md](DEVELOPMENT.md#配置文件) and restart); Left Alt, Win
 and Shift can't be used alone as the hotkey; recognition always runs locally, with no remote server option
 (use the [client–server version](../client-server/README.md) for that).
 

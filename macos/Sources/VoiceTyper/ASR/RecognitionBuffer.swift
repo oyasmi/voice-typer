@@ -84,6 +84,9 @@ final class RecognitionBuffer: @unchecked Sendable {
         try engine.recognize(audioSnapshot())
     }
 
+    /// 最近一次识别的解码统计（VOC-10）。只应在 asrQueue 上、紧跟 `finalize()` 之后读取。
+    var lastDecodeStats: DecodeStats { engine.lastDecodeStats }
+
     /// 在 target 附近找能量（RMS）最低的一小段作为切点，尽量避免把一个字切在正中间。
     private static func findSeam(_ audio: [Float], target: Int) -> Int {
         let lo = max(0, target - seamSearchRadius)

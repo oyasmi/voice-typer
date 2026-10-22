@@ -41,7 +41,13 @@ final class AppCoordinator {
     private var readiness: AppState = .booting
     /// 进行中的听写阶段，只由控制器事件写入；nil 表示没有进行中的听写。
     /// 与就绪度分开存放：就绪度的变化不会把它覆盖掉，反之亦然。
-    private var dictationPhase: DictationPhase?
+    private var dictationPhase: DictationPhase? {
+        didSet {
+            if (oldValue == nil) != (dictationPhase == nil) {
+                setupWindowController?.setDictationActive(dictationPhase != nil)
+            }
+        }
+    }
     /// 刚结束的那段听写的错误说明，菜单栏短暂显示后回落（R3-04）。只影响显示，不影响就绪度。
     private var dictationError: String?
     /// 当前控制器里校对器所用的 API Key，用来发现"只改了 Key"的保存。
@@ -118,6 +124,9 @@ final class AppCoordinator {
             // 状态变化发生在 ASRService 自己的流程中间，同步重入会让外层拿着过期判断覆盖结果。
             self?.reevaluateReadinessSoon()
         }
+        asrService.onVocabularyReport = { [weak self] report in
+            self?.setupWindowController?.updateVocabularyReport(report)
+        }
 
         do {
             try reloadConfigurationFromDisk()
@@ -149,6 +158,7 @@ final class AppCoordinator {
         // 权限与模型是两条互不依赖的准备线：权限没给全时模型照样在后台下载/加载，
         // 用户授权完立刻可用。
         asrService.updateConfig(config.asr)
+        asrService.updateVocabulary(config.vocabulary)
         Task {
             await prepareEngineForLaunch()
             reevaluateReadiness()
@@ -418,8 +428,13 @@ final class AppCoordinator {
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
                 await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? .failure(SimpleMessageError(message: L("应用未就绪")))
             }
+            controller.historyEntriesProvider = { [weak self] in
+                self?.dictationHistory.entries ?? []
+            }
             controller.loadWindow()
             setupWindowController = controller
+            controller.updateVocabularyReport(asrService.vocabularyReport)
+            controller.setDictationActive(isDictating)
             refreshSetupWindowEditorContent()
         }
 
@@ -1146,6 +1161,7 @@ final class AppCoordinator {
             || old.llm != new.llm
             || old.hotkey != new.hotkey
             || old.audio != new.audio
+            || old.vocabulary != new.vocabulary
             || (new.llm.enabled && llmAPIKeyChanged)
     }
 
@@ -1182,6 +1198,7 @@ final class AppCoordinator {
         appliedLLMAPIKey = nil
         try reloadConfigurationFromDisk()
         asrService.updateConfig(config.asr)
+        asrService.updateVocabulary(config.vocabulary)
         refreshSetupWindowEditorContent()
         reevaluateReadiness()
     }

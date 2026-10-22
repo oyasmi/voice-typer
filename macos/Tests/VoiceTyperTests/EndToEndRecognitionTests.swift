@@ -41,6 +41,44 @@ final class EndToEndRecognitionTests: XCTestCase {
         )
     }
 
+    /// 50 条与音频内容无关的词汇、最强档：整句改走束搜索也不得改动无关文本——输出与同一引擎的贪心结果逐字相同
+    /// （VOC-D4 / §10.3）。比对象是本机贪心而非 Python 参考，避免跨构建 ORT 的浮点差异混进来。
+    func testIrrelevantVocabularyKeepsOutputIdentical() throws {
+        guard let bundle = ModelLocator.locate(explicitDir: "") else {
+            throw XCTSkip("本机未找到 SenseVoice 模型，跳过端到端识别测试")
+        }
+        let testBundle = Bundle(for: Self.self)
+        guard let wavURL = testBundle.url(forResource: "speech_zh_en_mixed", withExtension: "wav") else {
+            throw XCTSkip("缺少语音夹具")
+        }
+        let (samples, _) = try WavLoader.loadMonoFloat32(wavURL)
+        let engine = try SenseVoiceEngine(bundle: bundle, language: .auto, threads: 4)
+
+        let greedy = try engine.recognize(samples)
+        XCTAssertEqual(engine.lastDecodeStats.mode, .greedy)
+
+        let report = engine.setVocabulary(VocabularyConfig(bias: .strong, entries: Self.irrelevantTerms.map {
+            VocabularyEntry(term: $0)
+        }))
+        XCTAssertEqual(report?.entries.count, 50)
+        let biased = try engine.recognize(samples)
+        XCTAssertEqual(engine.lastDecodeStats.mode, .beam)
+        XCTAssertEqual(biased, greedy)
+
+        // 清空词汇后回到贪心。
+        _ = engine.setVocabulary(VocabularyConfig())
+        XCTAssertEqual(try engine.recognize(samples), greedy)
+        XCTAssertEqual(engine.lastDecodeStats.mode, .greedy)
+    }
+
+    private static let irrelevantTerms = [
+        "张三丰", "李四光", "王小波", "飞书", "钉钉", "企业微信", "Kubernetes", "PostgreSQL", "Redis", "Grafana",
+        "Prometheus", "TensorFlow", "PyTorch", "Claude Code", "Anthropic", "OpenAI", "ChatGPT", "Gemini", "Copilot", "Cursor",
+        "VSCode", "JetBrains", "IntelliJ", "Xcode", "SwiftUI", "AppKit", "WinForms", "ONNX", "SenseVoice", "Paraformer",
+        "克劳德", "乔布斯", "马斯克", "黄仁勋", "雷军", "字节跳动", "阿里巴巴", "腾讯会议", "小红书", "哔哩哔哩",
+        "深度求索", "通义千问", "文心一言", "豆包", "Kimi", "月之暗面", "智谱清言", "讯飞", "搜狗", "百度网盘",
+    ]
+
     private func levenshteinDistance(_ a: String, _ b: String) -> Int {
         let a = Array(a), b = Array(b)
         var previous = Array(0...b.count)

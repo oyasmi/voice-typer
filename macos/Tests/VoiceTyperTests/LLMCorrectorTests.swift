@@ -331,6 +331,60 @@ final class LLMCorrectorTests: XCTestCase {
         XCTAssertTrue(store.isThinkingParameterUnsupported(fingerprint: "f39"))
     }
 
+    // MARK: - VOC-8：词表提示
+
+    private var payloadConfig: LLMCorrector.Config {
+        LLMCorrector.Config(
+            chatCompletionsURL: modelURL, apiKey: "k", model: "gpt-4o-mini", temperature: 0, maxTokens: 800, timeout: 5
+        )
+    }
+
+    private func messages(_ payload: [String: Any]) -> [[String: String]] {
+        payload["messages"] as? [[String: String]] ?? []
+    }
+
+    /// 带词表时 system 与 few-shot 逐条不变（保住前缀缓存），只有末条 user 消息多出 `<glossary>`。
+    func testGlossaryOnlyChangesLastUserMessage() {
+        let plain = messages(LLMCorrector.buildPayload(
+            config: payloadConfig, systemPrompt: "SYS", text: "用克劳德写", includeThinking: true
+        ))
+        let withGlossary = messages(LLMCorrector.buildPayload(
+            config: payloadConfig, systemPrompt: "SYS", text: "用克劳德写", includeThinking: true,
+            glossary: ["Claude", "VoiceTyper", "张三丰"]
+        ))
+        XCTAssertEqual(plain.count, withGlossary.count)
+        XCTAssertEqual(Array(plain.dropLast()), Array(withGlossary.dropLast()))
+        XCTAssertEqual(
+            withGlossary.last?["content"],
+            "<glossary>Claude、VoiceTyper、张三丰</glossary>\n<asr_text>\n用克劳德写\n</asr_text>"
+        )
+    }
+
+    /// 空词表时请求与没有这项功能时逐字节相同。
+    func testEmptyGlossaryKeepsMessagesByteIdentical() throws {
+        let legacy = LLMCorrector.buildPayload(config: payloadConfig, systemPrompt: "SYS", text: "原文", includeThinking: false)
+        let empty = LLMCorrector.buildPayload(
+            config: payloadConfig, systemPrompt: "SYS", text: "原文", includeThinking: false, glossary: []
+        )
+        let encode = { (payload: [String: Any]) in
+            try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        }
+        XCTAssertEqual(try encode(legacy), try encode(empty))
+        XCTAssertEqual(messages(empty).last?["content"], "<asr_text>\n原文\n</asr_text>")
+    }
+
+    /// 词表经 `correctWithReport` 真正发到服务端。
+    func testCorrectWithReportSendsGlossary() async {
+        let recorder = RequestRecorder()
+        StubURLProtocol.handler = { request in
+            recorder.record(request)
+            return (200, Self.okBody)
+        }
+        _ = await makeCorrector(session: makeSession()).correctWithReport("原文", glossary: ["Claude"])
+        let sent = (recorder.requests.first?["messages"] as? [[String: Any]])?.last?["content"] as? String
+        XCTAssertEqual(sent, "<glossary>Claude</glossary>\n<asr_text>\n原文\n</asr_text>")
+    }
+
     /// test() 遇到语义回落（如 finish_reason=length）仍返回文本、不抛错——契约不变。
     func testTestReturnsOriginalTextOnSemanticFallback() async throws {
         StubURLProtocol.handler = { _ in

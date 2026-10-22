@@ -45,9 +45,21 @@ enum OutputFormatter {
         return String(output)
     }
 
-    /// 上屏前的完整格式化链。R8-F1（自定义词汇）/ R8-F3（衔接空格）会在这里扩展。
-    static func formatForOutput(_ text: String) -> String {
-        applyCJKLatinSpacing(text)
+    /// 上屏前的完整格式化链。完整处理链：
+    ///
+    /// ```
+    /// CTC 解码（VOC-5）→ TextPostprocessor（识别契约，不变）
+    ///   → VocabularyReplacer.apply        —— LocalASRSession.completeWithASRText，LLM 之前
+    ///   → LLM 校对（附词表，VOC-8）
+    ///   → formatForOutput：
+    ///         VocabularyReplacer.apply    —— LLM 可能改回去；幂等，未启用 LLM 时是空操作
+    ///       → applyCJKLatinSpacing（R8-F2）
+    /// ```
+    ///
+    /// 替换必须在加空格之前：`用克劳德写` 先变成 `用Claude写`，才能再补成 `用 Claude 写`。
+    /// 预览不经过 `completeWithASRText`，只在这里替换一次。R8-F3（衔接空格）会在这里扩展。
+    static func formatForOutput(_ text: String, vocabulary: VocabularyReplacer) -> String {
+        applyCJKLatinSpacing(vocabulary.apply(text))
     }
 
     // MARK: - 字符分类

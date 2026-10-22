@@ -134,4 +134,22 @@ final class ConfigStoreTests: XCTestCase {
         _ = try store.loadOrCreate()
         XCTAssertFalse(store.lastLoadFellBackToDefaults)
     }
+
+    /// VOC-1：词汇表写回 YAML 后能原样读出，含需要转义的字符。
+    func testVocabularyRoundTrips() throws {
+        var config = AppConfig()
+        config.vocabulary = VocabularyConfig(bias: .strong, entries: [
+            VocabularyEntry(term: "Claude", aliases: ["克劳德", "可劳德"]),
+            VocabularyEntry(term: "张三丰"),
+            VocabularyEntry(term: "say \"hi\" \\ ok", aliases: ["x: y", "- z", "#tag"]),
+        ])
+        try store.save(config: config)
+        let loaded = try store.loadOrCreate()
+        XCTAssertEqual(loaded.vocabulary, config.vocabulary)
+
+        var empty = AppConfig()
+        empty.vocabulary.bias = .off
+        try store.save(config: empty)
+        XCTAssertEqual(try store.loadOrCreate().vocabulary, VocabularyConfig(bias: .off, entries: []))
+    }
 }

@@ -73,6 +73,7 @@ Everything is configurable in the Settings window; there is no config file to ed
 | --- | --- |
 | Permissions | Status of the three permissions and shortcuts to grant them |
 | Recognition | Model status, recognition language (auto / Chinese / English / Cantonese / Japanese / Korean), memory, AI proofreading |
+| Vocabulary | Custom vocabulary (names, product names, terms) and recognition bias strength |
 | General | Hotkey, trigger mode, microphone, overlay position and opacity, launch at login, interface language |
 
 - **Hotkey**: `Fn`, a key combination (such as `⌥Space`), or a single Right ⌘ / Right ⌥ / Left ⌥ / Right ⌃
@@ -86,6 +87,26 @@ Everything is configurable in the Settings window; there is no config file to ed
   loads while you record.
 - **Interface language**: Chinese or English, applied after restarting the app. It is independent of the
   recognition language.
+
+### Custom vocabulary
+
+Names, product names, project code names and terms that keep getting misrecognized can be listed in
+Settings → Vocabulary. Everything runs on your Mac; nothing goes online.
+
+- **Spelling**: the correct spelling, such as `VoiceTyper`, `Claude` or `张三丰`.
+- **Sounds like** (optional): what it tends to come out as, e.g. `克劳德` for `Claude`. Variants that differ only
+  in spaces, hyphens or letter case (`voice typer`, `Voice-Typer`) don't need to be listed — they are normalized
+  to your spelling automatically.
+- **Recognition bias**: Off / Light / Standard / Strong, Standard by default. Stronger settings recognize listed
+  words more readily, but are also more likely to turn similar-sounding ordinary words into them; words that sound
+  clearly different are never changed. If you see unwanted changes, go down one level.
+- **Add from Recent Results**: when you spot a misrecognition, select the wrong part in a recent result and type
+  the correct spelling.
+- **Status column**: ✓ means the entry takes part in recognition bias; ⚠ means it is a single character (or a single
+  English word piece) — such entries are only used for replacement.
+
+Up to 200 entries. Without any vocabulary, recognition results are exactly the same as before. When AI proofreading
+is on, the list is also given to the proofreading service.
 
 ### AI proofreading (optional, off by default)
 
@@ -101,7 +122,7 @@ Press the hotkey again during proofreading to skip it and insert the original te
 - Audio is processed in memory only — never written to disk, never uploaded.
 - Once the model is downloaded, VoiceTyper works fully offline.
 - No account, no usage limits.
-- Logs never contain recognized text; Recent Results live in memory and are cleared on quit.
+- Logs never contain recognized text or your custom vocabulary; Recent Results live in memory and are cleared on quit.
 
 ## FAQ
 

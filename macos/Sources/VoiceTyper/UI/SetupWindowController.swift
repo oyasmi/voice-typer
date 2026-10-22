@@ -5,12 +5,15 @@ import SwiftUI
 enum SetupTab: Int, CaseIterable {
     case permissions
     case recognition
+    /// 自定义词汇（VOC-9），排在「识别」之后。
+    case vocabulary
     case general
 
     var title: String {
         switch self {
         case .permissions: return L("权限")
         case .recognition: return L("识别")
+        case .vocabulary: return L("词汇")
         case .general: return L("通用")
         }
     }
@@ -19,6 +22,7 @@ enum SetupTab: Int, CaseIterable {
         switch self {
         case .permissions: return "checkmark.shield"
         case .recognition: return "waveform"
+        case .vocabulary: return "character.book.closed"
         case .general: return "gearshape"
         }
     }
@@ -42,6 +46,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
     var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
+    /// 「词汇」页的「从最近结果添加」读取最近结果。
+    var historyEntriesProvider: (() -> [DictationHistory.Entry])?
 
     private let viewModel = SettingsViewModel()
     private let tabController = NSTabViewController()
@@ -112,6 +118,18 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         } else if window?.isVisible == true {
             startPermissionPollIfNeeded()
         }
+    }
+
+    /// 词汇编译报告（VOC-9 状态列）；引擎从未加载过为 nil。
+    func updateVocabularyReport(_ report: HotwordCompileReport?) {
+        ensureUIBuilt()
+        viewModel.vocabularyReport = report
+    }
+
+    /// 听写进行中禁用词汇编辑：编辑会重建控制器，`applyConfig` 会拒绝。
+    func setDictationActive(_ active: Bool) {
+        ensureUIBuilt()
+        viewModel.isDictating = active
     }
 
     func selectTab(_ tab: SetupTab) {
@@ -190,6 +208,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.onStartModelDownload = { [weak self] in self?.onStartModelDownload?() }
         viewModel.onCancelModelDownload = { [weak self] in self?.onCancelModelDownload?() }
         viewModel.onReloadModel = { [weak self] in self?.onReloadModel?() }
+        viewModel.historyEntriesProvider = { [weak self] in self?.historyEntriesProvider?() ?? [] }
         viewModel.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
             await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? .failure(SimpleMessageError(message: L("内部错误：测试通道不可用")))
         }
@@ -246,6 +265,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return sized(PermissionsSettingsView(vm: viewModel))
         case .recognition:
             return sized(RecognitionSettingsView(vm: viewModel))
+        case .vocabulary:
+            return sized(VocabularySettingsView(vm: viewModel))
         case .general:
             return sized(GeneralSettingsView(vm: viewModel))
         }

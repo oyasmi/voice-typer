@@ -23,6 +23,11 @@ internal sealed class AppConfig
     [YamlMember(Alias = "ui")]
     public UIConfig UI { get; set; } = new();
 
+    /// <summary>自定义词汇（VOC-1）。设置窗口保存时以 <see cref="Clone"/> 出的草稿为基础，必须一并复制，
+    /// 否则任何一次保存都会把词汇表清空。</summary>
+    [YamlMember(Alias = "vocabulary")]
+    public VocabularyConfig Vocabulary { get; set; } = new();
+
     public AppConfig Clone() => new()
     {
         Asr = Asr.Clone(),
@@ -30,6 +35,7 @@ internal sealed class AppConfig
         Hotkey = Hotkey.Clone(),
         Audio = Audio.Clone(),
         UI = UI.Clone(),
+        Vocabulary = (Vocabulary ?? new VocabularyConfig()).Clone(),
     };
 
     /// <summary>
@@ -56,6 +62,7 @@ internal sealed class AppConfig
             : config.Audio.InputDevice.Trim();
         // 无法识别的 hud_position 回落默认，与 mode 的容错一致；不打 warning：手改成未知值不是错误。
         config.UI.HudPositionValue = HudPlacementExtensions.Parse(config.UI.HudPosition);
+        config.Vocabulary = (config.Vocabulary ?? new VocabularyConfig()).Validated();
         return config;
     }
 

@@ -619,4 +619,91 @@ final class LocalASRSessionTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(engine.callCount, 0, "排队中的预览应被跳过")
     }
+
+    // MARK: - VOC-7 / VOC-8 / VOC-10：自定义词汇
+
+    private final class BeamStatsEngine: SenseVoiceRecognizing, @unchecked Sendable {
+        let text: String
+        init(text: String) { self.text = text }
+        func recognize(_ samples: [Float]) throws -> String { text }
+        var lastDecodeStats: DecodeStats { DecodeStats(mode: .beam, hotwordHits: 2, decodeNanos: 3_000_000) }
+    }
+
+    private let claudeVocabulary = VocabularyReplacer(VocabularyConfig(entries: [
+        VocabularyEntry(term: "Claude", aliases: ["克劳德"]),
+        VocabularyEntry(term: "VoiceTyper"),
+    ]))
+
+    /// 未启用 LLM：终稿已做词汇替换；终稿的解码统计进入会话打点。
+    func testFinalAppliesVocabularyAndRecordsDecodeStats() async {
+        let engine = BeamStatsEngine(text: "用克劳德写voice typer")
+        let session = LocalASRSession(
+            asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: nil, vocabulary: claudeVocabulary
+        )
+        var finalText: String?
+        session.onFinal = { finalText = $0 }
+
+        session.sendAudio(speech(count: 8_000))
+        session.finalize(timeout: 2)
+        await poll { finalText != nil }
+
+        XCTAssertEqual(finalText, "用Claude写VoiceTyper", "中英文空格由 formatForOutput 负责，这里只做替换")
+        XCTAssertEqual(session.timings.decodeMode, .beam)
+        XCTAssertEqual(session.timings.hotwordHits, 2)
+        XCTAssertEqual(session.timings.decodeNanos, 3_000_000)
+    }
+
+    /// 启用 LLM：校对收到的是替换后的文本，且末条消息带词表；校对前顶到 HUD 的也是替换后的文本。
+    func testCorrectionReceivesReplacedTextAndGlossary() async {
+        let engine = GatedFakeEngine()
+        engine.textForCall = { _ in "用克劳德写" }
+        let session = LocalASRSession(
+            asrQueue: makeQueue(), engineAccessor: { engine }, llmCorrector: makeCorrector(), vocabulary: claudeVocabulary
+        )
+        let captured = CapturedContent()
+        StubURLProtocol.handler = { request in
+            captured.set(Self.lastUserContent(of: request))
+            return (200, #"{"choices":[{"message":{"content":"用克劳德写"},"finish_reason":"stop"}]}"#)
+        }
+        var partials: [String] = []
+        var finalText: String?
+        session.onPartial = { partials.append($0) }
+        session.onFinal = { finalText = $0 }
+
+        session.stopPreviews()
+        session.sendAudio(speech(count: 8_000))
+        session.finalize(timeout: 2)
+        await poll { finalText != nil }
+
+        XCTAssertEqual(partials, ["用Claude写"])
+        XCTAssertEqual(captured.value, "<glossary>Claude、VoiceTyper</glossary>\n<asr_text>\n用Claude写\n</asr_text>")
+        // LLM 改回去的写法由 formatForOutput 里的第二次替换兜住；会话本身原样转交校对结果。
+        XCTAssertEqual(finalText, "用克劳德写")
+    }
+
+    private final class CapturedContent: @unchecked Sendable {
+        private let lock = NSLock()
+        private var content: String?
+        var value: String? { lock.lock(); defer { lock.unlock() }; return content }
+        func set(_ value: String?) { lock.lock(); content = value; lock.unlock() }
+    }
+
+    private nonisolated static func lastUserContent(of request: URLRequest) -> String? {
+        var data = request.httpBody
+        if data == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var collected = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                collected.append(buffer, count: count)
+            }
+            data = collected
+        }
+        guard let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messages = json["messages"] as? [[String: Any]] else { return nil }
+        return messages.last?["content"] as? String
+    }
 }

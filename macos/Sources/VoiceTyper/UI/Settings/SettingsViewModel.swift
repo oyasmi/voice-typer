@@ -33,6 +33,57 @@ private enum SettingsValidationError: LocalizedError {
     }
 }
 
+/// 「词汇」页表格的一行草稿（VOC-9）。`aliasesText` 是逗号分隔的「听起来像」。
+struct VocabularyRow: Identifiable, Equatable {
+    let id: UUID
+    var term: String
+    var aliasesText: String
+
+    init(id: UUID = UUID(), term: String = "", aliasesText: String = "") {
+        self.id = id
+        self.term = term
+        self.aliasesText = aliasesText
+    }
+
+    init(entry: VocabularyEntry) {
+        self.init(term: entry.term, aliasesText: entry.aliases.joined(separator: L("，")))
+    }
+
+    /// 半角 / 全角逗号与顿号都算分隔符。
+    var entry: VocabularyEntry {
+        let aliases = aliasesText
+            .split(whereSeparator: { ",，、".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return VocabularyEntry(term: term, aliases: aliases)
+    }
+}
+
+/// 「词汇」页状态列的显示（VOC-9）。
+enum VocabularyRowStatus: Equatable {
+    /// 模型未加载、尚未编译或识别偏向已关闭。
+    case unknown(String)
+    case active
+    case warning(String)
+
+    static func make(for row: VocabularyRow, report: HotwordCompileReport?, bias: VocabularyBias) -> VocabularyRowStatus {
+        let term = row.term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return .unknown("") }
+        if bias == .off {
+            return .unknown(L("识别偏向已关闭，仍会做替换"))
+        }
+        guard let status = report?.status(forTerm: term) else {
+            return .unknown(L("模型加载后检查"))
+        }
+        switch status {
+        case .biased: return .active
+        case .tooShort: return .warning(L("只有一个字 / 一个词片，不参与识别偏向，仍会做替换"))
+        case .unsupportedCharacters: return .warning(L("含无法识别的字符，不参与识别偏向，仍会做替换"))
+        case .truncated: return .warning(L("词汇过多，本条未参与识别偏向，仍会做替换"))
+        }
+    }
+}
+
 /// 设置窗口各 SwiftUI 分页共享的可观察状态。
 /// 由 `SetupWindowController` 创建并注入回调，AppKit 侧更新它、SwiftUI 侧观察它。
 @MainActor
@@ -90,6 +141,17 @@ final class SettingsViewModel {
     var generalMessage = ""
     var generalMessageKind: SettingsMessageKind = .info
 
+    // MARK: 词汇（编辑后即时保存，VOC-9）
+    var vocabularyBias: VocabularyBias = .standard
+    var vocabularyRows: [VocabularyRow] = []
+    /// 引擎的编译报告；模型未加载过为 nil，状态列显示「—」。
+    var vocabularyReport: HotwordCompileReport?
+    /// 听写进行中：词汇编辑会重建控制器，`applyConfig` 会拒绝，界面直接禁用。
+    var isDictating = false
+    var vocabularyTrialInput = ""
+    var vocabularyMessage = ""
+    var vocabularyMessageKind: SettingsMessageKind = .info
+
     // MARK: 注入的回调
     var onRequestPermission: ((PermissionKind) -> Void)?
     var onOpenSystemSettings: ((PermissionKind) -> Void)?
@@ -104,6 +166,8 @@ final class SettingsViewModel {
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
     var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
+    /// 「从最近结果添加」读取最近的听写结果（只在内存，R8-A2）。
+    var historyEntriesProvider: (() -> [DictationHistory.Entry])?
 
     /// 已落盘的基线配置。即时保存（热键/透明度）以它为基准，避免带上未保存的识别草稿。
     private(set) var loadedConfig = AppConfig()
@@ -129,6 +193,7 @@ final class SettingsViewModel {
         idleUnloadMinutes = config.asr.idleUnloadMinutes
         preloadOnLaunch = config.asr.preloadOnLaunch
         self.launchAtLogin = launchAtLogin
+        syncVocabularyRows(with: config.vocabulary)
 
         recognitionMessage = ""
         hotkeyMessage = ""
@@ -481,6 +546,100 @@ final class SettingsViewModel {
                 self.interfaceLanguage = previous
                 self.generalMessage = LF("界面语言保存失败：%@", error.localizedDescription)
                 self.generalMessageKind = .error
+            }
+        }
+    }
+
+    // MARK: - 词汇
+
+    /// 配置回灌到草稿。自己刚保存的结果回灌时不重建行：保留空白新行、行身份与表格选中状态。
+    func syncVocabularyRows(with vocabulary: VocabularyConfig) {
+        vocabularyBias = vocabulary.bias
+        if draftVocabularyConfig() != vocabulary {
+            vocabularyRows = vocabulary.entries.map(VocabularyRow.init(entry:))
+        }
+    }
+
+    /// 草稿 → 校验后的配置（与落盘时的规整一致，用来判断「有没有变」）。
+    func draftVocabularyConfig() -> VocabularyConfig {
+        VocabularyConfig(bias: vocabularyBias, entries: vocabularyRows.map(\.entry)).validated()
+    }
+
+    /// 「试一试替换」：只演示替换层与上屏格式化，离线、即时。
+    var vocabularyTrialOutput: String {
+        OutputFormatter.formatForOutput(vocabularyTrialInput, vocabulary: VocabularyReplacer(draftVocabularyConfig()))
+    }
+
+    func status(for row: VocabularyRow) -> VocabularyRowStatus {
+        VocabularyRowStatus.make(for: row, report: vocabularyReport, bias: loadedConfig.vocabulary.bias)
+    }
+
+    var canAddVocabularyRow: Bool { vocabularyRows.count < VocabularyConfig.maxEntries }
+
+    @discardableResult
+    func addVocabularyRow() -> UUID? {
+        guard canAddVocabularyRow else {
+            vocabularyMessage = LF("最多 %d 条词汇。", VocabularyConfig.maxEntries)
+            vocabularyMessageKind = .error
+            return nil
+        }
+        let row = VocabularyRow()
+        vocabularyRows.append(row)
+        return row.id
+    }
+
+    func removeVocabularyRows(_ ids: Set<VocabularyRow.ID>) {
+        guard !ids.isEmpty else { return }
+        vocabularyRows.removeAll { ids.contains($0.id) }
+        commitVocabulary()
+    }
+
+    /// 「从最近结果添加」：`heard` 是用户在识别结果里选中的、被认错的片段，`term` 是正确写法。
+    /// 已有同名词条时把片段并入它的 aliases（`validated()` 会合并）。
+    func addVocabularyFromHistory(term: String, heard: String) {
+        let term = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        let alias = heard.lowercased() == term.lowercased() ? "" : heard
+        if let index = vocabularyRows.firstIndex(where: {
+            $0.term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == term.lowercased()
+        }) {
+            if !alias.isEmpty {
+                let existing = vocabularyRows[index].aliasesText.trimmingCharacters(in: .whitespaces)
+                vocabularyRows[index].aliasesText = existing.isEmpty ? alias : existing + L("，") + alias
+            }
+        } else {
+            guard addVocabularyRow() != nil else { return }
+            vocabularyRows[vocabularyRows.count - 1] = VocabularyRow(
+                id: vocabularyRows[vocabularyRows.count - 1].id, term: term, aliasesText: alias
+            )
+        }
+        commitVocabulary()
+    }
+
+    func recentResults() -> [DictationHistory.Entry] {
+        historyEntriesProvider?() ?? []
+    }
+
+    /// 编辑结束（回车、离开输入框、增删行、改强度）时调用：有变化才落盘。保存会重建控制器，下一次听写生效。
+    func commitVocabulary() {
+        let draft = draftVocabularyConfig()
+        guard draft != loadedConfig.vocabulary else { return }
+        var updated = loadedConfig
+        updated.vocabulary = draft
+        let previous = loadedConfig.vocabulary
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+                self.vocabularyMessage = ""
+            } catch {
+                // 保存失败（例如正在听写）：界面退回真实生效的值，不显示一个没生效的词汇表。
+                self.vocabularyBias = previous.bias
+                self.vocabularyRows = previous.entries.map(VocabularyRow.init(entry:))
+                self.vocabularyMessage = LF("词汇保存失败：%@", error.localizedDescription)
+                self.vocabularyMessageKind = .error
             }
         }
     }

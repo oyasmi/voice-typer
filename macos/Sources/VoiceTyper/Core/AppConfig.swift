@@ -6,19 +6,22 @@ struct AppConfig: Codable {
     var hotkey: HotkeyConfig
     var audio: AudioConfig
     var ui: UIConfig
+    var vocabulary: VocabularyConfig
 
     init(
         asr: ASRConfig = .init(),
         llm: LLMConfig = .init(),
         hotkey: HotkeyConfig = .init(),
         audio: AudioConfig = .init(),
-        ui: UIConfig = .init()
+        ui: UIConfig = .init(),
+        vocabulary: VocabularyConfig = .init()
     ) {
         self.asr = asr
         self.llm = llm
         self.hotkey = hotkey
         self.audio = audio
         self.ui = ui
+        self.vocabulary = vocabulary
     }
 
     init(from decoder: Decoder) throws {
@@ -28,6 +31,7 @@ struct AppConfig: Codable {
         self.hotkey = try container.decodeIfPresent(HotkeyConfig.self, forKey: .hotkey) ?? .init()
         self.audio = try container.decodeIfPresent(AudioConfig.self, forKey: .audio) ?? .init()
         self.ui = try container.decodeIfPresent(UIConfig.self, forKey: .ui) ?? .init()
+        self.vocabulary = try container.decodeIfPresent(VocabularyConfig.self, forKey: .vocabulary) ?? .init()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -36,6 +40,7 @@ struct AppConfig: Codable {
         case hotkey
         case audio
         case ui
+        case vocabulary
     }
 
     /// 把手改 YAML 或历史脏数据里越界的值夹逼回合法范围，避免 `timeout: -1`、
@@ -50,6 +55,7 @@ struct AppConfig: Codable {
         config.llm.timeout = clamp(config.llm.timeout, 1, 120, field: "llm.timeout")
         config.ui.opacity = clamp(config.ui.opacity, 0.1, 1.0, field: "ui.opacity")
         config.hotkey = Self.validatedHotkey(config.hotkey)
+        config.vocabulary = config.vocabulary.validated()
         return config
     }
 
@@ -375,5 +381,152 @@ struct UIConfig: Codable, Equatable {
         case opacity
         case hudPosition = "hud_position"
         case interfaceLanguage = "interface_language"
+    }
+}
+
+/// 识别偏置强度（VOC-D5）。只影响识别层偏置；替换层与 LLM 词表不受它控制。
+enum VocabularyBias: String, Codable, CaseIterable {
+    case off
+    case light
+    case standard
+    case strong
+
+    var displayName: String {
+        switch self {
+        case .off: return L("关")
+        case .light: return L("轻")
+        case .standard: return L("标准")
+        case .strong: return L("强")
+        }
+    }
+}
+
+/// 一条自定义词汇（VOC-D2）：`term` 是正确写法，`aliases` 是「听起来像 / 常被识别成」的写法。
+struct VocabularyEntry: Codable, Equatable {
+    var term: String
+    var aliases: [String]
+
+    init(term: String, aliases: [String] = []) {
+        self.term = term
+        self.aliases = aliases
+    }
+
+    /// 容错：手写 YAML 时允许 `- 张三丰` 这种只有 term 的简写，`aliases` 也允许写成单个字符串。
+    init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer().decode(String.self) {
+            self.init(term: single)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let term = try container.decodeIfPresent(String.self, forKey: .term) ?? ""
+        let aliases: [String]
+        if let list = try? container.decodeIfPresent([String].self, forKey: .aliases) {
+            aliases = list
+        } else if let one = try? container.decodeIfPresent(String.self, forKey: .aliases) {
+            aliases = [one]
+        } else {
+            aliases = []
+        }
+        self.init(term: term, aliases: aliases)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case term
+        case aliases
+    }
+}
+
+/// 自定义词汇表（VOC-1）。词条文本只存在 config.yaml，日志里只记条数（VOC-D9）。
+struct VocabularyConfig: Codable, Equatable {
+    static let maxEntries = 200
+    static let maxAliasesPerEntry = 10
+    static let maxSurfaceLength = 50
+
+    var bias: VocabularyBias
+    var entries: [VocabularyEntry]
+
+    init(bias: VocabularyBias = .standard, entries: [VocabularyEntry] = []) {
+        self.bias = bias
+        self.entries = entries
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawBias = try container.decodeIfPresent(String.self, forKey: .bias) ?? VocabularyBias.standard.rawValue
+        // 未知值回落 standard，与本文件其余枚举字段的容错一致。
+        self.bias = VocabularyBias(rawValue: rawBias) ?? .standard
+        self.entries = try container.decodeIfPresent([VocabularyEntry].self, forKey: .entries) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case bias
+        case entries
+    }
+
+    /// 识别层是否需要编译上下文图：有词条且强度不是「关」。
+    var biasesRecognition: Bool { bias != .off && !entries.isEmpty }
+
+    /// §4.2 的逐条校验：去空白、去空、去重、合并同名 term、截断超限部分。越界只截断，warning 只记条数。
+    func validated() -> VocabularyConfig {
+        var merged: [VocabularyEntry] = []
+        var indexByKey: [String: Int] = [:]
+        var truncatedSurfaces = 0
+        var droppedEntries = 0
+        var mergedEntries = 0
+
+        for entry in entries {
+            let term = Self.normalizedSurface(entry.term, truncatedCount: &truncatedSurfaces)
+            guard !term.isEmpty else {
+                droppedEntries += 1
+                continue
+            }
+            let aliases = entry.aliases.map { Self.normalizedSurface($0, truncatedCount: &truncatedSurfaces) }
+            let key = term.lowercased()
+            if let index = indexByKey[key] {
+                mergedEntries += 1
+                merged[index].aliases.append(contentsOf: aliases)
+            } else {
+                indexByKey[key] = merged.count
+                merged.append(VocabularyEntry(term: term, aliases: aliases))
+            }
+        }
+
+        var truncatedAliases = 0
+        for index in merged.indices {
+            let termKey = merged[index].term.lowercased()
+            var seen: Set<String> = [termKey]
+            var kept: [String] = []
+            for alias in merged[index].aliases where !alias.isEmpty {
+                guard seen.insert(alias.lowercased()).inserted else { continue }
+                kept.append(alias)
+            }
+            if kept.count > Self.maxAliasesPerEntry {
+                truncatedAliases += kept.count - Self.maxAliasesPerEntry
+                kept.removeLast(kept.count - Self.maxAliasesPerEntry)
+            }
+            merged[index].aliases = kept
+        }
+
+        let overflow = max(0, merged.count - Self.maxEntries)
+        if overflow > 0 {
+            merged.removeLast(overflow)
+        }
+
+        if droppedEntries + mergedEntries + truncatedSurfaces + truncatedAliases + overflow > 0 {
+            AppLog.app.warning(
+                "词汇表已规整：空词条 \(droppedEntries, privacy: .public) 条、合并重复 \(mergedEntries, privacy: .public) 条、截断过长写法 \(truncatedSurfaces, privacy: .public) 个、截断多余 alias \(truncatedAliases, privacy: .public) 个、超出上限 \(overflow, privacy: .public) 条"
+            )
+        }
+        return VocabularyConfig(bias: bias, entries: merged)
+    }
+
+    /// 去首尾空白；内部的换行、制表等空白收敛成一个半角空格（写回 YAML 时不必转义控制字符）；超长截断。
+    private static func normalizedSurface(_ raw: String, truncatedCount: inout Int) -> String {
+        let collapsed = raw
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard collapsed.count > maxSurfaceLength else { return collapsed }
+        truncatedCount += 1
+        return String(collapsed.prefix(maxSurfaceLength)).trimmingCharacters(in: .whitespaces)
     }
 }

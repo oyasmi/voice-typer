@@ -77,7 +77,7 @@
 | R8-C5 | 下载进度详情 + 就绪提示 | P2 | S | 二 | `AppCoordinator`、新增 `Support/DownloadStats.swift`、设置 / 引导 | 已有（E3、F-01） |
 | R8-G1 | 菜单栏快捷切换 | P2 | R | 二 | `StatusBarController`、`AppCoordinator` | 可选 |
 | R8-H1 | 更新后重新授权引导 | P2 | R | 二 | `AppCoordinator`、引导 / 权限页 | 不需要 |
-| R8-F1 | 自定义词汇 | P1（价值） | R | 三 | `Text/`、`LLMCorrector`、`correction.md`、新设置页 | **必须**（schema + 提示词） |
+| R8-F1 | 自定义词汇（已移交 `VOCABULARY_SPEC.md`） | P1（价值） | R | 三 | `Text/`、`LLMCorrector`、`correction.md`、新设置页 | **必须**（schema + 提示词） |
 | R8-G2 | 麦克风设备列表 + 测试麦克风 | P2 | S | 三 | 设置「通用」、新增 `Services/MicLevelTester.swift` | 已有（D1/E2） |
 | R8-E1 | 录音紧凑态改小胶囊 | P2 | S | 三 | HUD | 不需要 |
 | R8-E2 | 浮窗落在焦点窗口所在屏 | P2 | S | 三 | HUD | 不需要 |
@@ -550,6 +550,9 @@ R8-G2 落地后的设备列表）、「智能校对」开关项（未配置 Base
 ## 6. 第三批：更懂我
 
 ### R8-F1 自定义词汇
+
+> **已被 [`VOCABULARY_SPEC.md`](VOCABULARY_SPEC.md) 取代**：新规格增加了 CTC 解码期热词偏置作为主力，并细化了下面两层。
+> 本节保留作为历史记录，实施以新规格为准。
 
 **目标**：人名、产品名、术语按用户写法输出。SenseVoice 不支持热词偏置，做两层：
 

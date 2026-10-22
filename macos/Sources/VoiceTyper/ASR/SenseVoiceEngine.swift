@@ -1,7 +1,7 @@
 import Foundation
 import OnnxRuntimeBindings
 
-/// SenseVoice-Small ONNX 推理封装：fbank → LFR/CMVN → ORT session → CTC 贪心解码。
+/// SenseVoice-Small ONNX 推理封装：fbank → LFR/CMVN → ORT session → CTC 解码（无词汇时贪心，有词汇时带热词偏置的束搜索）。
 /// 对外只有一个方法 `recognize`，非线程安全——只应在 `ASRService.asrQueue` 上使用
 /// （与服务端单 worker executor 的约束一致：ONNX session 与前端状态都有可变缓冲）。
 ///
@@ -19,11 +19,17 @@ import OnnxRuntimeBindings
 protocol SenseVoiceRecognizing: AnyObject, Sendable {
     func recognize(_ samples: [Float]) throws -> String
     func setLanguage(_ language: ASRLanguage)
+    /// 只在 asrQueue 上调用。编译在调用线程同步完成，返回报告供设置页显示（VOC-2）。
+    func setVocabulary(_ vocabulary: VocabularyConfig) -> HotwordCompileReport?
+    /// 最近一次 `recognize` 的解码统计，只在 asrQueue 上读。
+    var lastDecodeStats: DecodeStats { get }
 }
 
 extension SenseVoiceRecognizing {
     /// 默认空实现：并非所有假实现（测试用）都关心语言切换。
     func setLanguage(_ language: ASRLanguage) {}
+    func setVocabulary(_ vocabulary: VocabularyConfig) -> HotwordCompileReport? { nil }
+    var lastDecodeStats: DecodeStats { .greedy }
 }
 
 /// `@unchecked Sendable`：实例只应在 `ASRService.asrQueue`（单一串行队列）上访问，
@@ -41,6 +47,14 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
     private let lfrM: Int
     private let lfrN: Int
     private var languageID: Int32
+
+    /// 词表前缀树与 token 类别：第一次 `setVocabulary` 时懒构建，之后复用（与具体词汇无关）。
+    private var tokenTrie: TokenTrie?
+    private var tokenClasses: CTCPrefixBeamSearch.TokenClasses?
+    /// 当前词汇的上下文图；nil = 走贪心解码，金标准与既有输出逐字节不变（VOC-D4）。
+    private var contextGraph: ContextGraph?
+    private var beamParameters: CTCPrefixBeamSearch.Parameters?
+    private(set) var lastDecodeStats = DecodeStats.greedy
 
     /// 侧载模型（`asr.model_dir`）的 config.yaml / am.mvn 相互独立，解析失败时各自静默
     /// 回落默认值，二者之间此前没有任何一致性校验：`lfr_m × n_mels` 与 am.mvn 实际维度
@@ -132,9 +146,45 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         languageID = language.tokenID
     }
 
+    func setVocabulary(_ vocabulary: VocabularyConfig) -> HotwordCompileReport? {
+        guard !vocabulary.entries.isEmpty else {
+            contextGraph = nil
+            beamParameters = nil
+            return HotwordCompileReport(entries: [], sequenceCount: 0, compileNanos: 0)
+        }
+        let trie: TokenTrie
+        if let tokenTrie {
+            trie = tokenTrie
+        } else {
+            trie = TokenTrie(tokens: tokens)
+            tokenTrie = trie
+            tokenClasses = CTCPrefixBeamSearch.TokenClasses(tokens: tokens)
+        }
+        // 强度为「关」时也编译：报告照样告诉用户哪些词条能参与偏置，只是不建图。
+        let compiled = HotwordCompiler.compile(vocabulary, trie: trie)
+        let report = compiled.report
+        if let parameters = CTCPrefixBeamSearch.Parameters.preset(vocabulary.bias), !compiled.sequences.isEmpty {
+            contextGraph = ContextGraph(
+                sequences: compiled.sequences,
+                perTokenBias: parameters.perTokenBias,
+                maxScoredDepth: parameters.maxScoredDepth
+            )
+            beamParameters = parameters
+        } else {
+            contextGraph = nil
+            beamParameters = nil
+        }
+        AppLog.asr.info(
+            "词汇已编译：entries=\(report.entries.count, privacy: .public) sequences=\(report.sequenceCount, privacy: .public) biased=\(report.count(of: .biased), privacy: .public) too_short=\(report.count(of: .tooShort), privacy: .public) unsupported=\(report.count(of: .unsupportedCharacters), privacy: .public) truncated=\(report.count(of: .truncated), privacy: .public) bias=\(vocabulary.bias.rawValue, privacy: .public) 耗时=\(report.compileNanos / 1_000_000, privacy: .public)ms"
+        )
+        return report
+    }
+
     /// - Parameter samples: 16kHz / mono / float32，范围 [-1, 1]。
     /// - Returns: 识别文本；样本不足一帧或识别为纯静音/纯标点时返回空字符串。
     func recognize(_ samples: [Float]) throws -> String {
+        // 提前返回（样本不足、静音）时不能留着上一次的统计。
+        lastDecodeStats = DecodeStats(mode: contextGraph == nil ? .greedy : .beam, hotwordHits: 0, decodeNanos: 0)
         guard samples.count >= fbankMinimumSamples else { return "" }
 
         let feats = frontend.compute(samples)
@@ -206,7 +256,42 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         return logitsData.withUnsafeBytes { raw -> String in
             guard raw.count >= neededFloats * MemoryLayout<Float>.size,
                   let base = raw.bindMemory(to: Float.self).baseAddress else { return "" }
-            return CTCDecoder.decode(logits: base, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
+            return decode(logits: base, numFrames: numFrames, vocabSize: vocabSize)
+        }
+    }
+
+    /// 无词汇走贪心（一行不改）；有词汇走带偏置的束搜索。两条路径都把拼好的原始串交给 `TextPostprocessor`。
+    private func decode(logits: UnsafePointer<Float>, numFrames: Int, vocabSize: Int) -> String {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        guard let contextGraph, let beamParameters, let tokenClasses else {
+            let text = CTCDecoder.decode(logits: logits, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
+            lastDecodeStats = DecodeStats(
+                mode: .greedy, hotwordHits: 0, decodeNanos: DispatchTime.now().uptimeNanoseconds &- startedAt
+            )
+            return text
+        }
+        do {
+            let result = try CTCPrefixBeamSearch.decode(
+                logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                graph: contextGraph, classes: tokenClasses, parameters: beamParameters
+            )
+            var raw = ""
+            for id in result.tokens where id >= 0 && id < tokens.count {
+                raw += tokens[id]
+            }
+            lastDecodeStats = DecodeStats(
+                mode: .beam, hotwordHits: result.hotwordHits,
+                decodeNanos: DispatchTime.now().uptimeNanoseconds &- startedAt
+            )
+            return TextPostprocessor.process(raw)
+        } catch {
+            // 束搜索的内部不一致不应让本次听写失败：记录后回退贪心结果（§5.8）。
+            AppLog.asr.error("热词束搜索失败，回退贪心解码: \(String(describing: error), privacy: .public)")
+            let text = CTCDecoder.decode(logits: logits, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens)
+            lastDecodeStats = DecodeStats(
+                mode: .greedy, hotwordHits: 0, decodeNanos: DispatchTime.now().uptimeNanoseconds &- startedAt
+            )
+            return text
         }
     }
 }

@@ -73,6 +73,8 @@ internal sealed class LocalAsrSession : IDictationSession
     /// "识别引擎尚未就绪"（R2-2）。</summary>
     private readonly Func<string?>? _engineLoadError;
     private readonly LlmCorrector? _llmCorrector;
+    /// <summary>词汇替换层快照（VOC-7）。听写中不会改配置（保存设置会拒绝重建控制器），快照即可。</summary>
+    private readonly VocabularyReplacer _vocabulary;
     private readonly int _previewWindowSamples;
     /// <summary>会话关闭时调用一次，归还 <see cref="AsrService"/> 的会话租约。</summary>
     private readonly Action? _onClosed;
@@ -139,12 +141,14 @@ internal sealed class LocalAsrSession : IDictationSession
     private bool _correctionSkipped;
 
     public LocalAsrSession(AsrPump pump, Func<IAsrEngine?> engineAccessor, LlmCorrector? llmCorrector,
-        int previewWindowSamples, Func<string?>? engineLoadError = null, Action? onClosed = null)
+        int previewWindowSamples, Func<string?>? engineLoadError = null, Action? onClosed = null,
+        VocabularyReplacer? vocabulary = null)
     {
         _onClosed = onClosed;
         _pump = pump;
         _engineAccessor = engineAccessor;
         _llmCorrector = llmCorrector;
+        _vocabulary = vocabulary ?? VocabularyReplacer.Empty;
         _previewWindowSamples = previewWindowSamples;
         _engineLoadError = engineLoadError;
     }
@@ -481,12 +485,20 @@ internal sealed class LocalAsrSession : IDictationSession
             Exception? error = null;
             try { text = buffer.Finalize(); }
             catch (Exception ex) { error = ex; }
+            // 同在 AsrPump 上、紧跟终稿推理之后读取，不会被预览覆盖。
+            var decodeStats = _engine?.LastDecodeStats;
 
             UiDispatcher.Post(() =>
             {
                 if (_closed) return;
                 _finalizeWatchdogCts?.Cancel();
                 _finalizeWatchdogCts = null;
+                if (decodeStats is { } stats)
+                {
+                    Timings.DecodeMode = stats.Mode;
+                    Timings.HotwordHits = stats.HotwordHits;
+                    Timings.DecodeTicks = stats.DecodeTicks;
+                }
 
                 if (error is not null)
                 {
@@ -501,12 +513,13 @@ internal sealed class LocalAsrSession : IDictationSession
     }
 
     /// <summary>
-    /// 拿到 ASR 原文后：若启用了 LLM 纠错，先把原文通过 OnPartial 顶到 HUD 上（让用户立刻看到
+    /// 拿到 ASR 原文后：先做词汇替换（VOC-7），若启用了 LLM 纠错，再把文本通过 OnPartial 顶到 HUD 上（让用户立刻看到
     /// 结果，纠错中不会像"卡住"），再异步纠错，最终以纠错结果调用 OnFinal。这一步在跨进程架构下
-    /// 没有意义（要多一次网络往返），进程内是免费的。
+    /// 没有意义（要多一次网络往返），进程内是免费的。LLM 收到的是替换后的文本（有意放宽「LLM 输入保持 ASR 原貌」）。
     /// </summary>
-    internal void CompleteWithAsrText(string text)
+    internal void CompleteWithAsrText(string asrText)
     {
+        var text = _vocabulary.Apply(asrText);
         if (_llmCorrector is null || string.IsNullOrWhiteSpace(text))
         {
             Timings.LlmResult = AsrSessionTimings.LlmOutcome.Off;
@@ -538,7 +551,7 @@ internal sealed class LocalAsrSession : IDictationSession
         _correctionCts = correctionCts;
         try
         {
-            report = await _llmCorrector!.CorrectWithReportAsync(text, correctionCts.Token).ConfigureAwait(true);
+            report = await _llmCorrector!.CorrectWithReportAsync(text, _vocabulary.Terms, correctionCts.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
