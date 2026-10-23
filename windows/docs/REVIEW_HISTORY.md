@@ -26,7 +26,7 @@
 | 三·五（交互与性能批次） | 2026-10-09 | 真机日志驱动 | A/B/C/D/E 编号（§23 方案） | 按热键到可开口的延迟、跟嘴跟手、剪贴板后台备份、锁屏恢复、下载进度、麦克风测试 | 大部分实施；A5/A6/A7/C5/E1 留待数据。见 DESIGN §18–§24 |
 | 四（用户体验评审） | 2026-10-11 | 当前代码（约 1.2 万行全量精读） | W/F/U/P-xx | 「最后一公里」体验：防丢结果、被动反馈、等待期反馈、启动排队 | 第一、二批共 15 项已实施；第三批未做。见 DESIGN §25 |
 | 五（设计与实现审查） | 2026-10-19 | `b8999be` / 3.5.2（非 UI 代码全量精读） | W5-01…W5-09 | 破坏性操作门禁、就绪重评估的异常与重入、探测 / 日志 / 配置的健壮性、协调器职责拆分、文档与代码漂移 | 全部实施（A 小修 / B 文档 / C 拆分）；Linux 上完整测试通过（STA 基线除外），Windows CI 与真机未验证。见 DESIGN §31 |
-| 跨平台功能移植：自定义词汇 | 2026-10-22 | `b86aa28` | VOC-1…VOC-11（规格编号，见 `macos/docs/VOCABULARY_SPEC.md`） | 识别层热词偏置（束搜索 + 上下文图）、替换层、LLM 词表、度量；共享夹具 `vocabulary_cases.json` / `ctc_hotword_cases.json` | 阶段 4 移植完成（设置页除外）；Linux 上测试通过（STA 基线除外），Windows CI 与真机未验证。见 DESIGN §33 |
+| 跨平台功能移植：自定义词汇 | 2026-10-22 | `b86aa28` | VOC-1…VOC-11（规格编号，见 `macos/docs/VOCABULARY_SPEC.md`） | 识别层热词偏置（束搜索 + 上下文图）、替换层、LLM 词表、度量；共享夹具 `vocabulary_cases.json` / `ctc_hotword_cases.json` | 阶段 4 移植完成；设置页（VOC-9）2026-10-23 补齐（DESIGN §33.4）。Linux / macOS 主机上测试通过（STA 基线除外），Windows CI 与真机未验证。见 DESIGN §33 |
 
 七份原文档的定位关系：每轮都是「审查（提出问题）→ 分诊（确证/降级/移出）→ 交付（实施记录）」
 三段链，分诊环节的价值（否决理由）已并入本文 §3/§4，实施细节由 DESIGN/CHANGELOG 承接。
@@ -197,7 +197,7 @@ C5 逐像素 alpha、E1 引导加选择热键、E3 布局重构按 §24.4 否决
 | arm64 | 始终只有交叉发布，无 arm64 原生进程/硬件验收 |
 | ReadyToRun 启动收益 | 2026-10-09 重新开启，启动收益未实测（PACKAGING.md） |
 | VW-14/VW-16 真机确认 | HUD 按 DPI 缩放、`Role.Console` 端点分类，代码完成但真机未核对 |
-| 自定义词汇（VOC）真机确认 | 识别偏置参数是估算初值，需按 macOS `DESIGN.md` §11.7 的评估工具用真实录音校准（两平台共用参数）；Windows 真机的 `decode_ms` 未采集 |
+| 自定义词汇（VOC）真机确认 | 识别偏置参数是估算初值，需按 macOS `DESIGN.md` §11.7 的评估工具用真实录音校准（两平台共用参数）；Windows 真机的 `decode_ms` 未采集；「词汇」设置页（DESIGN §33.4）的 STA 界面测试与手工步骤未在 Windows 上执行 |
 
 ### L3 · 低优先待办（已确证、条件允许即做）
 
@@ -211,7 +211,6 @@ C5 逐像素 alpha、E1 引导加选择热键、E3 布局重构按 §24.4 否决
 | ORT 内存池 + EcoQoS（§19） | 长听写 `ctc_logits` ~200MB 不还给系统；Win11 后台降频。都要真机对比后再决定 |
 | 停止时兜底复制（第五轮） | 退出程序或模型被移除时，进行中的听写以 `Shutdown` 收尾、不留任何结果；可把预览文本复制到剪贴板兜底 |
 | 协调器接线无单测（第五轮） | 判定与下载编排已有单测，`AppCoordinator` 的执行与界面接线仍依赖 WinForms，只有代码审查 |
-| 自定义词汇设置页（VOC-9） | macOS 已有「词汇」页（表格、识别偏向、试一试、从最近结果添加）；Windows 识别与替换已移植，但只能手写 `config.yaml` 并重启。照 `macos/UI/Settings/VocabularySettingsView.swift` 补 WinForms 页面，保存走 `SaveRecognition` 同一事务；状态列读 `AsrService.VocabularyReport` |
 
 ### L4 · 工程欠账
 

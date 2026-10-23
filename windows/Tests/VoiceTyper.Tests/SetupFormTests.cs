@@ -107,6 +107,56 @@ public class SetupFormTests
         Assert.False(form.HasUnsavedChanges);
     });
 
+    /// <summary>「词汇」页（VOC-9）：载入不算改动；编辑中的文字立即进草稿；保存时与其他页同一事务；撤销恢复表格。</summary>
+    [Fact]
+    public void VocabularyPage_EditsEnterDraft_SaveIncludesThem_AndDiscardRestores() => OnUiThread(() =>
+    {
+        using var form = new SetupForm();
+        var config = new AppConfig();
+        config.Vocabulary = new VocabularyConfig { BiasValue = VocabularyBias.Light, Entries = { new VocabularyEntry("Claude", "克劳德") } };
+        form.LoadEditableContent(config, refreshDevices: false);
+        form.Show();
+        form.SelectTab(SetupTab.Vocabulary);
+        Assert.False(form.HasUnsavedChanges);
+
+        var grid = Field<DataGridView>(form, "_vocabularyGrid");
+        Assert.Equal(1, grid.Rows.Count);
+        Assert.Equal("克劳德", grid.Rows[0].Cells[1].Value);
+
+        // 「添加词汇」进入新行的编辑；尚未离开单元格时「保存并应用」就应可用。
+        Field<Button>(form, "_vocabularyAddButton").PerformClick();
+        Assert.True(grid.IsCurrentCellInEditMode);
+        grid.EditingControl!.Text = "张三丰";
+        Assert.True(form.HasUnsavedChanges);
+        Assert.Equal(new[] { "Claude", "张三丰" }, form.BuildDraft().Vocabulary.Entries.Select(e => e.Term));
+
+        Field<ComboBox>(form, "_vocabularyBiasCombo").SelectedItem = VocabularyBias.Strong;
+        Field<TextBox>(form, "_vocabularyTrialInput").Text = "用克劳德写插件";
+        Assert.Equal("→ 用 Claude 写插件", Field<Label>(form, "_vocabularyTrialOutput").Text);
+
+        VocabularyConfig? saved = null;
+        form.OnSaveRecognition = (draft, _) => { saved = draft.Vocabulary; return Task.CompletedTask; };
+        form.HandleSaveAll().GetAwaiter().GetResult();
+        Assert.NotNull(saved);
+        Assert.Equal(VocabularyBias.Strong, saved!.BiasValue);
+        Assert.Equal(new[] { new VocabularyEntry("Claude", "克劳德"), new VocabularyEntry("张三丰") }, saved.Entries);
+        Assert.False(form.HasUnsavedChanges);
+
+        grid.Rows.RemoveAt(0);
+        Assert.True(form.HasUnsavedChanges);
+        form.DiscardChanges();
+        Assert.Equal(2, grid.Rows.Count);
+        Assert.False(form.HasUnsavedChanges);
+
+        // 编译报告到达后状态列刷新：已生效 ✓，未知词条（不在报告里）显示 —。
+        form.UpdateVocabularyReport(new Asr.Hotword.HotwordCompileReport
+        {
+            Entries = new[] { ("Claude", Asr.Hotword.HotwordCompileReport.Status.Biased) },
+        });
+        Assert.Equal("✓", grid.Rows[0].Cells[2].Value);
+        Assert.Equal("—", grid.Rows[1].Cells[2].Value);
+    });
+
     /// <summary>配置允许的边界值必须能被控件无损载入：不被夹逼、不被误判为"已修改"，BuildDraft 原值不变。</summary>
     [Fact]
     public void BoundaryConfigValues_LoadWithoutClampingOrDirtyState() => OnUiThread(() =>

@@ -103,7 +103,8 @@ final class SettingsViewModelVocabularyTests: XCTestCase {
         )
         guard case .warning = vm.status(for: row) else { return XCTFail("单字应显示警告") }
         XCTAssertEqual(vm.status(for: VocabularyRow(term: "张三丰")), .active)
-        XCTAssertEqual(vm.status(for: VocabularyRow(term: "还没编译")), .unknown(L("模型加载后检查")))
+        XCTAssertEqual(vm.status(for: VocabularyRow(term: "还没编译")), .unknown(L("保存后检查")),
+                       "有报告但查不到的行是还没提交的草稿，不应提示「模型加载后检查」")
     }
 
     func testTrialOutputUsesDraft() {

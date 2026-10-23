@@ -4,11 +4,11 @@ macOS 应用（`macos/`）的版本变更，按版本倒序排列，只记录用
 [`DESIGN.md`](DESIGN.md)；Windows 版见 [`windows/CHANGELOG.md`](../windows/CHANGELOG.md)，旧客户端—服务端
 架构见 [`client-server/server/CHANGELOG.md`](../client-server/server/CHANGELOG.md)。
 
-## 未发布
+## 3.6.0 — 2026-10-23
 
-架构与实现审查修复（R9，见 [`DESIGN.md`](DESIGN.md) §11.6）与自定义词汇（规格见
-[`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)，实施记录见 [`DESIGN.md`](DESIGN.md) §11.7）。本轮尚未在 macOS 上
-编译与真机验证；自定义词汇的识别偏向强度是估算的初值，尚未用真实录音校准。
+自定义词汇（规格见 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)，实施记录见 [`DESIGN.md`](DESIGN.md) §11.7）与
+架构与实现审查修复（R9，见 [`DESIGN.md`](DESIGN.md) §11.6）。单元测试全部通过，已在 Apple Silicon 真机上听写验证；
+识别偏向的四档强度是估算的初值，尚未用成批的真实录音系统校准。
 
 ### 新增
 

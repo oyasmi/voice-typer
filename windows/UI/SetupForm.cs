@@ -13,7 +13,7 @@ using static VoiceTyper.Support.NativeMethods;
 
 namespace VoiceTyper.UI;
 
-internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General = 3, Correction = 4 }
+internal enum SetupTab { Recognition = 0, Hotkey = 1, Permissions = 2, General = 3, Correction = 4, Vocabulary = 5 }
 
 /// <summary>麦克风下拉框的一项：<see cref="Value"/> 是写进 <c>audio.input_device</c> 的值。</summary>
 internal sealed record MicChoice(string Value, string Label)
@@ -315,6 +315,7 @@ internal sealed partial class SetupForm : Form
         _previewWindowField.Value = Math.Clamp(config.Asr.PreviewWindowSeconds, ConfigLimits.PreviewWindowSecondsMin, ConfigLimits.PreviewWindowSecondsMax);
         _preloadCheck.Checked = config.Asr.PreloadOnLaunch;
         _hudPositionCombo.SelectedItem = config.UI.HudPositionValue;
+        LoadVocabulary(config.Vocabulary);
         if (refreshDevices) RefreshMicChoices(config.Audio.InputDevice);
         else
         {

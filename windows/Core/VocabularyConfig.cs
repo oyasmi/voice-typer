@@ -21,6 +21,15 @@ internal static class VocabularyBiasExtensions
         _ => "standard",
     };
 
+    /// <summary>设置页「识别偏向」下拉框的文案。</summary>
+    public static string DisplayName(this VocabularyBias bias) => bias switch
+    {
+        VocabularyBias.Off => L10n.T("关"),
+        VocabularyBias.Light => L10n.T("轻"),
+        VocabularyBias.Strong => L10n.T("强"),
+        _ => L10n.T("标准"),
+    };
+
     /// <summary>未知值回落 standard，与本文件其余枚举字段的容错一致。</summary>
     public static VocabularyBias Parse(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
     {
@@ -97,7 +106,8 @@ internal sealed class VocabularyConfig
         BiasValue == other.BiasValue && Entries.SequenceEqual(other.Entries);
 
     /// <summary>§4.2 的逐条校验：去空白、去空、去重、合并同名 term、截断超限部分。越界只截断，warning 只记条数。</summary>
-    public VocabularyConfig Validated()
+    /// <param name="logWarnings">设置页的草稿每次按键都会规整一遍（空白新行必然被丢弃），传 false 免得刷屏日志。</param>
+    public VocabularyConfig Validated(bool logWarnings = true)
     {
         var merged = new List<VocabularyEntry>();
         var indexByKey = new Dictionary<string, int>();
@@ -151,7 +161,7 @@ internal sealed class VocabularyConfig
         int overflow = Math.Max(0, merged.Count - MaxEntries);
         if (overflow > 0) merged.RemoveRange(MaxEntries, overflow);
 
-        if (droppedEntries + mergedEntries + truncatedSurfaces + truncatedAliases + overflow > 0)
+        if (logWarnings && droppedEntries + mergedEntries + truncatedSurfaces + truncatedAliases + overflow > 0)
         {
             AppLog.Warn("config",
                 $"词汇表已规整：空词条 {droppedEntries} 条、合并重复 {mergedEntries} 条、截断过长写法 {truncatedSurfaces} 个、"

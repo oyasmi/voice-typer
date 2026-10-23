@@ -47,6 +47,7 @@ internal sealed partial class SetupForm
 
         AddNavigation(sidebar, SetupTab.Hotkey, L10n.T("听写"));
         AddNavigation(sidebar, SetupTab.Recognition, L10n.T("语音模型"));
+        AddNavigation(sidebar, SetupTab.Vocabulary, L10n.T("词汇"));
         AddNavigation(sidebar, SetupTab.Correction, L10n.T("智能纠错"));
         AddNavigation(sidebar, SetupTab.General, L10n.T("外观与通用"));
         AddNavigation(sidebar, SetupTab.Permissions, L10n.T("诊断与帮助"));
@@ -80,6 +81,7 @@ internal sealed partial class SetupForm
 
         BuildDictationSettings();
         BuildModelSettings();
+        BuildVocabularySettings();
         BuildCorrectionSettings();
         BuildAppearanceSettings();
         BuildDiagnosticsSettings();
@@ -494,6 +496,7 @@ internal sealed partial class SetupForm
         draft.Llm = new LlmConfig { Enabled = _llmEnabledCheck.Checked, BaseUrl = _llmBaseUrlField.Text.Trim(),
             Model = _llmModelField.Text.Trim(), Temperature = (double)_llmTemperatureField.Value,
             MaxTokens = (int)_llmMaxTokensField.Value, Timeout = (double)_llmTimeoutField.Value };
+        draft.Vocabulary = BuildVocabularyDraft();
         return draft;
     }
 
@@ -522,6 +525,7 @@ internal sealed partial class SetupForm
     {
         if (_saving || OnSaveRecognition is null) return;
         StopHotkeyRecording();
+        _vocabularyGrid.EndEdit(); // 正在编辑的单元格先提交，保存的就是用户看到的内容
         var draft = BuildDraft();
         if (!HotkeyService.IsSupportedKey(draft.Hotkey.Key)
             || (!ModifierHotkeys.IsModifierOnlyKey(draft.Hotkey.Key) && draft.Hotkey.Modifiers.Count == 0))

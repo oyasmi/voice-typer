@@ -166,6 +166,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopPermissionPoll()
+        // 「词汇」页在离开输入框时才提交；关窗时输入框可能还有焦点，补一次（没有变化时是空操作）。
+        viewModel.commitVocabulary()
         onClose?()
     }
 

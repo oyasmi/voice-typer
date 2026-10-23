@@ -87,6 +87,8 @@ struct VocabularySettingsView: View {
             // 离开一行的输入框即提交，不必每敲一个字就重建一次控制器。
             if previous != nil { vm.commitVocabulary() }
         }
+        // 输入框还有焦点时切走分页或关窗，focusedField 不一定变化：在这里补一次提交，免得刚敲的字丢失。
+        .onDisappear { vm.commitVocabulary() }
         .sheet(isPresented: $showingHistorySheet) {
             VocabularyFromHistorySheet(
                 entries: vm.recentResults(),

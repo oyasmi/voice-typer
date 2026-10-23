@@ -28,7 +28,7 @@ echo .NET SDK: %DOTNET_VER%
 REM ===== Read version from csproj =====
 set VERSION=
 for /f "tokens=*" %%a in ('dotnet msbuild VoiceTyper.csproj -getProperty:Version -nologo 2^>nul') do set VERSION=%%a
-if "%VERSION%"=="" set VERSION=3.5.2
+if "%VERSION%"=="" set VERSION=3.6.0
 
 echo Version:  %VERSION%
 echo.

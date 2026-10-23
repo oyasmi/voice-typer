@@ -100,9 +100,9 @@ this once.
 
 ### Can I switch models or add hotwords?
 
-You can add hotwords: on macOS, list the words that keep getting misrecognized in Settings → Vocabulary (see the
-[macOS guide](macos/README.en.md#custom-vocabulary)); the Windows app already supports the same recognition and
-replacement, with its settings page still in development. The standalone apps focus on SenseVoice-Small and do not
+You can add hotwords: list the words that keep getting misrecognized in Settings → Vocabulary; the macOS and
+Windows apps work the same way (see the [macOS guide](macos/README.en.md#custom-vocabulary) and the
+[Windows guide](windows/README.en.md#custom-vocabulary)). The standalone apps focus on SenseVoice-Small and do not
 support switching models — a clear, dependable default matters more than a pile of unpolished options. For other
 models, use the [client–server version](client-server/README.md).
 

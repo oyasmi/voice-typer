@@ -466,6 +466,7 @@ extension L10n {
         "状态": "Status",
         "已生效": "Active",
         "模型加载后检查": "Checked once the model is loaded",
+        "保存后检查": "Checked once saved",
         "识别偏向已关闭，仍会做替换": "Recognition bias is off; replacements still apply",
         "只有一个字 / 一个词片，不参与识别偏向，仍会做替换":
             "Only one character or word piece, so it is not used for recognition bias; replacements still apply",

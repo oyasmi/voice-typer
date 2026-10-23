@@ -72,8 +72,12 @@ enum VocabularyRowStatus: Equatable {
         if bias == .off {
             return .unknown(L("识别偏向已关闭，仍会做替换"))
         }
-        guard let status = report?.status(forTerm: term) else {
+        guard let report else {
             return .unknown(L("模型加载后检查"))
+        }
+        // 报告只覆盖已落盘的词条：刚输入、还没提交的行查不到。
+        guard let status = report.status(forTerm: term) else {
+            return .unknown(L("保存后检查"))
         }
         switch status {
         case .biased: return .active
@@ -562,7 +566,7 @@ final class SettingsViewModel {
 
     /// 草稿 → 校验后的配置（与落盘时的规整一致，用来判断「有没有变」）。
     func draftVocabularyConfig() -> VocabularyConfig {
-        VocabularyConfig(bias: vocabularyBias, entries: vocabularyRows.map(\.entry)).validated()
+        VocabularyConfig(bias: vocabularyBias, entries: vocabularyRows.map(\.entry)).validated(logging: false)
     }
 
     /// 「试一试替换」：只演示替换层与上屏格式化，离线、即时。

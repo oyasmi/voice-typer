@@ -82,8 +82,8 @@ Windows 上点「更多信息 → 仍要运行」。只需一次。
 
 ### 可以换模型或添加热词吗？
 
-可以添加热词：macOS 版在「设置 → 词汇」里列出常被认错的词（详见 [macOS 说明](macos/README.md#自定义词汇)）；
-Windows 版已支持同样的识别与替换，设置界面尚在开发中。一体化应用专注于 SenseVoice-Small，不支持更换模型——
+可以添加热词：在「设置 → 词汇」里列出常被认错的词即可，macOS 与 Windows 版功能相同（详见
+[macOS 说明](macos/README.md#自定义词汇)、[Windows 说明](windows/README.md#自定义词汇)）。一体化应用专注于 SenseVoice-Small，不支持更换模型——
 清晰稳定的默认体验优先于大量未打磨的选项。需要其他模型可以使用[客户端—服务端版本](client-server/README.md)。
 
 ### Windows 版稳定吗？

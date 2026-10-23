@@ -467,7 +467,8 @@ struct VocabularyConfig: Codable, Equatable {
     var biasesRecognition: Bool { bias != .off && !entries.isEmpty }
 
     /// §4.2 的逐条校验：去空白、去空、去重、合并同名 term、截断超限部分。越界只截断，warning 只记条数。
-    func validated() -> VocabularyConfig {
+    /// - Parameter logging: 设置页的草稿每次渲染都会规整一遍（空白新行必然被丢弃），传 false 免得刷屏日志。
+    func validated(logging: Bool = true) -> VocabularyConfig {
         var merged: [VocabularyEntry] = []
         var indexByKey: [String: Int] = [:]
         var truncatedSurfaces = 0
@@ -512,7 +513,7 @@ struct VocabularyConfig: Codable, Equatable {
             merged.removeLast(overflow)
         }
 
-        if droppedEntries + mergedEntries + truncatedSurfaces + truncatedAliases + overflow > 0 {
+        if logging, droppedEntries + mergedEntries + truncatedSurfaces + truncatedAliases + overflow > 0 {
             AppLog.app.warning(
                 "词汇表已规整：空词条 \(droppedEntries, privacy: .public) 条、合并重复 \(mergedEntries, privacy: .public) 条、截断过长写法 \(truncatedSurfaces, privacy: .public) 个、截断多余 alias \(truncatedAliases, privacy: .public) 个、超出上限 \(overflow, privacy: .public) 条"
             )

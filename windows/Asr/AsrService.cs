@@ -37,8 +37,19 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// 找不到模型时为 null。设置页据此显示真实路径，而不是一律显示下载目录。</summary>
     public string? ModelDirectory { get; private set; }
     public Action<AsrState>? OnStateChange;
-    /// <summary>最近一次词汇编译报告；引擎还没加载过时为 null。在 UI 线程更新。</summary>
-    public HotwordCompileReport? VocabularyReport { get; private set; }
+    /// <summary>最近一次词汇编译报告；引擎还没加载过时为 null。在 UI 线程更新，更新后回调
+    /// <see cref="OnVocabularyReport"/>（设置页「词汇」的状态列据此刷新）。</summary>
+    public HotwordCompileReport? VocabularyReport
+    {
+        get => _vocabularyReport;
+        private set
+        {
+            _vocabularyReport = value;
+            OnVocabularyReport?.Invoke(value);
+        }
+    }
+    public Action<HotwordCompileReport?>? OnVocabularyReport;
+    private HotwordCompileReport? _vocabularyReport;
 
     private readonly AsrPump _pump;
     private readonly Func<string, ModelBundle?> _locate;

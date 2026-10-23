@@ -96,6 +96,7 @@ use the full content width for longer values.
 | --- | --- |
 | Dictation | Hotkey, trigger mode, microphone and “Test microphone”, recognition language (auto / Chinese / English / Cantonese / Japanese / Korean) |
 | Speech Model | Model status and download, memory |
+| Vocabulary | Custom vocabulary (names, product names, terms) and recognition bias strength |
 | Text correction | Service URL, API key, model name, test |
 | Appearance and general | Overlay position and opacity, launch at login, interface language |
 | Diagnostics and help | Microphone check, timings of the last 20 dictations, log and config folders |
@@ -112,6 +113,29 @@ use the full content width for longer values.
   loads while you record.
 - **Interface language**: Chinese or English, applied after restarting the app. It is independent of the
   recognition language.
+
+### Custom vocabulary
+
+Names, product names, project code names and terms that keep getting misrecognized can be listed in
+Settings → Vocabulary. Everything runs on your PC; nothing goes online.
+
+- **Spelling**: the correct spelling, such as `VoiceTyper`, `Claude` or `张三丰`.
+- **Sounds like** (optional): what it tends to come out as, e.g. `克劳德` for `Claude`; separate several with commas.
+  Variants that differ only in spaces, hyphens or letter case (`voice typer`, `Voice-Typer`) don't need to be
+  listed — they are normalized to your spelling automatically.
+- **Recognition bias**: Off / Light / Standard / Strong, Standard by default. Stronger settings recognize listed
+  words more readily, but are also more likely to turn similar-sounding ordinary words into them; words that sound
+  clearly different are never changed. If you see unwanted changes, go down one level.
+- **Add from recent results**: when you spot a misrecognition, select the wrong part in a recent result and type
+  the correct spelling.
+- **Try replacement**: type a sentence to see the replacements immediately (recognition bias can only be tried by
+  dictating).
+- **Status column**: ✓ means the entry takes part in recognition bias; ⚠ means it is, for example, a single character
+  (or a single English word piece) — such entries are only used for replacement. New entries are checked once saved.
+
+Click “Save and Apply”; the change takes effect from the next dictation. Up to 200 entries. Without any vocabulary,
+recognition results are exactly the same as before. When AI text correction is on, the list is also given to the
+correction service.
 
 ### AI text correction (optional, off by default)
 
@@ -130,7 +154,7 @@ the original text is used automatically.
 - Once the model is downloaded, VoiceTyper works fully offline; “Check for Updates” only goes online
   when you click it.
 - No account, no usage limits.
-- Logs never contain recognized text; the last transcription and the last 20 history entries are kept
+- Logs never contain recognized text or your custom vocabulary; the last transcription and the last 20 history entries are kept
   in memory only and cleared on quit.
 
 ## FAQ
@@ -172,9 +196,7 @@ together.
 
 ### Known limitations
 
-CPU inference only; only the SenseVoice-Small model, with no model switching; custom vocabulary (hotwords) works in
-recognition but has no settings page yet (the macOS app has one; Windows will follow — advanced users can write it in the
-config file as described in [DEVELOPMENT.md](DEVELOPMENT.md#配置文件) and restart); Left Alt, Win
+CPU inference only; only the SenseVoice-Small model, with no model switching; Left Alt, Win
 and Shift can't be used alone as the hotkey; recognition always runs locally, with no remote server option
 (use the [client–server version](../client-server/README.md) for that).
 

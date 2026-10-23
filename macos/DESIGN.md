@@ -34,7 +34,7 @@
 | 项目 | App 名 | Bundle ID | 版本 |
 | --- | --- | --- | --- |
 | `client-server/client_macos_swift/`（现有，降级为次要） | `VoiceTyper` → **`VoiceTyperClient`** | `com.voicetyper.app` → **`com.voicetyper.client`** | 2.7.0（**不变**） |
-| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.5.2**（当前版本，见 D3） |
+| `macos/`（新，主分发版本） | **`VoiceTyper`** | **`com.voicetyper.app`** | **3.6.0**（当前版本，见 D3） |
 
 > Bundle ID 必须区分：TCC 权限、`SMAppService` 开机自启、LaunchServices 都以 Bundle ID 为键。
 > 代价：老客户端用户升级到改名版后需要**重新授权一次**三项权限。由于两个 App 都是 adhoc 签名、
@@ -1333,7 +1333,7 @@ Windows 影响：同一套参数已同步，见 windows/DESIGN.md §29。
 
 ---
 
-## 11.6 R9：架构与实现审查修复（2026-10-19，未发布）
+## 11.6 R9：架构与实现审查修复（2026-10-19，随 3.6.0 发布）
 
 一轮针对设计合理性、健壮性与关键路径性能的代码审查，编号 `R9-xx`。识别契约（fbank / LFR-CMVN / CTC / 文本后处理 /
 模型 I/O）与共享夹具均未改动。
@@ -1373,7 +1373,8 @@ Windows 影响：同一套参数已同步，见 windows/DESIGN.md §29。
 自动化测试（新增 / 改写）：控制器测试改用事件记录器，新增空结果只收尾一次、迟到尾音不影响下一段、松键后不再预览、
 度量等待回读、未确认插入不重试共 5 项；`AppCoordinatorReadinessTests` 改写为就绪度 / 打断判定 / 显示合成 / 重建判定
 四组；`LocalASRSessionTests` 新增停止预览 2 项；`ConfigStoreTests` 新增坏配置回落 1 项；`TextInsertionServiceTests`
-新增回读判定 1 项；`SegmentedDownloadTests` 新增单块失败重试 1 项。**均未在 macOS 上运行。**
+新增回读判定 1 项；`SegmentedDownloadTests` 新增单块失败重试 1 项。编写时均未在 macOS 上运行；2026-10-23 随 3.6.0 在
+macOS（Apple M4）上 `xcodebuild … test` 全量通过（332 项，1 项按设计跳过，见 §11.7）。
 
 ### 刻意没做的（性价比不高或另有取舍）
 
@@ -1409,13 +1410,13 @@ Windows 影响：同一套参数已同步，见 windows/DESIGN.md §29。
 其余需要 Windows 侧另行评估：R9-08（`LocalAsrSession.SchedulePreview` 同样只看 `_isFinalizing`，送入尾音时仍会排一次预览）；
 R9-09 不适用（Windows 的 `RecognitionBuffer` 用定长数组加计数，无写时复制）；R9-03 / R9-10 / R9-11 是 macOS AX 专属。
 
-## 11.7 自定义词汇（VOC，2026-10-22，未发布）
+## 11.7 自定义词汇（VOC，2026-10-22，3.6.0）
 
 按 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md) 四个阶段全部实施：配置（VOC-1）、识别层偏置（VOC-2–6）、
 替换层（VOC-7）、LLM 词表（VOC-8）、设置页与「从最近结果添加」（VOC-9）、度量（VOC-10）、测试与离线评估工具（VOC-11），
-以及 Windows 移植（阶段 4，设置页除外，见下文）。
+以及 Windows 移植（阶段 4；Windows 设置页 2026-10-23 补齐，见下文「Windows 影响」）。
 
-**验证口径**：本轮在 Linux 上完成。
+**验证口径**：实施在 Linux 上完成；2026-10-23 在 macOS 上补做编译、全量测试与真机听写（见「macOS 编译与真机验证」）。
 
 - **已运行**：用 Swift 6.1.2 Linux 工具链（Swift 6 语言模式）编译并运行不依赖 AppKit / Accelerate / ORT 的部分——
   `HotwordCompiler`、`ContextGraph`、`CTCPrefixBeamSearch`、`VocabularyReplacer`、`OutputFormatter`、`VocabularyConfig`
@@ -1424,8 +1425,8 @@ R9-09 不适用（Windows 的 `RecognitionBuffer` 用定长数组加计数，无
   前端桩之上通过了类型检查。
 - **独立参考实现**：同一算法另写了 Python 版，对 23 个写法的编译结果、对 `speech_zh_en_mixed.wav` 真实 `ctc_logits`
   （本机 ONNX Runtime 1.31 跑出）的 12 组解码结果，Swift 与 Python 逐 token 相同；共享夹具的期望值同样由它核对。
-- **未做**：没有在 macOS 上编译（`VocabularySettingsView` 与 `SetupWindowController` / `AppCoordinator` 的接线没有任何
-  编译验证），没有跑 `xcodebuild … test`，没有真机听写，没有用真实录音校准参数。
+- **实施时未做**（2026-10-23 已补做前两项）：没有在 macOS 上编译与跑 `xcodebuild … test`，没有真机听写，没有用真实录音
+  校准参数。
 
 ### 实施结果
 
@@ -1465,17 +1466,27 @@ R9-09 不适用（Windows 的 `RecognitionBuffer` 用定长数组加计数，无
 - 这段 TTS 音频里所有字的第二名都比第一名低 4–12，几乎没有可翻盘的同音字；**同音替换的效果只能用真实录音评估**。
 - 帧统计：约 67%（G=5）的帧走跳帧捷径，与 §5.6 的估计（大部分帧）一致。
 
-### 性能（开发机实测，不代表 Apple Silicon）
+### 性能
 
-Intel i5-8260U / Linux，合成 2000 帧（≈120s）× 25055、约 75% blank 帧、200 条词汇（最坏情况：每帧都扫描）：
+**Apple Silicon 真机（2026-10-23，Apple M4 / 24GB，用户日常使用的构建，取自度量日志 `decode_ms`）**：真实听写、3 条词汇、标准档。
+
+| 音频 | 解码方式 | `decode_ms` | 同句 `asr`（整段推理） |
+| --- | --- | --- | --- |
+| 3.1–8.6s | 贪心（无词汇） | 0.1–0.3 | 70–82ms |
+| 3.2–7.2s | 束搜索 | 0.2–0.8 | 76–108ms |
+| 32.1s | 束搜索 | 3.2 | 369ms |
+
+束搜索相对推理耗时不到 1%，在可感知范围之外；120s 长句与 200 条词汇的组合尚未在真机上记录（按 32s 的线性外推约 12ms，**E**）。
+同机 `xcodebuild test`（Debug）下 50 条词汇的编译日志为 7ms。
+
+**开发机（Intel i5-8260U / Linux，实施时）**：合成 2000 帧（≈120s）× 25055、约 75% blank 帧、200 条词汇（最坏情况：每帧都扫描）：
 
 | 实现 | 贪心 | 束搜索（空图） | 束搜索（200 条） | 编译 200 条 |
 | --- | --- | --- | --- | --- |
 | C#（.NET 10 Release，`Vector<float>` 求最大值） | 43ms | 41ms | 49ms | 17–24ms |
 | Swift（-O，求最大值用手写循环替代 vDSP） | — | 32–39ms | 35–42ms | 11ms |
 
-Swift 一栏里约 20ms 是整行求最大值，macOS 上由 `vDSP_maxv` 完成会显著更快；真实 15.8s 音频（10 条词汇）C# Release 解码
-8–11ms。**Apple Silicon 上的真实数值以度量日志 `decode_ms` 为准**，须在真机上记录 10s / 120s 两档后回写本节。
+Swift 一栏里约 20ms 是整行求最大值，macOS 上由 `vDSP_maxv` 完成；真实 15.8s 音频（10 条词汇）C# Release 解码 8–11ms。
 XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug 实测约 0.4s）。
 
 ### 参数校准（未做）
@@ -1483,23 +1494,34 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
 三档参数仍是规格 §5.6 的初值。`HotwordEvaluationTests` 已就绪（用法见 `DEVELOPMENT.md`），需要按 §10.5 录一批真实
 语音（10–20 个会认错的词各 3 句 + 30 句日常话）跑一轮，以「标准档误触发为 0、召回尽量高」为目标调整，并把结果写回这里。
 差异 #2 修正前观察到的 `issuesue` 说明：强档在「词表里的词与原文读音相近、模型又能直接输出」时有误改风险，校准时
-优先检查强档。
+优先检查强档。3.6.0 按初值发布：用户在真机上的日常听写里标准档效果良好（见下节），但这不等于系统化的召回 / 误触发评估。
+
+### macOS 编译与真机验证（2026-10-23，3.6.0）
+
+- **编译与全量测试**：Apple M4 / Xcode，`xcodebuild … test` 332 项全部通过（1 项为默认跳过的离线评估工具），含需要真实模型的
+  `EndToEndRecognitionTests`（无关词汇在强档下与贪心逐字相同）与真实 `tokens.json` 上的编译用例。编译器警告均为本功能之前的
+  既有代码。
+- **真机听写**：用户在 macOS 上实测，功能正常、效果超出预期（用户反馈）。度量日志里束搜索听写的 `vocab_hits` 为 0–3，无词汇时
+  `decode_mode=greedy`；「词汇已编译」日志只有条数。规格 §10.6 的 8 个手工步骤没有逐条记录结果。
+- **发布前收尾**（本节同批改动）：
+  1. `VocabularyConfig.validated(logging:)`：设置页草稿每次渲染都要规整一遍，表里有空白新行时，此前每次渲染（包括在「试一试」里
+     敲每一个字）都会写一条「词汇表已规整：空词条 1 条」warning。草稿改为不写日志，只有加载 / 保存时写。
+  2. 状态列区分「模型加载后检查」（还没有编译报告）与「保存后检查」（有报告但查不到：刚输入、尚未提交的行），此前一律显示前者。
+  3. 「词汇」页只在回车或离开输入框时提交：输入框还有焦点时切走分页或关闭窗口，刚敲的字会丢。补了 `onDisappear` 与
+     `windowWillClose` 两处提交（没有变化时是空操作）。
 
 ### 待真机验证
 
-1. 编译：`ruby scripts/generate_xcodeproj.rb` 已运行（工程文件已更新），在 macOS 上 `./build_xcode.sh` 与
-   `xcodebuild … test` 全量通过；重点看 `VocabularySettingsView`（本轮唯一完全未经编译的文件）。
-2. 规格 §10.6 的手工步骤 1–8。
-3. 设置页：增删行、回车与切换输入框后状态列刷新（模型已加载时 ✓ / ⚠，未加载时「—」）；「试一试替换」即时更新；
-   听写中整页禁用；改强度后下一次听写生效。
-4. 「从最近结果添加」：在 sheet 的文本里拖选片段，「听起来像」随之更新，「正确写法」预填片段；添加后词条出现在表里。
-5. `log stream … category == "asr"` 出现「词汇已编译」一行，不含任何词条文本；度量行末尾有 `decode_mode`。
+1. 规格 §10.6 的手工步骤 1–8 逐条记录（特别是 3「50 条无关词汇 × 20 句日常话无误改」与 6「120 秒长句 + 200 条词汇」）。
+2. 设置页：在输入框里敲字后直接切到别的分页、或直接关窗，词条已保存（本节收尾 3）；新行未提交时状态列悬停为「保存后检查」。
+3. 「从最近结果添加」：在 sheet 的文本里拖选片段，「听起来像」随之更新，「正确写法」预填片段；添加后词条出现在表里。
 
 ### Windows 影响
 
-阶段 4 已移植（见 `windows/DESIGN.md` 与 `windows/docs/REVIEW_HISTORY.md` 的 VOC 条目）：配置 schema、编译器、上下文图、
-束搜索、替换层、LLM 词表、度量字段，读同一份共享夹具。C# 测试在 Linux 的 net10.0 工程里通过（含真实模型 + ORT 的
-无关词汇回归）；**Windows 真机未验证**。Windows 设置页未做，词汇只能手写 `config.yaml`（重启生效）。
+阶段 4 已移植（见 `windows/DESIGN.md` §33 与 `windows/docs/REVIEW_HISTORY.md` 的 VOC 条目）：配置 schema、编译器、上下文图、
+束搜索、替换层、LLM 词表、度量字段，读同一份共享夹具。设置页「词汇」2026-10-23 补齐（`windows/DESIGN.md` §33.4）：功能与
+本页相同，保存沿用 Windows 设置窗口的草稿 + 「保存并应用」。上面收尾 1、2 两平台同步。C# 测试在 Linux / macOS 主机上通过
+（STA 界面用例除外）；**Windows 真机未验证**。
 
 ---
 
@@ -1510,7 +1532,7 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
 | D1 | 模型分发方式 | ✅ **首启从 ModelScope 下载** | App 52MB；已验证端点、断点续传与 sha256（§4.4） |
 | D2 | 架构覆盖 | ✅ **只出 arm64** | 放弃 Intel Mac；构建脚本三变体逻辑整段删除 |
 | D5 | 配置目录 | ✅ **`~/Library/Application Support/VoiceTyper/`** | 与 `VoiceTyperClient` 的 `~/.config/voice_typer/` 天然隔离；首启一次性继承热键与 HUD 透明度 |
-| D3 | 新 App 版本号 | ✅ **3.5.2**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 → 3.3.0 → 3.3.1 → 3.5.0 → 3.5.1 → 3.5.2（R8 第一、二批，版本号不再递增） |
+| D3 | 新 App 版本号 | ✅ **3.6.0**（当前发布） | 起始为 3.0.0，随后随发布迭代到 3.1.0 → 3.1.3 → 3.1.6 → 3.1.9 → 3.2.0 → 3.2.1 → 3.3.0 → 3.3.1 → 3.5.0 → 3.5.1 → 3.5.2（R8 第一、二批，版本号不再递增）→ 3.6.0（自定义词汇是较大的功能更新，升次版本号；同时收录 R9） |
 | D4 | 空闲卸载默认值 | ✅ **从不卸载**（`ASRConfig.idleUnloadMinutes` 默认 0） | 初版默认 10 分钟，3.3.0 后改为"从不"：与"启动时预加载"默认开启配套，让按热键始终零等待；内存代价（~510MB 常驻）由用户按需改回定时卸载 |
 | D6 | 热键触发方式 | ✅ **显式二选一 `hold`（默认）/ `toggle`** | 否决"短按 toggle、长按 hold"的自动判别：会把被丢弃的误触升级为用户无察觉的持续录音（§11.2 R5-03） |
 | D7 | 版本更新提醒 | ✅ **菜单里手动「检查更新…」**，不引入 Sparkle、不做后台轮询 | 后台自动检查与"音频只在本机处理"的定位相悖；Sparkle 需要 appcast 托管与更新签名密钥管理，不在本轮范围（§11.2 R5-05） |

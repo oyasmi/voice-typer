@@ -101,6 +101,7 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnCheckForUpdates = () => _ = CheckForUpdatesAsync();
 
         _asrService.OnStateChange = OnAsrStateChanged;
+        _asrService.OnVocabularyReport = report => _setupForm?.UpdateVocabularyReport(report);
 
         _download = new ModelDownloadOrchestrator(shouldRetry: () => _asrService.State == AsrState.ModelMissing)
         {
@@ -969,6 +970,9 @@ internal sealed class AppCoordinator : IDisposable
         form.OnUserClosedWindow = () => _userOpenedSetup = false;
         form.OnBeginHotkeyRecording = BeginHotkeyRecording;
         form.OnEndHotkeyRecording = EndHotkeyRecording;
+        // 「从最近结果添加」读最近的识别文本（只在内存，与「近期识别历史」同一份）。
+        form.OnLoadRecentResults = _recognitionHistory.NewestFirst;
+        form.UpdateVocabularyReport(_asrService.VocabularyReport);
         _setupForm = form;
     }
 

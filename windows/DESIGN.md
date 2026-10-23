@@ -2109,6 +2109,7 @@ Windows 真机手工验收（尚未执行）：
 | VOC-7 | `Core/VocabularyReplacer.cs`；`LocalAsrSession.CompleteWithAsrText`（LLM 之前）与 `OutputFormatter.FormatForOutput(text, vocabulary)` 各一次；`IDictationSessionFactory.MakeSession` 增加替换层参数 | `VocabularyReplacer.swift`、`OutputFormatter.swift` |
 | VOC-8 | `LlmCorrector.CorrectWithReportAsync(text, glossary, ct)`、`UserMessage`；`Resources/correction.md` 与另两份同步 | `LLMCorrector.swift` |
 | VOC-10 | `AsrSessionTimings.DecodeMode / HotwordHits / DecodeTicks`，摘要行末尾追加 `decode_mode vocab_hits decode_ms` | `DictationMetrics.swift` |
+| VOC-9 | `UI/SetupForm.Vocabulary.cs`（「词汇」页）、`UI/VocabularyRows.cs`（不依赖 WinForms 的行 ↔ 配置、状态列、从最近结果合并）、`UI/VocabularyFromHistoryForm.cs`；`AsrService.OnVocabularyReport` 推送编译报告（2026-10-23，§33.4） | `VocabularySettingsView.swift`、`SettingsViewModel.swift` |
 
 实现要点（与 Swift 的对应关系）：
 
@@ -2117,8 +2118,8 @@ Windows 真机手工验收（尚未执行）：
 - 行最大值用 `Vector<float>`（相当于 macOS 的 `vDSP_maxv`），没有新增包依赖；argmax 沿用 `CtcDecoder` 的严格大于比较。
 - `LogAddExp` 用 `Math.Log(1 + Math.Exp(-d))`：.NET 没有精确的 log1p，这里 `d ≥ 0`，误差远小于任何有意义的分差。
   同一平台结果可复现；跨平台 exp/log 的末位差异只可能影响分数完全相等的情形，共享夹具的分差都远大于它。
-- 词汇变化按其余配置段的规则走重建控制器（`SaveRecognition` 的 `sectionsChanged` 加入词汇比较）；目前没有设置界面能改它，
-  实际只在启动时从 `config.yaml` 读入。
+- 词汇变化按其余配置段的规则走重建控制器（`SaveRecognition` 的 `sectionsChanged` 加入词汇比较）；由设置窗口「词汇」页
+  修改（§33.4），手写 `config.yaml` 仍需重启。
 
 ### 33.2 自动化与验证证据
 
@@ -2137,8 +2138,51 @@ Windows 真机手工验收（尚未执行）：
 ### 33.3 待办与手工验证（Windows，尚未执行）
 
 1. 不配词汇听写若干句：结果与升级前一致，摘要行 `decode_mode=greedy`。
-2. 在 `config.yaml` 写入几条会被认错的词（同音人名、英文合成词、按中文读的英文名各一个），重启后听写：命中时
+2. 在「设置 → 词汇」加入几条会被认错的词（同音人名、英文合成词、按中文读的英文名各一个），保存后听写：命中时
    `decode_mode=beam vocab_hits≥1`，结果为表中写法；日志里「词汇已编译」一行只有条数。
 3. 50 条无关词汇、`bias: strong`，听写 20 句日常话：不应出现被改动的字。
-4. 打开设置窗口改任意一项并保存：`config.yaml` 里的 `vocabulary` 段保持不变。
-5. 设置页「词汇」未实现，登记为遗留项（[REVIEW_HISTORY](docs/REVIEW_HISTORY.md) §3 L3）。
+4. 在别的页改任意一项并保存：`config.yaml` 里的 `vocabulary` 段保持不变；手写的词汇在「词汇」页里原样显示。
+5. 「词汇」页的手工步骤见 §33.4。
+
+### 33.4 设置页「词汇」（VOC-9，2026-10-23，3.6.0）
+
+补齐 §33 阶段 4 唯一的缺口，功能与 macOS「词汇」页相同：识别偏向四档、词汇表（写法 / 听起来像 / 状态）、添加与删除、
+「从最近结果添加…」、「试一试替换」。与 macOS 的差异只在保存语义，沿用本窗口既有的约定：
+
+- **草稿 + 统一保存**：macOS 在离开输入框时即时落盘；Windows 的表格改动与其他页一样先进草稿，点「保存并应用」走
+  `SaveRecognition` 的同一事务（听写中保存被拒绝并提示，草稿保留），「撤销更改」恢复表格。因此不需要 macOS 那样在听写中
+  禁用整页。
+- **脏检查覆盖编辑中的单元格**：`DataGridView` 只在离开单元格时提交值，而「保存并应用」在未脏时是禁用的——用户敲完字
+  直接去点保存会点不动。编辑框每次 `TextChanged` 都刷新脏检查，草稿读取时用编辑框里的文字代替未提交的单元格值；保存前
+  先 `EndEdit()`。
+- **规整一致**：草稿经 `VocabularyConfig.Validated(logWarnings: false)` 规整后再比较，与落盘结果一致——空白新行、只差空白的
+  写法不算改动。脏检查每次按键都跑，规整的 warning 日志只在加载 / 保存时写（macOS 同步加了 `validated(logging:)`：此前
+  「试一试」每次渲染都会因空白新行写一条「词汇表已规整」）。
+- **状态列**：报告由 `AsrService.OnVocabularyReport` 推到设置窗（模型加载完成、保存后重新编译）。状态按**已保存**的强度
+  判定；有报告但查不到的行是尚未保存的草稿，显示「—」并提示「保存后检查」（区别于模型未加载的「模型加载后检查」，macOS
+  同步）。
+- **从最近结果添加**：读托盘「近期识别历史」同一份内存列表（最近 20 条），在全文里拖选或 Shift+方向键选中被认错的片段，
+  预填为正确写法；同名词条（不区分大小写）并入其「听起来像」，只差大小写的片段不作为 alias。加入后仍是草稿，提示点
+  「保存并应用」。
+- 「添加词汇」按钮代替 `DataGridView` 末尾的「新行」（`AllowUserToAddRows`），避免半提交行的语义；整行选中后按 Delete
+  或点「删除选中的词汇」删除。
+
+**自动化证据**：macOS 主机交叉编译主工程（win-x64 Release，0 警告）与测试工程；新增 `VocabularySettingsTests`（5 项：
+行 ↔ 配置与三种分隔符、规整与载入不算改动、状态列四态、从最近结果合并、条数上限）在 macOS 上通过；
+`SetupFormTests.VocabularyPage_EditsEnterDraft_SaveIncludesThem_AndDiscardRestores`（编辑中即进草稿、统一保存、撤销、状态列刷新）
+需要 STA，与既有 12 项同属 `COM Interop is not supported` 基线，**只能在 Windows 上运行，尚未运行**。全量：449 项，435 通过、
+1 跳过、13 失败（均为 STA 基线）。`LocalizationTests` 通过（新增文案均有英文）。
+
+**手工验证（Windows 真机，尚未执行）**：
+
+1. 中英文界面各打开一次「词汇」页：表格、按钮行与「试一试」不被裁切；窄窗下页面纵向滚动、底部保存按钮可见。
+2. 点「添加词汇」→ 直接输入 `张三丰`，不离开单元格就点「保存并应用」：保存成功，`config.yaml` 写入该词条。
+3. 填「听起来像」时用 `,` `，` `、` 三种分隔符各一次，保存后重新打开设置窗：统一显示为全角逗号分隔。
+4. 模型已加载时：多字词显示 ✓，单字显示 ⚠ 并有悬停说明；新加一行未保存时显示「—」（悬停「保存后检查」），保存后
+   一两秒内变为 ✓ / ⚠；把强度改为「关」并保存后整列为「—」。
+5. 「从最近结果添加…」：没有历史时说明为空；听写一段后，拖选认错的片段，「正确写法」预填片段，改正后添加；表里出现
+   新行或并入同名词条的「听起来像」，提示保存。
+6. 听写进行中点「保存并应用」：提示正在听写、草稿保留；结束后再次保存成功。
+7. 选中整行按 Delete 删除、「撤销更改」恢复；在单元格里编辑时按 Delete 只删字符。
+8. 「试一试替换」输入 `用克劳德写一个voice typer的插件`（表中有 `Claude`/克劳德、`VoiceTyper`）：显示
+   `→ 用 Claude 写一个 VoiceTyper 的插件`，且使用的是尚未保存的表格内容。
