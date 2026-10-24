@@ -59,8 +59,9 @@ Windows 侧同规则的 C# 实现应在 `VoiceTyper.Tests.csproj` 里 `Link` 同
 带热词偏置的 CTC 前缀束搜索（`CTCPrefixBeamSearch`，VOC-5）的共享用例（`CTCPrefixBeamSearchTests` 与 Windows
 `HotwordDecodingTests` 逐条读取）：合成小词表、逐帧 logits（未列出的 token 取 `floor`）、热词 token 序列与档位，
 期望最优路径的 token 序列与热词命中次数。覆盖同音替换、声学门限、部分匹配不泄漏、重复 token 需隔 blank、
-开头标签帧、跳帧、同分可复现与嵌套热词。规则见 `macos/docs/VOCABULARY_SPEC.md` §5。期望值由规格里的算法
-推导，并用独立的 Python 参考实现逐条核对过。
+开头标签帧、跳帧、同分可复现与嵌套热词。规则见 `macos/docs/VOCABULARY_SPEC.md` §5。初始 11 例的期望值由规格里的算法
+推导，并用独立的 Python 参考实现逐条核对过。2026-10-24 新增 12 例，覆盖三档弱候选拒绝与近分候选召回、
+长词累计奖励、共享前缀的弱尾字、blank 误插，以及标准 / 强档的召回边界；两平台读取相同的 23 例。
 
 以上两份与 `text_format_cases.json` 同一约定：规则变更须先改规格；既有用例的期望值不得删改；新增用例须同时在
 两个平台通过。Windows 的 `VoiceTyper.Tests.csproj` 以 `Link` 引用同一份文件。

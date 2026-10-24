@@ -4,6 +4,12 @@ macOS 应用（`macos/`）的版本变更，按版本倒序排列，只记录用
 [`DESIGN.md`](DESIGN.md)；Windows 版见 [`windows/CHANGELOG.md`](../windows/CHANGELOG.md)，旧客户端—服务端
 架构见 [`client-server/server/CHANGELOG.md`](../client-server/server/CHANGELOG.md)。
 
+## 未发布
+
+### 改进
+
+- 降低热词识别偏向的积极程度，减少无关句子被改成热词的情况，保留近音纠错能力。
+
 ## 3.6.0 — 2026-10-23
 
 自定义词汇（规格见 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)，实施记录见 [`DESIGN.md`](DESIGN.md) §11.7）与

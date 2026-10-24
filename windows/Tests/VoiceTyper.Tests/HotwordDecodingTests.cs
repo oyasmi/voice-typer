@@ -39,7 +39,7 @@ public class HotwordDecodingTests
         var floor = root.GetProperty("floor").GetSingle();
         var id = Ids(tokens);
         var cases = root.GetProperty("cases").EnumerateArray().ToList();
-        Assert.True(cases.Count >= 11, "规格要求的初始用例不得减少");
+        Assert.True(cases.Count >= 23, "初始用例与保守偏置回归用例不得减少");
 
         foreach (var item in cases)
         {

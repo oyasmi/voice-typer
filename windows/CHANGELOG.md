@@ -5,6 +5,12 @@ Windows 应用（`windows/`）的版本变更，按版本倒序排列，只记�
 真机验证清单见 [`docs/VERIFICATION.md`](docs/VERIFICATION.md)。macOS 版见
 [`macos/CHANGELOG.md`](../macos/CHANGELOG.md)。
 
+## 未发布
+
+### 改进
+
+- 与 macOS 同步降低热词识别偏向的积极程度，减少无关句子被改成热词的情况，保留近音纠错能力。
+
 ## 3.6.0 — 2026-10-23
 
 自定义词汇与 macOS 版同步（DESIGN §33）。在 macOS / Linux 主机上交叉编译与自动化测试通过（WinForms 界面用例除外），

@@ -34,13 +34,14 @@ enum CTCPrefixBeamSearch {
         var topK = 10
         var maxScoredDepth = 4
 
-        /// 三档初值（VOC-6）。**全部是估算**，需用评估工具和真实录音校准，见 `DESIGN.md` §11.7。
+        /// 三档保守预设（VOC-6）：降低累计奖励并收紧候选门限，保留近分纠错。
+        /// 仍需真实录音校准；合成回归与参数依据见 `DESIGN.md` §11.7。
         static func preset(_ bias: VocabularyBias) -> Parameters? {
             switch bias {
             case .off: return nil
-            case .light: return Parameters(perTokenBias: 1.0, acousticGate: 4.0)
-            case .standard: return Parameters(perTokenBias: 1.5, acousticGate: 5.0)
-            case .strong: return Parameters(perTokenBias: 2.5, acousticGate: 7.0)
+            case .light: return Parameters(perTokenBias: 0.75, acousticGate: 2.0)
+            case .standard: return Parameters(perTokenBias: 1.25, acousticGate: 3.0)
+            case .strong: return Parameters(perTokenBias: 1.75, acousticGate: 4.0)
             }
         }
     }

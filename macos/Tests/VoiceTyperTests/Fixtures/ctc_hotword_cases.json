@@ -178,6 +178,186 @@
       ],
       "expected": ["张", "三", "丰"],
       "expected_hits": 2
+    },
+    {
+      "name": "light_rejects_weak_two_token_word",
+      "note": "两个热词 token 均弱于原文；累计声学损失超过本档奖励，不应拼出热词",
+      "preset": "light",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -0.9},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -0.9},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y"],
+      "expected_hits": 0
+    },
+    {
+      "name": "light_keeps_close_two_token_word",
+      "note": "近分候选仍能借助热词偏置胜出，防止为压低误触发而失去召回",
+      "preset": "light",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -0.5},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -0.5},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["A", "B"],
+      "expected_hits": 1
+    },
+    {
+      "name": "standard_rejects_weak_two_token_word",
+      "note": "两个热词 token 均弱于原文；累计声学损失超过本档奖励，不应拼出热词",
+      "preset": "standard",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -1.4},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.4},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y"],
+      "expected_hits": 0
+    },
+    {
+      "name": "standard_keeps_close_two_token_word",
+      "note": "近分候选仍能借助热词偏置胜出，防止为压低误触发而失去召回",
+      "preset": "standard",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -1.0},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.0},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["A", "B"],
+      "expected_hits": 1
+    },
+    {
+      "name": "strong_rejects_weak_two_token_word",
+      "note": "两个热词 token 均弱于原文；累计声学损失超过本档奖励，不应拼出热词",
+      "preset": "strong",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -1.9},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.9},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y"],
+      "expected_hits": 0
+    },
+    {
+      "name": "strong_keeps_close_two_token_word",
+      "note": "近分候选仍能借助热词偏置胜出，防止为压低误触发而失去召回",
+      "preset": "strong",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"X": 0.0, "A": -1.5},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.5},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["A", "B"],
+      "expected_hits": 1
+    },
+    {
+      "name": "standard_rejects_weak_three_token_word",
+      "note": "三处较弱候选的累计损失超过收敛后的标准档奖励",
+      "preset": "standard",
+      "hotwords": [["A", "B", "C"]],
+      "frames": [
+        {"X": 0.0, "A": -1.4},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.4},
+        {"<unk>": 0.0},
+        {"Z": 0.0, "C": -1.4},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y", "Z"],
+      "expected_hits": 0
+    },
+    {
+      "name": "standard_rejects_weak_four_token_word",
+      "note": "长热词不得靠四个 token 的累计奖励压过更可信的原文",
+      "preset": "standard",
+      "hotwords": [["A", "B", "C", "D"]],
+      "frames": [
+        {"X": 0.0, "A": -1.4},
+        {"<unk>": 0.0},
+        {"Y": 0.0, "B": -1.4},
+        {"<unk>": 0.0},
+        {"Z": 0.0, "C": -1.4},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "D": -1.4},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["X", "Y", "Z", "峰"],
+      "expected_hits": 0
+    },
+    {
+      "name": "standard_shared_prefix_cannot_buy_weak_tail",
+      "note": "前两个字已确定，也不能用它们的奖励购买门限外的弱尾字",
+      "preset": "standard",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -3.5},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["张", "三", "峰"],
+      "expected_hits": 0
+    },
+    {
+      "name": "strong_can_recover_tail_rejected_by_standard",
+      "note": "强档保留更高召回：标准档门限外、强档门限内的尾字可采用",
+      "preset": "strong",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -3.5},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["张", "三", "丰"],
+      "expected_hits": 1
+    },
+    {
+      "name": "strong_shared_prefix_rejects_far_tail",
+      "note": "强档也收紧门限，确定的前缀不能强推明显落后的尾字",
+      "preset": "strong",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -4.5},
+        {"<unk>": 0.0}
+      ],
+      "expected": ["张", "三", "峰"],
+      "expected_hits": 0
+    },
+    {
+      "name": "standard_does_not_insert_word_over_blank",
+      "note": "blank 占优时，不能仅靠累计热词奖励凭空插入两个弱 token",
+      "preset": "standard",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"<unk>": 0.0, "A": -1.4},
+        {"<unk>": 0.0},
+        {"<unk>": 0.0, "B": -1.4},
+        {"<unk>": 0.0}
+      ],
+      "expected": [],
+      "expected_hits": 0
     }
   ]
 }

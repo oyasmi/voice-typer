@@ -46,7 +46,7 @@ final class CTCPrefixBeamSearchTests: XCTestCase {
 
     func testSharedFixtureCases() throws {
         let file = try loadCases()
-        XCTAssertGreaterThanOrEqual(file.cases.count, 11, "规格要求的初始用例不得减少")
+        XCTAssertGreaterThanOrEqual(file.cases.count, 23, "初始用例与保守偏置回归用例不得减少")
         let id = Dictionary(uniqueKeysWithValues: file.tokens.enumerated().map { ($1, $0) })
         let vocabSize = file.tokens.count
         for item in file.cases {

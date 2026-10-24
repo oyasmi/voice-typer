@@ -28,12 +28,13 @@ internal static class CtcPrefixBeamSearch
 {
     internal sealed record Parameters(double PerTokenBias, double AcousticGate, int BeamWidth = 8, int TopK = 10, int MaxScoredDepth = 4)
     {
-        /// <summary>三档初值（VOC-6）。<b>全部是估算</b>，需用评估工具和真实录音校准，见 macOS <c>DESIGN.md</c> §11.7。</summary>
+        /// <summary>三档保守预设（VOC-6）：降低累计奖励并收紧候选门限，保留近分纠错。
+        /// 仍需真实录音校准；合成回归与参数依据见 macOS <c>DESIGN.md</c> §11.7。</summary>
         public static Parameters? Preset(VocabularyBias bias) => bias switch
         {
-            VocabularyBias.Light => new Parameters(1.0, 4.0),
-            VocabularyBias.Standard => new Parameters(1.5, 5.0),
-            VocabularyBias.Strong => new Parameters(2.5, 7.0),
+            VocabularyBias.Light => new Parameters(0.75, 2.0),
+            VocabularyBias.Standard => new Parameters(1.25, 3.0),
+            VocabularyBias.Strong => new Parameters(1.75, 4.0),
             _ => null,
         };
     }
