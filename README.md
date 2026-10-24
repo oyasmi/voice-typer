@@ -107,6 +107,7 @@ voice-typer/
 - macOS：[开发说明](macos/DEVELOPMENT.md) · [设计文档](macos/DESIGN.md) · [更新日志](macos/CHANGELOG.md)
 - Windows：[开发说明](windows/DEVELOPMENT.md) · [设计文档](windows/DESIGN.md) · [变更记录](windows/CHANGELOG.md)
 - 客户端—服务端：[说明](client-server/README.md) · [通信协议](client-server/PROTOCOL.md)
+- 模型选型：[Fun-ASR-Nano 调研与暂缓引入决定](FUN_ASR_NANO_EVALUATION.md)（继续仅支持 SenseVoice-Small）
 
 欢迎通过 [Issues](https://github.com/oyasmi/voice-typer/issues) 反馈问题或提出建议。
 
