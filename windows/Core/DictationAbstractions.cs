@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using VoiceTyper.Llm;
 using VoiceTyper.Services;
 
@@ -12,6 +14,8 @@ internal interface IHotkeyListening : IDisposable
 {
     Action? OnPress { get; set; }
     Action? OnRelease { get; set; }
+    /// <summary>卡键恢复产生的释放：立即收尾，不补录。默认兼容测试替身。</summary>
+    Action? OnForcedRelease { get => null; set { } }
     /// <summary>用户按 Esc 主动取消。</summary>
     Action? OnCancel { get; set; }
     /// <summary>单独修饰键被用作组合快捷键（按住期间又按了别的键 / 点了鼠标）。</summary>
@@ -65,6 +69,13 @@ internal interface IAudioCapturing : IDisposable
 /// 进程 id 用来防止窗口句柄被系统复用给另一个窗口时误判为"焦点未变化"。</summary>
 internal readonly record struct ForegroundTarget(IntPtr Window, uint ProcessId);
 
+internal enum FocusSafety { Normal, Password, Unknown }
+
+internal interface IFocusInspector
+{
+    Task<FocusSafety> InspectAsync(ForegroundTarget target, CancellationToken cancellationToken);
+}
+
 internal interface ITextInserting
 {
     ForegroundTarget CaptureForegroundTarget();
@@ -96,6 +107,8 @@ internal interface IDictationSession
     /// <summary>分阶段打点；收尾时由控制器并入 <see cref="DictationMetrics"/>。</summary>
     AsrSessionTimings Timings { get; }
     void SendAudio(byte[] data);
+    /// <summary>松键后停止预览，但继续接受尾音；不改变终稿音频。</summary>
+    void StopPreviews() { }
     /// <summary>正在等 LLM 纠错时放弃等待，直接以识别原文收尾；其他阶段无效果。</summary>
     void SkipCorrection();
     void FinalizeStream(TimeSpan timeout);

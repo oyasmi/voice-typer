@@ -50,6 +50,8 @@ internal enum DictationOutcome
 {
     Inserted,
     FocusChanged,
+    ProtectedField,
+    FocusUnverified,
     ModifiersHeld,
     InsertFailed,
     Empty,
@@ -120,6 +122,8 @@ internal sealed class DictationMetrics
     {
         DictationOutcome.Inserted => "inserted",
         DictationOutcome.FocusChanged => "focus_changed",
+        DictationOutcome.ProtectedField => "protected_field",
+        DictationOutcome.FocusUnverified => "focus_unverified",
         DictationOutcome.ModifiersHeld => "modifiers_held",
         DictationOutcome.InsertFailed => "insert_failed",
         DictationOutcome.Empty => "empty",

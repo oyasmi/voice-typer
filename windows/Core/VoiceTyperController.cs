@@ -26,7 +26,7 @@ namespace VoiceTyper.Core;
 internal sealed class VoiceTyperController : IDisposable
 {
     /// <summary>Starting：已按下热键、麦克风还在打开；Recording：采集已开始。</summary>
-    private enum Phase { Starting, Recording, Recognizing }
+    private enum Phase { Starting, Recording, TailCapturing, Recognizing }
 
     private sealed class Utterance
     {
@@ -40,6 +40,7 @@ internal sealed class VoiceTyperController : IDisposable
         public bool ReadyAnnounced { get; set; }
         /// <summary>识别已出结果、正在等 LLM 纠错（可被再次按下热键跳过）。</summary>
         public bool Correcting { get; set; }
+        public IDisposable? TailTimer { get; set; }
     }
 
     /// <summary>
@@ -47,7 +48,8 @@ internal sealed class VoiceTyperController : IDisposable
     /// 直接降级成"只复制到剪贴板"体验很差，所以先等一小会儿再试，超时才降级。
     /// </summary>
     private sealed record PendingInsert(string Text, ForegroundTarget Target, DictationMetrics Metrics, long FirstAttemptAt,
-        int Attempt, int BackupAttempt = 0, long? BackupWaitStartedAt = null, bool WaitingForBackup = false);
+        int Attempt, int BackupAttempt = 0, long? BackupWaitStartedAt = null, bool WaitingForBackup = false,
+        long? ModifierWaitStartedAt = null);
 
     private abstract record Outcome
     {
@@ -131,6 +133,9 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>最终文本已定（纠错之后、插入之前）：无论随后是粘贴成功还是退化为只复制，都会触发。
     /// 供界面保留"上一次识别结果"。文本只应留在内存里，不得落日志。</summary>
     public Action<string>? FinalTextReady;
+    /// <summary>取消或失败留下的部分结果，仅供内存历史，不触发自动粘贴。</summary>
+    public Action<string, RecognitionHistory.ResultKind>? PartialTextReady;
+    public Action<string>? RecordingRefused;
     /// <summary>每次听写收尾时恰好触发一次（<see cref="Stop"/> 除外），内容只含数字与枚举。</summary>
     public Action<DictationMetrics>? MetricsReported;
 
@@ -145,6 +150,11 @@ internal sealed class VoiceTyperController : IDisposable
     private readonly Func<long> _now;
     private readonly Action<Action> _post;
     private readonly Func<TimeSpan, Action, IDisposable> _schedule;
+    private readonly IFocusInspector? _focusInspector;
+    private readonly TimeSpan _releaseTailCapture;
+    private CancellationTokenSource? _startCheck;
+    private CancellationTokenSource? _insertCheck;
+    private bool _passwordRefused;
 
     private Utterance? _active;
     private bool _isRunning;
@@ -175,13 +185,13 @@ internal sealed class VoiceTyperController : IDisposable
 
     /// <summary>是否有一次听写正在进行（录音 / 识别 / 纠错 / 插入）。这是破坏性操作（重载模型、
     /// 重建控制器、暂停热键）的门禁依据——比协调器的显示状态可靠：显示状态会被错误提示等覆盖。</summary>
-    public bool HasActiveDictation => _active is not null || _pendingInsert is not null;
+    public bool HasActiveDictation => _active is not null || _pendingInsert is not null || _startCheck is not null;
 
     /// <summary>派生自 <see cref="_active"/>，不是独立事实源。</summary>
     private bool IsRecording => _active?.Phase == Phase.Recording;
 
     /// <summary>录音阶段（含麦克风仍在打开的 Starting）：松键 / 再按一次 / Esc 都要结束它。</summary>
-    private bool IsCapturing => _active?.Phase is Phase.Starting or Phase.Recording;
+    private bool IsCapturing => _startCheck is not null || _active?.Phase is Phase.Starting or Phase.Recording;
 
     /// <summary>当前录音实际使用的输入设备名，供 HUD 显示；Start 成功后才有值。</summary>
     public string? RecordingInputDeviceName
@@ -197,7 +207,8 @@ internal sealed class VoiceTyperController : IDisposable
     /// 控制器：重建控制器不能丢掉尚未完成的剪贴板恢复状态，控制器 Dispose 时也不释放它。</summary>
     public VoiceTyperController(AppConfig config, AsrService asrService, TextInsertionService textInsertion)
         : this(config, asrService, new HotkeyService(), new AudioCaptureService(), textInsertion,
-            CreateLlmCorrector(config))
+            CreateLlmCorrector(config), focusInspector: new WindowsFocusInspector(),
+            releaseTailCapture: TimeSpan.FromMilliseconds(150))
     {
     }
 
@@ -212,7 +223,9 @@ internal sealed class VoiceTyperController : IDisposable
         LlmCorrector? llmCorrector,
         Func<long>? now = null,
         Action<Action>? post = null,
-        Func<TimeSpan, Action, IDisposable>? schedule = null)
+        Func<TimeSpan, Action, IDisposable>? schedule = null,
+        IFocusInspector? focusInspector = null,
+        TimeSpan? releaseTailCapture = null)
     {
         _config = config;
         _sessions = sessions;
@@ -224,6 +237,8 @@ internal sealed class VoiceTyperController : IDisposable
         _now = now ?? Stopwatch.GetTimestamp;
         _post = post ?? UiDispatcher.Post;
         _schedule = schedule ?? DefaultSchedule;
+        _focusInspector = focusInspector;
+        _releaseTailCapture = releaseTailCapture ?? TimeSpan.Zero;
     }
 
     private IDisposable DefaultSchedule(TimeSpan delay, Action action)
@@ -300,6 +315,7 @@ internal sealed class VoiceTyperController : IDisposable
     {
         _hotkey.OnPress = HandleHotkeyPress;
         _hotkey.OnRelease = HandleHotkeyRelease;
+        _hotkey.OnForcedRelease = () => FinishRecording(captureTail: false);
         _hotkey.OnCancel = CancelByUser;
         _hotkey.OnGestureCancelled = DiscardByGesture;
         _hotkey.OnHealthChanged = OnHotkeyHealthChanged;
@@ -326,6 +342,7 @@ internal sealed class VoiceTyperController : IDisposable
     public void Stop()
     {
         if (!_isRunning) return;
+        CancelStartCheck();
         _hotkey.AcceptsCancelWhenInactive = false;
         CancelSilenceProbes();
         _hotkey.Stop();
@@ -373,7 +390,9 @@ internal sealed class VoiceTyperController : IDisposable
     /// </summary>
     public void HandleSystemInterruption()
     {
-        if (!_isRunning || !IsCapturing) return;
+        if (!_isRunning) return;
+        CancelStartCheck();
+        if (_active?.Phase is not (Phase.Starting or Phase.Recording or Phase.TailCapturing)) return;
         AppLog.Info("controller", "系统锁屏或睡眠，丢弃进行中的录音");
         _audio.StopWithoutResult();
         Finish(new Outcome.GestureDiscarded());
@@ -420,6 +439,8 @@ internal sealed class VoiceTyperController : IDisposable
             return;
         }
 
+        if (_active is { Correcting: true } && _config.Hotkey.IsModifierOnly) return;
+
         switch (_config.Hotkey.ModeValue)
         {
             case HotkeyMode.Hold:
@@ -441,6 +462,17 @@ internal sealed class VoiceTyperController : IDisposable
     private void HandleHotkeyRelease()
     {
         if (!_isRunning) return;
+        if (_passwordRefused)
+        {
+            _passwordRefused = false;
+            RecordingRefused?.Invoke(L10n.T("当前是密码输入框，不会在这里听写"));
+            return;
+        }
+        if (_active is { Correcting: true } && _config.Hotkey.IsModifierOnly)
+        {
+            BeginRecording(_now());
+            return;
+        }
         if (_active is null && _blockedReason is { } reason)
         {
             if (_config.Hotkey.IsModifierOnly) BlockedAttempt?.Invoke(reason);
@@ -464,6 +496,8 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>单独修饰键（Hold 模式）在按住期间被用作组合快捷键：静默丢弃本次录音，不弹任何提示。</summary>
     private void DiscardByGesture()
     {
+        _passwordRefused = false;
+        CancelStartCheck();
         if (_config.Hotkey.ModeValue != HotkeyMode.Hold || !IsCapturing) return;
         _audio.StopWithoutResult();
         Finish(new Outcome.GestureDiscarded());
@@ -476,8 +510,9 @@ internal sealed class VoiceTyperController : IDisposable
     /// </summary>
     private void CancelByUser()
     {
+        CancelStartCheck();
         if (_active is not { } utterance) return;
-        if (utterance.Phase is Phase.Starting or Phase.Recording)
+        if (utterance.Phase is Phase.Starting or Phase.Recording or Phase.TailCapturing)
         {
             // 麦克风仍在打开时，这一步撤销启动。
             _audio.StopWithoutResult();
@@ -491,6 +526,8 @@ internal sealed class VoiceTyperController : IDisposable
     private void BeginRecording(long pressedAt)
     {
         if (!_isRunning) return;
+        if (_startCheck is not null) return;
+        _passwordRefused = false;
         if (_active is { Correcting: true } correcting)
         {
             // 等纠错时再按热键：用户不想等了。不直接开始新录音（上一段还没上屏），而是放弃纠错、
@@ -499,17 +536,69 @@ internal sealed class VoiceTyperController : IDisposable
             PreviewWarning?.Invoke(L10n.T("已跳过纠错，使用识别原文"));
             return;
         }
-        if (_active is not null)
+        if (_active is not null || _insertCheck is not null)
         {
             // 上一段听写仍在识别 / 插入：拒绝新会话并给出可见反馈（R3-1）。
             PreviewWarning?.Invoke(L10n.T("上一段听写尚未完成，请稍候再试"));
             return;
         }
-        BeginDictationSession(pressedAt);
+        if (_focusInspector is null) BeginDictationSession(pressedAt);
+        else
+        {
+            var check = new CancellationTokenSource();
+            _startCheck = check;
+            _hotkey.AcceptsCancelWhenInactive = true;
+            var target = _text.CaptureForegroundTarget();
+            _ = CheckFocusAsync(check, target, safety =>
+            {
+                if (!ReferenceEquals(_startCheck, check)) return;
+                _startCheck = null;
+                _hotkey.AcceptsCancelWhenInactive = false;
+                if (!_isRunning || _blockedReason is not null || _text.CaptureForegroundTarget() != target) return;
+                if (safety == FocusSafety.Password)
+                {
+                    if (_config.Hotkey.IsModifierOnly && _config.Hotkey.ModeValue == HotkeyMode.Hold) _passwordRefused = true;
+                    else RecordingRefused?.Invoke(L10n.T("当前是密码输入框，不会在这里听写"));
+                    return;
+                }
+                BeginDictationSession(pressedAt);
+            });
+        }
     }
 
-    private void FinishRecording()
+    private async System.Threading.Tasks.Task CheckFocusAsync(CancellationTokenSource check, ForegroundTarget target,
+        Action<FocusSafety> completed)
     {
+        FocusSafety safety;
+        try
+        {
+            safety = await _focusInspector!.InspectAsync(target, check.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (check.IsCancellationRequested) { check.Dispose(); return; }
+        catch (Exception ex)
+        {
+            AppLog.Warn("focus", $"密码框检查失败：{ex.GetType().Name}");
+            safety = FocusSafety.Unknown;
+        }
+        _post(() =>
+        {
+            try { if (!check.IsCancellationRequested) completed(safety); }
+            finally { check.Dispose(); }
+        });
+    }
+
+    private void CancelStartCheck()
+    {
+        _passwordRefused = false;
+        if (_startCheck is not { } check) return;
+        _startCheck = null;
+        check.Cancel();
+        _hotkey.AcceptsCancelWhenInactive = false;
+    }
+
+    private void FinishRecording(bool captureTail = true)
+    {
+        if (_startCheck is not null) { CancelStartCheck(); return; }
         if (_active is not { Phase: Phase.Starting or Phase.Recording } utterance) return;
         utterance.Metrics.ReleasedAt = _now();
         var heldLongEnough = Stopwatch.GetElapsedTime(utterance.StartedAt, _now()) >= MinimumRecordingDuration;
@@ -533,8 +622,18 @@ internal sealed class VoiceTyperController : IDisposable
             return;
         }
 
-        // Stop() 触发 OnTailChunk → SendAudio(tail) + FinalizeStream，Phase 在那里推进到 Recognizing。
-        _audio.Stop();
+        utterance.Session.StopPreviews();
+        CancelSilenceProbes();
+        if (captureTail && _releaseTailCapture > TimeSpan.Zero)
+        {
+            utterance.Phase = Phase.TailCapturing;
+            StateChanged?.Invoke(AppStateInfo.Recognizing);
+            utterance.TailTimer = _schedule(_releaseTailCapture, () =>
+            {
+                if (ReferenceEquals(_active, utterance) && utterance.Phase == Phase.TailCapturing) _audio.Stop();
+            });
+        }
+        else _audio.Stop();
     }
 
     /// <summary>录音期间输入设备变化：采集服务已自行走过收尾路径把已采到的音频交给当前会话继续识别，
@@ -549,7 +648,7 @@ internal sealed class VoiceTyperController : IDisposable
     /// 相同的收尾路径——<c>Stop()</c> 会触发 OnTailChunk，把已录到的内容正常推进到 Recognizing 并上屏（R3-03）。</summary>
     private void HandleSessionCapped()
     {
-        if (_active is not { Phase: Phase.Recording }) return;
+        if (_active is not { Phase: Phase.Recording or Phase.TailCapturing }) return;
         _audio.Stop();
     }
 
@@ -633,7 +732,10 @@ internal sealed class VoiceTyperController : IDisposable
         _audio.OnTailChunk = data => _post(() =>
         {
             if (!IsCurrent()) return;
+            session.StopPreviews();
             if (data.Length > 0) session.SendAudio(data);
+            var announced = utterance.Phase == Phase.TailCapturing;
+            utterance.TailTimer?.Dispose();
             utterance.Phase = Phase.Recognizing;
             CancelSilenceProbes(); // 录音已结束，不再需要"没采到声音"的提示
             // 设备变化 / 达到会话上限时没有"松手"，以尾音到达的时刻作为收音结束点。
@@ -647,7 +749,7 @@ internal sealed class VoiceTyperController : IDisposable
             // 看门狗按音频时长缩放：长听写在慢机器上的整段重跑要远超 30 秒（见 FinalizeWatchdogTimeout）。
             session.FinalizeStream(FinalizeWatchdogTimeout(utterance.Session.Timings.ReceivedSamples
                 / (double)AppConstants.TargetSampleRate));
-            StateChanged?.Invoke(AppStateInfo.Recognizing);
+            if (!announced) StateChanged?.Invoke(AppStateInfo.Recognizing);
         });
 
         _active = utterance;
@@ -746,6 +848,7 @@ internal sealed class VoiceTyperController : IDisposable
     {
         if (_active is not { } utterance) return;
         _active = null;
+        utterance.TailTimer?.Dispose();
         CancelSilenceProbes();
         _hotkey.AcceptsCancelWhenInactive = false;
 
@@ -771,6 +874,7 @@ internal sealed class VoiceTyperController : IDisposable
                 result = inserted;
                 break;
             case Outcome.Failed failed:
+                RetainPartial(lastPreview, RecognitionHistory.ResultKind.Partial);
                 // 终稿推理看门狗超时：预览里已经固化了大部分文字，复制到剪贴板兜底，
                 // 不让用户说了很久的话一个字都找不回来（REVIEW_UX W-01 的第二层防护）。
                 if (metrics.Timings.FinalizeTimedOut && !string.IsNullOrWhiteSpace(lastPreview))
@@ -783,6 +887,7 @@ internal sealed class VoiceTyperController : IDisposable
                 result = DictationOutcome.Failed;
                 break;
             case Outcome.Cancelled:
+                RetainPartial(lastPreview, RecognitionHistory.ResultKind.Cancelled);
                 if (_isRunning)
                 {
                     AppLog.Info("controller", "用户取消录音");
@@ -817,6 +922,12 @@ internal sealed class VoiceTyperController : IDisposable
         }
 
         CompleteMetrics(metrics, result);
+    }
+
+    private void RetainPartial(string text, RecognitionHistory.ResultKind kind)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+            PartialTextReady?.Invoke(OutputFormatter.FormatForOutput(text.Trim(), _vocabulary), kind);
     }
 
     private void CompleteMetrics(DictationMetrics metrics, DictationOutcome result)
@@ -857,12 +968,40 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>一次插入尝试。修饰键仍被按住且还有重试额度时登记 <see cref="_pendingInsert"/> 并返回 null。</summary>
     private DictationOutcome? TryInsertFinalText(PendingInsert attempt)
     {
+        if (_focusInspector is null) return InsertAfterFocusCheck(attempt);
+        var check = new CancellationTokenSource();
+        _insertCheck = check;
+        _pendingInsert = attempt;
+        _ = CheckFocusAsync(check, attempt.Target, safety =>
+        {
+            if (!ReferenceEquals(_pendingInsert, attempt) || !ReferenceEquals(_insertCheck, check)) return;
+            _insertCheck = null;
+            _pendingInsert = null;
+            if (safety != FocusSafety.Normal)
+            {
+                _text.DiscardPreparedBackup();
+                // 检查不可用也不盲目粘贴；原文仍可从历史找回，不自动把不确定目标的文本送进密码框。
+                StateChanged?.Invoke(AppStateInfo.ErrorWith(safety == FocusSafety.Password
+                    ? L10n.T("目标是密码输入框，未自动输入；可从识别历史复制结果")
+                    : L10n.T("无法确认输入框类型，未自动输入；可从识别历史复制结果")));
+                CompleteMetrics(attempt.Metrics, safety == FocusSafety.Password
+                    ? DictationOutcome.ProtectedField : DictationOutcome.FocusUnverified);
+            }
+            else if (InsertAfterFocusCheck(attempt) is { } outcome) CompleteMetrics(attempt.Metrics, outcome);
+        });
+        return null;
+    }
+
+    private DictationOutcome? InsertAfterFocusCheck(PendingInsert attempt)
+    {
         var (trimmed, target, metrics) = (attempt.Text, attempt.Target, attempt.Metrics);
         var insertStartedAt = _now();
         var result = _text.Insert(trimmed, target);
         metrics.InsertTicks = (metrics.InsertTicks ?? 0) + (_now() - insertStartedAt);
 
-        if (result == TextInsertionResult.BackupPending && attempt.BackupAttempt < BackupMaxRetries)
+        if (result == TextInsertionResult.BackupPending && attempt.BackupAttempt < BackupMaxRetries
+            && (attempt.BackupWaitStartedAt is not { } backupStart
+                || Stopwatch.GetElapsedTime(backupStart, _now()) < BackupPollInterval * BackupMaxRetries))
         {
             _pendingInsert = attempt with
             {
@@ -873,16 +1012,20 @@ internal sealed class VoiceTyperController : IDisposable
             _pendingInsertTimer = _schedule(BackupPollInterval, RetryPendingInsert);
             return null;
         }
-        if (result == TextInsertionResult.ModifiersHeld && attempt.Attempt < ModifierReleaseMaxRetries)
+        if (result == TextInsertionResult.ModifiersHeld && attempt.Attempt < ModifierReleaseMaxRetries
+            && (attempt.ModifierWaitStartedAt is not { } modifierStart
+                || Stopwatch.GetElapsedTime(modifierStart, _now()) < ModifierReleasePollInterval * ModifierReleaseMaxRetries))
         {
-            _pendingInsert = attempt with { Attempt = attempt.Attempt + 1, WaitingForBackup = false };
+            _pendingInsert = attempt with { Attempt = attempt.Attempt + 1, WaitingForBackup = false,
+                ModifierWaitStartedAt = attempt.ModifierWaitStartedAt ?? insertStartedAt };
             _pendingInsertTimer = _schedule(ModifierReleasePollInterval, RetryPendingInsert);
             return null;
         }
         var finishedAt = _now();
         // 两种等待分开记：备份等待从第一次返回 BackupPending 算起，其余（修饰键）才是 mod_wait。
-        metrics.BackupWaitTicks = attempt.BackupWaitStartedAt is { } backupSince ? finishedAt - backupSince : 0;
-        metrics.ModifierWaitTicks = Math.Max(0, finishedAt - attempt.FirstAttemptAt - metrics.BackupWaitTicks);
+        metrics.BackupWaitTicks = attempt.BackupWaitStartedAt is { } backupSince
+            ? Math.Max(0, (attempt.ModifierWaitStartedAt ?? finishedAt) - backupSince) : 0;
+        metrics.ModifierWaitTicks = attempt.ModifierWaitStartedAt is { } modifierSince ? finishedAt - modifierSince : 0;
 
         switch (result)
         {
@@ -946,7 +1089,7 @@ internal sealed class VoiceTyperController : IDisposable
         _pendingInsertTimer = null;
         _pendingInsert = null;
 
-        if (!_isRunning || _active is not null)
+        if (!_isRunning || _active is not null || _startCheck is not null)
         {
             // 继续等下去会和新的听写抢状态与剪贴板：改为只复制，结果不丢。
             FinishPendingByClipboard(pending);
@@ -958,18 +1101,21 @@ internal sealed class VoiceTyperController : IDisposable
     /// <summary>停止控制器时仍有推迟的插入：把识别结果复制到剪贴板，不让已经说出口的内容凭空消失。</summary>
     private void AbandonPendingInsert()
     {
+        var waitingForFocus = _insertCheck is not null;
+        _insertCheck?.Cancel();
+        _insertCheck = null;
         if (_pendingInsert is not { } pending) return;
         _pendingInsertTimer?.Dispose();
         _pendingInsertTimer = null;
         _pendingInsert = null;
-        FinishPendingByClipboard(pending);
+        FinishPendingByClipboard(pending, waitingForFocus);
     }
 
-    private void FinishPendingByClipboard(PendingInsert pending)
+    private void FinishPendingByClipboard(PendingInsert pending, bool waitingForFocus = false)
     {
         var copied = _text.CopyToClipboard(pending.Text);
         AppLog.Warn("controller", copied ? "推迟的插入被打断，结果已复制到剪贴板" : "推迟的插入被打断，且复制到剪贴板失败");
-        if (pending.WaitingForBackup)
+        if (pending.WaitingForBackup || waitingForFocus)
         {
             PreviewWarning?.Invoke(copied
                 ? L10n.T("上一段识别结果未能自动粘贴，已复制到剪贴板")

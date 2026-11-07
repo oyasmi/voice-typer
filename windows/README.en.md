@@ -7,8 +7,8 @@
 VoiceTyper is a system tray app: hold the right-hand `Ctrl` key in any app and speak, release it, and the
 text appears at the cursor. Speech recognition runs entirely on your PC; recordings are never uploaded.
 
-> **Status**: the Windows app has feature parity with macOS, and dictation and model download have been
-> run on real Windows hardware. Systematic real-device testing — especially arm64 devices, long-running
+> **Status**: the Windows app uses a native tray menu and WinForms interface. Dictation and model download have been
+> run on real Windows hardware. Validation of the latest improvements — including arm64 devices, long-running
 > sessions and multi-monitor DPI — is still in progress. Please [report](#reporting-issues) anything odd.
 
 ## Requirements
@@ -68,10 +68,15 @@ from the input field, so it is no longer recommended.
 
 Useful details:
 
+- **Ending dictation**: normal release captures about 150ms of extra audio to preserve the last word. Esc cancels immediately.
+- **Password fields**: detected password fields block recording. The target is checked again before insertion; if it is protected or cannot be checked, recover the text manually from history.
+- **Quick settings**: change recognition language, text correction, or automatic/system-default microphone policy from the tray. Choose a specific device in Settings. Quick changes are disabled during dictation or while Settings has unsaved edits.
+
 - **Cancel**: press `Esc` while recording or recognizing; nothing is written.
 - **Recover results**: “Copy last transcription” still copies the latest result. “Recent transcriptions...”
-  shows the last 20 final results, including the latest, newest first. Select an entry to read its full text
+  shows the last 20 results, including the latest, newest first. Select an entry to read its full text
   and copy it, or use “Copy all (oldest first)” to join all retained entries with newlines in speaking order.
+  Text recognized before cancellation or failure is retained with a cancelled or partial label. Use “Clear history” to remove it.
   History is kept in memory only and cleared on exit. Wait for active dictation to finish before copying.
 - **Long dictation**: switch the trigger to “press once to start, press again to stop” in Settings.
 - **Length**: up to 120 seconds per dictation, with a countdown for the last 15 seconds; at the limit the
@@ -147,6 +152,7 @@ read it.
 
 Press the hotkey again during correction to skip it and insert the original text; if correction fails,
 the original text is used automatically.
+When skipping correction with a modifier-only hotkey such as Right Ctrl, tap and release it on its own. Ordinary combinations such as Right Ctrl + C do not skip correction.
 
 ## Privacy
 

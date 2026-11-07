@@ -27,6 +27,11 @@ internal sealed class TrayController : IDisposable
     public Action? OnOpenRecognitionHistory;
     public Action? OnOpenOnboarding;
     public Action? OnCheckForUpdates;
+    public Func<AppConfig>? CurrentSettings;
+    public Func<bool>? CanChangeSettings;
+    public Action<AsrLanguage>? OnChangeLanguage;
+    public Action<string>? OnChangeInput;
+    public Action<bool>? OnChangeCorrection;
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _menu;
@@ -36,6 +41,9 @@ internal sealed class TrayController : IDisposable
     private readonly ToolStripMenuItem _pauseItem;
     private readonly ToolStripMenuItem _copyLastItem;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _languageItem;
+    private readonly ToolStripMenuItem _inputItem;
+    private readonly ToolStripMenuItem _correctionItem;
     private Icon? _currentIcon;
     private AppState _lastState = AppState.Booting;
     private readonly Icon _appIcon;
@@ -68,6 +76,24 @@ internal sealed class TrayController : IDisposable
         var historyItem = new ToolStripMenuItem(L10n.T("近期识别历史..."));
         historyItem.Click += (_, _) => OnOpenRecognitionHistory?.Invoke();
 
+        _languageItem = new ToolStripMenuItem(L10n.T("识别语言"));
+        foreach (var language in Enum.GetValues<AsrLanguage>())
+        {
+            var item = new ToolStripMenuItem(language.DisplayName()) { Tag = language };
+            item.Click += (_, _) => OnChangeLanguage?.Invoke(language);
+            _languageItem.DropDownItems.Add(item);
+        }
+        _inputItem = new ToolStripMenuItem(L10n.T("麦克风"));
+        AddInputPolicy(L10n.T("自动选择"), AudioConfig.Auto);
+        AddInputPolicy(L10n.T("跟随系统默认"), AudioConfig.System);
+        _inputItem.DropDownItems.Add(new ToolStripSeparator());
+        _inputItem.DropDownItems.Add(L10n.T("选择指定设备..."), null, (_, _) => OnOpenSetup?.Invoke());
+        _correctionItem = new ToolStripMenuItem(L10n.T("智能纠错"));
+        _correctionItem.Click += (_, _) =>
+        {
+            if (CurrentSettings?.Invoke() is { } config) OnChangeCorrection?.Invoke(!config.Llm.Enabled);
+        };
+
         _startupItem = new ToolStripMenuItem(L10n.T("开机自启")) { CheckOnClick = true };
         _startupItem.Checked = StartupRegistration.IsEnabled;
         _startupItem.Click += (_, _) =>
@@ -80,7 +106,24 @@ internal sealed class TrayController : IDisposable
         };
 
         // 自启状态可能在别处（设置页）被改过：每次展开菜单时以注册表为准，而不是沿用构造时读到的值。
-        _menu.Opening += (_, _) => _startupItem.Checked = StartupRegistration.IsEnabled;
+        _menu.Opening += (_, _) =>
+        {
+            _startupItem.Checked = StartupRegistration.IsEnabled;
+            if (CurrentSettings?.Invoke() is not { } config) return;
+            var enabled = CanChangeSettings?.Invoke() ?? false;
+            _languageItem.Enabled = _correctionItem.Enabled = enabled;
+            _correctionItem.Checked = config.Llm.Enabled;
+            foreach (ToolStripMenuItem item in _languageItem.DropDownItems)
+                item.Checked = (AsrLanguage)item.Tag! == config.Asr.LanguageValue;
+            foreach (ToolStripItem item in _inputItem.DropDownItems)
+            {
+                if (item is ToolStripMenuItem choice && choice.Tag is string policy)
+                {
+                    choice.Enabled = enabled;
+                    choice.Checked = string.Equals(policy, config.Audio.InputDevice, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        };
 
         var onboardingItem = new ToolStripMenuItem(L10n.T("使用引导..."));
         onboardingItem.Click += (_, _) => OnOpenOnboarding?.Invoke();
@@ -102,6 +145,9 @@ internal sealed class TrayController : IDisposable
             new ToolStripSeparator(),
             setupItem,
             _pauseItem,
+            _languageItem,
+            _inputItem,
+            _correctionItem,
             _copyLastItem,
             historyItem,
             new ToolStripSeparator(),
@@ -127,6 +173,13 @@ internal sealed class TrayController : IDisposable
             _balloonClickAction = null;
             action?.Invoke();
         };
+    }
+
+    private void AddInputPolicy(string label, string policy)
+    {
+        var item = new ToolStripMenuItem(label) { Tag = policy };
+        item.Click += (_, _) => OnChangeInput?.Invoke(policy);
+        _inputItem.DropDownItems.Add(item);
     }
 
     /// <summary>是否已有可复制的识别结果（菜单项可用状态）。</summary>

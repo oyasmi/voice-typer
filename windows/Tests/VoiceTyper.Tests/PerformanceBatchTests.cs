@@ -11,6 +11,29 @@ namespace VoiceTyper.Tests;
 /// <summary>2026-10「跟嘴 · 跟手 · 稳健」批次（DESIGN §23）里可以脱离 Win32 / UI 线程验证的部分。</summary>
 public class PerformanceBatchTests
 {
+    [Fact]
+    public void StopPreviews_DiscardsQueuedPreview_ButKeepsTailForFinal()
+    {
+        using var pump = new AsrPump("VoiceTyper.Test.StopPreviews");
+        using var gate = new ManualResetEventSlim(false);
+        using var entered = new ManualResetEventSlim(false);
+        pump.Post(() => { entered.Set(); gate.Wait(); });
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var fake = new FakeAsrEngine();
+        var session = new LocalAsrSession(pump, () => fake, null, 15 * AppConstants.TargetSampleRate);
+        try
+        {
+            session.SendAudio(Speech(AppConstants.ChunkSamples * 2));
+            session.StopPreviews();
+            session.SendAudio(Speech(AppConstants.ChunkSamples));
+            session.FinalizeStream(TimeSpan.Zero);
+            gate.Set();
+            Assert.True(WaitFor(() => session.Timings.FinalizeRunStartedAt is not null));
+            Assert.Equal(1, fake.RecognizeCalls);
+            Assert.Equal(AppConstants.ChunkSamples * 3, session.Timings.ReceivedSamples);
+        }
+        finally { gate.Set(); session.Close(); }
+    }
     private static byte[] Speech(int samples, float value = 0.1f)
     {
         var data = new float[samples];

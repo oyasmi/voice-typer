@@ -20,9 +20,10 @@ internal sealed class RecognitionHistoryForm : Form
     };
     private readonly Button _copySelected = new() { AutoSize = true };
     private readonly Button _copyAll = new() { AutoSize = true };
+    private readonly Button _clear = new() { AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, Dock = DockStyle.Fill };
 
-    public RecognitionHistoryForm(RecognitionHistory history, Func<string, string?> copy)
+    public RecognitionHistoryForm(RecognitionHistory history, Func<string, string?> copy, Action? onClear = null)
     {
         _history = history;
         _copy = copy;
@@ -57,7 +58,13 @@ internal sealed class RecognitionHistoryForm : Form
             {
                 var preview = entry.Text.ReplaceLineEndings(" ").Replace('\t', ' ');
                 if (preview.Length > 120) preview = preview[..120] + "…";
-                e.Value = $"{entry.Time:MM-dd HH:mm:ss}  {preview}";
+                var suffix = entry.Kind switch
+                {
+                    RecognitionHistory.ResultKind.Cancelled => L10n.T("（已取消）"),
+                    RecognitionHistory.ResultKind.Partial => L10n.T("（部分结果）"),
+                    _ => "",
+                };
+                e.Value = $"{entry.Time:MM-dd HH:mm:ss}  {preview}{suffix}";
             }
         };
         _entries.SelectedIndexChanged += (_, _) => ShowSelection();
@@ -73,10 +80,17 @@ internal sealed class RecognitionHistoryForm : Form
         };
         _copyAll.Text = L10n.T("全部复制（旧到新）");
         _copyAll.Click += (_, _) => Copy(_history.AllText());
+        _clear.Text = L10n.T("清空历史");
+        _clear.Click += (_, _) =>
+        {
+            _history.Clear();
+            RefreshEntries();
+            onClear?.Invoke();
+        };
         var close = new Button { Text = L10n.T("关闭"), AutoSize = true, DialogResult = DialogResult.Cancel };
         close.Click += (_, _) => Close();
         CancelButton = close;
-        buttons.Controls.AddRange(new Control[] { _copySelected, _copyAll, close });
+        buttons.Controls.AddRange(new Control[] { _copySelected, _copyAll, _clear, close });
         layout.Controls.Add(buttons, 0, 3);
         layout.Controls.Add(_status, 0, 4);
         Controls.Add(layout);
@@ -98,6 +112,7 @@ internal sealed class RecognitionHistoryForm : Form
         }
         finally { _entries.EndUpdate(); }
         _copyAll.Enabled = _entries.Items.Count > 0;
+        _clear.Enabled = _entries.Items.Count > 0;
         ShowSelection();
     }
 

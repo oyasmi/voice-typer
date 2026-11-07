@@ -28,6 +28,7 @@ internal sealed class HotkeyService : IHotkeyListening
     public Action? OnPress { get; set; }
     /// <summary>热键松开。在 UI 线程触发。</summary>
     public Action? OnRelease { get; set; }
+    public Action? OnForcedRelease { get; set; }
     /// <summary>录音中按下 Esc 主动取消。在 UI 线程触发。</summary>
     public Action? OnCancel { get; set; }
     /// <summary>单独修饰键被用作组合快捷键，本次录音应静默丢弃。在 UI 线程触发。</summary>
@@ -345,7 +346,7 @@ internal sealed class HotkeyService : IHotkeyListening
         if (machine.ResetIfReleased(static vk => (GetAsyncKeyState(vk) & 0x8000) != 0) == HotkeyAction.Release)
         {
             AppLog.Warn("hotkey", "热键在物理上已松开但没有收到松键事件（可能切换到了安全桌面），按松键处理");
-            UiDispatcher.PostAsync(() => OnRelease?.Invoke());
+            UiDispatcher.PostAsync(() => (OnForcedRelease ?? OnRelease)?.Invoke());
         }
     }
 

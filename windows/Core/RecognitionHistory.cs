@@ -4,20 +4,21 @@ using System.Linq;
 
 namespace VoiceTyper.Core;
 
-/// <summary>最近 20 条非空的最终识别文本。只在 UI 线程使用，只存内存，不进入日志或诊断报告。</summary>
+/// <summary>最近 20 条非空结果（包括取消 / 失败前的预览）。只在 UI 线程使用，只存内存。</summary>
 internal sealed class RecognitionHistory
 {
     public const int Capacity = 20;
     private readonly List<Entry> _entries = new();
 
-    internal sealed record Entry(DateTime Time, string Text);
+    internal enum ResultKind { Final, Cancelled, Partial }
+    internal sealed record Entry(DateTime Time, string Text, ResultKind Kind = ResultKind.Final);
 
     public string? LatestText => _entries.Count == 0 ? null : _entries[^1].Text;
 
-    public void Add(DateTime localTime, string text)
+    public void Add(DateTime localTime, string text, ResultKind kind = ResultKind.Final)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
-        _entries.Add(new Entry(localTime, text));
+        _entries.Add(new Entry(localTime, text, kind));
         if (_entries.Count > Capacity) _entries.RemoveAt(0);
     }
 
@@ -26,4 +27,6 @@ internal sealed class RecognitionHistory
 
     /// <summary>按录入顺序正序拼接，只复制正文，保留各条内容原有的空白。</summary>
     public string AllText() => string.Join("\r\n", _entries.Select(entry => entry.Text));
+
+    public void Clear() => _entries.Clear();
 }

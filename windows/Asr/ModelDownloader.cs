@@ -43,7 +43,7 @@ internal interface IModelDownloading : IDisposable
 ///   <c>Range: bytes=&lt;len&gt;-</c>。经过实测的必经之路。</item>
 /// <item><b>分段并行</b>（≥ 32MB 的文件，即 230MB 的模型权重）：先用 <c>Range: bytes=0-0</c> 探测总长，
 ///   均分四段并行下载到各自的 <c>.segN</c> 文件（续传同样只看文件长度），最后按序拼成 <c>.part</c>。
-///   分段只是优化：不支持 Range、长度不符或可恢复的网络异常会停用分段并落回单连接。
+///   不支持 Range 或范围不符时停用分段并落回单连接；网络异常在各段内按已写入字节续传重试。
 ///   TLS 或权限错误直接切换来源，避免无意义地重复相同请求。</item>
 /// </list>
 /// 两条路径最终都以固定 sha256 校验为准。
@@ -200,7 +200,7 @@ internal sealed class ModelDownloader : IModelDownloading
         var destPath = Path.Combine(_destination, spec.Name);
         var partPath = Path.Combine(_destination, spec.Name + ".part");
 
-        // 大文件先试分段并行。失败不抛出，而是停用分段并落回下面那条经过实测的单连接路径。
+        // 大文件先试分段并行。只有服务端不支持 Range 才降级；网络故障保留分段用于下次续传。
         if (!_segmentedDisabled && spec.SizeHint >= _segmentedMinimumBytes)
         {
             try
@@ -224,7 +224,7 @@ internal sealed class ModelDownloader : IModelDownloading
             {
                 throw; // 同一下载源的权限/TLS 故障不能靠改成单连接解决，直接切源。
             }
-            catch (Exception ex)
+            catch (SegmentedUnsupportedException ex)
             {
                 AppLog.Warn("model", $"分段下载 {spec.Name} 失败，停用分段并改用单连接: {DownloadFailure.Diagnostics(ex)}");
                 TryDelete(partPath);
@@ -450,6 +450,29 @@ internal sealed class ModelDownloader : IModelDownloading
     }
 
     private async Task DownloadSegmentAsync(FileSpec spec, int index, (long Start, long End) range, long[] done, long total,
+        ProgressReporter reporter, CancellationToken ct, Uri url)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Windows 的流直接落盘：重试从已写入字节继续，无需额外引入 8MB 分块或再拷贝临时文件。
+            var path = SegmentPath(spec, index);
+            Interlocked.Exchange(ref done[index], File.Exists(path) ? new FileInfo(path).Length : 0);
+            try
+            {
+                await DownloadSegmentAttemptAsync(spec, index, range, done, total, reporter, ct, url).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex) when (ex is not SegmentedUnsupportedException && !ct.IsCancellationRequested
+                && DownloadFailure.CanRetry(ex) && attempt < 2)
+            {
+                AppLog.Warn("model", $"分段 {index} 断流，保留进度并重试（{attempt + 1}/2）");
+                await Task.Delay(TimeSpan.FromSeconds(attempt + 1), ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task DownloadSegmentAttemptAsync(FileSpec spec, int index, (long Start, long End) range, long[] done, long total,
         ProgressReporter reporter, CancellationToken ct, Uri url)
     {
         var expected = range.End - range.Start + 1;

@@ -115,6 +115,7 @@ internal sealed class LocalAsrSession : IDictationSession
     /// <c>volatile</c>：UI 线程写、推理线程读。
     /// </summary>
     private volatile bool _finalizeRequested;
+    private volatile bool _previewsStopped;
     /// <summary>引擎尚未加载完成时，音频先攒在这里；引擎就绪后的第一次 SendAudio 会把它们一并灌入 buffer。</summary>
     private readonly List<float> _pendingAudio = new();
 
@@ -246,10 +247,21 @@ internal sealed class LocalAsrSession : IDictationSession
         return false;
     }
 
+    /// <summary>松键后不再运行预览，但继续接受补录和尾音；冻结松键时的尾音度量。</summary>
+    public void StopPreviews()
+    {
+        if (_previewsStopped) return;
+        if (_buffer is not null) Timings.TailSpeech = ContainsSpeech(_buffer.CopyTail(TailProbeSamples));
+        _previewsStopped = true;
+        if (_previewInFlight)
+        {
+            Timings.PreviewAborted = true;
+            _engine?.Abort();
+        }
+    }
+
     /// <param name="timeout">
-    /// 终稿<b>推理</b>完成的最长时间；本地无网络往返，这里纯粹是防止推理卡死的看门狗，
-    /// 由 <see cref="RunFinalize"/> 在推理真正开始时启动（等引擎加载不算在内，那段有自己的轮询上限）。
-    /// 传 <see cref="TimeSpan.Zero"/> 或负值表示不设超时。
+    /// 终稿推理的超时预算，等引擎加载不算在内；零或负值表示不设超时。
     /// </param>
     public void FinalizeStream(TimeSpan timeout)
     {
@@ -277,7 +289,7 @@ internal sealed class LocalAsrSession : IDictationSession
             WaitForEngineThenFinalize();
             return;
         }
-        Timings.TailSpeech = ContainsSpeech(_buffer.CopyTail(TailProbeSamples));
+        if (!_previewsStopped) Timings.TailSpeech = ContainsSpeech(_buffer.CopyTail(TailProbeSamples));
         RunFinalize(_buffer);
     }
 
@@ -353,7 +365,7 @@ internal sealed class LocalAsrSession : IDictationSession
     /// </summary>
     private void SchedulePreview()
     {
-        if (_isFinalizing || _previewInFlight || _buffer is null) return;
+        if (_previewsStopped || _isFinalizing || _previewInFlight || _buffer is null) return;
         // 这一轮没有新的语音：跳过整窗重跑，HUD 保持上一次的预览文本。
         if (!_hasSpeechSinceLastPreview)
         {
@@ -373,7 +385,7 @@ internal sealed class LocalAsrSession : IDictationSession
 
         _pump.Post(() =>
         {
-            if (_cancelled || _finalizeRequested) return;
+            if (_cancelled || _previewsStopped || _finalizeRequested) return;
             engine?.ResetAbort();
             string? text = null;
             Exception? error = null;
@@ -390,7 +402,7 @@ internal sealed class LocalAsrSession : IDictationSession
                 Timings.PreviewMaxTicks = Math.Max(Timings.PreviewMaxTicks, elapsed);
                 Timings.PreviewTotalTicks += deliveredAt - scheduledAt;
                 _previewNotBefore = deliveredAt + elapsed / 2;
-                if (_closed || _isFinalizing) return;
+                if (_closed || _previewsStopped || _isFinalizing) return;
 
                 if (error is not null)
                 {

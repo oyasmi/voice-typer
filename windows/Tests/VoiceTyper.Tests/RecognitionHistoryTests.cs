@@ -6,6 +6,19 @@ namespace VoiceTyper.Tests;
 public class RecognitionHistoryTests
 {
     [Fact]
+    public void PartialAndCancelledResults_KeepStatus_ButCopyOnlyText_AndCanBeCleared()
+    {
+        var history = new RecognitionHistory();
+        history.Add(DateTime.Now, "取消内容", RecognitionHistory.ResultKind.Cancelled);
+        history.Add(DateTime.Now, "部分内容", RecognitionHistory.ResultKind.Partial);
+        Assert.Equal(RecognitionHistory.ResultKind.Partial, history.NewestFirst()[0].Kind);
+        Assert.Equal("取消内容\r\n部分内容", history.AllText());
+        history.Clear();
+        Assert.Null(history.LatestText);
+        Assert.Empty(history.NewestFirst());
+        Assert.Empty(history.AllText());
+    }
+    [Fact]
     public void EmptyHistory_HasNoCopyableText()
     {
         var history = new RecognitionHistory();

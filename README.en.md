@@ -54,7 +54,9 @@ Presses shorter than 0.3 seconds are ignored as accidental. For long passages, s
 “press once to start, press again to stop”.
 On Windows, Right Ctrl is recommended, with Ctrl + Tab as a second preset. The tray menu’s
 “Recent transcriptions” shows the last 20 results, with individual copying or copying all in speaking
-order, separated by newlines.
+order, separated by newlines. Text recognized before cancellation or failure can also be recovered.
+Recognition language, microphone policy and correction can be changed from the tray; see the
+[Windows guide](windows/README.en.md#everyday-use) for password-field checks and Windows-specific behavior.
 
 ## Privacy
 
@@ -108,9 +110,9 @@ models, use the [client–server version](client-server/README.md).
 
 ### Is the Windows version stable?
 
-It has feature parity with macOS, and dictation and model download have been run on real Windows
-hardware. arm64 devices, long-running sessions and multi-monitor DPI are still being tested
-systematically. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if you hit a problem.
+It uses native Windows interaction, and dictation and model download have been run on real Windows
+hardware. The latest improvements, arm64 devices, long-running sessions and multi-monitor DPI still
+require systematic real-device acceptance testing. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if you hit a problem.
 
 ## Contributing
 

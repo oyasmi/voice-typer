@@ -99,6 +99,11 @@ internal sealed class AppCoordinator : IDisposable
         _tray.OnOpenRecognitionHistory = OpenRecognitionHistory;
         _tray.OnOpenOnboarding = PresentOnboarding;
         _tray.OnCheckForUpdates = () => _ = CheckForUpdatesAsync();
+        _tray.CurrentSettings = () => _config;
+        _tray.CanChangeSettings = () => !IsDictating && _setupForm?.HasUnsavedChanges != true;
+        _tray.OnChangeLanguage = language => ApplyQuickSetting(draft => draft.Asr.LanguageValue = language);
+        _tray.OnChangeInput = policy => ApplyQuickSetting(draft => draft.Audio.InputDevice = policy);
+        _tray.OnChangeCorrection = enabled => ApplyQuickSetting(draft => draft.Llm.Enabled = enabled);
 
         _asrService.OnStateChange = OnAsrStateChanged;
         _asrService.OnVocabularyReport = report => _setupForm?.UpdateVocabularyReport(report);
@@ -533,6 +538,19 @@ internal sealed class AppCoordinator : IDisposable
         else _hud?.ShowCopied();
     }
 
+    private void ApplyQuickSetting(Action<AppConfig> change)
+    {
+        if (IsDictating || _setupForm?.HasUnsavedChanges == true) return;
+        var draft = _config.Clone();
+        change(draft);
+        try { SaveRecognition(draft, null); }
+        catch (Exception ex)
+        {
+            AppLog.Warn("coordinator", $"托盘快捷设置保存失败：{ex.GetType().Name}");
+            _tray.ShowBalloonTip(L10n.T("保存失败"), ex.Message, ToolTipIcon.Warning);
+        }
+    }
+
     /// <summary>两个复制入口共用听写门禁与剪贴板恢复保护；返回 null 表示成功。</summary>
     private string? CopyRecognitionText(string text)
     {
@@ -545,7 +563,8 @@ internal sealed class AppCoordinator : IDisposable
     {
         if (_recognitionHistoryForm is null)
         {
-            _recognitionHistoryForm = new RecognitionHistoryForm(_recognitionHistory, CopyRecognitionText);
+            _recognitionHistoryForm = new RecognitionHistoryForm(_recognitionHistory, CopyRecognitionText,
+                () => _tray.SetLastResultAvailable(_recognitionHistory.LatestText is not null));
             _recognitionHistoryForm.FormClosed += (_, _) => _recognitionHistoryForm = null;
             _recognitionHistoryForm.Show();
         }
@@ -662,6 +681,13 @@ internal sealed class AppCoordinator : IDisposable
         {
             _hud?.ShowNoSpeech();
             ForwardToOnboarding(new OnboardingDictationEvent.EmptyResult());
+        };
+        controller.RecordingRefused = message => _hud?.ShowNotice(L10n.T("未开始听写"), message);
+        controller.PartialTextReady = (text, kind) =>
+        {
+            _recognitionHistory.Add(DateTime.Now, text, kind);
+            _tray.SetLastResultAvailable(true);
+            _recognitionHistoryForm?.RefreshEntries();
         };
         controller.InsertedWithCorrectionFallback = () =>
             _pendingSuccessNote = L10n.T("已使用识别原文（纠错未成功）");

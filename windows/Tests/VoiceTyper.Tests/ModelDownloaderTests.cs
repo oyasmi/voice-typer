@@ -32,6 +32,7 @@ public class ModelDownloaderTests : IDisposable
         public bool RangeReturnsOk { get; set; }
         public bool MissingContentRange { get; set; }
         public bool CorruptBody { get; set; }
+        public int TruncateSegmentResponses;
         public int ForbiddenRequests { get; set; }
         public HttpStatusCode? ForcedStatus { get; set; }
         public readonly List<(long? From, long? To)> Requests = new();
@@ -64,7 +65,12 @@ public class ModelDownloaderTests : IDisposable
             if (from >= body.Length) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
 
             var slice = body.AsSpan((int)from, (int)(to - from + 1)).ToArray();
-            var content = new ByteArrayContent(slice);
+            HttpContent content = new ByteArrayContent(slice);
+            if (to > from && Interlocked.Decrement(ref TruncateSegmentResponses) >= 0)
+            {
+                content = new StreamContent(new MemoryStream(slice[..(slice.Length / 2)]));
+                content.Headers.ContentLength = slice.Length;
+            }
             if (!MissingContentRange) content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, body.Length);
             return Task.FromResult(new HttpResponseMessage(RangeReturnsOk ? HttpStatusCode.OK : HttpStatusCode.PartialContent) { Content = content });
         }
@@ -112,6 +118,19 @@ public class ModelDownloaderTests : IDisposable
         Assert.Empty(Directory.GetFiles(_dir, "*.part"));
         Assert.Equal(1.0, progress.Last(), 6);
         Assert.All(progress, p => Assert.InRange(p, 0.0, 1.0));
+    }
+
+    [Fact]
+    public async Task Segmented_TruncatedStream_ResumesFromWrittenBytes_WithoutSingleConnectionFallback()
+    {
+        var data = MakeData(400_000);
+        var server = new RangeServer(data) { TruncateSegmentResponses = 1 };
+        using var downloader = Make(server, data, segmentedMinimum: 100_000);
+        await downloader.DownloadAllAsync(_ => { });
+        Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(_dir, "model.bin")));
+        Assert.All(server.Requests, r => Assert.NotNull(r.From));
+        Assert.Contains(server.Requests, r => r.From is { } from && from % 100_000 == 50_000);
+        Assert.Empty(Directory.GetFiles(_dir, "*.seg*"));
     }
 
     [Fact]
