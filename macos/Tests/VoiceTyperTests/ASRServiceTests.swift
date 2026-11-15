@@ -107,6 +107,11 @@ final class ASRServiceTests: XCTestCase {
         _ = service.makeSession(llmCorrector: nil)
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(service.state, .ready, "makeSession() 必须按需触发重新加载")
+        XCTAssertNotNil(service.currentEngine(), "state 进入 ready 时引擎引用必须已经落定")
+        XCTAssertFalse(scheduler.hasPendingSchedule, "S-1：按需加载完成时会话仍在进行中，绝不能提前挂起空闲卸载计时器")
+
+        service.sessionEnded()
+        XCTAssertTrue(scheduler.hasPendingSchedule, "会话结束后才应安排空闲卸载计时器")
     }
 
     func testSessionInProgressIsNotUnloaded() async {
@@ -118,8 +123,31 @@ final class ASRServiceTests: XCTestCase {
         _ = service.makeSession(llmCorrector: nil)
         XCTAssertFalse(scheduler.hasPendingSchedule, "录音会话进行中不应有待触发的空闲卸载")
 
+        // S-1：会话进行中修改空闲卸载配置，也不应绕过会话租约挂起计时器。
+        service.updateConfig(ASRConfig(language: .auto, threads: 0, modelDir: "", idleUnloadMinutes: 2))
+        XCTAssertFalse(scheduler.hasPendingSchedule, "录音进行中 updateConfig 不应重新挂起空闲卸载计时器")
+
         service.sessionEnded()
-        XCTAssertTrue(scheduler.hasPendingSchedule, "会话结束后应重新安排空闲卸载")
+        XCTAssertTrue(scheduler.hasPendingSchedule, "会话结束后应按最新配置重新安排空闲卸载")
+        XCTAssertEqual(scheduler.lastInterval, 120)
+    }
+
+    func testIdleTimerFiredRightBeforeSessionStartsAbortsUnload() async {
+        let scheduler = FakeIdleScheduler()
+        let service = makeService(scheduler: scheduler)
+        await service.preload()
+        XCTAssertEqual(service.state, .ready)
+
+        // 模拟计时器回调已入队 MainActor，但在 unloadNow 真正卸载前用户按下了热键开始录音。
+        scheduler.fire()
+        _ = service.makeSession(llmCorrector: nil)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(service.state, .ready, "已有活跃会话时空闲卸载必须中止")
+        XCTAssertNotNil(service.currentEngine(), "活跃会话期间引擎绝不能被置空")
+
+        service.sessionEnded()
+        XCTAssertTrue(scheduler.hasPendingSchedule)
     }
 
     /// R4-13 回归：`updateConfig` 收到的语言变化若恰好落在 `load()` 已经取到旧语言快照、

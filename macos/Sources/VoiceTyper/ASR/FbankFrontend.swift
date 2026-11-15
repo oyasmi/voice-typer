@@ -107,92 +107,122 @@ final class FbankFrontend {
     /// - Parameter waveform: 原始 float32 采样，范围 [-1, 1]（尚未按 knf 约定乘以 32768）。
     /// - Returns: `[numFrames][numMelBins]` 的对数 mel 能量；样本不足一帧时返回空数组。
     func compute(_ waveform: [Float]) -> [[Float]] {
-        let n = waveform.count
-        guard n >= frameLength else { return [] }
-
-        let scaled = waveform.map { $0 * 32768.0 }
-        let numFrames = (n - frameLength) / frameShift + 1
-
+        let flat = computeFlat(waveform)
+        guard flat.frameCount > 0 else { return [] }
         var result: [[Float]] = []
-        result.reserveCapacity(numFrames)
-
-        var frameBuf = [Float](repeating: 0, count: fftSize)
-        for f in 0..<numFrames {
-            let start = f * frameShift
-            for i in 0..<frameLength { frameBuf[i] = scaled[start + i] }
-            for i in frameLength..<fftSize { frameBuf[i] = 0 }
-
-            if opts.removeDCOffset {
-                var mean: Float = 0
-                vDSP_meanv(frameBuf, 1, &mean, vDSP_Length(frameLength))
-                var negMean = -mean
-                vDSP_vsadd(frameBuf, 1, &negMean, &frameBuf, 1, vDSP_Length(frameLength))
-            }
-
-            if opts.preemphCoeff != 0 {
-                // Kaldi 的预加重按倒序原地修改：x[i] -= coeff*x[i-1]（i 从高到低），
-                // 最后单独处理 x[0] -= coeff*x[0]。顺序不可颠倒，否则会用到"未来"的已修改值。
-                let coeff = Float(opts.preemphCoeff)
-                var i = frameLength - 1
-                while i > 0 {
-                    frameBuf[i] -= coeff * frameBuf[i - 1]
-                    i -= 1
-                }
-                frameBuf[0] -= coeff * frameBuf[0]
-            }
-
-            for i in 0..<frameLength { frameBuf[i] *= window[i] }
-
-            let power = powerSpectrum(frameBuf)
-            // 用 vDSP_dotpr 做每个 mel bin 的加权求和（替代标量循环），并把 80 个 bin
-            // 的 log 一次性交给 vvlogf 批量处理（替代逐个调用 logf），减少每帧的标量
-            // 循环与函数调用开销——120s 音频对应约 12000 帧，累计可观（R3-08）。
-            var melEnergies = [Float](repeating: 0, count: opts.numMelBins)
-            power.withUnsafeBufferPointer { powerPtr in
-                for bin in 0..<opts.numMelBins {
-                    let (lo, hi) = melBinRanges[bin]
-                    guard hi >= lo else { continue }
-                    let weights = melFilters[bin]
-                    var sum: Float = 0
-                    weights.withUnsafeBufferPointer { weightPtr in
-                        vDSP_dotpr(powerPtr.baseAddress! + lo, 1, weightPtr.baseAddress!, 1, &sum, vDSP_Length(hi - lo + 1))
-                    }
-                    // 对数下限对齐本文件顶部规格与 kaldi_native_fbank 的
-                    // std::numeric_limits<float>::epsilon()，即 Float.ulpOfOne（≈1.19e-7），
-                    // 不是 Float.leastNormalMagnitude（FLT_MIN≈1.17e-38，差 31 个数量级）。
-                    // 已用真实全零输入实测 Python 参考值验证：两者在 log 之后的差是
-                    // -15.94（epsilon）对 -87.3（FLT_MIN），只有静音/数字零输入才会踩到，
-                    // 金标准夹具此前恰好没有覆盖这个分支（R4-10，见 LFRCMVNTests /
-                    // FbankParityTests 的全零回归测试）。
-                    melEnergies[bin] = max(sum, Float.ulpOfOne)
-                }
-            }
-            var logged = [Float](repeating: 0, count: opts.numMelBins)
-            melEnergies.withUnsafeBufferPointer { inPtr in
-                logged.withUnsafeMutableBufferPointer { outPtr in
-                    var count = Int32(opts.numMelBins)
-                    vvlogf(outPtr.baseAddress!, inPtr.baseAddress!, &count)
-                }
-            }
-            result.append(logged)
+        result.reserveCapacity(flat.frameCount)
+        let dim = flat.melDim
+        for f in 0..<flat.frameCount {
+            let start = f * dim
+            result.append(Array(flat.features[start..<(start + dim)]))
         }
         return result
     }
 
-    /// 实数输入的功率谱，vDSP 实 FFT，返回 bin 0…fftSize/2（含 Nyquist）。
-    private func powerSpectrum(_ frame: [Float]) -> [Float] {
+    /// 扁平化零帧内堆分配的 fbank 计算（S-5）：
+    /// - 不拷贝整段 `waveform * 32768`（120s 录音省去 7.7MB 临时数组），改为按帧原地缩放；
+    /// - FFT / 功率谱 / mel 工作缓冲在帧循环外预分配一次并复用（保持 `FbankFrontend` 本身无可变状态）；
+    /// - `vvlogf` 直接写入行优先连续输出 `[frameCount × numMelBins]`。
+    func computeFlat(_ waveform: [Float]) -> (features: [Float], frameCount: Int, melDim: Int) {
+        let n = waveform.count
+        let numMelBins = opts.numMelBins
+        guard n >= frameLength else { return ([], 0, numMelBins) }
+
+        let numFrames = (n - frameLength) / frameShift + 1
+        var output = [Float](repeating: 0, count: numFrames * numMelBins)
+
         let half = fftSize / 2
+        var frameBuf = [Float](repeating: 0, count: fftSize)
         var realp = [Float](repeating: 0, count: half)
         var imagp = [Float](repeating: 0, count: half)
         var power = [Float](repeating: 0, count: half + 1)
+        var melEnergies = [Float](repeating: 0, count: numMelBins)
+        var pcmScale: Float = 32768.0
+        var logCount = Int32(numMelBins)
 
+        waveform.withUnsafeBufferPointer { wavePtr in
+            window.withUnsafeBufferPointer { winPtr in
+                output.withUnsafeMutableBufferPointer { outPtr in
+                    let waveBase = wavePtr.baseAddress!
+                    let winBase = winPtr.baseAddress!
+                    let outBase = outPtr.baseAddress!
+
+                    for f in 0..<numFrames {
+                        let start = f * frameShift
+                        frameBuf.withUnsafeMutableBufferPointer { framePtr in
+                            let fBase = framePtr.baseAddress!
+                            vDSP_vsmul(waveBase + start, 1, &pcmScale, fBase, 1, vDSP_Length(frameLength))
+                            if fftSize > frameLength {
+                                vDSP_vclr(fBase + frameLength, 1, vDSP_Length(fftSize - frameLength))
+                            }
+
+                            if opts.removeDCOffset {
+                                var mean: Float = 0
+                                vDSP_meanv(fBase, 1, &mean, vDSP_Length(frameLength))
+                                var negMean = -mean
+                                vDSP_vsadd(fBase, 1, &negMean, fBase, 1, vDSP_Length(frameLength))
+                            }
+
+                            if opts.preemphCoeff != 0 {
+                                // Kaldi 的预加重按倒序原地修改：x[i] -= coeff*x[i-1]（i 从高到低），
+                                // 最后单独处理 x[0] -= coeff*x[0]。顺序不可颠倒，否则会用到"未来"的已修改值。
+                                let coeff = Float(opts.preemphCoeff)
+                                var i = frameLength - 1
+                                while i > 0 {
+                                    fBase[i] -= coeff * fBase[i - 1]
+                                    i -= 1
+                                }
+                                fBase[0] -= coeff * fBase[0]
+                            }
+
+                            vDSP_vmul(fBase, 1, winBase, 1, fBase, 1, vDSP_Length(frameLength))
+                            computePowerSpectrum(frameBase: fBase, realp: &realp, imagp: &imagp, power: &power)
+                        }
+
+                        // 用 vDSP_dotpr 做每个 mel bin 的加权求和，并把 80 个 bin 的 log
+                        // 一次性交给 vvlogf 直接写进连续输出切片（R3-08 / S-5）。
+                        power.withUnsafeBufferPointer { powerPtr in
+                            let pBase = powerPtr.baseAddress!
+                            for bin in 0..<numMelBins {
+                                let (lo, hi) = melBinRanges[bin]
+                                guard hi >= lo else {
+                                    melEnergies[bin] = Float.ulpOfOne
+                                    continue
+                                }
+                                let weights = melFilters[bin]
+                                var sum: Float = 0
+                                weights.withUnsafeBufferPointer { weightPtr in
+                                    vDSP_dotpr(pBase + lo, 1, weightPtr.baseAddress!, 1, &sum, vDSP_Length(hi - lo + 1))
+                                }
+                                // 对数下限对齐 kaldi_native_fbank 的 std::numeric_limits<float>::epsilon()
+                                // （Float.ulpOfOne ≈ 1.19e-7，而非 Float.leastNormalMagnitude，R4-10）。
+                                melEnergies[bin] = max(sum, Float.ulpOfOne)
+                            }
+                        }
+
+                        melEnergies.withUnsafeBufferPointer { inPtr in
+                            vvlogf(outBase + f * numMelBins, inPtr.baseAddress!, &logCount)
+                        }
+                    }
+                }
+            }
+        }
+        return (output, numFrames, numMelBins)
+    }
+
+    /// 实数输入的功率谱，vDSP 实 FFT，写入预分配的 `power[0…fftSize/2]`（含 Nyquist）。
+    private func computePowerSpectrum(
+        frameBase: UnsafePointer<Float>,
+        realp: inout [Float],
+        imagp: inout [Float],
+        power: inout [Float]
+    ) {
+        let half = fftSize / 2
         realp.withUnsafeMutableBufferPointer { realPtr in
             imagp.withUnsafeMutableBufferPointer { imagPtr in
                 var split = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
-                frame.withUnsafeBufferPointer { framePtr in
-                    framePtr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { complexPtr in
-                        vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(half))
-                    }
+                frameBase.withMemoryRebound(to: DSPComplex.self, capacity: half) { complexPtr in
+                    vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(half))
                 }
                 vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
 
@@ -210,6 +240,5 @@ final class FbankFrontend {
                 }
             }
         }
-        return power
     }
 }

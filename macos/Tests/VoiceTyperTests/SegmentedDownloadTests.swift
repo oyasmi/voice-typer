@@ -171,6 +171,120 @@ final class SegmentedDownloadTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(spec.name)), content)
         XCTAssertEqual(requestedRanges.count(of: "bytes=50-74"), 2, "断掉的那一块重试一次")
         XCTAssertEqual(requestedRanges.count(of: "bytes=0-24"), 1, "其他分段不受影响")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(spec.name).segmeta").path),
+            "分段拼装完成后 .segmeta 也应一并清理"
+        )
+    }
+
+    /// S-3 回归：分段下载中途失败（部分 .seg* 已落盘）后回落到单连接并成功完装时，
+    /// 必须把残留的 .seg* 与 .segmeta 清理干净，不能在磁盘上永久泄漏百兆碎片。
+    func testFallbackToSingleConnectionCleansUpOrphanedSegmentFiles() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let content = Data((0..<100).map { UInt8($0) })
+        let digest = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
+        let spec = ModelDownloader.FileSpec(
+            name: "model_quant.onnx", sha256: digest, sizeHint: ModelDownloader.segmentedDownloadMinimumBytes + 1
+        )
+
+        DownloadStubURLProtocol.responseHandler = { request in
+            guard let header = request.value(forHTTPHeaderField: "Range"),
+                  let bounds = Self.parseRange(header) else {
+                // 单连接回落请求：返回完整内容
+                return (200, content, ["ETag": "\"v1\""])
+            }
+            // Range 探测与前两段正常返回 206，第三段返回 503 迫使分段任务失败回落（DownloadError 不走慢重试）。
+            if header != "bytes=0-0", bounds.lowerBound == 50 {
+                return (503, Data(), [:])
+            }
+            let body = content.subdata(in: Int(bounds.lowerBound)..<Int(bounds.upperBound + 1))
+            return (206, body, [
+                "Content-Range": "bytes \(bounds.lowerBound)-\(bounds.upperBound)/\(content.count)",
+                "ETag": "\"v1\"",
+            ])
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        let downloader = ModelDownloader(sessionConfiguration: configuration, fileSpecs: [spec], downloadDestination: dir)
+
+        try await downloader.downloadAll { _ in }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(spec.name)), content)
+        for index in 0..<ModelDownloader.segmentCount {
+            let segURL = dir.appendingPathComponent("\(spec.name).seg\(index)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: segURL.path), "回落完装后不应残留 .seg\(index)")
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(spec.name).segmeta").path),
+            "回落完装后不应残留 .segmeta"
+        )
+    }
+
+    /// S-3 回归：服务端 ETag 变化时必须作废旧分段重下，避免新老字节混拼；ETag 一致时保留续传能力。
+    func testSegmentResumeValidatesETagMetadata() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let oldContent = Data(repeating: 0xAA, count: 100)
+        let newContent = Data((0..<100).map { UInt8($0) })
+        let newDigest = SHA256.hash(data: newContent).map { String(format: "%02x", $0) }.joined()
+        let spec = ModelDownloader.FileSpec(
+            name: "model_quant.onnx", sha256: newDigest, sizeHint: ModelDownloader.segmentedDownloadMinimumBytes + 1
+        )
+
+        // 第一轮：分段在第三段失败，且单连接也因 503 失败，使旧版本（ETag "v1"）的 .seg0/.seg1 与 .segmeta 留在盘上。
+        DownloadStubURLProtocol.responseHandler = { request in
+            guard let header = request.value(forHTTPHeaderField: "Range"),
+                  let bounds = Self.parseRange(header) else {
+                return (503, Data(), [:])
+            }
+            if header != "bytes=0-0", bounds.lowerBound >= 50 {
+                return (503, Data(), [:])
+            }
+            let body = oldContent.subdata(in: Int(bounds.lowerBound)..<Int(bounds.upperBound + 1))
+            return (206, body, [
+                "Content-Range": "bytes \(bounds.lowerBound)-\(bounds.upperBound)/\(oldContent.count)",
+                "ETag": "\"v1\"",
+            ])
+        }
+
+        let config1 = URLSessionConfiguration.ephemeral
+        config1.protocolClasses = [DownloadStubURLProtocol.self]
+        let firstAttempt = ModelDownloader(sessionConfiguration: config1, fileSpecs: [spec], downloadDestination: dir)
+        do {
+            try await firstAttempt.downloadAll { _ in }
+            XCTFail("首轮预期失败以留下部分分段")
+        } catch {}
+
+        XCTAssertGreaterThan(ModelDownloader.fileSize(at: dir.appendingPathComponent("\(spec.name).seg0")), 0)
+
+        // 第二轮：远端文件更新为 newContent（总长度仍是 100，但 ETag 变为 "v2"），应当丢弃旧分段从头拉取并校验通过。
+        let secondRunRanges = RangeLog()
+        DownloadStubURLProtocol.responseHandler = { request in
+            guard let header = request.value(forHTTPHeaderField: "Range"),
+                  let bounds = Self.parseRange(header) else {
+                return (200, newContent, ["ETag": "\"v2\""])
+            }
+            _ = secondRunRanges.record(header)
+            let body = newContent.subdata(in: Int(bounds.lowerBound)..<Int(bounds.upperBound + 1))
+            return (206, body, [
+                "Content-Range": "bytes \(bounds.lowerBound)-\(bounds.upperBound)/\(newContent.count)",
+                "ETag": "\"v2\"",
+            ])
+        }
+
+        let config2 = URLSessionConfiguration.ephemeral
+        config2.protocolClasses = [DownloadStubURLProtocol.self]
+        let secondAttempt = ModelDownloader(sessionConfiguration: config2, fileSpecs: [spec], downloadDestination: dir)
+        try await secondAttempt.downloadAll { _ in }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(spec.name)), newContent)
+        XCTAssertEqual(secondRunRanges.count(of: "bytes=0-24"), 1, "ETag 变化后第 0 段必须作废重下而非跳过")
     }
 
     private nonisolated static func parseRange(_ header: String) -> ClosedRange<Int64>? {

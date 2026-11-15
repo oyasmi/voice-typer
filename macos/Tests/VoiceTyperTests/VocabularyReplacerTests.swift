@@ -98,4 +98,25 @@ final class VocabularyReplacerTests: XCTestCase {
         ])
         XCTAssertEqual(replacer.terms, ["Claude", "张三丰"])
     }
+
+    /// S-2 回归：空格与连字符交错的写法（长度 ≤ 50 字符，合法通过 `validated()`）编译后会形成交替的
+    /// `.optionalSeparator(allowsHyphen: true)` 与 `.literal("-")`；面对连续连字符但末尾失配的输入时，
+    /// 旧递归回溯会退化为 O(2^k)（此处 20 × 2^23 ≈ 1.67 亿次分支），线性 NFA 则在数毫秒内完成。
+    func testPathologicalAlternatingHyphenPatternRunsInLinearTime() {
+        // 长度 = 2 + 45 + 2 = 49 ≤ 50，不触发过长截断。
+        let pathologicalAlias = "a " + Array(repeating: "-", count: 23).joined(separator: " ") + " b"
+        let replacer = replacer([
+            VocabularyEntry(term: "TargetTerm", aliases: [pathologicalAlias]),
+        ])
+
+        let mismatchInput = String(repeating: "a", count: 20) + String(repeating: "-", count: 46) + "x"
+        let start = CFAbsoluteTimeGetCurrent()
+        XCTAssertEqual(replacer.apply(mismatchInput), mismatchInput)
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        XCTAssertLessThan(elapsedMs, 100, "线性 NFA 匹配应在数毫秒内完成，实际耗时 \(elapsedMs)ms")
+
+        // 同时验证可匹配时仍严格取最长消费区间（23 组可选+字面连字符 + b 前 1 个可选连字符 = 47 个连字符）。
+        let matchInput = "a" + String(repeating: "-", count: 47) + "b--"
+        XCTAssertEqual(replacer.apply(matchInput), "TargetTerm--")
+    }
 }

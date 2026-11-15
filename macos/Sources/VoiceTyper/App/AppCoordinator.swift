@@ -1,18 +1,6 @@
 import AppKit
 import Foundation
 
-/// 每次应用进程对缺失模型至少自动尝试一次，同一进程内失败后不无限循环重试。
-/// 下次启动会再自动尝试，并复用 ModelDownloader 已保存的断点数据。
-struct AutomaticModelDownloadPolicy {
-    private(set) var hasAttempted = false
-
-    mutating func shouldStart(for state: ASRService.State, isDownloading: Bool) -> Bool {
-        guard !hasAttempted, !isDownloading, state == .modelMissing else { return false }
-        hasAttempted = true
-        return true
-    }
-}
-
 @MainActor
 final class AppCoordinator {
     private let configStore = ConfigStore()
@@ -64,11 +52,7 @@ final class AppCoordinator {
         Self.displayState(readiness: readiness, phase: dictationPhase, dictationError: dictationError)
     }
 
-    private var modelDownloader: ModelDownloader?
-    private var isDownloadingModel = false
-    private var modelDownloadProgress = 0.0
-    private var modelDownloadError: String?
-    private var automaticModelDownloadPolicy = AutomaticModelDownloadPolicy()
+    private let modelDownloadCoordinator = ModelDownloadCoordinator()
     /// 听写流程内的一次性错误（识别失败/插入失败/焦点变化）2.5s 后从菜单栏回落，
     /// 与 HUD 的自动隐藏同步（R3-04）。
     private var dictationErrorRecoveryWorkItem: DispatchWorkItem?
@@ -89,16 +73,6 @@ final class AppCoordinator {
     private var lastBlockedAttemptPresentation: Date?
     private static let blockedAttemptPresentationInterval: TimeInterval = 5
 
-    /// 模型下载失败后的自动重试退避序列（秒）。
-    ///
-    /// 只试一次就放弃太保守——下载失败绝大多数是网络抖动，而首启拿不到模型意味着
-    /// 应用完全不可用，这是新用户能遇到的最糟的第一印象。断点续传数据已经落盘，
-    /// 重试的成本只是续上而不是从头再来。也不能无限重试：真的没网时那会变成一个
-    /// 用户看不见的死循环，所以给定次数用完后停下来，把手动重试交还给用户。
-    private static let downloadRetryDelays: [TimeInterval] = [5, 20, 60]
-    private var downloadRetryAttempt = 0
-    private var downloadRetryTask: Task<Void, Never>?
-
     /// 缓存的 Fn 键冲突提示。
     ///
     /// 不在 `syncAuxiliaryWindows()` 里现算：那个函数在模型下载期间会以 5Hz 被调用，
@@ -107,10 +81,6 @@ final class AppCoordinator {
     private var cachedFnConflictWarning: String?
     /// 缓存的安全输入说明（引导窗口用）；菜单头每次打开现算，见 `bindStatusBarActions`。
     private var cachedSecureInputWarning: String?
-    /// 下载进度详情的采样（R8-C5）。
-    private var downloadStats = DownloadStats()
-    /// 下载完成后，等模型加载就绪且窗口都不可见时，用浮窗告诉用户「可以用了」（R8-C5）。
-    private var pendingReadyNotice = false
     /// 更新后需要重新授权的引导文案（R8-H1）；权限补齐后清空。
     private var reauthorizationNotice: String?
     /// 系统唤醒 / 解锁等通知常常成串到达，1 秒内只重装一次热键监听。
@@ -120,6 +90,7 @@ final class AppCoordinator {
         // 必须先于任何 AX 调用：之后各处只在具体元素上设超时（见 `AXMessaging`）。
         AXMessaging.configureProcessDefault()
         bindStatusBarActions()
+        bindModelDownloadCoordinator()
         asrService.onStateChange = { [weak self] _ in
             // 状态变化发生在 ASRService 自己的流程中间，同步重入会让外层拿着过期判断覆盖结果。
             self?.reevaluateReadinessSoon()
@@ -607,12 +578,7 @@ final class AppCoordinator {
     private func reevaluateReadiness() {
         // 模型准备与 TCC 授权完全独立。首次定位到模型缺失后立即下载，
         // 用户只需处理必须亲自确认的系统权限；用户暂停听写也不阻断后台准备。
-        if automaticModelDownloadPolicy.shouldStart(
-            for: asrService.state,
-            isDownloading: isDownloadingModel
-        ) {
-            startModelDownload()
-        }
+        modelDownloadCoordinator.startAutomaticIfNeeded(for: asrService.state)
 
         permissions = permissionCenter.snapshot()
         noteCurrentPermissionsForReauthorization()
@@ -620,8 +586,8 @@ final class AppCoordinator {
         readiness = Self.computeReadiness(
             permissions: permissions,
             isPaused: isPaused,
-            isDownloadingModel: isDownloadingModel,
-            downloadProgress: modelDownloadProgress,
+            isDownloadingModel: modelDownloadCoordinator.isDownloading,
+            downloadProgress: modelDownloadCoordinator.progress,
             asrState: asrService.state
         )
 
@@ -686,9 +652,14 @@ final class AppCoordinator {
     /// 下载完成且模型加载就绪后，引导和设置窗口都不可见、权限已齐全时，浮窗告诉用户可以用了（R8-C5）。
     /// 权限未齐不提示——引导 / 设置窗口会接手。
     private func showModelReadyNoticeIfNeeded() {
-        guard pendingReadyNotice, isModelReady, !isDownloadingModel, readiness == .idle, !isDictating else { return }
+        guard modelDownloadCoordinator.pendingReadyNotice,
+              isModelReady,
+              !modelDownloadCoordinator.isDownloading,
+              readiness == .idle,
+              !isDictating
+        else { return }
         if isOnboardingVisible || setupWindowController?.window?.isVisible == true { return }
-        pendingReadyNotice = false
+        modelDownloadCoordinator.consumePendingReadyNotice()
         let display = config.hotkey.displayString
         let text = config.hotkey.mode == .toggle
             ? LF("语音模型已就绪 · 按一下 %@ 开始说话", display)
@@ -774,120 +745,55 @@ final class AppCoordinator {
         )
     }
 
-    // MARK: - 模型下载
+    // MARK: - 模型下载（委托给 ModelDownloadCoordinator，S-6）
 
-    /// - Parameter isAutomaticRetry: 由退避重试触发时为 true。用户手动点「重试下载」
-    ///   算作一次新的尝试序列，会把退避计数清零——那是明确的"我要它继续试"的信号。
-    private func startModelDownload(isAutomaticRetry: Bool = false) {
-        guard !isDownloadingModel else { return }
-        downloadRetryTask?.cancel()
-        downloadRetryTask = nil
-        if !isAutomaticRetry {
-            downloadRetryAttempt = 0
+    private func bindModelDownloadCoordinator() {
+        modelDownloadCoordinator.isModelStillMissing = { [weak self] in
+            self?.asrService.state == .modelMissing
         }
-        isDownloadingModel = true
-        modelDownloadProgress = 0
-        modelDownloadError = nil
-        downloadStats.reset()
-        if !isPaused, permissions.allRequiredGranted {
-            readiness = .downloadingModel(0)
-        }
-        updateStatusUI()
-        syncAuxiliaryWindows()
-
-        let downloader = ModelDownloader()
-        modelDownloader = downloader
-
-        Task {
-            do {
-                try await downloader.downloadAll { [weak self] progress in
-                    guard let self, self.isDownloadingModel else { return }
-                    self.modelDownloadProgress = progress
-                    self.downloadStats.record(progress: progress, at: ProcessInfo.processInfo.systemUptime)
-                    if !self.isPaused, self.permissions.allRequiredGranted {
-                        self.readiness = .downloadingModel(progress)
-                    }
-                    self.updateStatusUI()
-                    self.syncAuxiliaryWindows()
-                }
-                self.isDownloadingModel = false
-                self.modelDownloader = nil
-                self.modelDownloadError = nil
-                self.downloadRetryAttempt = 0
-                self.pendingReadyNotice = true
-                await self.asrService.reload()
-                self.reevaluateReadiness()
-            } catch let error as ModelDownloader.DownloadError {
-                self.isDownloadingModel = false
-                self.modelDownloader = nil
-                if case .cancelled = error {
-                    // 用户主动取消：回到 .modelMissing 原地重试，而不是显示为红色失败态；
-                    // resume 数据已由 ModelDownloader 落盘保留（F-11）。
-                    self.reevaluateReadiness()
-                } else {
-                    self.handleModelDownloadFailure(error)
-                }
-            } catch {
-                self.isDownloadingModel = false
-                self.modelDownloader = nil
-                self.handleModelDownloadFailure(error)
+        modelDownloadCoordinator.onProgressChanged = { [weak self] progress in
+            guard let self else { return }
+            if !self.isPaused, self.permissions.allRequiredGranted {
+                self.readiness = .downloadingModel(progress)
             }
+            self.updateStatusUI()
+            self.syncAuxiliaryWindows()
         }
-    }
-
-    private func handleModelDownloadFailure(_ error: Error) {
-        AppLog.model.error("模型下载失败: \(String(describing: error), privacy: .public)")
-        let reason = error.localizedDescription
-
-        if downloadRetryAttempt < Self.downloadRetryDelays.count {
-            let delay = Self.downloadRetryDelays[downloadRetryAttempt]
-            downloadRetryAttempt += 1
-            modelDownloadError = LF(
-                "%@将在 %d 秒后自动重试（第 %d/%d 次）。",
-                reason, Int(delay), downloadRetryAttempt, Self.downloadRetryDelays.count
-            )
-            scheduleDownloadRetry(after: delay)
-        } else {
-            modelDownloadError = LF(
-                "%@已自动重试 %d 次仍未成功，请检查网络后手动重试。",
-                reason, Self.downloadRetryDelays.count
-            )
-            // 自动重试用尽：窗口都不可见时，浮窗提示一次并指向设置（不受「不显示」影响，R8-C5）。
-            if !isOnboardingVisible, setupWindowController?.window?.isVisible != true {
-                recordingHUDController?.showError(L("语音模型下载失败，请到「设置 → 识别」查看并重试"))
+        modelDownloadCoordinator.onSucceeded = { [weak self] in
+            guard let self else { return }
+            await self.asrService.reload()
+            self.reevaluateReadiness()
+        }
+        modelDownloadCoordinator.onCancelled = { [weak self] in
+            // 用户主动取消：回到 .modelMissing 原地重试，而不是显示为红色失败态（F-11）。
+            self?.reevaluateReadiness()
+        }
+        modelDownloadCoordinator.onFailed = { [weak self] reason, retriesExhausted in
+            guard let self else { return }
+            if retriesExhausted, !self.isOnboardingVisible, self.setupWindowController?.window?.isVisible != true {
+                // 自动重试用尽：窗口都不可见时，浮窗提示一次并指向设置（不受「不显示」影响，R8-C5）。
+                self.recordingHUDController?.showError(L("语音模型下载失败，请到「设置 → 识别」查看并重试"))
             }
-        }
-
-        if !isPaused {
-            readiness = permissions.allRequiredGranted
-                ? .error(LF("模型下载失败: %@", reason))
-                : .setupRequired
-        }
-        if permissions.allRequiredGranted {
-            forcedPresentations.insert(.model)
-            setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
-        }
-        updateStatusUI()
-        syncAuxiliaryWindows()
-    }
-
-    private func scheduleDownloadRetry(after delay: TimeInterval) {
-        downloadRetryTask?.cancel()
-        downloadRetryTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled, let self else { return }
-            // 期间用户可能已经手动下载完、或主动取消并不想再试了。
-            guard !self.isDownloadingModel, self.asrService.state == .modelMissing else { return }
-            AppLog.model.info("模型下载自动重试（第 \(self.downloadRetryAttempt, privacy: .public) 次）")
-            self.startModelDownload(isAutomaticRetry: true)
+            if !self.isPaused {
+                self.readiness = self.permissions.allRequiredGranted
+                    ? .error(LF("模型下载失败: %@", reason))
+                    : .setupRequired
+            }
+            if self.permissions.allRequiredGranted {
+                self.forcedPresentations.insert(.model)
+                self.setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
+            }
+            self.updateStatusUI()
+            self.syncAuxiliaryWindows()
         }
     }
 
-    /// 用户主动取消下载：同时取消尚未触发的自动重试——他刚刚表达了"先不下"。
+    private func startModelDownload() {
+        modelDownloadCoordinator.start()
+    }
+
     private func cancelModelDownload() {
-        downloadRetryTask?.cancel()
-        downloadRetryTask = nil
-        modelDownloader?.cancel()
+        modelDownloadCoordinator.cancel()
     }
 
     /// 返回 `.success` 时携带模型的真实校对结果，`.failure` 时携带真实错误描述
@@ -1182,7 +1088,7 @@ final class AppCoordinator {
             // 只有 ui 段变化：不重建控制器，只更新内存配置与 HUD/设置窗口显示。
             config = updatedConfig.validated()
             recordingHUDController?.updateConfig(config.ui)
-            refreshSetupWindowEditorContent()
+            setupWindowController?.syncAppliedConfig(config)
         }
     }
 
@@ -1199,18 +1105,20 @@ final class AppCoordinator {
         try reloadConfigurationFromDisk()
         asrService.updateConfig(config.asr)
         asrService.updateVocabulary(config.vocabulary)
-        refreshSetupWindowEditorContent()
+        setupWindowController?.syncAppliedConfig(config)
         reevaluateReadiness()
     }
 
     private func syncAuxiliaryWindows() {
-        let progress = isDownloadingModel ? modelDownloadProgress : nil
+        let progress = modelDownloadCoordinator.isDownloading ? modelDownloadCoordinator.progress : nil
+        let detail = modelDownloadCoordinator.detailText
+        let downloadError = modelDownloadCoordinator.errorMessage
         setupWindowController?.updateStatus(
             permissions: permissions,
             asrState: asrService.state,
             downloadProgress: progress,
-            downloadDetail: downloadDetailText(),
-            modelDownloadError: modelDownloadError,
+            downloadDetail: detail,
+            modelDownloadError: downloadError,
             hotkeyDisplay: config.hotkey.displayString,
             engineStatus: engineStatusText(),
             reauthorizationNotice: reauthorizationNotice
@@ -1219,8 +1127,8 @@ final class AppCoordinator {
             permissions: permissions,
             asrState: asrService.state,
             downloadProgress: progress,
-            downloadDetail: downloadDetailText(),
-            modelDownloadError: modelDownloadError,
+            downloadDetail: detail,
+            modelDownloadError: downloadError,
             hotkey: config.hotkey,
             fnConflictWarning: cachedFnConflictWarning,
             secureInputWarning: cachedSecureInputWarning
@@ -1232,22 +1140,17 @@ final class AppCoordinator {
         cachedSecureInputWarning = SecureInput.currentWarning(for: config.hotkey)
     }
 
-    /// 下载进度详情（已下载 / 总量 · 速度 · 剩余）；不在下载时为 nil（R8-C5）。
-    private func downloadDetailText() -> String? {
-        guard isDownloadingModel else { return nil }
-        return downloadStats.text(progress: modelDownloadProgress)
-    }
-
     /// 菜单栏下拉里那行副标题。
     ///
     /// 必须自己感知下载进度：下载期间 `asrService.state` 仍是 `.modelMissing`，
     /// 而权限没给全时就绪度又是 `.setupRequired`——两者叠加，首次安装的用户在最想知道
     /// "它在下载吗、还要多久"的时刻，菜单里会完全看不到下载进度（B2）。
     private func engineStatusText() -> String {
-        if isDownloadingModel {
-            return downloadDetailText() ?? LF("模型下载中 %d%%", Int(modelDownloadProgress * 100))
+        if modelDownloadCoordinator.isDownloading {
+            return modelDownloadCoordinator.detailText
+                ?? LF("模型下载中 %d%%", Int(modelDownloadCoordinator.progress * 100))
         }
-        if let modelDownloadError {
+        if let modelDownloadError = modelDownloadCoordinator.errorMessage {
             return LF("模型下载失败：%@", modelDownloadError)
         }
         switch asrService.state {

@@ -1571,6 +1571,32 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
 
 ---
 
+## 11.8 R10：设计与实现审查 P0 修复（S-1 ~ S-6）
+
+围绕「健壮、精悍、好用易用、控制复杂度」的定位对 `macos/` 做深入审查后先行落地的 6 项 P0 级修复：
+
+| # | 问题与根因 | 实施与架构取舍 |
+| --- | --- | --- |
+| S-1 | **活跃会话期间空闲卸载竞态与 `.ready` 异步窗口**（`ASRService.swift`）：从 `.suspendedForIdle` 或关闭启动预加载时按热键开始听写，`makeSession()` 先建会话再 `Task { await preload() }`；`load()` 结尾无视在途会话调用 `scheduleIdleUnloadIfNeeded()`；听写中修改设置触发 `updateConfig` 也会启动空闲卸载计时器。此外 `load()` 原先用 `asrQueue.async { setEngine(built) }` 异步写引擎引用后立刻置 `state = .ready`，存在 `state == .ready` 但 `currentEngine() == nil` 的竞态窗口 | 1. 引入与 `engineLock` 同锁保护的 `_activeSessionCount` 活跃会话租约，`makeSession()` 递增、`sessionEnded()` 递减；<br>2. `scheduleIdleUnloadIfNeeded()` 仅在 `!hasActiveSessions() && state == .ready` 时挂起空闲计时器；<br>3. `unloadNow(dueToIdle: true)` 在主线程与 `asrQueue` 置空引擎前双重核对租约（覆盖计时器刚触发而新听写恰在切线程瞬间开始的窄窗口）；<br>4. `load()` 用 `withCheckedContinuation` 等待 `asrQueue` 完成 `setEngine`、`setLanguage` 与 `setVocabulary` 后再写入 `vocabularyReport` 与 `state = .ready`，保证 `preload()` 返回即可立即识别（对齐 Windows `WT-02`） |
+| S-2 | **`VocabularyReplacer` 连字符交替模式指数级回溯**（`VocabularyReplacer.swift`）：`matchUnits` 原先用递归回溯枚举每个连字符单元的 0 / 1 字符分支，病态词条（如 `a-a-a-…-b`）对连续同字母输入会触发 $O(2^k)$ 回溯并阻塞主线程或 `asrQueue` | 将 `matchUnits` 改为按单元步进的确定性有序位置表（线性 NFA）：因所有单元步长 $\in \{0, 1\}$ 且输入位置严格递增，每步只需单趟合并去重，最坏复杂度严格收敛到 $O(\|U\| \cdot \|S\|)$ 且无 `Set` 哈希开销；匹配结果与原实现完全等价 |
+| S-3 | **模型分段下载回落单连接后残留 `.seg*` 碎片及续传未验 ETag**（`ModelDownloader.swift`）：`downloadSegmented` 中途失败回落到单连接路径并成功安装目标文件后，未清理已落盘的 `model.int8.onnx.seg0..3`（最高多占 ~240MB）；且分段续传仅靠文件长度判断，远端热修同尺寸文件时可能新旧分段混拼直到合并后整体 sha256 失败 | 1. 新增旁路元数据 `.segmeta`（记录 `totalBytes` 与响应 `ETag`），续传前若远端总长或双侧非空 `ETag` 不一致则清空旧 `.seg*` 重拉；<br>2. 单连接路径安装成功及 `downloadAll` 命中既有有效目标文件时统一调用 `removeSegmentFiles` 清理 `.seg*` 与 `.segmeta` |
+| S-4 | **设置页即时保存一致性与未提交草稿保护**（`SettingsViewModel.swift`、`RecognitionSettingsView.swift`、`SetupWindowController.swift`、`AppCoordinator.swift`）：「识别」页里其余 3 个控件均即时保存，唯独「识别语言」未绑定提交方法；`commitIdleUnloadMinutes()` 写盘失败未回滚 UI 状态；且任意即时保存触发 `onSaveConfig` 后回调 `loadEditableContent` 会重读 Keychain、清空保存提示并冲掉「智能校对」分页尚未点保存的草稿 | 1. 新增 `commitLanguage()` 并绑定 `识别语言` Picker，在「语音模型」分组内就近展示 `modelMessage`；<br>2. `commitLanguage()` 与 `commitIdleUnloadMinutes()` 写盘失败时回滚 UI 值；<br>3. 新增轻量 `syncAppliedConfig(_:)` 替代配置应用后的全量 `loadEditableContent`，仅同步外部已生效字段，不重读 Keychain、不清空分区提示、不覆盖未提交的 `llm*` 草稿 |
+| S-5 | **特征前端零逐帧堆分配与 LFR+CMVN 单趟融合**（`FbankFrontend.swift`、`LFRCMVN.swift`、`SenseVoiceEngine.swift`）：`FbankFrontend.compute` 原先对整段波形做 `* 32768` 拷贝并在每帧循环内分配 5 个临时数组（120s 约 60,000 次堆分配）及 `[[Float]]` 嵌套数组，再经 LFR、CMVN 两次全量扁平化拷贝 | 1. `FbankFrontend.computeFlat(_:)` 在循环外一次性分配帧工作缓冲区与扁平输出 `[Float](numFrames * 80)`，逐帧原位缩放加窗并在末尾直接调用 `vvlogf`；<br>2. `LFRCMVN.applyLFRCMVNFlat` 在拼接 7 帧窗口的同时直接施加 `(x + shift) * scale` 一步产出 `[T_lfr * 560]` 模型输入，`SenseVoiceEngine` 切换至扁平管线；<br>3. 保留原 `compute(_:)` / `applyLFR` / `applyCMVN` 供诊断与逐阶段测试使用，金标准夹具与双路径逐位（bit-exact）一致性测试全部通过 |
+| S-6 | **职责边界轻量化拆分与测试去 `Task.sleep` 化**（`ModelDownloadCoordinator.swift`、`HUDIndicatorViews.swift`、`RecordingHUDLayout.swift`、`VoiceTyperController.swift`）：`AppCoordinator` 混杂模型下载退避重试状态机，`RecordingHUDController` 逾 1,500 行含独立 CALayer 子视图与纯排版几何算法，且 `VoiceTyperControllerTests` 每次构造 harness 固定 `sleep(100ms)`、静音探针测试等待真实秒级延迟 | 1. 抽出 `@MainActor final class ModelDownloadCoordinator`（对齐 Windows `ModelDownloadOrchestrator`）并补确定性编排单测，`AppCoordinator` 瘦身约 100 行；<br>2. 从 `RecordingHUDController` 抽出 `HUDIndicatorViews.swift`（`PulseDotView` / `WaveformView`）与 `RecordingHUDLayout.swift`（纯函数排版测量与高度计算），控制器瘦身至约 1,125 行；<br>3. 依托 S-1 的 `preload()` 同步落定保证移除 `VoiceTyperControllerTests.makeHarness()` 里的 100ms 等待，并将 `silenceProbeDelays` 改为可注入参数，测试套件总耗时显著缩短且消除时序抖动 |
+
+### 手工验证步骤（待真机按需复核）
+
+1. **按需加载 + 短周期空闲卸载**：在设置中关闭「启动时预加载模型」（或等待一次空闲卸载生效），按住热键连续口述超过空闲卸载周期（或口述途中在菜单栏切换识别语言），确认录音全程不触发空闲卸载、松手后正常出字，且松手静置到期后模型正常卸载。
+2. **「识别语言」即时保存与跨分页草稿保留**：打开「设置 → 智能校对」修改 Base URL 但不点保存，切到「识别」切换「识别语言」，重启应用确认新识别语言已持久化；切回「智能校对」确认未保存的 Base URL 草稿仍在。
+3. **模型分段下载回落清理**：首次下载模型或删除模型重下完成后，检查 `~/Library/Application Support/VoiceTyper/models/SenseVoiceSmall/` 目录，确认无残留 `.seg0`～`.seg3` 或 `.segmeta` 文件。
+
+### Windows 同步评估
+
+- **S-1 / S-5 / S-6**：Windows 侧已有对应设计（`WT-02` 活跃会话计数、`LfrCmvnFlat` 融合路径、`ModelDownloadOrchestrator`），且 Fbank / LFR / CMVN / CTC 输出契约与金标准夹具保持 100% 不变。
+- **S-2 / S-3**：C# 侧 `VocabularyReplacer.cs`（连字符交替词条的线性 NFA 匹配）与 `ModelDownloader.cs`（分段失败回落单连接时的 `.seg*` 清理及 `.segmeta` 校验）记入 `windows/docs/REVIEW_HISTORY.md` L3 待同步项，在具备 .NET 10 SDK 的环境下同步补齐并跑 `dotnet test`。
+
+---
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |

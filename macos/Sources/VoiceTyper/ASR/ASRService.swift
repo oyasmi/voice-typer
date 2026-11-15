@@ -53,6 +53,10 @@ final class ASRService {
     /// 不再是"约定"。引擎推理仍然只在 asrQueue 上串行执行，这一点不变。
     private let engineLock = NSLock()
     private nonisolated(unsafe) var _engine: (any SenseVoiceRecognizing)?
+    /// 当前活跃的听写会话计数（S-1，对齐 Windows WT-02）：
+    /// 由 `makeSession()` / `sessionEnded()` 成对维护，防止按需 `load()` 完成或
+    /// `updateConfig()` 在录音进行中重新挂起空闲卸载计时器。
+    private nonisolated(unsafe) var _activeSessionCount = 0
 
     private var config = ASRConfig()
     private var vocabulary = VocabularyConfig()
@@ -204,6 +208,24 @@ final class ASRService {
         return hadPrevious
     }
 
+    private nonisolated func hasActiveSessions() -> Bool {
+        engineLock.lock()
+        defer { engineLock.unlock() }
+        return _activeSessionCount > 0
+    }
+
+    private nonisolated func incrementActiveSessions() {
+        engineLock.lock()
+        _activeSessionCount += 1
+        engineLock.unlock()
+    }
+
+    private nonisolated func decrementActiveSessions() {
+        engineLock.lock()
+        _activeSessionCount = max(0, _activeSessionCount - 1)
+        engineLock.unlock()
+    }
+
     private func load() async {
         loadGeneration += 1
         let generation = loadGeneration
@@ -244,14 +266,18 @@ final class ASRService {
             // 词汇同理：加载期间的 `updateVocabulary` 可能作用在 nil 引擎上，这里用最新值重放一次。
             let latestVocabulary = vocabulary
             let vocabularyGeneration = vocabularyGeneration
-            asrQueue.async { [weak self] in
-                self?.setEngine(built)
-                built.setLanguage(latestLanguage)
-                let report = built.setVocabulary(latestVocabulary)
-                Task { @MainActor [weak self] in
-                    guard let self, vocabularyGeneration == self.vocabularyGeneration else { return }
-                    self.vocabularyReport = report
+            // 等待引擎引用写入与语言/热词配置在 asrQueue 上落定后再宣布 `.ready`（对齐 Windows AsrService）：
+            // 保证调用方观察到 `state == .ready`（或 `preload()` 返回）时 `currentEngine()` 一定非 nil。
+            let report: HotwordCompileReport? = await withCheckedContinuation { continuation in
+                asrQueue.async { [weak self] in
+                    self?.setEngine(built)
+                    built.setLanguage(latestLanguage)
+                    let compiled = built.setVocabulary(latestVocabulary)
+                    continuation.resume(returning: compiled)
                 }
+            }
+            if vocabularyGeneration == self.vocabularyGeneration {
+                self.vocabularyReport = report
             }
             state = .ready
             scheduleIdleUnloadIfNeeded()
@@ -266,22 +292,43 @@ final class ASRService {
     ///   误判为"尚未加载"从而立即触发自动预加载（F-04）。`reload()` 内部调用时传 false。
     private func unloadNow(dueToIdle: Bool) async {
         idleScheduler.cancel()
+        if dueToIdle && hasActiveSessions() {
+            return
+        }
         // hop 到 asrQueue 只是为了让"卸载"与"推理"在时序上不交叉；引擎引用本身
         // 已经用 engineLock 保护，跨线程读写是安全的。
-        let hadEngine: Bool = await withCheckedContinuation { continuation in
+        // 空闲卸载在真正置空引擎前再核对一次活跃会话租约，防止主线程刚检查完、
+        // asrQueue 尚未执行这段窗口内恰好开始了新会话（S-1）。
+        let outcome: (hadEngine: Bool, abortedBySession: Bool) = await withCheckedContinuation { continuation in
             asrQueue.async { [weak self] in
-                continuation.resume(returning: self?.setEngine(nil) ?? false)
+                guard let self else {
+                    continuation.resume(returning: (false, false))
+                    return
+                }
+                if dueToIdle && self.hasActiveSessions() {
+                    continuation.resume(returning: (false, true))
+                    return
+                }
+                continuation.resume(returning: (self.setEngine(nil), false))
             }
         }
-        guard hadEngine else { return }
+        if outcome.abortedBySession {
+            return
+        }
+        guard outcome.hadEngine else { return }
         if state == .ready {
             state = dueToIdle ? .suspendedForIdle : .unloaded
+        }
+        // 极端窗口兜底：asrQueue 置空 _engine 后、回到 MainActor 更新 state 前，若恰好有新会话
+        // 调了 makeSession()（当时看到 state == .ready 未触发 preload），在此补发按需加载。
+        if dueToIdle && hasActiveSessions() {
+            Task { await preload() }
         }
     }
 
     private func scheduleIdleUnloadIfNeeded() {
         idleScheduler.cancel()
-        guard config.idleUnloadMinutes > 0 else { return }
+        guard config.idleUnloadMinutes > 0, !hasActiveSessions(), state == .ready else { return }
         let interval = TimeInterval(config.idleUnloadMinutes * 60)
         idleScheduler.schedule(afterSeconds: interval) { [weak self] in
             Task { @MainActor in await self?.unloadNow(dueToIdle: true) }
@@ -296,10 +343,11 @@ final class ASRService {
         vocabulary: VocabularyReplacer = .empty,
         now: @escaping MonotonicClock = systemMonotonicClock
     ) -> LocalASRSession {
+        incrementActiveSessions()
+        idleScheduler.cancel() // 录音期间持有活跃会话租约，结束后由 sessionEnded() 重新安排空闲卸载
         if state != .ready && state != .loading {
             Task { await preload() }
         }
-        idleScheduler.cancel() // 录音期间不应触发空闲卸载；结束后由 makeSession 之外的下一次调度重新安排
         return LocalASRSession(
             asrQueue: asrQueue,
             engineAccessor: { [weak self] in self?.currentEngine() },
@@ -316,8 +364,9 @@ final class ASRService {
         )
     }
 
-    /// 录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。
+    /// 录音会话结束后由调用方（VoiceTyperController）调用，释放会话租约并重新安排空闲卸载计时。
     func sessionEnded() {
+        decrementActiveSessions()
         scheduleIdleUnloadIfNeeded()
     }
 }

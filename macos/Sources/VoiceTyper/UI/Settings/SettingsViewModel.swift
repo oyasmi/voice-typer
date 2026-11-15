@@ -107,9 +107,11 @@ final class SettingsViewModel {
     var engineStatus = L("检查中")
     var hotkeyDisplay = "Fn🌐"
 
-    // MARK: 识别（草稿，显式保存）
+    // MARK: 语音模型（即时保存）
     var language: ASRLanguage = .auto
     var modelActionBusy = false
+    var modelMessage = ""
+    var modelMessageKind: SettingsMessageKind = .info
 
     // MARK: 智能校对（草稿，显式保存）
     var llmEnabled = false
@@ -199,6 +201,7 @@ final class SettingsViewModel {
         self.launchAtLogin = launchAtLogin
         syncVocabularyRows(with: config.vocabulary)
 
+        modelMessage = ""
         recognitionMessage = ""
         hotkeyMessage = ""
 
@@ -211,6 +214,45 @@ final class SettingsViewModel {
             llmAPIKey = ""
             recognitionMessage = L("无法从 Keychain 读取已保存的 API Key，请重新填写并保存。")
             recognitionMessageKind = .error
+        }
+    }
+
+    /// 已落盘配置同步回界面（供即时保存回写或菜单栏快捷切换推送使用，S-4）：
+    /// 只同步已生效字段与基线 `loadedConfig`，**不**重读 Keychain、**不**清空提示文案，
+    /// 也不覆盖用户在「智能校对」区尚未点击「保存并应用」的未提交草稿。
+    func syncAppliedConfig(_ config: AppConfig) {
+        let previous = loadedConfig
+        loadedConfig = config
+        language = config.asr.language
+        idleUnloadMinutes = config.asr.idleUnloadMinutes
+        preloadOnLaunch = config.asr.preloadOnLaunch
+        hotkeyConfig = config.hotkey
+        hotkeyDisplay = config.hotkey.displayString
+        if previous.hotkey != config.hotkey {
+            refreshFnConflictWarning()
+        }
+        hudOpacity = config.ui.opacity
+        hudPosition = config.ui.hudPosition
+        audioInputPolicy = AudioInputPolicy(configValue: config.audio.inputDevice)
+        interfaceLanguage = config.ui.interfaceLanguage
+        syncVocabularyRows(with: config.vocabulary)
+
+        // 智能校对区为显式保存：仅当外部（如菜单栏快捷开关）确实改动了对应已落盘字段时才同步该项，
+        // 避免即时保存其他设置时冲掉用户正在填写的 Base URL / API Key / 模型草稿。
+        if previous.llm.enabled != config.llm.enabled {
+            llmEnabled = config.llm.enabled
+        }
+        if previous.llm.baseURL != config.llm.baseURL {
+            llmBaseURL = config.llm.baseURL
+        }
+        if previous.llm.model != config.llm.model {
+            llmModel = config.llm.model
+        }
+        if previous.llm.temperature != config.llm.temperature {
+            llmTemperature = config.llm.temperature
+        }
+        if previous.llm.timeout != config.llm.timeout {
+            llmTimeout = config.llm.timeout
         }
     }
 
@@ -500,7 +542,27 @@ final class SettingsViewModel {
         }
     }
 
+    func commitLanguage() {
+        guard language != loadedConfig.asr.language else { return }
+        var updated = loadedConfig
+        updated.asr.language = language
+        let previous = loadedConfig.asr.language
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.onSaveConfig?(updated)
+                self.loadedConfig = updated
+                self.modelMessage = ""
+            } catch {
+                self.language = previous
+                self.modelMessage = LF("识别语言保存失败：%@", error.localizedDescription)
+                self.modelMessageKind = .error
+            }
+        }
+    }
+
     func commitPreloadOnLaunch() {
+        guard preloadOnLaunch != loadedConfig.asr.preloadOnLaunch else { return }
         var updated = loadedConfig
         updated.asr.preloadOnLaunch = preloadOnLaunch
         let previous = loadedConfig.asr.preloadOnLaunch
@@ -509,25 +571,30 @@ final class SettingsViewModel {
             do {
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
+                self.modelMessage = ""
             } catch {
                 self.preloadOnLaunch = previous
-                self.recognitionMessage = LF("启动预加载设置保存失败：%@", error.localizedDescription)
-                self.recognitionMessageKind = .error
+                self.modelMessage = LF("启动预加载设置保存失败：%@", error.localizedDescription)
+                self.modelMessageKind = .error
             }
         }
     }
 
     func commitIdleUnloadMinutes() {
+        guard idleUnloadMinutes != loadedConfig.asr.idleUnloadMinutes else { return }
         var updated = loadedConfig
         updated.asr.idleUnloadMinutes = idleUnloadMinutes
+        let previous = loadedConfig.asr.idleUnloadMinutes
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.onSaveConfig?(updated)
                 self.loadedConfig = updated
+                self.modelMessage = ""
             } catch {
-                self.recognitionMessage = LF("空闲卸载时长保存失败：%@", error.localizedDescription)
-                self.recognitionMessageKind = .error
+                self.idleUnloadMinutes = previous
+                self.modelMessage = LF("空闲卸载时长保存失败：%@", error.localizedDescription)
+                self.modelMessageKind = .error
             }
         }
     }

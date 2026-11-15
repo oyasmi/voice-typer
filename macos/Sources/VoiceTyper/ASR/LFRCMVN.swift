@@ -85,3 +85,67 @@ func applyCMVN(_ feats: [[Float]], stats: CMVNStats) -> [[Float]] {
         return out
     }
 }
+
+/// 扁平化 LFR + CMVN 融合计算（S-5，对齐 Windows `LfrCmvn.ApplyLfrCmvnFlat`）：
+/// 输入行优先 `[frameCount × featureDim]` 特征，一次分配直接产出 `[lfrFrames × (m * featureDim)]`
+/// 的归一化扁平特征，省去 `padded` 帧数组拷贝、数千个每帧堆数组分配以及推理前的二次展平。
+func applyLFRCMVNFlat(
+    _ feats: [Float],
+    frameCount: Int,
+    featureDim: Int,
+    m: Int,
+    n: Int,
+    stats: CMVNStats
+) -> (features: [Float], frameCount: Int, featureDim: Int) {
+    let outDim = m * featureDim
+    guard frameCount > 0, featureDim > 0, m > 0, n > 0,
+          feats.count >= frameCount * featureDim
+    else {
+        return ([], 0, outDim)
+    }
+    precondition(
+        stats.means.count >= outDim && stats.vars.count >= outDim,
+        "CMVN stats 维度 (\(stats.means.count)/\(stats.vars.count)) 小于 LFR 输出维度 (\(outDim))"
+    )
+
+    let leftPad = (m - 1) / 2
+    let framesLFR = (frameCount + n - 1) / n
+    var out = [Float](repeating: 0, count: framesLFR * outDim)
+
+    feats.withUnsafeBufferPointer { featsPtr in
+        stats.means.withUnsafeBufferPointer { meansPtr in
+            stats.vars.withUnsafeBufferPointer { varsPtr in
+                out.withUnsafeMutableBufferPointer { outPtr in
+                    let inBase = featsPtr.baseAddress!
+                    let mBase = meansPtr.baseAddress!
+                    let vBase = varsPtr.baseAddress!
+                    let outBase = outPtr.baseAddress!
+
+                    for i in 0..<framesLFR {
+                        let outRowOffset = i * outDim
+                        let paddedStart = i * n
+                        for k in 0..<m {
+                            let paddedIdx = paddedStart + k
+                            let srcFrame: Int
+                            if paddedIdx < leftPad {
+                                srcFrame = 0
+                            } else if paddedIdx - leftPad < frameCount {
+                                srcFrame = paddedIdx - leftPad
+                            } else {
+                                srcFrame = frameCount - 1
+                            }
+                            let srcOffset = srcFrame * featureDim
+                            let colOffset = k * featureDim
+                            let dstOffset = outRowOffset + colOffset
+                            for d in 0..<featureDim {
+                                let col = colOffset + d
+                                outBase[dstOffset + d] = (inBase[srcOffset + d] + mBase[col]) * vBase[col]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (out, framesLFR, outDim)
+}

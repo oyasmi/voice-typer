@@ -187,17 +187,21 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         lastDecodeStats = DecodeStats(mode: contextGraph == nil ? .greedy : .beam, hotwordHits: 0, decodeNanos: 0)
         guard samples.count >= fbankMinimumSamples else { return "" }
 
-        let feats = frontend.compute(samples)
-        guard !feats.isEmpty else { return "" }
-        let lfr = applyLFR(feats, m: lfrM, n: lfrN)
-        let normalized = applyCMVN(lfr, stats: cmvn)
-        guard !normalized.isEmpty else { return "" }
+        let fbank = frontend.computeFlat(samples)
+        guard fbank.frameCount > 0 else { return "" }
+        let normalized = applyLFRCMVNFlat(
+            fbank.features,
+            frameCount: fbank.frameCount,
+            featureDim: fbank.melDim,
+            m: lfrM,
+            n: lfrN,
+            stats: cmvn
+        )
+        guard normalized.frameCount > 0 else { return "" }
 
-        let featsLen = normalized.count
-        let dim = normalized[0].count
-        var flatFeats = [Float]()
-        flatFeats.reserveCapacity(featsLen * dim)
-        for row in normalized { flatFeats.append(contentsOf: row) }
+        let featsLen = normalized.frameCount
+        let dim = normalized.featureDim
+        var flatFeats = normalized.features
 
         let speechData = NSMutableData(bytes: &flatFeats, length: flatFeats.count * MemoryLayout<Float>.size)
         let speechValue = try ORTValue(

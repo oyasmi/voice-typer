@@ -23,12 +23,22 @@ struct RecognitionSettingsView: View {
                 ))
                 .help(L("关闭时首次按热键才加载模型，加载与录音并行，约 1 秒；开机自启的场景下能省下常驻内存。"))
 
-                Picker(L("识别语言"), selection: $vm.language) {
+                Picker(L("识别语言"), selection: Binding(
+                    get: { vm.language },
+                    set: { vm.language = $0; vm.commitLanguage() }
+                )) {
                     ForEach(ASRLanguage.allCases, id: \.self) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
                 .help(L("SenseVoice 支持自动判断语种，也可指定为固定语言以提升准确率。"))
+
+                if !vm.modelMessage.isEmpty {
+                    Text(vm.modelMessage)
+                        .font(.callout)
+                        .foregroundStyle(vm.modelMessageKind.color)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } header: {
                 Text(L("语音模型"))
             }

@@ -4,63 +4,7 @@ import QuartzCore
 
 @MainActor
 final class RecordingHUDController: NSWindowController {
-    // MARK: - 几何常量
-
-    /// 宽度策略：浮窗是顺带瞥一眼的辅助信息，尺寸变化要少、跳得干脆、只增不减。
-    /// - 起步宽度 400（约 25 个汉字）；状态行（设备名 + 操作提示）实测更宽时放宽，至多 460。
-    static let compactWidthRange: ClosedRange<CGFloat> = 400...460
-    /// - 预览一行放不下时直接跳到最宽 600（约 40 个汉字一行，中文舒适行长的上限），之后换行。
-    ///   只有两档：中间档比起步只宽几个字，多跳一次换不来什么。
-    /// - 一次显示期间只增不减（`widthFloor`）：预览被修正变短时不回缩，整个过程最多跳一次。
-    ///   浮窗从中心向两边变宽而文字左对齐，每跳一次文字整体左移一下，逐字跟随时会一直在挪。
-    static let maximumHudWidth: CGFloat = 600
-    private static let maximumScreenWidthRatio: CGFloat = 0.5
-    private static let screenMargin: CGFloat = 16
-    /// 纵向排版：顶部内边距 + 状态行 + 状态行与预览的间距 + 预览 N 行 + 底部内边距。
-    /// 高度一律由这几段与预览字体的行高推出，不再手写总高——此前手写的 100 / 122 在预览下方
-    /// 留出了约两行的空白。
-    private static let topInset: CGFloat = 10
-    private static let topRowHeight: CGFloat = 28
-    private static let previewTopSpacing: CGFloat = 6
-    /// 比 `topInset` 略大：状态行文字在 28pt 行内垂直居中，视觉上的上边距约 16pt，底部与之相称。
-    private static let bottomInset: CGFloat = 14
-    private static let compactHeight: CGFloat = topInset + topRowHeight + topInset
-    private static let cornerRadius: CGFloat = 24
-    /// 预览最多显示的行数。
-    ///
-    /// 一行 + 前导省略号意味着长句只剩尾巴，而"边说边校对识别结果"正是 HUD 存在的理由。
-    /// 宽度收窄到 `maximumHudWidth` 后用三行补回容量（约 120 个汉字，连续说 30 秒左右），
-    /// 不会更多地遮挡用户正在工作的窗口。超过三行时按整行滚动：第四行出现的同时第一行整行消失，
-    /// 其余各行的断行位置不变（见 `lastLines`）。
-    static let previewMaximumLines = 3
-    /// 行数减少后要持续这么久才收矮：识别修正常让预览短暂少一行，立刻收矮会一跳一跳。变高则立即生效。
-    static let lineShrinkDelay: TimeInterval = 0.6
-    static let previewFont = NSFont.systemFont(ofSize: 14, weight: .medium)
-    static let statusFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
-    static let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-    /// `NSTextField` 绘制文字时左右各留 2pt 行片段内边距，实际换行宽度比标签窄 4pt。
-    /// 测量（`fitPreview`、`singleLineHudWidth`、`compactWidth`）必须算上它，否则算作一行的文字会折到看不见的下一行。
-    static let labelTextPadding: CGFloat = 4
-    /// 内容区左右内缩，与 buildUI 里 topRow / previewClipView 的约束常量保持一致。
-    static let contentHorizontalInset: CGFloat = 16
-    /// 状态行各元素的尺寸，buildUI 与 `compactWidth` 共用。
-    private static let indicatorSize: CGFloat = 16
-    private static let waveformWidth: CGFloat = 44
-    private static let topRowSpacing: CGFloat = 10
-    /// 计时位预留的宽度样本：录音上限 120 秒，最长显示为「2:00」。
-    private static let timeWidthSample = "0:00"
-    /// 底部落点距屏幕可见区下沿的距离（避开 Dock）。
-    private static let screenBottomOffset: CGFloat = 80
-    /// 跟随光标时浮窗与光标之间留出的间距。
-    private static let cursorGap: CGFloat = 24
-    private static let leadingEllipsis = "…"
-    /// 状态行里输入设备名的显示上限，超出截断——设备名可以很长
-    /// （"Jabra Evolve2 65 立体声耳机"），不能让它把计时挤出可视区。
-    private static let inputDeviceNameLimit = 14
-    /// 状态行带操作提示（「再按 X 结束」「Esc 取消」）时设备名收紧到这么多字符，免得把计时挤出可视区（R8-C4）。
-    private static let inputDeviceNameLimitWithHint = 8
-
-    // MARK: - UI 元素
+    // MARK: - UI 元素（几何与纯排版函数见 RecordingHUDLayout.swift；呼吸点与声波见 HUDIndicatorViews.swift）
 
     private let dotView = PulseDotView()
     private let glyphView = NSImageView()
@@ -86,9 +30,6 @@ final class RecordingHUDController: NSWindowController {
     private var hasBuiltUI = false
     private var hudOpacity: Double = 0.85
 
-    /// 状态行常规色（次级灰白，见 buildUI 的层级注释）。flashWarning 期间临时升为警示色。
-    private static let statusTextColor: NSColor = .secondaryLabelColor
-
     /// 展开态（显示 preview 行）与否。
     private var isExpanded = false
     /// 展开态当前应有的窗口高度（随预览行数变化）。
@@ -96,23 +37,8 @@ final class RecordingHUDController: NSWindowController {
         Self.expandedHeight(lineCount: previewLineCount)
     }
 
-    /// 预览字体的单行高度。
-    static let previewLineHeight = lineHeight(of: previewFont)
-
-    /// 展开态窗口高度：预览区正好容纳 `lineCount` 行，下方只留 `bottomInset`。
-    static func expandedHeight(lineCount: Int) -> CGFloat {
-        previewTopOffset + previewHeight(lineCount: lineCount) + bottomInset
-    }
-
-    /// 预览区上沿距窗口顶边的距离。
-    static let previewTopOffset: CGFloat = topInset + topRowHeight + previewTopSpacing
-
-    static func previewHeight(lineCount: Int) -> CGFloat {
-        previewLineHeight * CGFloat(max(1, min(previewMaximumLines, lineCount)))
-    }
-
     /// 当前 HUD 宽度。随预览内容按档位增长到上限，避免文本继续把窗口推到屏幕外。
-    private var currentHudWidth: CGFloat = compactWidthRange.lowerBound
+    private var currentHudWidth: CGFloat = RecordingHUDController.compactWidthRange.lowerBound
     /// 本次显示期间已经到过的宽度：宽度只增不减。浮窗隐藏或开始新一次听写时归零。
     private var widthFloor: CGFloat = 0
     /// 行数减少后的延迟收矮（见 `lineShrinkDelay`）。
@@ -140,10 +66,6 @@ final class RecordingHUDController: NSWindowController {
     private var anchorScreen: NSScreen?
     private var caretAnchor: CGRect?
     private var anchorsResolved = false
-    /// 跟随插入点时，浮窗与插入点之间留出的间距。
-    private static let caretGap: CGFloat = 8
-    /// 预览尾部变化的淡显时长（R8-D3）。
-    static let previewHighlightDuration: TimeInterval = 0.3
     private var previewHighlightWorkItem: DispatchWorkItem?
     /// 上一次送达的预览原文，用于求公共前缀（R8-D3）。
     private var previousPreviewText = ""
@@ -650,31 +572,7 @@ final class RecordingHUDController: NSWindowController {
         return fitted.text
     }
 
-    /// 按浮窗宽度排预览：扣掉左右内缩与标签自身的行片段内边距，得到标签真正的换行宽度。
-    static func fitPreview(_ display: String, hudWidth: CGFloat) -> (text: String, lineCount: Int) {
-        let wrapWidth = max(40, hudWidth - contentHorizontalInset * 2) - labelTextPadding
-        return lastLines(display, width: wrapWidth, maximumLines: previewMaximumLines, font: previewFont)
-    }
-
     // MARK: - 预览尾部淡显（R8-D3）
-
-    /// 两段文本的公共前缀长度（按 Character 计）。
-    static func commonPrefixLength(_ a: String, _ b: String) -> Int {
-        var count = 0
-        var left = a.makeIterator()
-        var right = b.makeIterator()
-        while let x = left.next(), let y = right.next(), x == y { count += 1 }
-        return count
-    }
-
-    /// 把「与上一次预览分叉的位置」换算成排版后文本里的下标。
-    ///
-    /// 排版（`lastLines`）超过行数上限时只保留最后几行，显示的是原文的后缀：被滚出去的字符数是
-    /// `displayCount - fittedCount`，分叉点要相应平移；分叉点落在滚出去的部分里则整段都是新内容。
-    static func highlightStart(divergence: Int, displayCount: Int, fittedCount: Int) -> Int {
-        let dropped = max(0, displayCount - fittedCount)
-        return min(max(divergence - dropped, 0), fittedCount)
-    }
 
     /// 预览与上一次的公共前缀之后的部分以次级色显示约 300ms 再变为常规色。
     /// 「减少动态效果」下不做；第一次出字（没有可比较的上一次）与没有变化时也不做。
@@ -713,70 +611,6 @@ final class RecordingHUDController: NSWindowController {
     private func cancelPreviewHighlight() {
         previewHighlightWorkItem?.cancel()
         previewHighlightWorkItem = nil
-    }
-
-    /// 把 `text` 从头按词换行排进 `width`，超过 `maximumLines` 行时只返回最后 `maximumLines` 行
-    /// （原文的一个后缀，从某一行的行首开始），以及实际占用的行数。
-    ///
-    /// 为什么从头排、按整行滚动，而不是逐字丢掉开头再加 `…`：逐字丢开头时，每来一个字所有行的断行
-    /// 位置都会变，整段文字像蛇一样往前爬，眼睛无处落脚。从头排版时已经显示过的行断行不变，
-    /// 第四行出现的同时第一行整行消失，其余各行只是整体上移一行。
-    ///
-    /// 不交给 `NSTextField` 的 `.byTruncatingHead`：AppKit 只保证对单个行片段做首部截断，多行时
-    /// 没有明确契约，万一退化成截尾部，用户看到的会是长听写的开头而不是刚说完的话。
-    static func lastLines(
-        _ text: String,
-        width: CGFloat,
-        maximumLines: Int,
-        font: NSFont
-    ) -> (text: String, lineCount: Int) {
-        guard width > 0, maximumLines >= 1, !text.isEmpty else { return (text, 1) }
-        let lineStarts = lineStartOffsets(text, width: width, font: font)
-        guard lineStarts.count > maximumLines else { return (text, max(1, lineStarts.count)) }
-        let start = lineStarts[lineStarts.count - maximumLines]
-        return ((text as NSString).substring(from: start), maximumLines)
-    }
-
-    /// 每一行行首在 `text` 里的 UTF-16 偏移。换行规则与预览标签一致（按词换行、无行片段内边距的宽度）。
-    static func lineStartOffsets(_ text: String, width: CGFloat, font: NSFont) -> [Int] {
-        let storage = NSTextStorage(string: text, attributes: [.font: font])
-        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        let layoutManager = NSLayoutManager()
-        layoutManager.addTextContainer(container)
-        storage.addLayoutManager(layoutManager)
-        var starts: [Int] = []
-        layoutManager.enumerateLineFragments(forGlyphRange: layoutManager.glyphRange(for: container)) {
-            _, _, _, glyphRange, _ in
-            starts.append(layoutManager.characterIndexForGlyph(at: glyphRange.location))
-        }
-        return starts
-    }
-
-    /// 单行文字的排版高度（14pt 系统字体为 17pt），与标签实际绘制的行距一致。
-    static func lineHeight(of font: NSFont) -> CGFloat {
-        let height = ("字" as NSString).boundingRect(
-            with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        ).height
-        return max(ceil(height), 1)
-    }
-
-    /// 录音状态行文案。带上当前输入设备名，让"录到的是哪个麦克风"这件事不必靠猜——
-    /// 这是静音提示触发后用户最需要的下一条线索。
-    static func recordingStatus(inputDeviceName: String?, hint: String? = nil) -> String {
-        let hint = hint?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        guard let name = inputDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !name.isEmpty else {
-            return hint.map { "\(L("录音中")) · \($0)" } ?? L("录音中")
-        }
-        let limit = hint == nil ? Self.inputDeviceNameLimit : Self.inputDeviceNameLimitWithHint
-        let shortened = name.count > limit
-            ? String(name.prefix(limit)) + Self.leadingEllipsis
-            : name
-        let base = LF("录音中 · %@", shortened)
-        return hint.map { "\(base) · \($0)" } ?? base
     }
 
     // MARK: - 一次性提示
@@ -933,32 +767,6 @@ final class RecordingHUDController: NSWindowController {
             ),
             width
         )
-    }
-
-    /// 紧凑态宽度：状态行（指示点、波形、状态文字、计时）实测宽度，夹在 `compactWidthRange` 内。
-    static func compactWidth(status: String) -> CGFloat {
-        func labelWidth(_ text: String, _ font: NSFont) -> CGFloat {
-            ceil((text as NSString).size(withAttributes: [.font: font]).width) + labelTextPadding
-        }
-        let content = indicatorSize + waveformWidth + topRowSpacing * 4
-            + labelWidth(status, statusFont) + labelWidth(timeWidthSample, timeFont)
-        let total = content + contentHorizontalInset * 2
-        return min(max(total, compactWidthRange.lowerBound), compactWidthRange.upperBound)
-    }
-
-    /// 让 `text` 恰好排成一行所需的浮窗宽度（未做上限夹逼）。
-    static func singleLineHudWidth(for text: String) -> CGFloat {
-        let textWidth = ceil((text as NSString).size(withAttributes: [.font: previewFont]).width)
-        return textWidth + labelTextPadding + contentHorizontalInset * 2
-    }
-
-    /// 浮窗该用的宽度档位：预览单行放得进紧凑宽度就用紧凑宽度，否则直接用最宽档（之后换行）。
-    /// 未做「只增不减」与屏幕夹逼，那两步在 `updateHudWidth` / `layoutMetrics`。
-    static func targetWidth(status: String, preview: String) -> CGFloat {
-        let compact = compactWidth(status: status)
-        let trimmed = preview.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, singleLineHudWidth(for: trimmed) > compact else { return compact }
-        return maximumHudWidth
     }
 
     /// 状态行文案变长（如「校对中… · 再按 X 跳过」）时按需加宽，同样只增不减。
@@ -1275,25 +1083,6 @@ final class RecordingHUDController: NSWindowController {
         previewLabel.stringValue = displayText(for: "")
     }
 
-    /// 预览标签的排版配置。单独抽出来，让测试能按同一配置验证「算出的行数 = 实际绘制的行数」。
-    static func configurePreviewLabel(_ label: NSTextField) {
-        label.font = previewFont
-        label.textColor = .labelColor
-        // 左对齐：多行时右对齐会让首行左边参差不齐；浮窗宽度随文字伸缩，单行时两者看起来几乎一样。
-        label.alignment = .left
-        // 首部截断（与 Windows 的 TruncateToFitFromStart 对齐）由 `fitPreview` 在
-        // 送进来之前算好，这里只负责按词换行、最多 `previewMaximumLines` 行。
-        // 不用 `.byTruncatingHead`：AppKit 对多行时的首部截断没有明确契约，
-        // 万一退化成截尾部，用户看到的会是长听写的开头而不是刚说完的话。
-        label.lineBreakMode = .byWordWrapping
-        label.maximumNumberOfLines = previewMaximumLines
-        label.cell?.usesSingleLineMode = false
-        label.cell?.wraps = true
-        label.cell?.isScrollable = false
-        // 宽度完全由约束决定；固有宽度（整段排一行）不能参与竞争。
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    }
-
     private func applyDimOpacity() {
         // hudOpacity 直接作为磨砂背景层的整体不透明度：越低，面板越透、桌面越明显。
         // 文字与状态行是 contentView 的兄弟视图，不在 effectView 内，不随之变淡，保证可读性。
@@ -1311,22 +1100,9 @@ final class RecordingHUDController: NSWindowController {
 
     // MARK: - 计时器
 
-    private static let timeTextColor: NSColor = .tertiaryLabelColor
-    /// 录音剩余不足这么多秒时，计时位置改为橙色倒计时（R8-C3）。
-    private static let countdownWindowSeconds = 15
-
     private func resetTimeLabel() {
         timeLabel.stringValue = ""
         timeLabel.textColor = Self.timeTextColor
-    }
-
-    /// 距单段录音上限还剩多少秒；剩余多于 15 秒或已到上限返回 nil（R8-C3）。
-    /// HUD 的起点与真实录音起点最多相差 150ms（单独修饰键延迟显示），可接受。
-    static func countdownSeconds(
-        elapsed: TimeInterval, maximumSeconds: Int = LocalASRSession.maxSessionSeconds
-    ) -> Int? {
-        let remaining = Int(ceil(Double(maximumSeconds) - elapsed))
-        return (1...countdownWindowSeconds).contains(remaining) ? remaining : nil
     }
 
     private func startTimer() {
@@ -1347,187 +1123,4 @@ final class RecordingHUDController: NSWindowController {
         timer?.tolerance = 0.1
         timer?.fire()
     }
-
-    private static func timeString(_ elapsed: Int) -> String {
-        if elapsed < 1 { return "" }
-        if elapsed < 60 { return "\(elapsed)s" }
-        return String(format: "%d:%02d", elapsed / 60, elapsed % 60)
-    }
-}
-
-// MARK: - 呼吸点
-
-private final class PulseDotView: NSView {
-    private let circle = CALayer()
-
-    override init(frame: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
-        setup()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var intrinsicContentSize: NSSize { NSSize(width: 8, height: 8) }
-
-    override func layout() {
-        super.layout()
-        circle.frame = bounds
-        circle.cornerRadius = min(bounds.width, bounds.height) / 2
-    }
-
-    private func setup() {
-        wantsLayer = true
-        circle.frame = NSRect(x: 0, y: 0, width: 8, height: 8)
-        circle.cornerRadius = 4
-        circle.backgroundColor = NSColor.systemRed.cgColor
-        layer?.addSublayer(circle)
-    }
-
-    func startPulse() {
-        circle.removeAllAnimations()
-        circle.backgroundColor = NSColor.systemRed.cgColor
-        let anim = CABasicAnimation(keyPath: "opacity")
-        anim.fromValue = 0.5
-        anim.toValue = 1.0
-        anim.duration = 0.6
-        anim.autoreverses = true
-        anim.repeatCount = .infinity
-        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        circle.add(anim, forKey: "pulse")
-    }
-
-    func stopPulse() {
-        circle.removeAllAnimations()
-        circle.opacity = 1.0
-    }
-
-    /// 换成静态颜色，并带一次颜色过渡（红 → 橙 → 蓝）。
-    func setStatic(color: NSColor) {
-        let from = circle.presentation()?.backgroundColor ?? circle.backgroundColor
-        circle.removeAllAnimations()
-        circle.backgroundColor = color.cgColor
-        circle.opacity = 1.0
-        let transition = CABasicAnimation(keyPath: "backgroundColor")
-        transition.fromValue = from
-        transition.toValue = color.cgColor
-        transition.duration = HUDMotion.colorTransitionDuration
-        circle.add(transition, forKey: "colorTransition")
-    }
-}
-
-// MARK: - 电平驱动声波
-
-private final class WaveformView: NSView {
-    private let bars: [CALayer] = (0..<5).map { _ in CALayer() }
-    private let barWidth: CGFloat = 4
-    private let barSpacing: CGFloat = 4
-    private let minBarHeight: CGFloat = 3
-    private let maxBarHeight: CGFloat = 18
-    /// 各条基础权重，制造中间高两侧低的自然形态。
-    private let weights: [CGFloat] = [0.55, 0.85, 1.0, 0.7, 0.9]
-    /// 快攻慢放后的显示电平（0…1）。
-    private var displayLevel: CGFloat = 0
-    private var recognizing = false
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        setup()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var intrinsicContentSize: NSSize { NSSize(width: 44, height: 22) }
-
-    override func layout() {
-        super.layout()
-        layoutBars()
-    }
-
-    private func setup() {
-        wantsLayer = true
-        bars.forEach { bar in
-            bar.cornerRadius = barWidth / 2
-            bar.backgroundColor = NSColor(white: 1.0, alpha: 0.9).cgColor
-            layer?.addSublayer(bar)
-        }
-        layoutBars()
-    }
-
-    private func layoutBars() {
-        let totalWidth = CGFloat(bars.count) * barWidth + CGFloat(bars.count - 1) * barSpacing
-        let startX = (bounds.width - totalWidth) / 2
-        for (index, bar) in bars.enumerated() {
-            let height = heightForBar(index)
-            let x = startX + CGFloat(index) * (barWidth + barSpacing)
-            let y = (bounds.height - height) / 2
-            bar.frame = CGRect(x: x, y: y, width: barWidth, height: height)
-        }
-    }
-
-    private func heightForBar(_ index: Int) -> CGFloat {
-        let base = minBarHeight + (maxBarHeight - minBarHeight) * displayLevel * weights[index]
-        return min(max(base, minBarHeight), maxBarHeight)
-    }
-
-    /// 进入录音（电平驱动）态。
-    func startListening() {
-        recognizing = false
-        displayLevel = 0
-        bars.forEach {
-            $0.removeAllAnimations()
-            $0.backgroundColor = NSColor(white: 1.0, alpha: 0.9).cgColor
-        }
-        layoutBars()
-    }
-
-    /// 输入线性 RMS 电平，做分贝归一化 + 快攻慢放平滑后更新条高。
-    func updateLevel(_ level: Float) {
-        guard !recognizing else { return }
-        let db = 20 * log10(max(Double(level), 1e-7))
-        let normalized = CGFloat(min(max((db + 50) / 40, 0), 1))
-        displayLevel = max(normalized, displayLevel * 0.82)
-
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.08)
-        layoutBars()
-        CATransaction.commit()
-    }
-
-    /// 识别中：先在 0.12s 内收拢到最低高度并由白变橙（"收声"），随后开始柔和的
-    /// 确定型顺序脉动。无电平输入，脉动的 `beginTime` 顺延收拢时长。
-    func settleThenPulse() {
-        recognizing = true
-        displayLevel = 0
-        let settle = HUDMotion.reduceMotion
-            ? min(HUDMotion.barsSettleDuration, HUDMotion.reducedMotionDuration)
-            : HUDMotion.barsSettleDuration
-
-        // 条高与颜色的变化交给 CALayer 的隐式动画，放在同一个事务里统一时长。
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(settle)
-        layoutBars()
-        bars.forEach { $0.backgroundColor = NSColor.systemOrange.cgColor }
-        CATransaction.commit()
-
-        for (index, bar) in bars.enumerated() {
-            bar.removeAnimation(forKey: "recognizing")
-            let anim = CABasicAnimation(keyPath: "transform.scale.y")
-            anim.fromValue = 0.4
-            anim.toValue = 1.0
-            anim.duration = 0.6
-            anim.beginTime = CACurrentMediaTime() + settle + Double(index) * 0.09
-            anim.autoreverses = true
-            anim.repeatCount = .infinity
-            anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            bar.add(anim, forKey: "recognizing")
-        }
-    }
-
-    func stop() {
-        bars.forEach { $0.removeAllAnimations() }
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

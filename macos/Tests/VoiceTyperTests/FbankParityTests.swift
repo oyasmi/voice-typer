@@ -20,7 +20,11 @@ final class FbankParityTests: XCTestCase {
 
         let frontend = FbankFrontend()
         let feats = frontend.compute(waveform)
+        let flat = frontend.computeFlat(waveform)
         XCTAssertEqual(feats.count, shapes.fbank_frames, "帧数应完全相同")
+        XCTAssertEqual(flat.frameCount, shapes.fbank_frames)
+        XCTAssertEqual(flat.melDim, shapes.fbank_dim)
+        XCTAssertEqual(flat.features, feats.flatMap { $0 }, "computeFlat 与二维包装输出必须逐 bit 一致")
 
         var maxDiff: Float = 0
         for (t, row) in feats.enumerated() {
@@ -51,8 +55,20 @@ final class FbankParityTests: XCTestCase {
         let lfr = applyLFR(feats, m: 7, n: 6)
         let stats = try CMVNStats.parse(contentsOf: cmvnURL)
         let normalized = applyCMVN(lfr, stats: stats)
+        let flatFbank = frontend.computeFlat(waveform)
+        let flatNormalized = applyLFRCMVNFlat(
+            flatFbank.features,
+            frameCount: flatFbank.frameCount,
+            featureDim: flatFbank.melDim,
+            m: 7,
+            n: 6,
+            stats: stats
+        )
 
         XCTAssertEqual(normalized.count, shapes.lfr_frames)
+        XCTAssertEqual(flatNormalized.frameCount, shapes.lfr_frames)
+        XCTAssertEqual(flatNormalized.featureDim, shapes.lfr_dim)
+        XCTAssertEqual(flatNormalized.features, normalized.flatMap { $0 }, "融合版 LFR+CMVN 必须逐 bit 对齐二维版本")
 
         var maxDiff: Float = 0
         for (t, row) in normalized.enumerated() {

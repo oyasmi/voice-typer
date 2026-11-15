@@ -169,6 +169,7 @@ extension L10n {
             "Writing the API key to the Keychain failed; settings were not saved.",
         "启动预加载设置保存失败：%@": "Could not save the preload-at-launch setting: %@",
         "空闲卸载时长保存失败：%@": "Could not save the idle-unload interval: %@",
+        "识别语言保存失败：%@": "Could not save the recognition language: %@",
         "HUD 透明度保存失败：%@": "Could not save the HUD opacity: %@",
         "浮窗位置保存失败：%@": "Could not save the overlay position: %@",
         "检查中": "checking",

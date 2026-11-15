@@ -212,6 +212,7 @@ C5 逐像素 alpha、E1 引导加选择热键、E3 布局重构按 §24.4 否决
 | ORT 内存池 + EcoQoS（§19） | 长听写 `ctc_logits` ~200MB 不还给系统；Win11 后台降频。都要真机对比后再决定 |
 | 停止时兜底复制（第五轮） | 退出程序或模型被移除时，进行中的听写以 `Shutdown` 收尾、不留任何结果；可把预览文本复制到剪贴板兜底 |
 | 协调器接线无单测（第五轮） | 判定与下载编排已有单测，`AppCoordinator` 的执行与界面接线仍依赖 WinForms，只有代码审查 |
+| macOS R10 跨平台同步（S-2 / S-3） | macOS `DESIGN.md` §11.8 已修 `VocabularyReplacer` 连字符交替词条的线性 NFA 匹配（S-2）及 `ModelDownloader` 分段回落单连接后的 `.seg*` 清理与 `.segmeta` ETag 续传校验（S-3）；需在带 .NET 10 SDK 环境同步检查并移植到 `VocabularyReplacer.cs` 与 `ModelDownloader.cs`（S-1 对应 `WT-02`、S-5 对应 `LfrCmvnFlat`、S-6 对应 `ModelDownloadOrchestrator` 已在 Windows 侧具备） |
 
 ### L4 · 工程欠账
 

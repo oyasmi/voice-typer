@@ -165,33 +165,46 @@ struct VocabularyReplacer: Sendable {
         }
 
         /// 在 `start` 处尝试匹配，返回匹配终点（不含）；多种走法时取最长。
+        ///
+        /// 使用确定性 NFA 位置集合按 unit 逐步推进（S-2）：每步只可能保持原位或前进 1 格，
+        /// 候选终点始终严格递增且自然去重，避免可选分隔符与字面连字符交错时产生指数级递归回溯，
+        /// 最坏复杂度 O(|units| × |match|)。
         func match(in text: [Unicode.Scalar], at start: Int) -> Int? {
             if needsLeadingBoundary, start > 0, VocabularyReplacer.isASCIIAlphanumeric(text[start - 1]) {
                 return nil
             }
-            return matchUnits(from: 0, in: text, at: start)
-        }
-
-        private func matchUnits(from unitIndex: Int, in text: [Unicode.Scalar], at position: Int) -> Int? {
-            guard unitIndex < units.count else {
-                if needsTrailingBoundary, position < text.count, VocabularyReplacer.isASCIIAlphanumeric(text[position]) {
+            var positions = [start]
+            var nextPositions: [Int] = []
+            for unit in units {
+                nextPositions.removeAll(keepingCapacity: true)
+                switch unit {
+                case .literal(let expected):
+                    for pos in positions where pos < text.count && VocabularyReplacer.folded(text[pos]) == expected {
+                        nextPositions.append(pos + 1)
+                    }
+                case .optionalSeparator(let allowsHyphen):
+                    for pos in positions {
+                        if nextPositions.last != pos {
+                            nextPositions.append(pos)
+                        }
+                        if pos < text.count,
+                           text[pos].properties.isWhitespace || (allowsHyphen && text[pos] == "-") {
+                            nextPositions.append(pos + 1)
+                        }
+                    }
+                }
+                if nextPositions.isEmpty {
                     return nil
                 }
-                return position
+                swap(&positions, &nextPositions)
             }
-            switch units[unitIndex] {
-            case .literal(let expected):
-                guard position < text.count, VocabularyReplacer.folded(text[position]) == expected else { return nil }
-                return matchUnits(from: unitIndex + 1, in: text, at: position + 1)
-            case .optionalSeparator(let allowsHyphen):
-                var best = matchUnits(from: unitIndex + 1, in: text, at: position)
-                if position < text.count,
-                   text[position].properties.isWhitespace || (allowsHyphen && text[position] == "-"),
-                   let consumed = matchUnits(from: unitIndex + 1, in: text, at: position + 1) {
-                    best = max(best ?? consumed, consumed)
+            for pos in positions.reversed() {
+                if needsTrailingBoundary, pos < text.count, VocabularyReplacer.isASCIIAlphanumeric(text[pos]) {
+                    continue
                 }
-                return best
+                return pos
             }
+            return nil
         }
     }
 

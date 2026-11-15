@@ -132,6 +132,7 @@ final class VoiceTyperController {
     private let focusInspector: FocusInspecting
     private let finalizeWatchdogTimeoutProvider: (Double) -> TimeInterval
     private let releaseTailCapture: TimeInterval
+    private let silenceProbeDelays: [TimeInterval]
     private let physicalHotkeyFlags: () -> UInt64
     private let stuckKeyPollInterval: TimeInterval
     private let now: MonotonicClock
@@ -225,12 +226,14 @@ final class VoiceTyperController {
         llmCorrectorOverride: LLMCorrector? = nil,
         finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
         releaseTailCapture: TimeInterval = VoiceTyperController.defaultReleaseTailCapture,
+        silenceProbeDelays: [TimeInterval] = VoiceTyperController.silenceProbeDelays,
         physicalHotkeyFlags: @escaping () -> UInt64 = HotkeyPhysicalState.currentFlags,
         stuckKeyPollInterval: TimeInterval = 0.25,
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
         self.now = now
         self.releaseTailCapture = releaseTailCapture
+        self.silenceProbeDelays = silenceProbeDelays
         self.physicalHotkeyFlags = physicalHotkeyFlags
         self.stuckKeyPollInterval = stuckKeyPollInterval
         self.focusInspector = focusInspector
@@ -720,7 +723,7 @@ final class VoiceTyperController {
     /// 用户会对着一个什么都没录到的会话一直说，直到松手才发现结果是空的。这段录音时间
     /// 是白花的，而信号（电平一直为 0）在第一秒就已经有了。
     private func scheduleSilenceProbes(for utterance: Utterance) {
-        for delay in Self.silenceProbeDelays {
+        for delay in silenceProbeDelays {
             let item = DispatchWorkItem { [weak self, weak utterance] in
                 guard let self, let utterance, self.active === utterance, utterance.phase == .recording else { return }
                 guard utterance.peakLevel < AppConstants.silenceRMSThreshold else { return }

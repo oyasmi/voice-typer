@@ -257,6 +257,7 @@ final class VoiceTyperControllerTests: XCTestCase {
         physicalFlags: @escaping () -> UInt64 = { 0x800000 },
         stuckKeyPollInterval: TimeInterval = 60,
         releaseTailCapture: TimeInterval = 0,
+        silenceProbeDelays: [TimeInterval] = VoiceTyperController.silenceProbeDelays,
         configureAudio: (FakeAudioCaptureService) -> Void = { _ in }
     ) async -> Harness {
         let engine = ScriptedEngine()
@@ -274,10 +275,6 @@ final class VoiceTyperControllerTests: XCTestCase {
         )
         asrService.updateConfig(ASRConfig(language: .auto, threads: 0, modelDir: "", idleUnloadMinutes: 1))
         await asrService.preload()
-        // preload() 的 await 只保证 state == .ready；实际把引擎实例写进 engineLock 保护的
-        // 存储是另一次 asrQueue.async 派发，二者不同步。给它一点时间真正落地，避免测试
-        // 意外撞上 LocalASRSession 的"引擎未就绪，轮询等待"分支引入的额外延迟。
-        try? await Task.sleep(nanoseconds: 100_000_000)
 
         let hotkey = FakeHotkeyService()
         let audio = FakeAudioCaptureService()
@@ -294,6 +291,7 @@ final class VoiceTyperControllerTests: XCTestCase {
             llmCorrectorOverride: llmCorrector,
             finalizeWatchdogTimeout: watchdogTimeout,
             releaseTailCapture: releaseTailCapture,
+            silenceProbeDelays: silenceProbeDelays,
             physicalHotkeyFlags: physicalFlags,
             stuckKeyPollInterval: stuckKeyPollInterval,
             now: clock
@@ -588,12 +586,11 @@ final class VoiceTyperControllerTests: XCTestCase {
     /// 麦克风被静音 / 选错输入设备时，用户会对着一个什么都没录到的会话一直说，
     /// 直到松手才发现结果是空的。电平在第一秒就已经给出信号，不该等到那时才提示。
     func testSilentRecordingWarnsAboutInputDevice() async {
-        let harness = await makeHarness()
+        let harness = await makeHarness(silenceProbeDelays: [0.06, 0.20])
         harness.hotkey.onPress?()
         await settle()
 
-        // 第一次探测在 1.5s；留出余量。
-        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        try? await Task.sleep(nanoseconds: 120_000_000)
         XCTAssertTrue(
             harness.warnings.contains(Self.silenceWarning),
             "录音一直没有电平时必须主动提示，实际警告：\(harness.warnings)"
@@ -603,27 +600,28 @@ final class VoiceTyperControllerTests: XCTestCase {
     }
 
     func testAudibleRecordingDoesNotWarn() async {
-        let harness = await makeHarness()
+        let harness = await makeHarness(silenceProbeDelays: [0.06, 0.20])
         harness.hotkey.onPress?()
         await settle()
         harness.audio.onLevel?(0.3)
 
-        try? await Task.sleep(nanoseconds: 1_800_000_000)
+        try? await Task.sleep(nanoseconds: 120_000_000)
         XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
         harness.hotkey.onRelease?()
         await settle()
     }
 
-    /// 录音正常结束后探针必须作废：否则一次 0.4 秒的短听写会在一秒多之后
-    /// 莫名其妙地弹出"没有检测到声音"。
+    /// 录音正常结束后探针必须作废：否则一次短听写会在之后莫名其妙地弹出"没有检测到声音"。
     func testSilenceProbeIsCancelledWhenRecordingEnds() async {
-        let harness = await makeHarness()
+        let fake = FakeClock()
+        let harness = await makeHarness(clock: fake.clock, silenceProbeDelays: [0.08, 0.20])
         harness.engine.script(text: "很短的一句")
         harness.hotkey.onPress?()
-        await holdPastMinimumDuration()
+        await settle()
+        fake.advance(ms: 350)
         harness.hotkey.onRelease?()
 
-        try? await Task.sleep(nanoseconds: 1_600_000_000)
+        try? await Task.sleep(nanoseconds: 140_000_000)
         XCTAssertFalse(harness.warnings.contains(Self.silenceWarning))
         XCTAssertEqual(harness.textInsertion.insertedTexts, ["很短的一句"])
     }

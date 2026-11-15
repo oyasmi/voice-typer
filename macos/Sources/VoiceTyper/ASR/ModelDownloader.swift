@@ -125,6 +125,10 @@ final class ModelDownloader: NSObject {
             if isCancelled { throw DownloadError.cancelled }
             let destURL = dir.appendingPathComponent(spec.name)
             if FileManager.default.fileExists(atPath: destURL.path), await Self.sha256Matches(destURL, spec.sha256) {
+                // 目标文件已完整就绪时顺带清掉可能遗留的临时碎片（S-3）。
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(spec.name).part"))
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(spec.name).resume"))
+                Self.removeSegmentFiles(for: spec, in: dir)
                 completedBytes += spec.sizeHint
                 onProgress(Double(completedBytes) / Double(totalBytes))
                 continue
@@ -199,6 +203,8 @@ final class ModelDownloader: NSObject {
                 }
                 try Self.install(partURL, to: destURL)
                 try? FileManager.default.removeItem(at: resumeDataURL)
+                // S-3：若此前分段下载半途失败后回落到单连接并成功完装，清理遗留的 .seg* / .segmeta 碎片。
+                Self.removeSegmentFiles(for: spec, in: dir)
                 return
             } catch {
                 if isCancelled { throw DownloadError.cancelled }
@@ -263,6 +269,13 @@ final class ModelDownloader: NSObject {
 
     // MARK: - 分段并行下载
 
+    /// 分段续传旁路元数据（S-3）：记录切分时的总字节数与服务端 ETag，
+    /// 避免远端文件更新或总长变化后把新老字节静默拼成损坏文件。
+    private struct SegmentMetadata: Codable, Equatable {
+        let totalBytes: Int64
+        let etag: String?
+    }
+
     /// 试一次分段并行下载。
     /// - Returns: true = 已下载、校验并安装完毕；false = 这条路走不通，调用方应回落单连接。
     /// - Throws: 仅在用户取消时抛出 `.cancelled`；其余失败一律吞掉并返回 false。
@@ -275,7 +288,7 @@ final class ModelDownloader: NSObject {
     ) async throws -> Bool {
         if isCancelled { throw DownloadError.cancelled }
 
-        guard let total = await probeTotalBytesIfRangeSupported(Self.remoteURL(for: spec.name)) else {
+        guard let probe = await probeRangeSupport(Self.remoteURL(for: spec.name)) else {
             AppLog.model.info("服务端未确认支持 Range 请求，\(spec.name, privacy: .public) 走单连接下载")
             segmentedDownloadDisabled = true
             return false
@@ -284,7 +297,14 @@ final class ModelDownloader: NSObject {
         do {
             let task = Task { [weak self] in
                 guard let self else { return }
-                try await self.runSegments(spec, totalBytes: total, into: dir, partURL: partURL, onProgress: onProgress)
+                try await self.runSegments(
+                    spec,
+                    totalBytes: probe.totalBytes,
+                    etag: probe.etag,
+                    into: dir,
+                    partURL: partURL,
+                    onProgress: onProgress
+                )
             }
             activeSegmentedTask = task
             defer { activeSegmentedTask = nil }
@@ -305,17 +325,17 @@ final class ModelDownloader: NSObject {
         } catch {
             if isCancelled { throw DownloadError.cancelled }
             AppLog.model.warning("分段下载失败，回落单连接: \(String(describing: error), privacy: .public)")
-            // 分段文件保留：单连接路径用不到它们，但下次启动若再次尝试分段可以续上。
-            // 只有校验失败（内容确实是坏的）才删。
+            // 分段文件暂留：若后续单连接也因断网失败，下次启动仍可从已落盘的分段续传；
+            // 若单连接回落成功安装，则由 downloadOne 统一清理（S-3）。
             segmentedDownloadDisabled = true
             return false
         }
     }
 
-    /// 用一个 1 字节的 Range 请求同时确认两件事：服务端支持范围请求，以及文件总长度。
+    /// 用一个 1 字节的 Range 请求同时确认：服务端支持范围请求、文件总长度与可选 ETag。
     /// 比 HEAD 更可靠——部分 CDN 对 HEAD 的支持并不完整，而 206 + `Content-Range`
     /// 是我们真正依赖的能力，直接测它最实在。
-    private func probeTotalBytesIfRangeSupported(_ url: URL) async -> Int64? {
+    private func probeRangeSupport(_ url: URL) async -> (totalBytes: Int64, etag: String?)? {
         var request = URLRequest(url: url)
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         guard let (_, response) = try? await segmentSession.data(for: request),
@@ -327,7 +347,9 @@ final class ModelDownloader: NSObject {
         else {
             return nil
         }
-        return total
+        let rawETag = http.value(forHTTPHeaderField: "ETag")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let etag = (rawETag?.isEmpty == false) ? rawETag : nil
+        return (totalBytes: total, etag: etag)
     }
 
     /// 解析 `Content-Range: bytes 0-0/241216270` 末尾的总长度。
@@ -368,10 +390,15 @@ final class ModelDownloader: NSObject {
         dir.appendingPathComponent("\(spec.name).seg\(index)")
     }
 
+    private static func segmentMetadataURL(for spec: FileSpec, in dir: URL) -> URL {
+        dir.appendingPathComponent("\(spec.name).segmeta")
+    }
+
     private static func removeSegmentFiles(for spec: FileSpec, in dir: URL) {
         for index in 0..<segmentCount {
             try? FileManager.default.removeItem(at: segmentURL(for: spec, index: index, in: dir))
         }
+        try? FileManager.default.removeItem(at: segmentMetadataURL(for: spec, in: dir))
     }
 
     /// 并行下载所有分段，然后按序拼成 `.part`。
@@ -382,12 +409,29 @@ final class ModelDownloader: NSObject {
     private func runSegments(
         _ spec: FileSpec,
         totalBytes: Int64,
+        etag: String?,
         into dir: URL,
         partURL: URL,
         onProgress: @escaping (Double) -> Void
     ) async throws {
         let ranges = Self.segmentRanges(totalBytes: totalBytes, segmentCount: Self.segmentCount)
         guard !ranges.isEmpty else { throw DownloadError.checksumMismatch(spec.name) }
+
+        let currentMetadata = SegmentMetadata(totalBytes: totalBytes, etag: etag)
+        let metadataURL = Self.segmentMetadataURL(for: spec, in: dir)
+        let previousMetadata = (try? Data(contentsOf: metadataURL)).flatMap {
+            try? JSONDecoder().decode(SegmentMetadata.self, from: $0)
+        }
+        let hasExistingSegments = ranges.indices.contains { index in
+            Self.fileSize(at: Self.segmentURL(for: spec, index: index, in: dir)) > 0
+        }
+        if hasExistingSegments, previousMetadata != currentMetadata {
+            AppLog.model.info("分段续传元数据变化，清理旧分段后重新下载: \(spec.name, privacy: .public)")
+            Self.removeSegmentFiles(for: spec, in: dir)
+        }
+        if let encodedMetadata = try? JSONEncoder().encode(currentMetadata) {
+            try? encodedMetadata.write(to: metadataURL, options: .atomic)
+        }
 
         var alreadyOnDisk: [Int64] = []
         for index in ranges.indices {

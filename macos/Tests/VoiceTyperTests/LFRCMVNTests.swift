@@ -72,4 +72,37 @@ final class LFRCMVNTests: XCTestCase {
         XCTAssertEqual(normalized[0], expectedRow0)
         XCTAssertEqual(normalized[1], expectedRow1)
     }
+
+    /// S-5 回归：`applyLFRCMVNFlat` 在含左侧复制、普通帧、尾帧补齐以及多维特征下，
+    /// 必须与 `applyCMVN(applyLFR(...))` 逐 bit 完全一致。
+    func testApplyLFRCMVNFlatMatchesTwoStagePipelineBitForBit() {
+        for frameCount in [0, 1, 5, 12, 13, 19] {
+            let featureDim = 4
+            let m = 7
+            let n = 6
+            let outDim = m * featureDim
+            let rows: [[Float]] = (0..<frameCount).map { t in
+                (0..<featureDim).map { d in Float(t * 10 + d) * 0.25 - 1.5 }
+            }
+            let flatInput = rows.flatMap { $0 }
+            let stats = CMVNStats(
+                means: (0..<outDim).map { Float($0) * 0.1 - 1.0 },
+                vars: (0..<outDim).map { Float($0 + 1) * 0.05 }
+            )
+
+            let expectedRows = applyCMVN(applyLFR(rows, m: m, n: n), stats: stats)
+            let actual = applyLFRCMVNFlat(
+                flatInput,
+                frameCount: frameCount,
+                featureDim: featureDim,
+                m: m,
+                n: n,
+                stats: stats
+            )
+
+            XCTAssertEqual(actual.frameCount, expectedRows.count, "frameCount=\(frameCount)")
+            XCTAssertEqual(actual.featureDim, outDim, "frameCount=\(frameCount)")
+            XCTAssertEqual(actual.features, expectedRows.flatMap { $0 }, "frameCount=\(frameCount)")
+        }
+    }
 }

@@ -88,6 +88,12 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.load(config: config, launchAtLogin: LaunchAtLogin.isEnabled)
     }
 
+    /// 配置保存或菜单栏快捷切换后回灌已生效值，保留未提交草稿且不重读 Keychain（S-4）。
+    func syncAppliedConfig(_ config: AppConfig) {
+        ensureUIBuilt()
+        viewModel.syncAppliedConfig(config)
+    }
+
     func updateStatus(
         permissions: PermissionSnapshot,
         asrState: ASRService.State,
