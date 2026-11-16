@@ -1,146 +1,122 @@
+<div align="center">
+
 # VoiceTyper
 
-[简体中文](README.md) | **English**
+**Hold a hotkey, speak, release — text lands right at your cursor.**
+
+Local, offline voice typing for macOS & Windows · Audio never leaves your device · Works alongside any input method
 
 [![Release](https://img.shields.io/github/v/release/oyasmi/voice-typer)](https://github.com/oyasmi/voice-typer/releases)
 [![License](https://img.shields.io/github/license/oyasmi/voice-typer)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)
+![ASR](https://img.shields.io/badge/ASR-100%25%20Local%20Offline-success)
 
-**Hold a hotkey, speak, release — the text appears at your cursor.** Recognition runs on your own
-computer; recordings never leave it.
+[简体中文](README.md) · **English**
 
-VoiceTyper sits quietly in the menu bar or system tray. Reply to a message, write a document, capture an
-idea the moment it shows up — no web page to open, no recording to upload, no copying and pasting between a
-transcript and the window you're working in. It doesn't replace your input method and works anywhere you
-can type.
+[Download](#download) · [Features](#features) · [Quick Start](#quick-start) · [Privacy](#privacy) · [FAQ](#faq) · [Contributing](#contributing)
+
+</div>
+
+---
+
+VoiceTyper lives quietly in your macOS menu bar or Windows system tray. Reply to messages, draft documents, write code comments, or capture a fleeting thought — no web page to open, no audio to upload, and no copying and pasting between a transcription window and your active app. It never replaces your system input method; **anywhere you can type, you can speak**.
 
 ## Download
 
-| Platform | Requirements | Default hotkey | |
+| Platform | System Requirements | Default Hotkey | Downloads & Guides |
 | --- | --- | --- | --- |
-| **macOS** | Apple Silicon, macOS 14+ | `Fn` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](macos/README.en.md) |
-| **Windows** | Windows 10 (1809+) / 11, x64 or arm64, [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) | Right `Ctrl` | [Download](https://github.com/oyasmi/voice-typer/releases) · [Guide](windows/README.en.md) |
-| Linux / Intel Mac | No standalone app yet | — | Use the [client–server version](client-server/README.md) |
+| **macOS** | Apple Silicon (M-series), macOS 14+ | <kbd>Fn</kbd> | [Download DMG](https://github.com/oyasmi/voice-typer/releases) · [macOS User Guide](macos/README.en.md) |
+| **Windows** | Windows 10 (1809+) / 11, x64 or arm64<br>Requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) | Right <kbd>Ctrl</kbd> | [Installer / Portable](https://github.com/oyasmi/voice-typer/releases) · [Windows User Guide](windows/README.en.md) |
+| **Linux / Intel Mac** | No standalone local app yet | — | Use the [client–server edition](client-server/README.md) |
 
-## Highlights
+> [!TIP]
+> Builds are not yet Apple-notarized or Windows code-signed. On first launch, if the OS blocks the app: on macOS open **System Settings → Privacy & Security** and click **Open Anyway**; on Windows click **More info → Run anyway** (one-time only).
 
-- **Works everywhere**: chat apps, browsers, documents, editors — text goes wherever the cursor is.
-- **See it as you speak**: the overlay shows live results and corrects earlier words as it hears more
-  context.
-- **Ready to send**: automatic punctuation, spoken numbers written as digits, and spacing between Chinese
-  and English words.
-- **Local, offline, free**: on-device recognition with the SenseVoice model; no account, no usage limits.
-- **Multilingual**: Chinese, English, Cantonese, Japanese and Korean, with automatic detection; mixed
-  Chinese and English needs no switching.
-- **Stays out of the way**: never steals focus; press `Esc` to cancel at any time; recover what you said
-  from the menu.
-- **Knows your words**: add names, product names and terms that keep getting misrecognized to a custom
-  vocabulary, and recognition leans toward those spellings — all on your machine.
-- **Optional AI proofreading**: connect any OpenAI-compatible service to fix homophones and slips of the
-  tongue. Off by default.
+## Features
 
-## Getting started
+- **Type anywhere without switching IMEs**: Chat apps, browsers, docs, terminals, IDEs — text goes straight to your active cursor while your regular keyboard layout and input method stay untouched.
+- **Live preview with self-correction**: A lightweight overlay streams your words as you speak and revises earlier homophones automatically as more context arrives.
+- **Polished output out of the box**: Adds punctuation automatically, formats spoken numbers as digits, and inserts clean spacing between Chinese and English words (`我用 Python 写代码`).
+- **100% local, offline, and free**: Powered on-device by SenseVoice. No account, no subscriptions, no usage caps, and works without internet access.
+- **Multilingual & code-switching friendly**: Supports Chinese, English, Cantonese, Japanese, and Korean with automatic language detection — mix Chinese and English naturally without flipping switches.
+- **Custom vocabulary (hotwords)**: Add names, product brands, and domain jargon (with optional phonetic hints) so on-device recognition favors your exact spellings.
+- **Thoughtful everyday ergonomics**:
+  - Never steals window focus; press <kbd>Esc</kbd> anytime to discard;
+  - Uses your built-in microphone automatically when Bluetooth headphones are connected so music won't pause or drop into low-bitrate call audio;
+  - Skips password fields automatically; cancelled or uninserted transcripts stay recoverable in recent history;
+  - Supports both **hold-to-talk** and **press-to-toggle** for longer passages.
+- **Optional AI proofreading**: Off by default. Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to clean up slips of the tongue and homophones.
 
-1. Download and install the app for your platform (see the platform guide).
-2. On first launch, a four-step guide gets you ready: on macOS you grant microphone, Input Monitoring and
-   Accessibility permissions; on Windows you just confirm the microphone works. The ~240MB speech model
-   downloads automatically in the background, once. The guide ends with a real test dictation.
-3. From then on:
-   - put the cursor where you want the text;
-   - hold the hotkey and speak, watching live results in the overlay;
-   - release the hotkey, and the text is typed in.
+## Quick Start
 
-Presses shorter than 0.3 seconds are ignored as accidental. For long passages, switch the trigger to
-“press once to start, press again to stop”.
-On Windows, Right Ctrl is recommended, with Ctrl + Tab as a second preset. The tray menu’s
-“Recent transcriptions” shows the last 20 results, with individual copying or copying all in speaking
-order, separated by newlines. Text recognized before cancellation or failure can also be recovered.
-Recognition language, microphone policy and correction can be changed from the tray; see the
-[Windows guide](windows/README.en.md#everyday-use) for password-field checks and Windows-specific behavior.
+1. **One-time setup**: Launch VoiceTyper and follow the four-step setup guide — grant permissions (Microphone, Input Monitoring, and Accessibility on macOS; Microphone check on Windows), let the ~240 MB speech model download automatically in the background, and run a live test dictation right inside the guide.
+2. **Hold and speak**: Click where you want text to appear, **hold your hotkey, and speak** while watching live feedback in the overlay.
+3. **Release to insert**: Let go of the hotkey and punctuated text is typed at your cursor (taps shorter than 0.3s are ignored as accidental presses).
+
+> For platform-specific hotkey presets, recent transcription history, and menu bar / tray shortcuts, check the [macOS User Guide](macos/README.en.md#everyday-use) and [Windows User Guide](windows/README.en.md#everyday-use).
 
 ## Privacy
 
-Speech often carries more private information than the text you end up writing, so local recognition is a
-design premise of VoiceTyper, not an add-on.
+Spoken audio carries far more personal context than final written text. **On-device recognition is VoiceTyper's foundational constraint, not an optional mode:**
 
-- Audio is processed in memory on your computer and never uploaded anywhere;
-- once the model is downloaded, it works fully offline;
-- logs never contain recognized text;
-- AI proofreading is off by default. When enabled, only the **recognized text** is sent to the service you
-  configured — never audio — and the API key is kept in the macOS Keychain or Windows DPAPI-encrypted
-  storage. To stay fully offline, point it at a model running on your own machine.
+- **Audio never leaves your computer**: Recordings are processed strictly in memory — never written to disk and never uploaded anywhere.
+- **Works completely offline**: Once the speech model is downloaded on first launch, no internet connection is needed. Update checks happen only when you click them manually.
+- **Zero transcript logging**: Diagnostic logs never contain recognized text or custom vocabulary entries; recent history lives in RAM only and vanishes when you quit.
+- **Clear boundaries for AI proofreading**: Off by default. When enabled, **only the recognized text** (never audio) is sent to the endpoint you configure, and your API key is stored encrypted in the macOS Keychain or Windows DPAPI. Point it at a local LLM to stay 100% offline.
 
 ## FAQ
 
-### Is it an input method (IME)?
+### Is VoiceTyper an input method (IME)?
 
-No. VoiceTyper doesn't replace your input method; it just writes the recognized text into the focused
-field, so your typing habits stay the same.
+No. VoiceTyper does not register as a system IME or alter how you type on your keyboard — it simply inserts the finished transcript at your active cursor when you finish speaking.
 
-### Does it need the internet every time?
+### Why does it use a few hundred MB of RAM, and can I reduce it?
 
-No. It only goes online to download the model once, when you check for updates, and when you turn on AI
-proofreading.
+By default, VoiceTyper keeps the speech model loaded in memory (~500 MB measured on macOS) so pressing the hotkey starts recording with zero delay. If you dictate only occasionally, disable preloading at launch or enable **unload after inactivity** in Settings — the model will load on demand while you speak.
 
-### Does it use a lot of memory?
+### Where might automatic text insertion not work?
 
-By default the model loads at launch and stays resident so the hotkey responds instantly, at the cost of a
-few hundred MB (about 500MB measured on macOS). If you dictate rarely, turn off preloading or release the
-model after inactivity in Settings; it then loads while you record.
+Almost anywhere you can paste works seamlessly. Password fields, certain fullscreen games, remote desktop clients, and elevated (Run as Administrator) windows on Windows may block simulated input; in those cases, your transcript stays on the clipboard and in recent history so you can paste manually.
 
-### Where doesn't it work?
+### Can I add hotwords or swap out the speech model?
 
-It works almost anywhere you can paste. Some password fields, games, remote desktops and windows running
-as administrator reject simulated input; the result then stays on the clipboard and can be recovered from
-the menu, so you can paste it manually.
+**Hotwords — yes**: Add frequently misrecognized names and terms in **Settings → Vocabulary**, processed entirely on-device (see the [macOS guide](macos/README.en.md#custom-vocabulary) and [Windows guide](windows/README.en.md#custom-vocabulary)).  
+**Model switching — no**: The standalone desktop apps focus on making SenseVoice-Small fast and dependable out of the box rather than exposing uncalibrated model choices. If you need alternative models or remote GPU inference, use the [client–server edition](client-server/README.md).
 
-### Why does the system block the first launch?
+### How mature is the Windows version?
 
-The packages aren't notarized by Apple or code-signed for Windows yet. On macOS, go to System Settings →
-Privacy & Security and click “Open Anyway”; on Windows, click “More info → Run anyway”. You only need to do
-this once.
-
-### Can I switch models or add hotwords?
-
-You can add hotwords: list the words that keep getting misrecognized in Settings → Vocabulary; the macOS and
-Windows apps work the same way (see the [macOS guide](macos/README.en.md#custom-vocabulary) and the
-[Windows guide](windows/README.en.md#custom-vocabulary)). The standalone apps focus on SenseVoice-Small and do not
-support switching models — a clear, dependable default matters more than a pile of unpolished options. For other
-models, use the [client–server version](client-server/README.md).
-
-### Is the Windows version stable?
-
-It uses native Windows interaction, and dictation and model download have been run on real Windows
-hardware. The latest improvements, arm64 devices, long-running sessions and multi-monitor DPI still
-require systematic real-device acceptance testing. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if you hit a problem.
+The Windows app uses native system tray and WinForms controls, and core dictation and model downloading have been verified on real Windows hardware. Recent UX refinements, arm64 laptops, extended sessions, and multi-monitor DPI scaling are still undergoing systematic hardware acceptance testing. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if anything behaves unexpectedly.
 
 ## Contributing
 
 ```text
 voice-typer/
-├── macos/           # macOS app: Swift + AppKit/SwiftUI + ONNX Runtime
-├── windows/         # Windows app: .NET 10 + WinForms + ONNX Runtime
-└── client-server/   # Legacy client–server architecture for Linux, remote and shared-server setups
+├── macos/           # Standalone macOS app: Swift + AppKit/SwiftUI + ONNX Runtime
+├── windows/         # Standalone Windows app: .NET 10 + WinForms + ONNX Runtime
+└── client-server/   # Legacy client–server edition for Linux, Intel Macs & shared servers
 ```
 
-Both platforms share the same product architecture and recognition pipeline, checked for numerical
-consistency against one set of golden fixtures. From the repository root, `make` builds for the host OS
-(falling back to macOS when it can't tell); `make macos`, `make windows`, `make test` and `make clean` are
-explicit targets, and `make help` lists them all. Build, test and architecture docs (in Chinese):
+Both desktop platforms share the same state-machine design and ASR pipeline, verified for numerical parity against shared golden fixtures. Use the root `Makefile` for common tasks:
 
-- macOS: [Development](macos/DEVELOPMENT.md) · [Design](macos/DESIGN.md) · [Changelog](macos/CHANGELOG.md)
-- Windows: [Development](windows/DEVELOPMENT.md) · [Design](windows/DESIGN.md) · [Changelog](windows/CHANGELOG.md)
-- Client–server: [Overview](client-server/README.md) · [Protocol](client-server/PROTOCOL.md)
+```bash
+make          # Build for the current host OS (macOS or Windows)
+make test     # Run automated tests for the current platform
+make help     # List all build, test, and clean targets
+```
 
-Bug reports and suggestions are welcome in [Issues](https://github.com/oyasmi/voice-typer/issues).
+Developer & architecture docs (primarily in Chinese):
+
+- **macOS**: [Development](macos/DEVELOPMENT.md) · [Architecture & Design](macos/DESIGN.md) · [Changelog](macos/CHANGELOG.md)
+- **Windows**: [Development](windows/DEVELOPMENT.md) · [Architecture & Design](windows/DESIGN.md) · [Changelog](windows/CHANGELOG.md)
+- **Client–server**: [Overview](client-server/README.md) · [Protocol](client-server/PROTOCOL.md)
+- **Model evaluation**: [Fun-ASR-Nano Evaluation & Deferral Notes](FUN_ASR_NANO_EVALUATION.md)
+
+Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/oyasmi/voice-typer/issues).
 
 ## Acknowledgements
 
-Local recognition is built on [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) and
-[ONNX Runtime](https://github.com/microsoft/onnxruntime). Thanks to these projects for bringing
-high-quality offline speech recognition to ordinary desktop apps.
+On-device speech recognition is built on [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) and [ONNX Runtime](https://github.com/microsoft/onnxruntime). Thank you to their authors and maintainers for making fast, accurate offline speech recognition practical on everyday computers.
 
 ## License
 
-[Apache License 2.0](LICENSE). Third-party components (the SenseVoice model, ONNX Runtime, etc.) remain
-under their own licenses.
+Licensed under the [Apache License 2.0](LICENSE). Third-party components (including the SenseVoice model and ONNX Runtime) remain subject to their respective licenses.

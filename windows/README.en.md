@@ -1,223 +1,160 @@
 # VoiceTyper for Windows
 
-[简体中文](README.md) | **English**
+[简体中文](README.md) · **English**
 
-[← Project home](../README.en.md) · [Download](https://github.com/oyasmi/voice-typer/releases) · [Changelog](CHANGELOG.md) · [Development](DEVELOPMENT.md)
+[← Project Home](../README.en.md) · [Download](https://github.com/oyasmi/voice-typer/releases) · [Changelog](CHANGELOG.md) · [Development](DEVELOPMENT.md)
 
-VoiceTyper is a system tray app: hold the right-hand `Ctrl` key in any app and speak, release it, and the
-text appears at the cursor. Speech recognition runs entirely on your PC; recordings are never uploaded.
+VoiceTyper is a lightweight system tray voice typing app for Windows: hold the right-hand <kbd>Ctrl</kbd> key in any window, speak, and release — punctuated text lands right at your cursor. Speech recognition runs 100% locally on your PC; audio is never uploaded.
 
-> **Status**: the Windows app uses a native tray menu and WinForms interface. Dictation and model download have been
-> run on real Windows hardware. Validation of the latest improvements — including arm64 devices, long-running
-> sessions and multi-monitor DPI — is still in progress. Please [report](#reporting-issues) anything odd.
+> [!NOTE]
+> **Current status**: The Windows app uses a native system tray and WinForms interface, and core dictation and model downloading have been verified on real Windows hardware. Recent UX refinements — along with systematic acceptance testing on arm64 laptops, extended sessions, and multi-monitor DPI setups — are still in progress. Please [report any issues](#reporting-issues) you run into.
 
-## Requirements
+## Installation & Requirements
 
 | Item | Requirement |
 | --- | --- |
-| System | Windows 10 (1809 or later) or Windows 11 |
-| Architecture | x64 or arm64 (including Snapdragon X laptops) |
-| Runtime | [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (installed separately) |
-| Disk | About 300MB (app + speech model downloaded on first launch) |
-| Network | Only for the first model download |
+| **OS** | Windows 10 (version 1809 or later) or Windows 11 |
+| **Architecture** | x64 (most PCs) or arm64 (including Snapdragon X laptops) |
+| **Runtime** | [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (installed once separately) |
+| **Disk Space** | ~300 MB (app + speech model downloaded on first launch) |
+| **Network** | Needed once for the initial model download; works completely offline afterward |
 
-## Installation
+### Install Steps
 
-1. Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0): pick
-   **Desktop Runtime** for your PC's architecture (most PCs are x64). The plain .NET Runtime or .NET 8/9
-   won't do; if you already have the .NET 10 SDK, you're set.
-2. Download the installer from [Releases](https://github.com/oyasmi/voice-typer/releases):
-   `VoiceTyper-<version>-win-x64-setup.exe` (most PCs) or `VoiceTyper-<version>-win-arm64-setup.exe`
-   (ARM laptops).
-3. Run it. It installs into your user folder and needs no administrator rights.
-4. If you see “Windows protected your PC”, click “More info → Run anyway”.
+1. **Install the .NET 10 Desktop Runtime**: Visit the [.NET 10 download page](https://dotnet.microsoft.com/download/dotnet/10.0) and download **.NET Desktop Runtime** matching your PC's architecture (usually `x64`).
+   - Note: The base console `.NET Runtime` or `.NET 8 / 9` will not work; if you already have the `.NET 10 SDK` installed, you're all set.
+2. **Download VoiceTyper** from [Releases](https://github.com/oyasmi/voice-typer/releases):
+   - Most PCs: `VoiceTyper-<version>-win-x64-setup.exe`
+   - ARM laptops: `VoiceTyper-<version>-win-arm64-setup.exe`
+   - Prefer no installer? Grab the `*-portable.zip` archive, extract it to a fresh folder, and run `VoiceTyper.exe`.
+3. **Run the installer**: It installs into your user profile with no administrator (UAC) prompt. If Windows SmartScreen shows “Windows protected your PC”, click **More info → Run anyway** (builds are not yet commercially code-signed).
 
-> The installer is not code-signed, which triggers SmartScreen; this does not affect how the app works. If
-> the .NET runtime is missing, the installer tells you where to get it. Prefer not to install? Download the
-> portable `*-portable.zip`, unzip it and run `VoiceTyper.exe`.
+## First Launch
 
-## First launch
+On your first run, a four-step setup guide walks you through **Welcome → Microphone → Speech Model → Try It**:
 
-A four-step guide opens: **Welcome → Microphone → Speech model → Try it**.
+- **Microphone check**: Pick your input device and click **Test microphone** to verify live audio levels. If the mic fails to open, check **Settings → Privacy & security → Microphone** in Windows to make sure desktop apps are allowed access. No other Windows permissions are required.
+- **Automatic speech model setup**: The ~240 MB speech model downloads and verifies itself in the background, supporting resume after interruptions, automatic retries, and fallback mirrors.
+- **Live test dictation**: Complete one real dictation inside the guide window to confirm your hotkey, microphone, model, and text insertion all work together. You can reopen this guide anytime via **Setup Guide...** in the tray menu.
 
-- **Microphone**: pick your input device and click “Test microphone” to see a live level meter. If the
-  microphone can't be opened, check that Settings → Privacy & security → Microphone allows desktop apps.
-  No other system permissions are needed on Windows.
-- **The speech model** (about 240MB) starts downloading in the background on first launch and is verified
-  automatically. Downloads resume after interruptions, retry on failure and fall back to mirror sources.
-- **Try it**: complete one real dictation inside the guide window. Only a successful run proves that the
-  hotkey, microphone, recognition and text insertion all work; if one of them fails, the guide tells you
-  which. You can reopen it from the tray menu (“Setup Guide...”).
-
-VoiceTyper lives in the system tray at the bottom right of the taskbar. Windows 11 tucks new icons behind
-the “^” arrow; drag it out to keep it visible.
+> **Finding the tray icon**: VoiceTyper sits in the system tray at the bottom right of your taskbar (Windows 11 tucks new icons behind the `^` overflow arrow — drag it onto the taskbar to keep it visible). The colored badge dot indicates state: **Red** = recording, **Yellow** = recognizing / inserting, **Orange** = downloading model, **Grey** = loading / paused, **Dark red** = error.
 
 ## Everyday use
 
-1. Put the cursor where you want the text.
-2. Hold **Right Ctrl**. The overlay first shows a grey “Starting microphone…”; **start speaking once it
-   turns red**. The overlay shows live results and corrects earlier words as you keep talking.
-3. Release Right Ctrl. The final, punctuated text is written into the current app.
+1. Click where you want text to appear.
+2. Hold **Right <kbd>Ctrl</kbd>**: The overlay briefly shows a grey “Starting microphone…” — **begin speaking once it turns red**. Live results stream in the overlay and revise earlier words automatically as you continue speaking.
+3. Release Right <kbd>Ctrl</kbd> to insert the final punctuated text into your active window.
 
-Right Ctrl only starts dictation when held on its own; holding it while pressing another key (such as
-Right Ctrl + C) is still a normal shortcut, and that recording is silently discarded. If your keyboard has
-no Right Ctrl (many new laptops replace it with a Copilot key), choose the second preset, **Ctrl + Tab**,
-or record a custom combination in Settings.
-Ctrl + Tab will replace tab switching in other apps. Right Alt can activate menus and move focus away
-from the input field, so it is no longer recommended.
+### Hotkey Tips
 
-Useful details:
+- **Normal shortcuts stay intact**: Right <kbd>Ctrl</kbd> triggers dictation only when held by itself. Pressing another key while holding it (such as Right <kbd>Ctrl</kbd> + <kbd>C</kbd>) acts as an ordinary shortcut and silently discards the recording.
+- **No Right <kbd>Ctrl</kbd> key?** Many recent laptops replace Right <kbd>Ctrl</kbd> with a Copilot key. In **Settings → Dictation**, click the **<kbd>Ctrl</kbd> + <kbd>Tab</kbd>** preset button (note: this overrides tab switching in other apps), or click **Record Hotkey** to set any custom chord like <kbd>Ctrl</kbd> + <kbd>F2</kbd>. Right <kbd>Alt</kbd> is not recommended because it can activate app menu bars and steal focus from input fields.
 
-- **Ending dictation**: normal release captures about 150ms of extra audio to preserve the last word. Esc cancels immediately.
-- **Password fields**: detected password fields block recording. The target is checked again before insertion; if it is protected or cannot be checked, recover the text manually from history.
-- **Quick settings**: change recognition language, text correction, or automatic/system-default microphone policy from the tray. Choose a specific device in Settings. Quick changes are disabled during dictation or while Settings has unsaved edits.
+### Handy Details
 
-- **Cancel**: press `Esc` while recording or recognizing; nothing is written.
-- **Recover results**: “Copy last transcription” still copies the latest result. “Recent transcriptions...”
-  shows the last 20 results, including the latest, newest first. Select an entry to read its full text
-  and copy it, or use “Copy all (oldest first)” to join all retained entries with newlines in speaking order.
-  Text recognized before cancellation or failure is retained with a cancelled or partial label. Use “Clear history” to remove it.
-  History is kept in memory only and cleared on exit. Wait for active dictation to finish before copying.
-- **Long dictation**: switch the trigger to “press once to start, press again to stop” in Settings.
-- **Length**: up to 120 seconds per dictation, with a countdown for the last 15 seconds; at the limit the
-  dictation ends and is inserted normally. Presses shorter than 0.3 seconds are ignored as accidental.
-- **Mixed Chinese and English**: no switching needed; a space is inserted between Chinese and English words.
-- **No surprise typing**: if you switch to another window while dictating, the result is only copied to
-  the clipboard, never typed into a window you didn't expect.
-
-A small dot on the tray icon shows the current state: red while recording, yellow while recognizing or
-inserting, orange while the model downloads, grey while loading or paused, dark red on errors.
-Right-click the tray icon for Settings, Pause Dictation, Check for Updates and more.
+- **Cancel anytime**: Press <kbd>Esc</kbd> while recording or recognizing to cancel immediately without typing anything.
+- **Recover transcripts**: Right-click the tray icon for two recovery options (kept in RAM only and cleared on exit):
+  - **Copy last transcription**: Copies your latest finished transcript in one click;
+  - **Recent transcriptions...**: Browse up to your last 20 entries newest-first (including cancelled or partial transcripts, clearly labeled). Select any entry to inspect and copy it, click **Copy all (oldest first)** to join every retained entry with newlines in speaking order, or **Clear history** anytime.
+- **Long dictation & clean endings**: Switch the trigger mode in Settings to **press once to start, press again to stop**. Sessions run up to 120 seconds (with a countdown during the final 15 seconds, inserting normally at the limit); taps shorter than 0.3s are ignored as accidental; releasing the hotkey normally captures ~150ms of extra audio so your last syllable isn't cut off.
+- **Mixed Chinese & English**: Speak both languages without switching — clean spacing between Chinese and English words (`我用 Python 写代码`) and spoken numbers are formatted automatically.
+- **No surprise typing & password protection**: If you switch windows mid-dictation, the transcript is placed on the clipboard instead of typing into an unexpected window. Detected password fields block dictation up front and are checked again right before insertion; if the target is protected, grab the text manually from recent history.
+- **Quick tray controls**: Right-click the tray icon to switch recognition language, toggle text correction, change microphone policy (Auto vs. System Default), pause dictation, or check for updates.
 
 ## Settings
 
-Everything is configurable in the Settings window; there is no config file to edit.
+Everything is configured in the Settings window — no config files to edit. The window adapts smoothly to display scaling and narrower screens while keeping **Save** and **Discard** pinned at the bottom:
 
-The window adapts to display scaling and available space. In narrow windows, fields stack vertically and
-pages scroll while Save and Discard remain at the bottom. Microphone, service URL and model name fields
-use the full content width for longer values.
-
-| Page | Contents |
+| Page | What's Inside |
 | --- | --- |
-| Dictation | Hotkey, trigger mode, microphone and “Test microphone”, recognition language (auto / Chinese / English / Cantonese / Japanese / Korean) |
-| Speech Model | Model status and download, memory |
-| Vocabulary | Custom vocabulary (names, product names, terms) and recognition bias strength |
-| Text correction | Service URL, API key, model name, test |
-| Appearance and general | Overlay position and opacity, launch at login, interface language |
-| Diagnostics and help | Microphone check, timings of the last 20 dictations, log and config folders |
+| **Dictation** | Hotkey presets & recorder, trigger mode (hold vs. toggle), microphone device & **Test microphone**, recognition language (Auto / Chinese / English / Cantonese / Japanese / Korean) |
+| **Speech Model** | Model status, download manager & source diagnostics, memory policy |
+| **Vocabulary** | Custom vocabulary list (names, brands, jargon), recognition bias strength, live replacement preview |
+| **Text correction** | OpenAI-compatible base URL, API key, model name, connection test |
+| **Appearance and general** | Overlay position & opacity (with live sample preview), launch at login, interface language |
+| **Diagnostics and help** | Microphone check, stage timings for the last 20 dictations, one-click diagnostic copy, log & config folders |
 
-- **Hotkey**: **Right Ctrl** is the default and first recommendation, followed by **Ctrl + Tab**. Both have
-  preset buttons in Settings. You can also click “Record Hotkey”
-  and press any combination you want (such as `Ctrl + F2`); you'll be warned if it collides with a common
-  shortcut such as `Ctrl + C` or `Alt + Tab`.
-- **Microphone**: “Auto” by default — when both the default input and output are Bluetooth headphones,
-  the built-in microphone is used instead, so the headphones don't drop into low-quality call mode. You can
-  also pin a specific device or follow the system default.
-- **Memory**: by default the model loads at launch and stays resident, so the hotkey responds instantly.
-  If memory is tight, turn off preloading or release the model after a period of inactivity; it then
-  loads while you record.
-- **Interface language**: Chinese or English, applied after restarting the app. It is independent of the
-  recognition language.
+Key options worth knowing:
+
+- **Shortcut conflict warnings**: Recording a custom hotkey warns you if it collides with everyday shortcuts like <kbd>Ctrl</kbd> + <kbd>C</kbd> or <kbd>Alt</kbd> + <kbd>Tab</kbd>.
+- **Bluetooth headphone protection**: Microphone defaults to **Auto** — when both system input and output point to Bluetooth headphones, VoiceTyper automatically records from your PC's built-in microphone so your headphones don't drop into muffled hands-free call audio. You can also pin a specific microphone or follow the Windows default.
+- **Memory management**: By default, the model loads at launch so your hotkey responds instantly. To save RAM, disable launch preloading or set an idle unload timeout — the model will load while you speak on your next dictation.
+- **Interface language**: Choose Simplified Chinese or English (applied on restart), independent of your recognition language.
 
 ### Custom vocabulary
 
-Names, product names, project code names and terms that keep getting misrecognized can be listed in
-Settings → Vocabulary. Everything runs on your PC; nothing goes online.
+Add frequently misrecognized names, brands, project code names, and jargon in **Settings → Vocabulary** (up to 200 entries; click **Save and Apply** to activate from your next dictation, 100% offline):
 
-- **Spelling**: the correct spelling, such as `VoiceTyper`, `Claude` or `张三丰`.
-- **Sounds like** (optional): what it tends to come out as, e.g. `克劳德` for `Claude`; separate several with commas.
-  Variants that differ only in spaces, hyphens or letter case (`voice typer`, `Voice-Typer`) don't need to be
-  listed — they are normalized to your spelling automatically.
-- **Recognition bias**: Off / Light / Standard / Strong, Standard by default. Stronger settings recognize listed
-  words more readily, but are also more likely to turn similar-sounding ordinary words into them; words that sound
-  clearly different are never changed. If you see unwanted changes, go down one level.
-- **Add from recent results**: when you spot a misrecognition, select the wrong part in a recent result and type
-  the correct spelling.
-- **Try replacement**: type a sentence to see the replacements immediately (recognition bias can only be tried by
-  dictating).
-- **Status column**: ✓ means the entry takes part in recognition bias; ⚠ means it is, for example, a single character
-  (or a single English word piece) — such entries are only used for replacement. New entries are checked once saved.
+- **Spelling**: The exact output you want, e.g., `VoiceTyper`, `Claude`, or `张三丰`.
+- **Sounds like** (optional): Common misrecognitions or phonetic approximations (e.g., `克劳德` for `Claude`; separate multiple hints with commas). Variations differing only in case, spaces, or hyphens (`voice typer`, `Voice-Typer`) normalize automatically without needing to be listed.
+- **Recognition bias**: Choose **Off / Light / Standard / Strong** (`Standard` by default). Stronger settings favor listed terms more readily, while clearly different-sounding words are never altered. Step down one level if ordinary similar-sounding words get pulled toward a custom entry.
+- **Add from recent results & Try replacement**: Highlight a misrecognized span from a recent dictation to add it directly, or type a sample sentence into **Try replacement** to preview text replacements right away (acoustic bias is experienced during live dictation).
+- **Status indicator**: Once saved, `✓` means the entry participates in both acoustic recognition bias and text replacement; `⚠` marks entries like single characters or single English word pieces that apply text replacement only.
 
-Click “Save and Apply”; the change takes effect from the next dictation. Up to 200 entries. Without any vocabulary,
-recognition results are exactly the same as before. When AI text correction is on, the list is also given to the
-correction service.
+When AI text correction is enabled, your vocabulary list is also included in the correction context.
 
 ### AI text correction (optional, off by default)
 
-Connect any OpenAI-compatible service (including a model running on your own machine) to fix homophones,
-slips of the tongue and punctuation. When enabled, only the **recognized text** is sent to the service you
-configured — never audio. To cut waiting time, a connection to the service is opened when recording starts
-(carrying no key and no text). The API key is encrypted with Windows DPAPI so only your user account can
-read it.
+Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to fix homophones, stutters, and punctuation:
 
-Press the hotkey again during correction to skip it and insert the original text; if correction fails,
-the original text is used automatically.
-When skipping correction with a modifier-only hotkey such as Right Ctrl, tap and release it on its own. Ordinary combinations such as Right Ctrl + C do not skip correction.
+- When turned on, **only the recognized text** is sent to your configured endpoint — audio is never transmitted. To minimize latency, VoiceTyper pre-warms the network connection when recording begins (sending neither your key nor any text). Your API key is encrypted with Windows DPAPI under your user account.
+- Press your hotkey again during correction to skip waiting and insert the raw transcript immediately (for single-modifier hotkeys like Right <kbd>Ctrl</kbd>, tap and release the key by itself; chords like Right <kbd>Ctrl</kbd> + <kbd>C</kbd> won't accidentally skip).
+- If correction times out or errors out, the raw transcript is inserted automatically.
 
 ## Privacy
 
-- Audio is processed in memory only — never written to disk, never uploaded.
-- Once the model is downloaded, VoiceTyper works fully offline; “Check for Updates” only goes online
-  when you click it.
-- No account, no usage limits.
-- Logs never contain recognized text or your custom vocabulary; the last transcription and the last 20 history entries are kept
-  in memory only and cleared on quit.
+- Audio stays strictly in RAM — never written to disk and never uploaded.
+- Works completely offline once the speech model is downloaded; **Check for Updates** connects only when you click it manually.
+- No account and no usage limits.
+- Logs and copied diagnostics never contain recognized text or custom vocabulary; the last transcription and the 20-entry history live in RAM only and clear on exit.
 
 ## FAQ
 
-### The hotkey does nothing?
+### Pressing the hotkey does nothing?
 
-Make sure the VoiceTyper icon is in the tray, dictation isn't paused, and no other program uses the same
-hotkey (for example the older split client running at the same time). When an elevated window such as Task
-Manager is in front, Windows may block the hotkey; switch to a normal window and try again.
+1. Make sure VoiceTyper is running in the system tray and **Pause Dictation** is unchecked.
+2. Check that no other app has registered the same global hotkey (such as the legacy split client).
+3. If an **elevated (Run as Administrator)** window like Task Manager is in the foreground, Windows may block non-elevated apps from receiving hotkey events — switch to a standard window and try again.
 
-### Recognition works, but the text doesn't appear?
+### Recognition succeeded, but nothing was typed into my window?
 
-If the target window runs as administrator (e.g. an elevated terminal), Windows blocks ordinary programs
-from typing into it. The result is already on the clipboard — press `Ctrl + V`. Some games, remote desktops
-and password fields also reject simulated input.
+When the target window is running as Administrator (e.g., an elevated terminal), Windows User Interface Privilege Isolation (UIPI) blocks standard apps from sending simulated keystrokes to it. Your transcript is already on the clipboard — simply press <kbd>Ctrl</kbd> + <kbd>V</kbd>. Some fullscreen games, remote desktop clients, and password fields behave the same way.
 
 ### The overlay says no sound was detected?
 
-While recording, the overlay shows which microphone is in use. Make sure it isn't muted, the right device
-is selected, and Windows' microphone privacy settings allow access. “Test microphone” in Settings →
-Dictation helps narrow it down.
+While recording, the overlay shows which microphone is active. Check that it isn't muted, that the right device is selected, and that Windows microphone privacy settings permit desktop apps. Use **Test microphone** in **Settings → Dictation** to verify input levels.
 
-### The model download fails?
+### Model download stalls or fails?
 
-Open Settings → Speech Model → “Download details” to see why each source failed. TLS or certificate errors
-usually come from the system clock, a proxy or a corporate network. Fix that and click “Retry Download”;
-it resumes where it stopped.
+Open **Settings → Speech Model → Download details** to see per-mirror error messages. TLS or certificate errors usually point to an inaccurate system clock, a proxy, or corporate HTTPS inspection. Once resolved, click **Retry Download** to resume from where it stopped.
 
-### It says the .NET runtime is missing?
+### Launch error saying the .NET runtime is missing?
 
-Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) — **Desktop
-Runtime**, matching your PC's architecture.
+Install the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) — make sure to pick **Desktop Runtime** matching your PC's architecture (`x64` or `arm64`).
 
-### Can it coexist with the older split client?
+### Can it coexist with the legacy split client?
 
-Yes, but keeping only one is recommended. When migrating, your hotkey (the old default was `Ctrl + F2`)
-and overlay opacity carry over automatically; if both use the same hotkey, they will fight over it when run
-together.
+Yes, though running only one at a time is recommended so they don't compete for the same hotkey. On first launch, your hotkey (the legacy default was <kbd>Ctrl</kbd> + <kbd>F2</kbd>) and overlay opacity carry over automatically.
 
 ### Known limitations
 
-CPU inference only; only the SenseVoice-Small model, with no model switching; Left Alt, Win
-and Shift can't be used alone as the hotkey; recognition always runs locally, with no remote server option
-(use the [client–server version](../client-server/README.md) for that).
+- CPU inference only;
+- Built around SenseVoice-Small, with no model switching;
+- Left <kbd>Alt</kbd>, <kbd>Win</kbd>, and <kbd>Shift</kbd> cannot be used alone as single-key hotkeys;
+- Local on-device recognition only, with no remote server mode (for remote GPU servers or alternative ASR models, use the [client–server edition](../client-server/README.md)).
 
 ## Uninstall
 
-Uninstall VoiceTyper from Settings → Apps, or use “Uninstall VoiceTyper” in the Start menu. Settings and
-the model are kept; to remove everything, delete `%APPDATA%\VoiceTyper\` and `%LOCALAPPDATA%\VoiceTyper\`.
+Uninstall VoiceTyper from **Settings → Apps → Installed apps** in Windows (or via **Uninstall VoiceTyper** in the Start menu). Your configuration and downloaded speech model are left intact by default; to remove everything completely, delete both folders:
+
+- `%APPDATA%\VoiceTyper\`
+- `%LOCALAPPDATA%\VoiceTyper\`
 
 ## Reporting issues
 
-Open an [issue](https://github.com/oyasmi/voice-typer/issues) with what happened, your Windows version and
-architecture. Diagnostics help: Settings → Diagnostics and help can copy diagnostic information and open the
-log folder (`%LOCALAPPDATA%\VoiceTyper\logs\`). Neither contains recognized text.
+Open an [issue on GitHub](https://github.com/oyasmi/voice-typer/issues) describing what happened along with your Windows version and architecture (`x64` / `arm64`). Diagnostics help: in **Settings → Diagnostics and help**, click **Copy diagnostics** or open the log folder (`%LOCALAPPDATA%\VoiceTyper\logs\`) — neither contains recognized text.
 
-## Building from source
+## Building from Source
 
 ```bat
 cd windows
@@ -225,6 +162,4 @@ dotnet run
 build.bat
 ```
 
-Requires the .NET 10 SDK. Cross-compiling, signing, tests and log fields are covered in
-[DEVELOPMENT.md](DEVELOPMENT.md); architecture and design decisions in [DESIGN.md](DESIGN.md). Both are in
-Chinese.
+Requires the .NET 10 SDK. See [DEVELOPMENT.md](DEVELOPMENT.md) for cross-compilation, installer packaging, code signing, testing, and log fields, and [DESIGN.md](DESIGN.md) for architecture and design rationale (both in Chinese).
