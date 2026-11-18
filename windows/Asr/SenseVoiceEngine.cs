@@ -310,7 +310,7 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         return Decode(logitsSpan, validFrames, vocabSize);
     }
 
-    /// <summary>无词汇走贪心（一行不改）；有词汇走带偏置的束搜索。两条路径都把拼好的原始串交给 <see cref="TextPostprocessor"/>。</summary>
+    /// <summary>有可用热词时先运行束搜索，未采用热词时由解码器返回贪心 token。两条路径共用文本后处理。</summary>
     private string Decode(ReadOnlySpan<float> logits, int numFrames, int vocabSize)
     {
         var startedAt = Stopwatch.GetTimestamp();

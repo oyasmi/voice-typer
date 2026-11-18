@@ -19,31 +19,34 @@ enum CTCDecoder {
     /// - Parameter logits: 指向 `[numFrames * vocabSize]` 行主序展平数据的指针。
     static func decode(logits: UnsafePointer<Float>?, numFrames: Int, vocabSize: Int, tokens: [String]) -> String {
         guard numFrames > 0, vocabSize > 0, let logits else { return "" }
-
-        var ids = [Int](repeating: 0, count: numFrames)
-        for t in 0..<numFrames {
-            var maxVal: Float = 0
-            var maxIdx: vDSP_Length = 0
-            let rowPtr = logits + t * vocabSize
-            vDSP_maxvi(rowPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
-            ids[t] = Int(maxIdx)
-        }
-
-        // torch.unique_consecutive 的等价实现：仅保留与前一帧不同的位置。
-        var collapsed: [Int] = []
-        collapsed.reserveCapacity(ids.count)
-        var prev = -1
-        for id in ids {
-            if id != prev { collapsed.append(id) }
-            prev = id
-        }
-        let nonBlank = collapsed.filter { $0 != 0 } // blank_id = 0
-
+        let ids = greedyTokens(logits: logits, numFrames: numFrames, vocabSize: vocabSize)
         var raw = ""
-        raw.reserveCapacity(nonBlank.count * 2)
-        for id in nonBlank where id >= 0 && id < tokens.count {
+        raw.reserveCapacity(ids.count * 2)
+        for id in ids where id >= 0 && id < tokens.count {
             raw += tokens[id]
         }
         return TextPostprocessor.process(raw)
+    }
+
+    /// 束搜索回退时可复用各帧的非 blank 峰值，只在 blank 不是明确首选时重新求 argmax。
+    static func greedyTokens(
+        logits: UnsafePointer<Float>, numFrames: Int, vocabSize: Int, nonBlankMaxima: [Float]? = nil
+    ) -> [Int] {
+        var ids: [Int] = []
+        ids.reserveCapacity(numFrames)
+        var previous = -1
+        for t in 0..<numFrames {
+            let rowPtr = logits + t * vocabSize
+            var maxIdx: vDSP_Length = 0
+            if !(rowPtr[0] > (nonBlankMaxima?[t] ?? .infinity)) {
+                var maxVal: Float = 0
+                vDSP_maxvi(rowPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
+            }
+            let id = Int(maxIdx)
+            // 先合并连续重复，再丢弃 blank。blank 仍会将两个相同 token 隔开。
+            if id != previous, id != 0 { ids.append(id) }
+            previous = id
+        }
+        return ids
     }
 }

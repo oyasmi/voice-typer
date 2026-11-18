@@ -390,9 +390,9 @@ final class SenseVoiceEngine {           // 仅在 asrQueue 上使用，非线�
   （静音时 SenseVoice 常吐一个孤立句号，必须丢弃）
 
 #### 热词偏置解码分支（VOC，§11.7）
-词汇表为空或强度为「关」时，`SenseVoiceEngine` 仍走上面的贪心 `CTCDecoder`，一行不改；有词汇时整句改走
+词汇表为空或强度为「关」时，`SenseVoiceEngine` 走上面的贪心 `CTCDecoder`；有可用热词时先跑
 `ASR/Hotword/` 的带偏置前缀束搜索（`HotwordCompiler` 用词表前缀树把写法切成 token、`ContextGraph` 做 Aho–Corasick
-打分、`CTCPrefixBeamSearch` 解码），产出的 token 串同样交给 `TextPostprocessor`。词汇经
+打分、`CTCPrefixBeamSearch` 解码）。未采用热词时返回贪心 token，产出的 token 串统一交给 `TextPostprocessor`。词汇经
 `ASRService.updateVocabulary` 在 asrQueue 上热更新到引擎（与语言一样，不重载模型）。规格见
 [`docs/VOCABULARY_SPEC.md`](docs/VOCABULARY_SPEC.md)，实施记录见 §11.7。
 
@@ -1541,6 +1541,23 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
    无关句至少 30 句。达到评估集目标也不等于所有场景保证零误触发。
 
 本轮 **macOS 原生构建 / 真机听写、Windows x64 / arm64 真机均未验证**。Windows 同步实现与证据见 `windows/DESIGN.md` §33.5。
+
+### 热词采用条件收紧（2026-11-18，未发布）
+
+- 束搜索完成后，要求获胜路径命中完整热词，且至少有一帧的普通 token 达到帧最高分并超过 blank。否则保留贪心结果。
+  这覆盖两种可复现的错误：未完成的前缀把原文挤出束，以及全段由 blank 领先时拼出热词。
+- 标准档候选门限从 3.0 降到 2.0，防止确定的前缀把落后 2.8 的尾字补成热词。已有的近分纠错、嵌套词和强档
+  较难候选继续通过共享夹具。预览和终稿经同一个解码器应用上述规则。
+- 回退复用已有的逐帧非 blank 峰值，避开明显由 blank 领先的宽词表行。整个解码仍只运行一次模型。若采用了一条
+  含热词的整句路径，句中其他位置仍可能随束搜索改变。词片时间对齐和逐处替换的收益需用真实误例评估。
+- 新增 4 例共享反例，旧 C# 解码在四例上均失败，新 Swift / C# 解码通过全部 27 例，原有期望值一致。
+  Swift 6.0.3 Linux 临时工程 26 项通过，使用循环代替 Accelerate 的求最大值调用。.NET 10 Linux 临时工程 18 项通过，
+  包含真实 SenseVoice 模型和既有中英混排 TTS 的端到端回归。额外对照确认标准档仍命中夹具中的 `Audio`，
+  且两秒数字静音的输出与无词汇基线相同。macOS 原生构建、两平台真机和日常录音召回仍待验证。
+
+**手工对照**：关闭智能校对，保留同一份词表，用先前误改的录音和真正含热词的近音正例，在「关 / 标准 / 强」三档
+检查录音中预览与松键后的终稿。补一段只含停顿或环境声的录音，观察是否出现只有打开识别偏向才有的热词。
+用同一段较长录音比较日志中的 `decode_ms`。完整录音评估仍按上节的方法进行。
 
 ### macOS 编译与真机验证（2026-10-23，3.6.0）
 

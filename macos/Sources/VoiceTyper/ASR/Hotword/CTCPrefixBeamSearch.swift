@@ -9,7 +9,7 @@ struct DecodeStats: Equatable, Sendable {
     }
 
     var mode: Mode
-    /// 最优路径上完成热词匹配的次数；贪心解码恒为 0。
+    /// 已采用的束搜索路径上完成热词匹配的次数；采用贪心结果时为 0。
     var hotwordHits: Int
     var decodeNanos: UInt64
 
@@ -40,7 +40,7 @@ enum CTCPrefixBeamSearch {
             switch bias {
             case .off: return nil
             case .light: return Parameters(perTokenBias: 0.75, acousticGate: 2.0)
-            case .standard: return Parameters(perTokenBias: 1.25, acousticGate: 3.0)
+            case .standard: return Parameters(perTokenBias: 1.25, acousticGate: 2.0)
             case .strong: return Parameters(perTokenBias: 1.75, acousticGate: 4.0)
             }
         }
@@ -67,7 +67,7 @@ enum CTCPrefixBeamSearch {
     }
 
     struct Result: Equatable {
-        /// 最优路径的 token 序列，含开头的标签 token，与贪心解码合并、去 blank 后的形态相同。
+        /// 采用的 token 序列，含开头的标签 token，与贪心解码合并、去 blank 后的形态相同。
         var tokens: [Int]
         var hotwordHits: Int
     }
@@ -100,11 +100,24 @@ enum CTCPrefixBeamSearch {
         }
         var beam = [Hypothesis(prefix: prefix, pb: lastTag >= 0 ? -.infinity : 0, pnb: lastTag >= 0 ? 0 : -.infinity)]
 
+        // 开头标签帧未求非 blank 峰值。用 +∞ 标记，回退时照常走完整 argmax。
+        var nonBlankMaxima = [Float](repeating: .infinity, count: numFrames)
         while frame < numFrames {
-            beam = try search.advance(beam, row: logits + frame * vocabSize)
+            let row = logits + frame * vocabSize
+            var maxNonBlank: Float = -.infinity
+            vDSP_maxv(row + 1, 1, &maxNonBlank, vDSP_Length(vocabSize - 1))
+            nonBlankMaxima[frame] = maxNonBlank
+            beam = try search.advance(beam, row: row, maxNonBlank: maxNonBlank)
             frame += 1
         }
-        return try search.best(of: beam)
+        if search.hasRegularPeak {
+            let result = try search.best(of: beam)
+            if result.hotwordHits > 0 { return result }
+        }
+        // 部分热词的暂存分可能已改变束里的路径。未采用完整热词时，保留原始贪心结果。
+        return Result(tokens: CTCDecoder.greedyTokens(
+            logits: logits, numFrames: numFrames, vocabSize: vocabSize, nonBlankMaxima: nonBlankMaxima
+        ), hotwordHits: 0)
     }
 
     // MARK: - 实现
@@ -132,6 +145,8 @@ enum CTCPrefixBeamSearch {
         var token: [Int32] = [-1]
         var state: [ContextGraph.State] = [ContextGraph.State()]
         var childIndex: [Int: Int32] = [:]
+        /// 至少一帧的普通 token 达到帧最高分并超过 blank。
+        var hasRegularPeak = false
 
         // 每帧复用的缓冲。
         var slotByPrefix: [Int: Int] = [:]
@@ -164,11 +179,9 @@ enum CTCPrefixBeamSearch {
             hypothesis.total + graph.bias(state[hypothesis.prefix])
         }
 
-        mutating func advance(_ beam: [Hypothesis], row: UnsafePointer<Float>) throws -> [Hypothesis] {
+        mutating func advance(_ beam: [Hypothesis], row: UnsafePointer<Float>, maxNonBlank: Float) throws -> [Hypothesis] {
             let gate = parameters.acousticGate
             let blankScore = row[0]
-            var maxNonBlank: Float = -.infinity
-            vDSP_maxv(row + 1, 1, &maxNonBlank, vDSP_Length(vocabSize - 1))
             let frameMax = max(blankScore, maxNonBlank)
 
             // 跳帧：没有任何非 blank token 落在门限内，所有假设只做 blank 扩展。与候选集规则完全一致，不是近似。
@@ -182,6 +195,9 @@ enum CTCPrefixBeamSearch {
                 isRegular[k] && Double(row[k]) - peak >= -gate
             }
             collectFrameCandidates(row: row, peak: peak, admits: admits)
+            if !hasRegularPeak, maxNonBlank > blankScore, topCandidates.first?.score == maxNonBlank {
+                hasRegularPeak = true
+            }
 
             slotByPrefix.removeAll(keepingCapacity: true)
             slots.removeAll(keepingCapacity: true)

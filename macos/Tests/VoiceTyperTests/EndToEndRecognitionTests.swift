@@ -41,7 +41,7 @@ final class EndToEndRecognitionTests: XCTestCase {
         )
     }
 
-    /// 50 条与音频内容无关的词汇、最强档：整句改走束搜索也不得改动无关文本——输出与同一引擎的贪心结果逐字相同
+    /// 50 条与音频内容无关的词汇、最强档：无热词命中时，输出与同一引擎的贪心结果逐字相同
     /// （VOC-D4 / §10.3）。比对象是本机贪心而非 Python 参考，避免跨构建 ORT 的浮点差异混进来。
     func testIrrelevantVocabularyKeepsOutputIdentical() throws {
         guard let bundle = ModelLocator.locate(explicitDir: "") else {
@@ -63,6 +63,7 @@ final class EndToEndRecognitionTests: XCTestCase {
         XCTAssertEqual(report?.entries.count, 50)
         let biased = try engine.recognize(samples)
         XCTAssertEqual(engine.lastDecodeStats.mode, .beam)
+        XCTAssertEqual(engine.lastDecodeStats.hotwordHits, 0)
         XCTAssertEqual(biased, greedy)
 
         // 清空词汇后回到贪心。

@@ -17,38 +17,51 @@ internal static class CtcDecoder
     {
         if (numFrames <= 0 || vocabSize <= 0) return "";
 
-        var ids = new int[numFrames];
-        for (int t = 0; t < numFrames; t++)
-        {
-            var row = logits.Slice(t * vocabSize, vocabSize);
-            int maxIdx = 0;
-            float maxVal = row[0];
-            for (int v = 1; v < vocabSize; v++)
-            {
-                if (row[v] > maxVal)
-                {
-                    maxVal = row[v];
-                    maxIdx = v;
-                }
-            }
-            ids[t] = maxIdx;
-        }
-
-        // torch.unique_consecutive 的等价实现：仅保留与前一帧不同的位置。
-        var collapsed = new List<int>(ids.Length);
-        int prev = -1;
+        var ids = GreedyTokens(logits, numFrames, vocabSize);
+        var raw = new StringBuilder();
         foreach (var id in ids)
         {
-            if (id != prev) collapsed.Add(id);
-            prev = id;
-        }
-
-        var raw = new StringBuilder();
-        foreach (var id in collapsed)
-        {
-            if (id == 0) continue; // blank_id = 0
             if (id >= 0 && id < tokens.Count) raw.Append(tokens[id]);
         }
         return TextPostprocessor.Process(raw.ToString());
+    }
+
+    /// <summary>束搜索回退时可复用非 blank 峰值，跳过 blank 占优的帧。</summary>
+    public static int[] GreedyTokens(ReadOnlySpan<float> logits, int numFrames, int vocabSize,
+        ReadOnlySpan<float> nonBlankMaxima = default)
+    {
+        var ids = new List<int>(numFrames);
+        int previous = -1;
+        for (int t = 0; t < numFrames; t++)
+        {
+            var row = logits.Slice(t * vocabSize, vocabSize);
+            int id = nonBlankMaxima.IsEmpty ? RowArgmax(row) : RowArgmax(row, nonBlankMaxima[t]);
+            // 先合并连续重复，再丢弃 blank。blank 仍会将两个相同 token 隔开。
+            if (id != previous && id != 0) ids.Add(id);
+            previous = id;
+        }
+        return ids.ToArray();
+    }
+
+    private static int RowArgmax(ReadOnlySpan<float> row, float maxNonBlank)
+    {
+        if (!float.IsFinite(maxNonBlank) || !float.IsFinite(row[0])) return RowArgmax(row);
+        // 分数相同取 id 较小者，与普通贪心的严格大于比较一致。
+        return row[0] >= maxNonBlank ? 0 : row.IndexOf(maxNonBlank);
+    }
+
+    internal static int RowArgmax(ReadOnlySpan<float> row)
+    {
+        int maxIndex = 0;
+        float maxValue = row[0];
+        for (int i = 1; i < row.Length; i++)
+        {
+            if (row[i] > maxValue)
+            {
+                maxValue = row[i];
+                maxIndex = i;
+            }
+        }
+        return maxIndex;
     }
 }

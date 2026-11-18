@@ -33,7 +33,7 @@ internal static class CtcPrefixBeamSearch
         public static Parameters? Preset(VocabularyBias bias) => bias switch
         {
             VocabularyBias.Light => new Parameters(0.75, 2.0),
-            VocabularyBias.Standard => new Parameters(1.25, 3.0),
+            VocabularyBias.Standard => new Parameters(1.25, 2.0),
             VocabularyBias.Strong => new Parameters(1.75, 4.0),
             _ => null,
         };
@@ -80,7 +80,7 @@ internal static class CtcPrefixBeamSearch
         int lastTag = -1;
         while (frame < numFrames)
         {
-            int argmax = RowArgmax(logits.Slice(frame * vocabSize, vocabSize));
+            int argmax = CtcDecoder.RowArgmax(logits.Slice(frame * vocabSize, vocabSize));
             if (!classes.IsSpecial[argmax]) break;
             if (argmax != lastTag)
             {
@@ -94,11 +94,23 @@ internal static class CtcPrefixBeamSearch
             lastTag >= 0 ? new Hypothesis(prefix, double.NegativeInfinity, 0) : new Hypothesis(prefix, 0, double.NegativeInfinity),
         };
 
+        var nonBlankMaxima = new float[numFrames];
+        // 开头标签帧未求非 blank 峰值。用 +∞ 标记，回退时照常走完整 argmax。
+        nonBlankMaxima.AsSpan(0, frame).Fill(float.PositiveInfinity);
         for (; frame < numFrames; frame++)
         {
-            beam = search.Advance(beam, logits.Slice(frame * vocabSize, vocabSize));
+            var row = logits.Slice(frame * vocabSize, vocabSize);
+            float maxNonBlank = RowMax(row[1..]);
+            nonBlankMaxima[frame] = maxNonBlank;
+            beam = search.Advance(beam, row, maxNonBlank);
         }
-        return search.Best(beam);
+        if (search.HasRegularPeak)
+        {
+            var result = search.Best(beam);
+            if (result.HotwordHits > 0) return result;
+        }
+        // 部分热词的暂存分可能已改变束里的路径。未采用完整热词时，保留原始贪心结果。
+        return new Result(CtcDecoder.GreedyTokens(logits, numFrames, vocabSize, nonBlankMaxima), 0);
     }
 
     private readonly record struct Hypothesis(int Prefix, double Pb, double Pnb)
@@ -126,6 +138,9 @@ internal static class CtcPrefixBeamSearch
         private readonly List<int> _hypothesisCandidates = new();
         private readonly List<(int Token, float Score)> _topCandidates = new();
 
+        /// <summary>至少一帧的普通 token 达到帧最高分并超过 blank。</summary>
+        public bool HasRegularPeak { get; private set; }
+
         public Search(int vocabSize, ContextGraph graph, TokenClasses classes, Parameters parameters)
         {
             _vocabSize = vocabSize;
@@ -151,11 +166,10 @@ internal static class CtcPrefixBeamSearch
         private bool Admits(ReadOnlySpan<float> row, int k, double peak) =>
             _classes.IsRegular[k] && (double)row[k] - peak >= -_parameters.AcousticGate;
 
-        public List<Hypothesis> Advance(List<Hypothesis> beam, ReadOnlySpan<float> row)
+        public List<Hypothesis> Advance(List<Hypothesis> beam, ReadOnlySpan<float> row, float maxNonBlank)
         {
             double gate = _parameters.AcousticGate;
             float blankScore = row[0];
-            float maxNonBlank = RowMax(row[1..]);
             float frameMax = Math.Max(blankScore, maxNonBlank);
 
             // 跳帧：没有任何非 blank token 落在门限内，所有假设只做 blank 扩展。与候选集规则完全一致，不是近似。
@@ -168,6 +182,11 @@ internal static class CtcPrefixBeamSearch
 
             double peak = frameMax;
             CollectFrameCandidates(row, peak);
+            if (!HasRegularPeak && maxNonBlank > blankScore && _topCandidates.Count > 0
+                && _topCandidates[0].Score == maxNonBlank)
+            {
+                HasRegularPeak = true;
+            }
 
             _slotByPrefix.Clear();
             _slots.Clear();
@@ -332,22 +351,6 @@ internal static class CtcPrefixBeamSearch
             if (best is not { } winner) throw new DecodeException("束为空");
             return new Result(TokensOf(winner.Prefix), _state[winner.Prefix].Hits);
         }
-    }
-
-    /// <summary>首个最大值的下标（与 <see cref="CtcDecoder"/> 的严格大于比较一致）。</summary>
-    private static int RowArgmax(ReadOnlySpan<float> row)
-    {
-        int maxIndex = 0;
-        float maxValue = row[0];
-        for (int i = 1; i < row.Length; i++)
-        {
-            if (row[i] > maxValue)
-            {
-                maxValue = row[i];
-                maxIndex = i;
-            }
-        }
-        return maxIndex;
     }
 
     /// <summary>向量化求最大值（相当于 macOS 的 <c>vDSP_maxv</c>）。</summary>

@@ -161,7 +161,7 @@ protocol SenseVoiceRecognizing: AnyObject, Sendable {
   两者都把拼好的原始串交给 `TextPostprocessor.process`。
 - `ASRService.updateConfig` 比照 `setLanguage`：词汇变化时 `asrQueue.async { engine?.setVocabulary(...) }`；
   引擎加载完成时，与 `setLanguage(latestLanguage)` 同处补一次 `setVocabulary(latestVocabulary)`。编译报告经回调回到主线程。
-- `DecodeStats`：`mode`（greedy / beam）、`hotwordHits: Int`（终稿最优路径上完成匹配的次数）、`decodeNanos: UInt64`。
+- `DecodeStats`：`mode`（greedy / beam）、`hotwordHits: Int`（采用的束搜索路径上完成匹配的次数）、`decodeNanos: UInt64`。
 
 ### 5.2 热词编译（VOC-3）
 
@@ -271,7 +271,7 @@ k != last:          pnb(y+k) ⊕= total(y) + ℓ[k]
 
 **前缀表示**：前缀用「节点表 + (父节点, token) → 子节点」的哈希表示，避免每次扩展都复制数组。结束时从最优节点回溯得到 token 序列。
 
-**输出**：按 `final` 取最优，拼 token 串交给 `TextPostprocessor.process`，与贪心路径完全相同。
+**输出**：按 `final` 取最优，经 §5.8 决定是否采用。选中的 token 串交给 `TextPostprocessor.process`。
 
 ### 5.5 「一个热词何时被采用」的直观解释
 
@@ -283,7 +283,7 @@ k != last:          pnb(y+k) ⊕= total(y) + ℓ[k]
 
 - 近分候选：累计分差较小时，`b` 可以帮助热词胜出；logits 分差并不等同于是否同音。
 - 弱候选：超过 `G` 直接不是候选，即使前面的字已确定，也不能用前缀奖励购买门限外的尾字。
-- 凭空插入：每个 token 都要和 blank 比；blank 领先不多时仍有误插风险，需要用反例约束，不能仅凭静音帧通常尖锐就排除。
+- 凭空插入：每帧都把 blank 纳入分差比较，整段缺少普通 token 峰值时回退贪心（§5.8）。含语音的句子中仍可能出现局部误插。
 
 这条解释写进设置页的帮助文案（§8），也是用户调强度时的心智模型。
 
@@ -292,7 +292,7 @@ k != last:          pnb(y+k) ⊕= total(y) + ℓ[k]
 | 档位 | `b`（每 token 偏置） | `G`（声学门限） |
 | --- | --- | --- |
 | 轻 | 0.75 | 2.0 |
-| 标准（默认） | 1.25 | 3.0 |
+| 标准（默认） | 1.25 | 2.0 |
 | 强 | 1.75 | 4.0 |
 
 固定参数：束宽 `B = 8`，`TopK = 10`，`Dmax = 4`。预览与终稿用同一组参数。
@@ -301,12 +301,13 @@ k != last:          pnb(y+k) ⊕= total(y) + ℓ[k]
 用户反馈无关句子也会被积极改成热词后，同时降低累计奖励、收紧候选门限。标准档最高累计奖励从 6 降到 5；
 共享夹具新增短词、长词、共享前缀的弱尾字与 blank 误插反例，并保留近分纠错、嵌套词扩展等既有正例。
 这只验证合成分数下的取舍，**不等于真实录音的误触发率或召回率已校准**；仍需用 §10.5 的工具校准，
-调整依据与验证结果见 `DESIGN.md` §11.7。参数集中定义在 `CTCPrefixBeamSearch.Parameters`，不进 `config.yaml`。
+调整依据与验证结果见 `DESIGN.md` §11.7。本轮将标准档门限从 3.0 再降到 2.0，减少长词用已确定前缀的奖励
+补入较弱候选。轻档与标准档以奖励大小区分，强档保留 4.0 的门限。参数集中定义在 `CTCPrefixBeamSearch.Parameters`，不进 `config.yaml`。
 
 ### 5.7 性能预算（E）
 
 - 编码器输出约 60ms 一帧（LFR n=6）：10s 音频约 167 帧，120s 上限约 2000 帧。
-- 每帧固定开销：`vDSP_maxvi` 求非 blank 最大值（贪心本来就有一次）。
+- 每帧固定开销：`vDSP_maxv` 求非 blank 最大值。回退贪心时复用这些值，只有 blank 未明确领先的帧再次求 argmax。
 - 非跳帧额外开销：按 256 个 token 分块扫描（块最大值在门限外就跳过，实施修订）收集 `TopK` 与门限内的热词首 token，再做
   `B × |C|` 次扩展（约 8 × 20）。
 - 估计 10s 音频、200 条词汇时解码 < 5ms，120s 时 < 40ms，相对 `DESIGN.md` §4.3 的推理耗时（15s 166ms，30s 262–397ms）可忽略。
@@ -317,8 +318,9 @@ k != last:          pnb(y+k) ⊕= total(y) + ℓ[k]
 
 - 束搜索抛出任何内部不一致（如回溯失败），记 `AppLog.asr.error` 并**回退贪心结果**，本次听写不失败。
 - 强度「关」是用户可见的总开关；它只关识别偏置，替换和 LLM 词表照常。
-- 如果 §10.3 的「无关词汇金标准不变」测试在实施中失败，说明束搜索在非热词文本上与贪心有分歧：先排查实现；
-  确认是算法固有差异时，**不改金标准**，改为「贪心锚定」：只把束搜索结果中包含完整热词匹配的片段替换进贪心结果，并回写本节。
+- 束搜索胜出的路径没有完整热词匹配，或去掉开头标签后没有任何一帧的普通 token 达到帧最高分且超过 blank 时，
+  输出贪心结果，命中数记为 0。这样能保留被部分热词前缀挤出束的原识别，也能阻止整段只靠低于 blank 的候选拼出热词。
+  回退复用已计算的逐帧峰值，跳过明确以 blank 为首选的帧。成功完成束搜索时 `decode_mode` 仍记为 `beam`。
 
 ---
 
@@ -454,7 +456,7 @@ CTC 解码（VOC-5）→ TextPostprocessor（识别契约，不变）
 
 - `vocabulary_cases.json`：替换层的输入 / 词汇 / 期望输出。
 - `ctc_hotword_cases.json`：合成小词表 + 逐帧 logits + 热词 token 序列 + 档位 → 期望 token 序列。覆盖 §10.1 的 ②–⑦，
-  另含三档近分召回 / 弱候选拒绝、长词累计奖励、共享前缀弱尾字、blank 误插与档位差异，共 23 例。
+  另含三档近分召回 / 弱候选拒绝、长词累计奖励、共享前缀弱尾字、blank 误插、档位差异与贪心回退，共 27 例。
   Windows 移植时 C# 读同一份。
 
 两份文件的 `description` 写明「规则变更须先改 `macos/docs/VOCABULARY_SPEC.md`；既有用例的期望值不得删改」，与

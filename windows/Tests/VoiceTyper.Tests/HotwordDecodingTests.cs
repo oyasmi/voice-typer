@@ -39,7 +39,7 @@ public class HotwordDecodingTests
         var floor = root.GetProperty("floor").GetSingle();
         var id = Ids(tokens);
         var cases = root.GetProperty("cases").EnumerateArray().ToList();
-        Assert.True(cases.Count >= 23, "初始用例与保守偏置回归用例不得减少");
+        Assert.True(cases.Count >= 27, "初始用例与保守偏置回归用例不得减少");
 
         foreach (var item in cases)
         {
@@ -369,6 +369,7 @@ public class HotwordDecodingTests
         Assert.Equal(50, report!.Entries.Count);
         Assert.Equal(greedy, engine.Recognize(samples));
         Assert.Equal(DecodeStats.DecodeMode.Beam, engine.LastDecodeStats.Mode);
+        Assert.Equal(0, engine.LastDecodeStats.HotwordHits);
     }
 
     private static readonly string[] IrrelevantTerms =

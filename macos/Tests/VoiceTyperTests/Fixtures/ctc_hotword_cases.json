@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "CTC 热词偏置束搜索的共享用例（macOS Swift 与 Windows C# 两边的测试读同一份）。每帧未列出的 token 分数为 floor；热词直接给 token 序列，偏置参数按 preset 取 CTCPrefixBeamSearch.Parameters 的三档。规则变更须先改 macos/docs/VOCABULARY_SPEC.md；既有用例的期望值不得删改。",
+  "description": "CTC 热词偏置束搜索与贪心回退的共享用例（macOS Swift 与 Windows C# 两边的测试读同一份）。每帧未列出的 token 分数为 floor；热词直接给 token 序列，偏置参数按 preset 取 CTCPrefixBeamSearch.Parameters 的三档。规则变更须先改 macos/docs/VOCABULARY_SPEC.md；既有用例的期望值不得删改。",
   "tokens": ["<unk>", "<s>", "</s>", "A", "B", "C", "D", "X", "Y", "Z", "张", "三", "丰", "峰", "<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>"],
   "floor": -20.0,
   "cases": [
@@ -357,6 +357,59 @@
         {"<unk>": 0.0}
       ],
       "expected": [],
+      "expected_hits": 0
+    },
+    {
+      "name": "standard_rejects_tail_previously_inside_gate",
+      "note": "旧标准档允许落后 2.8 的尾字进入候选，前三个字的奖励足以让它胜出；新门限保护原尾字",
+      "preset": "standard",
+      "hotwords": [["A", "B", "C", "D"]],
+      "frames": [
+        {"A": 0.0},
+        {"B": 0.0},
+        {"C": 0.0},
+        {"X": 0.0, "D": -2.8}
+      ],
+      "expected": ["A", "B", "C", "X"],
+      "expected_hits": 0
+    },
+    {
+      "name": "blank_led_frames_cannot_create_hotword",
+      "note": "两个候选都在门限内且累计损失小于两字奖励，但所有非标签帧由 blank 领先",
+      "preset": "standard",
+      "hotwords": [["A", "B"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<unk>": 0.0, "A": -1.0},
+        {"<unk>": 0.0, "B": -1.0}
+      ],
+      "expected": ["<|zh|>"],
+      "expected_hits": 0
+    },
+    {
+      "name": "partial_matches_prune_greedy_but_fall_back",
+      "note": "八条热词首字获得暂存分、挤掉原始 X；下一帧全部失配，回退恢复 XY",
+      "preset": "standard",
+      "hotwords": [["A", "Z"], ["B", "Z"], ["C", "Z"], ["D", "Z"], ["张", "Z"], ["三", "Z"], ["丰", "Z"], ["峰", "Z"]],
+      "frames": [
+        {"X": 0.0, "A": -0.5, "B": -0.55, "C": -0.6, "D": -0.65, "张": -0.7, "三": -0.75, "丰": -0.8, "峰": -0.85},
+        {"Y": 0.0}
+      ],
+      "expected": ["X", "Y"],
+      "expected_hits": 0
+    },
+    {
+      "name": "no_hit_preserves_greedy_even_with_other_speech",
+      "note": "两帧候选 A 的多条 CTC 对齐总分足以改变束搜索结果；无热词命中时仍保留由 blank 隔开的两个 X",
+      "preset": "standard",
+      "hotwords": [["B", "C"]],
+      "frames": [
+        {"X": 0.0},
+        {"<unk>": 0.0, "A": -0.2},
+        {"<unk>": 0.0, "A": -0.2},
+        {"X": 0.0}
+      ],
+      "expected": ["X", "X"],
       "expected_hits": 0
     }
   ]
