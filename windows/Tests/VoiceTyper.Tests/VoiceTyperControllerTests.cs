@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using VoiceTyper.Core;
 using VoiceTyper.Llm;
 using VoiceTyper.Services;
@@ -94,11 +92,13 @@ public class VoiceTyperControllerTests
         public ForegroundElevation Elevation = ForegroundElevation.NotElevated;
         public readonly List<string> Inserted = new();
         public readonly List<string> Copied = new();
+        public ForegroundTarget CurrentTarget = new(new IntPtr(42), 7);
 
-        public ForegroundTarget CaptureForegroundTarget() => new(new IntPtr(42), 7);
+        public ForegroundTarget CaptureForegroundTarget() => CurrentTarget;
 
         public TextInsertionResult Insert(string text, ForegroundTarget expected)
         {
+            if (expected != CurrentTarget) return TextInsertionResult.FocusChanged;
             Inserted.Add(text);
             return Script.Count > 0 ? Script.Dequeue() : Result;
         }
@@ -178,21 +178,20 @@ public class VoiceTyperControllerTests
         public readonly VoiceTyperController Controller;
         private long _ticks = 1_000;
 
-        public Harness(Action<AppConfig>? configure = null, IFocusInspector? focus = null, TimeSpan? tail = null,
-            Action<Action>? post = null)
+        public Harness(Action<AppConfig>? configure = null, TimeSpan? tail = null)
         {
             // 基线用组合键热键（Ctrl+F2）；默认的单独右 Ctrl 语义由 UseModifierOnly 显式选用。
             var config = new AppConfig { Hotkey = new HotkeyConfig { Modifiers = new() { "ctrl" }, Key = "f2" } };
             configure?.Invoke(config);
             Config = config;
             Controller = new VoiceTyperController(config, Factory, Hotkey, Audio, Text, llmCorrector: null,
-                now: () => _ticks, post: post ?? (action => action()),
+                now: () => _ticks, post: action => action(),
                 schedule: (_, action) =>
                 {
                     var probe = new Probe { Action = action };
                     Probes.Add(probe);
                     return probe;
-                }, focusInspector: focus, releaseTailCapture: tail);
+                }, releaseTailCapture: tail);
             Controller.StateChanged = s => States.Add(s);
             Controller.PreviewWarning = m => Warnings.Add(m);
             Controller.BlockedAttempt = r => Blocked.Add(r);
@@ -603,15 +602,32 @@ public class VoiceTyperControllerTests
         Assert.Equal("识别超时", h.States.Last().Message);
     }
 
-    [Fact]
-    public void FocusChanged_CopiesToClipboardAndReportsError()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FocusChanged_CopiesToClipboardAndReportsError(bool whileWaitingForBackup)
     {
         var h = Started();
-        h.Text.Result = TextInsertionResult.FocusChanged;
         h.HoldFor(600);
-        h.Session.OnFinal!("结果");
+
+        if (whileWaitingForBackup)
+        {
+            h.Text.Script.Enqueue(TextInsertionResult.BackupPending);
+            h.Session.OnFinal!("结果");
+            Assert.True(h.Controller.HasActiveDictation);
+            h.Text.CurrentTarget = new(new IntPtr(99), 7);
+            h.Advance(25);
+            PendingProbe(h).Action();
+        }
+        else
+        {
+            h.Text.CurrentTarget = new(new IntPtr(99), 7);
+            h.Session.OnFinal!("结果");
+        }
 
         Assert.Equal(new[] { "结果" }, h.Text.Copied);
+        Assert.Equal(new[] { "结果" }, h.FinalTexts);
+        Assert.False(h.Controller.HasActiveDictation);
         Assert.Equal(AppState.Error, h.States.Last().State);
         Assert.Empty(h.Recognized);
         Assert.Equal(DictationOutcome.FocusChanged, Assert.Single(h.Metrics).Outcome);
@@ -1325,14 +1341,6 @@ public class VoiceTyperControllerTests
         Assert.Equal(new[] { "已识别 Python 部分" }, h.Text.Copied);
     }
 
-    private sealed class FakeFocus : IFocusInspector
-    {
-        public FocusSafety Safety = FocusSafety.Normal;
-        public TaskCompletionSource<FocusSafety>? Pending;
-        public Task<FocusSafety> InspectAsync(ForegroundTarget target, CancellationToken cancellationToken)
-            => Pending?.Task ?? Task.FromResult(Safety);
-    }
-
     [Theory]
     [InlineData("hold")]
     [InlineData("toggle")]
@@ -1353,89 +1361,6 @@ public class VoiceTyperControllerTests
         h.Hotkey.OnRelease!();
         Assert.Equal(1, h.Session.SkipCount);
         Assert.Single(h.Factory.Sessions);
-    }
-
-    [Fact]
-    public void PasswordFocus_RefusesRecording_AndCanRecover()
-    {
-        var focus = new FakeFocus { Safety = FocusSafety.Password };
-        var h = new Harness(focus: focus);
-        var notices = new List<string>();
-        h.Controller.RecordingRefused = notices.Add;
-        h.Controller.Start();
-        h.Hotkey.OnPress!();
-        Assert.Empty(h.Factory.Sessions);
-        Assert.Equal(0, h.Audio.StartCount);
-        Assert.Single(notices);
-        focus.Safety = FocusSafety.Normal;
-        h.Hotkey.OnPress!();
-        Assert.Single(h.Factory.Sessions);
-    }
-
-    [Fact]
-    public void PasswordModifierShortcut_DoesNotShowRefusal()
-    {
-        var h = new Harness(c => { c.Hotkey.Key = "right_ctrl"; c.Hotkey.Modifiers.Clear(); },
-            new FakeFocus { Safety = FocusSafety.Password });
-        var notices = new List<string>();
-        h.Controller.RecordingRefused = notices.Add;
-        h.Controller.Start();
-        h.Hotkey.OnPress!();
-        Assert.Empty(notices);
-        h.Hotkey.OnGestureCancelled!();
-        Assert.Empty(notices);
-        h.Hotkey.OnPress!();
-        h.Hotkey.OnRelease!();
-        Assert.Single(notices);
-    }
-
-    [Fact]
-    public void ReleaseDuringFocusCheck_IgnoresLateResult()
-    {
-        var focus = new FakeFocus { Pending = new() };
-        var h = new Harness(focus: focus);
-        h.Controller.Start();
-        h.Hotkey.OnPress!();
-        Assert.True(h.Controller.HasActiveDictation);
-        h.Hotkey.OnRelease!();
-        focus.Pending.SetResult(FocusSafety.Normal);
-        Assert.Empty(h.Factory.Sessions);
-        Assert.False(h.Controller.HasActiveDictation);
-    }
-
-    [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
-    public void UnsafeInsertion_LeavesResultInHistory_WithoutPasting(int safety)
-    {
-        var focus = new FakeFocus();
-        var h = new Harness(focus: focus);
-        h.Controller.Start();
-        h.HoldFor(600);
-        focus.Safety = (FocusSafety)safety;
-        h.Session.OnFinal!("找回结果");
-        Assert.Empty(h.Text.Inserted);
-        Assert.Empty(h.Text.Copied); // 检查不明时不主动污染剪贴板
-        Assert.Equal(new[] { "找回结果" }, h.FinalTexts);
-        Assert.False(h.Controller.HasActiveDictation);
-        Assert.Equal(safety == (int)FocusSafety.Password ? DictationOutcome.ProtectedField : DictationOutcome.FocusUnverified,
-            Assert.Single(h.Metrics).Outcome);
-    }
-
-    [Fact]
-    public void StopDuringInsertionFocusCheck_DoesNotInsertLateResult()
-    {
-        var focus = new FakeFocus();
-        var h = new Harness(focus: focus);
-        h.Controller.Start();
-        h.HoldFor(600);
-        focus.Pending = new();
-        h.Session.OnFinal!("保留结果");
-        h.Controller.Stop();
-        focus.Pending.SetResult(FocusSafety.Normal);
-        Assert.Empty(h.Text.Inserted);
-        Assert.Equal(new[] { "保留结果" }, h.Text.Copied);
-        Assert.Single(h.Metrics);
     }
 
     [Fact]
@@ -1500,19 +1425,6 @@ public class VoiceTyperControllerTests
     }
 
     [Fact]
-    public void FocusCheckResultQueuedToUi_CanBeCancelledBeforeDelivery()
-    {
-        var posted = new Queue<Action>();
-        var h = new Harness(focus: new FakeFocus(), post: posted.Enqueue);
-        h.Controller.Start();
-        h.Hotkey.OnPress!(); // 检查已完成，回调尚未回到 UI
-        h.Hotkey.OnRelease!();
-        while (posted.TryDequeue(out var action)) action();
-        Assert.Empty(h.Factory.Sessions);
-        Assert.False(h.Controller.HasActiveDictation);
-    }
-
-    [Fact]
     public void ShortRecording_WithTailEnabled_StillStopsImmediately()
     {
         var h = new Harness(tail: TimeSpan.FromMilliseconds(150));
@@ -1522,42 +1434,6 @@ public class VoiceTyperControllerTests
         Assert.Equal(0, h.Audio.StopCount);
         Assert.Equal(0, h.Session.FinalizeCount);
         Assert.Equal(DictationOutcome.Discarded, Assert.Single(h.Metrics).Outcome);
-    }
-
-    [Fact]
-    public async Task InsertionFocusCheck_RejectsNewRecording_UntilResultIsHandled()
-    {
-        var focus = new FakeFocus();
-        var h = new Harness(focus: focus);
-        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        h.Controller.MetricsReported = _ => completed.SetResult();
-        h.Controller.Start();
-        h.HoldFor(600);
-        focus.Pending = new();
-        h.Session.OnFinal!("上一段");
-        h.Hotkey.OnPress!();
-        Assert.Single(h.Factory.Sessions);
-        Assert.NotEmpty(h.Warnings);
-        focus.Pending.SetResult(FocusSafety.Normal);
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(new[] { "上一段" }, h.Text.Inserted);
-        Assert.False(h.Controller.HasActiveDictation);
-    }
-
-    [Fact]
-    public void PasswordCheck_IsRepeatedAfterClipboardBackupWait()
-    {
-        var focus = new FakeFocus();
-        var h = new Harness(focus: focus);
-        h.Controller.Start();
-        h.Text.Result = TextInsertionResult.BackupPending;
-        h.HoldFor(600);
-        h.Session.OnFinal!("最终结果");
-        focus.Safety = FocusSafety.Password;
-        PendingProbe(h).Action();
-        Assert.Single(h.Text.Inserted); // 只发生过第一次备份未就绪的尝试
-        Assert.Equal(DictationOutcome.ProtectedField, Assert.Single(h.Metrics).Outcome);
-        Assert.Single(h.FinalTexts);
     }
 
     [Fact]

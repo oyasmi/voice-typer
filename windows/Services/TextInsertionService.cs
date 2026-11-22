@@ -13,8 +13,7 @@ namespace VoiceTyper.Services;
 internal enum TextInsertionResult
 {
     Inserted,
-    /// <summary>录音开始到插入之间前台窗口已切换：为避免写入用户未预期的窗口
-    /// （最坏情况是密码框），不再插入，只把结果复制到剪贴板（F-10）。</summary>
+    /// <summary>录音开始到插入之间前台窗口已切换，只把结果复制到剪贴板（F-10）。</summary>
     FocusChanged,
     /// <summary>插入前检测到 Alt/Shift/Win 仍被按住——会改变 Ctrl+V 的语义，
     /// 放弃自动粘贴改为复制到剪贴板（R3-2）。</summary>

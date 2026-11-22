@@ -682,7 +682,6 @@ internal sealed class AppCoordinator : IDisposable
             _hud?.ShowNoSpeech();
             ForwardToOnboarding(new OnboardingDictationEvent.EmptyResult());
         };
-        controller.RecordingRefused = message => _hud?.ShowNotice(L10n.T("未开始听写"), message);
         controller.PartialTextReady = (text, kind) =>
         {
             _recognitionHistory.Add(DateTime.Now, text, kind);

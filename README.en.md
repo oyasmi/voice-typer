@@ -43,7 +43,7 @@ VoiceTyper lives quietly in your macOS menu bar or Windows system tray. Reply to
 - **Thoughtful everyday ergonomics**:
   - Never steals window focus; press <kbd>Esc</kbd> anytime to discard;
   - Uses your built-in microphone automatically when Bluetooth headphones are connected so music won't pause or drop into low-bitrate call audio;
-  - Skips password fields automatically; cancelled or uninserted transcripts stay recoverable in recent history;
+  - Automatically skips password fields on macOS. Transcripts from cancelled or unsuccessful dictation can be recovered from recent history.
   - Supports both **hold-to-talk** and **press-to-toggle** for longer passages.
 - **Optional AI proofreading**: Off by default. Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to clean up slips of the tongue and homophones.
 

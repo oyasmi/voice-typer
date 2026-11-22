@@ -1,6 +1,4 @@
 using System;
-using System.Threading;
-using System.Threading.Tasks;
 using VoiceTyper.Llm;
 using VoiceTyper.Services;
 
@@ -68,13 +66,6 @@ internal interface IAudioCapturing : IDisposable
 /// <summary>录音开始时的前台窗口；插入前据此判断焦点是否已变化（F-10）。
 /// 进程 id 用来防止窗口句柄被系统复用给另一个窗口时误判为"焦点未变化"。</summary>
 internal readonly record struct ForegroundTarget(IntPtr Window, uint ProcessId);
-
-internal enum FocusSafety { Normal, Password, Unknown }
-
-internal interface IFocusInspector
-{
-    Task<FocusSafety> InspectAsync(ForegroundTarget target, CancellationToken cancellationToken);
-}
 
 internal interface ITextInserting
 {

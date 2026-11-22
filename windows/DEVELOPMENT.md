@@ -99,14 +99,8 @@ dotnet test Tests/VoiceTyper.Tests/bin/Debug/net10.0-windows/VoiceTyper.Tests.dl
 
 ## 测试
 
-密码框检查只读取 UI Automation 的 `IsPassword` 与进程身份，不读取控件文本，也不通过 UIA 写入。
-`WindowsFocusInspector` 在 MTA 后台任务上查询，异步等待上限 200ms；全进程最多一个未完成查询，防止异常 provider
-挂起后不断创建线程。添加的 WindowsDesktop WPF 框架引用仅用于 UIAutomationClient/Types，界面继续使用 WinForms，
-仍依赖同一个 .NET 10 Desktop Runtime。超时 / 属性不支持时，录音可继续，自动输入降级为从历史手动复制。
-实现取舍与 Windows 真机清单见 [DESIGN §34](DESIGN.md#34-2026-11-07-windows-体验补齐)。
-
 正常结束的补录为控制器构造参数 `releaseTailCapture=150ms`；测试默认传零以保持确定性，补录专项测试显式开启。
-日志结局新增 `protected_field` / `focus_unverified`；`release_to_done` 包含补录与异步检查等待，不能把它们当作推理耗时。
+`release_to_done` 包含补录与粘贴等待。输入框类型检测的回滚与真机验收见 [DESIGN §35](DESIGN.md#35-windows-输入框类型检测回滚)。
 
 ```bat
 cd windows

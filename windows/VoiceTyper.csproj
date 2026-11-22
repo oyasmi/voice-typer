@@ -41,8 +41,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 只读取焦点控件的 IsPassword；不使用 WPF UI，也不通过 UIA 写入文字。 -->
-    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
     <!-- 与 macos/ 钉的版本一致，消掉"不同 ORT 版本导致 argmax 翻转"这一整类变量。
          升级 ORT 应作为一次独立的、带金标准复测的变更。 -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />

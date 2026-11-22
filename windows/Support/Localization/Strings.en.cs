@@ -16,10 +16,6 @@ internal static partial class L10n
 {
     private static readonly Dictionary<string, string> EnglishTable = new()
     {
-        ["当前是密码输入框，不会在这里听写"] = "This is a password field. Dictation will not start here.",
-        ["无法确认输入框类型，未自动输入；可从识别历史复制结果"] = "The input field could not be checked. Nothing was inserted; copy the result from transcription history.",
-        ["目标是密码输入框，未自动输入；可从识别历史复制结果"] = "The target is a password field. Nothing was inserted; copy the result from transcription history.",
-        ["未开始听写"] = "Dictation did not start",
         ["清空历史"] = "Clear history",
         ["自动选择"] = "Automatic selection",
         ["跟随系统默认"] = "Follow system default",

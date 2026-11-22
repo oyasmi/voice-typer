@@ -58,7 +58,7 @@ On your first run, a four-step setup guide walks you through **Welcome → Micro
   - **Recent transcriptions...**: Browse up to your last 20 entries newest-first (including cancelled or partial transcripts, clearly labeled). Select any entry to inspect and copy it, click **Copy all (oldest first)** to join every retained entry with newlines in speaking order, or **Clear history** anytime.
 - **Long dictation & clean endings**: Switch the trigger mode in Settings to **press once to start, press again to stop**. Sessions run up to 120 seconds (with a countdown during the final 15 seconds, inserting normally at the limit); taps shorter than 0.3s are ignored as accidental; releasing the hotkey normally captures ~150ms of extra audio so your last syllable isn't cut off.
 - **Mixed Chinese & English**: Speak both languages without switching — clean spacing between Chinese and English words (`我用 Python 写代码`) and spoken numbers are formatted automatically.
-- **No surprise typing & password protection**: If you switch windows mid-dictation, the transcript is placed on the clipboard instead of typing into an unexpected window. Detected password fields block dictation up front and are checked again right before insertion; if the target is protected, grab the text manually from recent history.
+- **Keep your transcript when switching windows**. If the foreground window at insertion differs from the one where dictation started, the app copies the transcript to the clipboard for manual pasting.
 - **Quick tray controls**: Right-click the tray icon to switch recognition language, toggle text correction, change microphone policy (Auto vs. System Default), pause dictation, or check for updates.
 
 ## Settings
@@ -118,7 +118,7 @@ Connect any OpenAI-compatible endpoint (including local models via Ollama or LM 
 
 ### Recognition succeeded, but nothing was typed into my window?
 
-When the target window is running as Administrator (e.g., an elevated terminal), Windows User Interface Privilege Isolation (UIPI) blocks standard apps from sending simulated keystrokes to it. Your transcript is already on the clipboard — simply press <kbd>Ctrl</kbd> + <kbd>V</kbd>. Some fullscreen games, remote desktop clients, and password fields behave the same way.
+When the target window is running as Administrator (e.g., an elevated terminal), Windows User Interface Privilege Isolation (UIPI) blocks standard apps from sending simulated keystrokes to it. If VoiceTyper says it copied the transcript, press <kbd>Ctrl</kbd> + <kbd>V</kbd> to paste it manually. Some fullscreen games, remote desktop clients, and password fields may also reject simulated paste. You can copy the transcript from recent history.
 
 ### The overlay says no sound was detected?
 
@@ -141,6 +141,7 @@ Yes, though running only one at a time is recommended so they don't compete for 
 - CPU inference only;
 - Built around SenseVoice-Small, with no model switching;
 - Left <kbd>Alt</kbd>, <kbd>Win</kbd>, and <kbd>Shift</kbd> cannot be used alone as single-key hotkeys;
+- Dictation can start in password fields, and the transcript may be inserted if the target app accepts the paste.
 - Local on-device recognition only, with no remote server mode (for remote GPU servers or alternative ASR models, use the [client–server edition](../client-server/README.md)).
 
 ## Uninstall
