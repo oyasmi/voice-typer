@@ -5,7 +5,7 @@ Windows 应用（`windows/`）的版本变更，按版本倒序排列，只记�
 真机验证清单见 [`docs/VERIFICATION.md`](docs/VERIFICATION.md)。macOS 版见
 [`macos/CHANGELOG.md`](../macos/CHANGELOG.md)。
 
-## 未发布
+## 3.6.1 — 2026-11-22
 
 ### 新增
 
