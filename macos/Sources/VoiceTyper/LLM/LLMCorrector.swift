@@ -249,10 +249,10 @@ actor LLMCorrector {
         }
         if let llmError = error as? LLMError {
             switch llmError {
-            case .invalidBaseURL: return "invalidBaseURL"
-            case .missingModel: return "missingModel"
-            case .httpStatus(let code): return "httpStatus(\(code))"
             case .invalidResponse: return "invalidResponse"
+            case .httpStatus(let code): return "httpStatus(\(code))"
+            case .malformedResponse: return "malformedResponse"
+            case .thinkingParameterRejected: return "thinkingParameterRejected"
             }
         }
         return String(describing: type(of: error))
