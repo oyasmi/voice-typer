@@ -521,5 +521,18 @@ internal static partial class L10n
         ["添加"] = "Add",
         ["取消"] = "Cancel",
         ["，"] = ", ",
+
+        // ── 校对效果诊断记录（TRACE-1） ────────────────────────
+        ["记录校对日志（用于效果评估）"] = "Record proofreading log (for evaluation)",
+        ["日志路径"] = "Log path",
+        ["留空默认 %TEMP%\\VoiceTyper\\correction_trace.jsonl"] = "Leave empty for %TEMP%\\VoiceTyper\\correction_trace.jsonl",
+        ["开启后会将识别原文、声学备选与校对结果保存在本机，不会上传。默认写到系统临时目录；如需长期保留可自定义路径。"] =
+            "When enabled, raw transcripts, acoustic hints, and proofreading outputs are saved locally and never uploaded. Written to the system temp folder by default; set a custom path to keep logs longer.",
+        ["清空日志"] = "Clear Log",
+        ["清空校对日志"] = "Clear Proofreading Log",
+        ["确定删除本机保存的全部校对日志？此操作不可撤销。"] =
+            "Delete all locally saved proofreading logs? This action cannot be undone.",
+        ["已清空本机校对日志。"] = "Local proofreading log cleared.",
+        ["智能纠错（记录中）"] = "AI proofreading (logging)",
     };
 }

@@ -26,11 +26,18 @@ actor LLMCorrector {
     /// 把待校对文本包裹在标签内，与指令结构性隔离，降低被当成对话/指令的概率。
     private static func wrap(_ text: String) -> String { "<asr_text>\n\(text)\n</asr_text>" }
 
-    /// 最后一条 user 消息：有词表时放在 `<asr_text>` 之前（VOC-8）。system prompt 与 few-shot 不变，保住前缀缓存；
-    /// 空词表时与没有这项功能时逐字节相同。
-    static func userMessage(_ text: String, glossary: [String]) -> String {
-        guard !glossary.isEmpty else { return wrap(text) }
-        return "<glossary>\(glossary.joined(separator: "、"))</glossary>\n" + wrap(text)
+    /// 最后一条 user 消息：顺序为 `<glossary>`（可选）→ `<asr_hints>`（可选）→ `<asr_text>`（必选）（VOC-8 / HINT-6）。
+    /// system prompt 与 few-shot 固定，保住前缀缓存；空词表且空 hints 时与现状逐字节相同。
+    static func userMessage(_ text: String, glossary: [String] = [], hints: [AcousticHint] = []) -> String {
+        var prefix = ""
+        if !glossary.isEmpty {
+            prefix += "<glossary>\(glossary.joined(separator: "、"))</glossary>\n"
+        }
+        if !hints.isEmpty {
+            let lines = hints.map { "「\($0.surface)」可能是：\($0.alternatives.joined(separator: " / "))" }
+            prefix += "<asr_hints>\n\(lines.joined(separator: "\n"))\n</asr_hints>\n"
+        }
+        return prefix + wrap(text)
     }
 
     /// few-shot 示例：对小模型而言，比 system prompt 里的文字禁令更能约束模型行为。
@@ -66,6 +73,13 @@ actor LLMCorrector {
         ["role": "assistant", "content": "需要准备的材料如下：\n1. 身份证复印件\n2. 学历证明\n3. 近期照片"],
         ["role": "user", "content": wrap("周报。")],
         ["role": "assistant", "content": "周报"],
+        // 第 9 组正反合一示例（HINT-6.3）：同时示范采纳合理声学备选与拒绝噪声备选。
+        [
+            "role": "user",
+            "content": "<asr_hints>\n「密等」可能是：幂等 / 密度\n「处理」可能是：出力 / 储理\n</asr_hints>\n"
+                + wrap("这个接口需要保证密等性，超时之后自动降级处理"),
+        ],
+        ["role": "assistant", "content": "这个接口需要保证幂等性，超时之后自动降级处理。"],
     ]
 
     /// - Parameters:
@@ -150,11 +164,20 @@ actor LLMCorrector {
         case emptyResult = "empty"
     }
 
+    /// OpenAI 兼容响应的 `usage` 统计（TRACE-4），仅用于可选的本机诊断日志。
+    struct TokenUsage: Equatable, Sendable {
+        let promptTokens: Int?
+        let completionTokens: Int?
+        let cachedTokens: Int?
+    }
+
     struct CorrectionReport {
         let outcome: CorrectionOutcome
         let thinkingParameter: ThinkingParameterUsage
         /// 仅 `.fellBack` 时有值。
         var fallbackReason: FallbackReason?
+        /// 响应携带 `usage` 时填充；缺失或失败时为 nil（TRACE-4）。
+        var tokenUsage: TokenUsage? = nil
     }
 
     /// 把校对过程中抛出的错误归类为用户可理解的几档原因。
@@ -180,14 +203,30 @@ actor LLMCorrector {
     }
 
     /// - Parameter glossary: 用户词汇表的 term（VOC-8），只放 term、不放 aliases（aliases 已被替换层处理）。
-    func correctWithReport(_ text: String, glossary: [String] = []) async -> CorrectionReport {
+    /// - Parameter hints: 经词汇表一致性过滤后的局部声学低置信度备选（HINT-5 / HINT-6）。
+    func correctWithReport(
+        _ text: String,
+        glossary: [String] = [],
+        hints: [AcousticHint] = []
+    ) async -> CorrectionReport {
         var usage = ThinkingParameterUsage.sent
         do {
-            let outcome = try await correctOrThrow(text, glossary: glossary, probeFresh: false, usage: &usage)
-            if case .fellBack = outcome {
-                return CorrectionReport(outcome: outcome, thinkingParameter: usage, fallbackReason: .emptyResult)
+            let parsed = try await correctOrThrow(
+                text, glossary: glossary, hints: hints, probeFresh: false, usage: &usage
+            )
+            if case .fellBack = parsed.outcome {
+                return CorrectionReport(
+                    outcome: parsed.outcome,
+                    thinkingParameter: usage,
+                    fallbackReason: .emptyResult,
+                    tokenUsage: parsed.tokenUsage
+                )
             }
-            return CorrectionReport(outcome: outcome, thinkingParameter: usage)
+            return CorrectionReport(
+                outcome: parsed.outcome,
+                thinkingParameter: usage,
+                tokenUsage: parsed.tokenUsage
+            )
         } catch is CancellationError {
             return CorrectionReport(outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: nil)
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -226,14 +265,19 @@ actor LLMCorrector {
     /// 总是忽略缓存、先带 `thinking` 字段探测：用户换了服务或服务升级后，点一次测试就能纠正缓存。
     func test(_ text: String) async throws -> TestResult {
         var usage = ThinkingParameterUsage.sent
-        let outcome = try await correctOrThrow(text, glossary: [], probeFresh: true, usage: &usage)
-        return TestResult(text: outcome.text, thinkingParameter: usage)
+        let parsed = try await correctOrThrow(text, glossary: [], hints: [], probeFresh: true, usage: &usage)
+        return TestResult(text: parsed.outcome.text, thinkingParameter: usage)
     }
 
     /// 请求体。`thinking: {"type": "disabled"}` 是火山方舟、智谱等服务的混合推理模型
     /// 关闭深度思考的写法；不支持的服务会以 400/422 拒绝，由 `correctOrThrow` 去掉字段重发。
     static func buildPayload(
-        config: Config, systemPrompt: String, text: String, includeThinking: Bool, glossary: [String] = []
+        config: Config,
+        systemPrompt: String,
+        text: String,
+        includeThinking: Bool,
+        glossary: [String] = [],
+        hints: [AcousticHint] = []
     ) -> [String: Any] {
         // 校对输出长度与输入相当，按输入动态放大上限，防止长听写被默认 max_tokens 截断。
         // 中文大致 1 字 ≈ 1~2 token，留足冗余。
@@ -241,7 +285,7 @@ actor LLMCorrector {
 
         var messages: [[String: String]] = [["role": "system", "content": systemPrompt]]
         messages.append(contentsOf: fewShotMessages)
-        messages.append(["role": "user", "content": userMessage(text, glossary: glossary)])
+        messages.append(["role": "user", "content": userMessage(text, glossary: glossary, hints: hints)])
 
         var payload: [String: Any] = [
             "model": config.model,
@@ -259,19 +303,27 @@ actor LLMCorrector {
     /// - `.corrected` 模型给出非空校对文本；
     /// - `.fellBack` 语义回落原文（`finish_reason==length` 截断、空 content、剥标签后为空）。
     private func correctOrThrow(
-        _ text: String, glossary: [String], probeFresh: Bool, usage: inout ThinkingParameterUsage
-    ) async throws -> CorrectionOutcome {
+        _ text: String,
+        glossary: [String],
+        hints: [AcousticHint],
+        probeFresh: Bool,
+        usage: inout ThinkingParameterUsage
+    ) async throws -> (outcome: CorrectionOutcome, tokenUsage: TokenUsage?) {
         let fingerprint = LLMCapabilityFingerprint.make(chatURL: config.chatCompletionsURL, model: config.model)
         let startedAt = Date()
         let data: Data
 
         if !probeFresh, capabilityStore.isThinkingParameterUnsupported(fingerprint: fingerprint) {
             usage = .omittedByCache
-            data = try await send(text: text, glossary: glossary, includeThinking: false, timeout: config.timeout)
+            data = try await send(
+                text: text, glossary: glossary, hints: hints, includeThinking: false, timeout: config.timeout
+            )
         } else {
             usage = .sent
             do {
-                data = try await send(text: text, glossary: glossary, includeThinking: true, timeout: config.timeout)
+                data = try await send(
+                    text: text, glossary: glossary, hints: hints, includeThinking: true, timeout: config.timeout
+                )
                 if probeFresh {
                     capabilityStore.setThinkingParameterUnsupported(false, fingerprint: fingerprint)
                 }
@@ -280,7 +332,9 @@ actor LLMCorrector {
                 usage = .rejectedThenOmitted
                 // 重发只吃"剩余预算"，保证整体不会比用户设置的超时多出太多。
                 let remaining = max(1, config.timeout - Date().timeIntervalSince(startedAt))
-                data = try await send(text: text, glossary: glossary, includeThinking: false, timeout: remaining)
+                data = try await send(
+                    text: text, glossary: glossary, hints: hints, includeThinking: false, timeout: remaining
+                )
             }
         }
         return try Self.parseOutcome(data, original: text)
@@ -290,10 +344,19 @@ actor LLMCorrector {
     /// 400/422 且响应体提到 `thinking`（只在本次确实带了该字段时判定）→ `thinkingParameterRejected`。
     /// 响应体只用于判定，绝不写日志。
     private func send(
-        text: String, glossary: [String], includeThinking: Bool, timeout: TimeInterval
+        text: String,
+        glossary: [String],
+        hints: [AcousticHint],
+        includeThinking: Bool,
+        timeout: TimeInterval
     ) async throws -> Data {
         let payload = Self.buildPayload(
-            config: config, systemPrompt: systemPrompt, text: text, includeThinking: includeThinking, glossary: glossary
+            config: config,
+            systemPrompt: systemPrompt,
+            text: text,
+            includeThinking: includeThinking,
+            glossary: glossary,
+            hints: hints
         )
         var request = URLRequest(url: config.chatCompletionsURL)
         request.httpMethod = "POST"
@@ -316,7 +379,27 @@ actor LLMCorrector {
         return data
     }
 
-    private static func parseOutcome(_ data: Data, original text: String) throws -> CorrectionOutcome {
+    private static let echoBlockPattern = try! NSRegularExpression(
+        pattern: "<(?:asr_hints|glossary)>[\\s\\S]*?</(?:asr_hints|glossary)>",
+        options: []
+    )
+    private static let leakedTagMarkers = ["<asr_hints", "</asr_hints>", "<glossary", "</glossary>"]
+
+    private static func parseTokenUsage(_ json: [String: Any]) -> TokenUsage? {
+        guard let usageObj = json["usage"] as? [String: Any] else { return nil }
+        let prompt = (usageObj["prompt_tokens"] as? NSNumber)?.intValue
+        let completion = (usageObj["completion_tokens"] as? NSNumber)?.intValue
+        var cached: Int?
+        if let details = usageObj["prompt_tokens_details"] as? [String: Any] {
+            cached = (details["cached_tokens"] as? NSNumber)?.intValue
+        }
+        if prompt == nil && completion == nil && cached == nil { return nil }
+        return TokenUsage(promptTokens: prompt, completionTokens: completion, cachedTokens: cached)
+    }
+
+    private static func parseOutcome(
+        _ data: Data, original text: String
+    ) throws -> (outcome: CorrectionOutcome, tokenUsage: TokenUsage?) {
         let responseObject: Any
         do {
             responseObject = try JSONSerialization.jsonObject(with: data)
@@ -334,23 +417,35 @@ actor LLMCorrector {
             throw LLMError.malformedResponse
         }
 
+        let tokenUsage = parseTokenUsage(json)
+
         if (first["finish_reason"] as? String) == "length" {
             AppLog.llm.warning("LLM 输出被 max_tokens 截断，放弃修正并返回原文")
-            return .fellBack(text)
+            return (.fellBack(text), tokenUsage)
         }
 
         content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 防御（HINT-6.4）：先剥离意外回显的成对 `<asr_hints>...</asr_hints>` / `<glossary>...</glossary>` 块。
+        let fullRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        content = echoBlockPattern.stringByReplacingMatches(in: content, range: fullRange, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         // 防御：个别模型可能把输入包裹标签一并回显。
         if content.hasPrefix("<asr_text>"), content.hasSuffix("</asr_text>") {
             content = String(content.dropFirst("<asr_text>".count).dropLast("</asr_text>".count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // 剥离后若仍残留未闭合的内部协议标签片段，说明模型输出已跑偏，直接回落原文（HINT-6.4）。
+        if leakedTagMarkers.contains(where: { content.contains($0) }) {
+            AppLog.llm.warning("LLM 输出残留内部协议标签，放弃修正并返回原文")
+            return (.fellBack(text), tokenUsage)
+        }
         // 剥标签之后再判空：tags-only 响应（如 `<asr_text>\n</asr_text>`）剥离前非空、
         // 剥离后才变空，若判空放在剥标签前会漏判这种情况（R2-08）。
         if content.isEmpty {
-            return .fellBack(text)
+            return (.fellBack(text), tokenUsage)
         }
-        return .corrected(content)
+        return (.corrected(content), tokenUsage)
     }
 
     enum LLMError: LocalizedError {

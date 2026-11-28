@@ -356,3 +356,7 @@ macOS 影响评估：
 实施与取舍见 [DESIGN §34](../DESIGN.md#34-2026-11-07-windows-体验补齐)：修饰键校对跳过、UIA 密码框检查、取消 / 失败历史与清空、150ms 补录与停止预览、托盘快捷设置、分段断流续传。
 输入框类型检测因干扰部分普通输入框的听写上屏已回滚，见 [DESIGN §35](../DESIGN.md#35-windows-输入框类型检测回滚)。
 R9 的 AX 回读 / 写入超时与 Swift 写时复制优化不适用于 Windows。真机状态见 §34–§35。
+
+## 7. 2026-11-28 `<asr_hints>` 与校对诊断记录同步（`feat/asr-hints`）
+
+同步实施 `ASR_HINTS_SPEC.md` 与 `ASR_HINTS_TRACE_SPEC.md`（见 [DESIGN §36](../DESIGN.md#36-局部声学低置信度备选asr_hints与校对效果诊断记录featasr-hints)）。Linux 下 `dotnet build -p:EnableWindowsTargeting=true` 0 warning / 0 error 编译通过；真实 Windows `dotnet test` 与手工验收待真机执行。

@@ -53,10 +53,22 @@ struct AppConfig: Codable {
         config.llm.temperature = clamp(config.llm.temperature, 0, 2, field: "llm.temperature")
         config.llm.maxTokens = clamp(config.llm.maxTokens, 64, 8192, field: "llm.max_tokens")
         config.llm.timeout = clamp(config.llm.timeout, 1, 120, field: "llm.timeout")
+        config.llm.traceLogPath = Self.validatedTraceLogPath(config.llm.traceLogPath)
         config.ui.opacity = clamp(config.ui.opacity, 0.1, 1.0, field: "ui.opacity")
         config.hotkey = Self.validatedHotkey(config.hotkey)
         config.vocabulary = config.vocabulary.validated()
         return config
+    }
+
+    /// 校验 `llm.trace_log_path`（TRACE-1）：去首尾空白；含 NUL 或控制字符时回落空串并记 warning（不打印原串）。
+    private static func validatedTraceLogPath(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+            AppLog.app.warning("配置字段 llm.trace_log_path 含非法控制字符，已回落默认路径")
+            return ""
+        }
+        return trimmed
     }
 
     /// `SettingsViewModel.applyHotkey` 已经在 UI 路径校验过"主键是否支持"与"非 fn 主键
@@ -218,6 +230,10 @@ struct LLMConfig: Codable, Equatable {
     var temperature: Double
     var maxTokens: Int
     var timeout: Double
+    /// 默认关闭的本机校对效果诊断记录开关（TRACE-1）。
+    var traceLog: Bool
+    /// 非必填；留空时使用 `/tmp/voice_typer/correction_trace.jsonl`（TRACE-D3）。
+    var traceLogPath: String
 
     init(
         enabled: Bool = false,
@@ -225,7 +241,9 @@ struct LLMConfig: Codable, Equatable {
         model: String = "gpt-4o-mini",
         temperature: Double = 0.0,
         maxTokens: Int = 800,
-        timeout: Double = 5.0
+        timeout: Double = 5.0,
+        traceLog: Bool = false,
+        traceLogPath: String = ""
     ) {
         self.enabled = enabled
         self.baseURL = baseURL
@@ -233,6 +251,8 @@ struct LLMConfig: Codable, Equatable {
         self.temperature = temperature
         self.maxTokens = maxTokens
         self.timeout = timeout
+        self.traceLog = traceLog
+        self.traceLogPath = traceLogPath
     }
 
     init(from decoder: Decoder) throws {
@@ -243,6 +263,8 @@ struct LLMConfig: Codable, Equatable {
         self.temperature = try container.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.0
         self.maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 800
         self.timeout = try container.decodeIfPresent(Double.self, forKey: .timeout) ?? 5.0
+        self.traceLog = try container.decodeIfPresent(Bool.self, forKey: .traceLog) ?? false
+        self.traceLogPath = try container.decodeIfPresent(String.self, forKey: .traceLogPath) ?? ""
     }
 
     enum CodingKeys: String, CodingKey {
@@ -252,6 +274,8 @@ struct LLMConfig: Codable, Equatable {
         case temperature
         case maxTokens = "max_tokens"
         case timeout
+        case traceLog = "trace_log"
+        case traceLogPath = "trace_log_path"
     }
 }
 

@@ -17,6 +17,10 @@ namespace VoiceTyper.Asr;
 internal interface ISenseVoiceRecognizing
 {
     string Recognize(ReadOnlySpan<float> samples);
+
+    /// <summary>终稿启用 LLM 校对时调用：除 1-best 文本外，同步提取局部声学低置信度备选（HINT-5）。</summary>
+    RecognitionResult RecognizeWithHints(ReadOnlySpan<float> samples) =>
+        new(Recognize(samples), Array.Empty<AcousticHint>());
 }
 
 /// <summary>
@@ -87,6 +91,8 @@ internal sealed class SenseVoiceEngine : IAsrEngine
     /// <summary>词表前缀树与 token 类别：第一次 <see cref="SetVocabulary"/> 时懒构建，之后复用（与具体词汇无关）。</summary>
     private TokenTrie? _tokenTrie;
     private CtcPrefixBeamSearch.TokenClasses? _tokenClasses;
+    /// <summary><c>&lt;asr_hints&gt;</c> 静态 token 属性表：首次提取备选时懒构建，之后复用（HINT-2）。</summary>
+    private AcousticHintExtractor.TokenMetadata? _hintMetadata;
     /// <summary>当前词汇的上下文图；null = 走贪心解码，金标准与既有输出逐字节不变（VOC-D4）。</summary>
     private ContextGraph? _contextGraph;
     private CtcPrefixBeamSearch.Parameters? _beamParameters;
@@ -239,19 +245,28 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         catch (ObjectDisposedException) { }
     }
 
+    private delegate T DecodeAction<out T>(ReadOnlySpan<float> logits, int numFrames, int vocabSize);
+
     /// <param name="samples">16kHz / mono / float32，范围 [-1, 1]。</param>
     /// <returns>识别文本；样本不足一帧或识别为纯静音/纯标点时返回空字符串。</returns>
-    public string Recognize(ReadOnlySpan<float> samples)
+    public string Recognize(ReadOnlySpan<float> samples) =>
+        RunInference(samples, "", Decode);
+
+    /// <summary>终稿且启用 LLM 校对时调用：与 <see cref="Recognize"/> 共用同一推理主干，仅末步解码同步提取 <c>&lt;asr_hints&gt;</c>（HINT-5）。</summary>
+    public RecognitionResult RecognizeWithHints(ReadOnlySpan<float> samples) =>
+        RunInference(samples, new RecognitionResult("", Array.Empty<AcousticHint>()), DecodeWithHints);
+
+    private T RunInference<T>(ReadOnlySpan<float> samples, T emptyValue, DecodeAction<T> decode)
     {
         // 提前返回（样本不足、静音）时不能留着上一次的统计。
         LastDecodeStats = new DecodeStats(
             _contextGraph is null ? DecodeStats.DecodeMode.Greedy : DecodeStats.DecodeMode.Beam, 0, 0);
-        if (samples.Length < FbankFrontend.MinimumSamples) return "";
+        if (samples.Length < FbankFrontend.MinimumSamples) return emptyValue;
 
         var feats = _frontend.Compute(samples);
-        if (feats.Length == 0) return "";
+        if (feats.Length == 0) return emptyValue;
         var flatFeats = LfrCmvn.ApplyLfrCmvnFlat(feats, _lfrM, _lfrN, _cmvn, out int featsLen, out int dim);
-        if (featsLen == 0) return "";
+        if (featsLen == 0) return emptyValue;
 
         var speechTensor = new DenseTensor<float>(flatFeats, new[] { 1, featsLen, dim });
         var lengthTensor = new DenseTensor<int>(new[] { featsLen }, new[] { 1 });
@@ -277,12 +292,12 @@ internal sealed class SenseVoiceEngine : IAsrEngine
 
         var lensTensor = lensResult.AsTensor<int>();
         int validFrames = lensTensor[0];
-        if (validFrames <= 0) return "";
+        if (validFrames <= 0) return emptyValue;
 
         var logitsTensor = logitsResult.AsTensor<float>();
         var shape = logitsTensor.Dimensions;
         int vocabSize = shape[shape.Length - 1];
-        if (vocabSize <= 0) return "";
+        if (vocabSize <= 0) return emptyValue;
         // 只有拿到推理输出的实际 shape 才能知道 vocabSize；此前不匹配时 CtcDecoder 会
         // 静默跳过越界 id，表现为"识别成功但缺字"，比报错更难排查（R2-09）。
         if (vocabSize != _tokens.Count)
@@ -291,11 +306,6 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         }
 
         int needed = validFrames * vocabSize;
-        // ctc_logits 形状 [1, logits_length, vocabSize]，行主序展平，只需要前 validFrames 帧
-        // （encoder_out_lens 给出的有效帧数）。DenseTensor<float>.Buffer 直接暴露底层内存，
-        // 可以不经拷贝就切出所需前缀；只有在 ORT 返回了非 DenseTensor 的实现时才退化为
-        // ToArray() 全量拷贝（F-07a——120s 音频场景下 ctc_logits 本身约 200MB，
-        // 全量 ToArray() 后再切片等于白白多复制一份）。
         ReadOnlySpan<float> logitsSpan;
         if (logitsTensor is DenseTensor<float> dense)
         {
@@ -307,7 +317,78 @@ internal sealed class SenseVoiceEngine : IAsrEngine
         }
         logitsSpan = logitsSpan[..Math.Min(needed, logitsSpan.Length)];
 
-        return Decode(logitsSpan, validFrames, vocabSize);
+        return decode(logitsSpan, validFrames, vocabSize);
+    }
+
+    private AcousticHintExtractor.TokenMetadata ResolvedHintMetadata() =>
+        _hintMetadata ??= new AcousticHintExtractor.TokenMetadata(_tokens);
+
+    /// <summary>终稿启用 LLM 校对时的解码与局部声学备选提取（HINT-1 / HINT-5 / HINT-7）。</summary>
+    private RecognitionResult DecodeWithHints(ReadOnlySpan<float> logits, int numFrames, int vocabSize)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        var meta = ResolvedHintMetadata();
+
+        RecognitionResult FinishGreedy(ReadOnlySpan<float> data)
+        {
+            var (ids, aligned) = CtcDecoder.GreedyAlignedTokens(data, numFrames, vocabSize, _tokens);
+            var raw = new System.Text.StringBuilder(ids.Length * 2);
+            foreach (var id in ids)
+            {
+                if (id >= 0 && id < _tokens.Count) raw.Append(_tokens[id]);
+            }
+            var text = TextPostprocessor.Process(raw.ToString());
+            var hints = string.IsNullOrEmpty(text)
+                ? Array.Empty<AcousticHint>()
+                : AcousticHintExtractor.Extract(data, numFrames, vocabSize, aligned, text, meta);
+            LastDecodeStats = new DecodeStats(DecodeStats.DecodeMode.Greedy, 0, Stopwatch.GetTimestamp() - startedAt);
+            return new RecognitionResult(text, hints);
+        }
+
+        if (_contextGraph is not { } graph || _beamParameters is not { } parameters || _tokenClasses is not { } classes)
+        {
+            return FinishGreedy(logits);
+        }
+        try
+        {
+            var result = CtcPrefixBeamSearch.Decode(logits, numFrames, vocabSize, graph, classes, parameters);
+            var raw = new System.Text.StringBuilder(result.Tokens.Length * 2);
+            foreach (var id in result.Tokens)
+            {
+                if (id >= 0 && id < _tokens.Count) raw.Append(_tokens[id]);
+            }
+            var text = TextPostprocessor.Process(raw.ToString());
+            IReadOnlyList<AcousticHint> hints;
+            if (string.IsNullOrEmpty(text))
+            {
+                hints = Array.Empty<AcousticHint>();
+            }
+            else if (result.HotwordHits > 0)
+            {
+                var aligned = AcousticHintExtractor.ForcedAlign(logits, numFrames, vocabSize, result.Tokens, _tokens, graph);
+                if (aligned is not null)
+                {
+                    hints = AcousticHintExtractor.Extract(logits, numFrames, vocabSize, aligned, text, meta);
+                }
+                else
+                {
+                    AppLog.Warn("asr", "热词路径强制对齐异常，放弃本次声学备选提取");
+                    hints = Array.Empty<AcousticHint>();
+                }
+            }
+            else
+            {
+                var (_, aligned) = CtcDecoder.GreedyAlignedTokens(logits, numFrames, vocabSize, _tokens);
+                hints = AcousticHintExtractor.Extract(logits, numFrames, vocabSize, aligned, text, meta);
+            }
+            LastDecodeStats = new DecodeStats(DecodeStats.DecodeMode.Beam, result.HotwordHits, Stopwatch.GetTimestamp() - startedAt);
+            return new RecognitionResult(text, hints);
+        }
+        catch (CtcPrefixBeamSearch.DecodeException ex)
+        {
+            AppLog.Error("asr", "热词束搜索失败，回退贪心解码", ex);
+            return FinishGreedy(logits);
+        }
     }
 
     /// <summary>有可用热词时先运行束搜索，未采用热词时由解码器返回贪心 token。两条路径共用文本后处理。</summary>

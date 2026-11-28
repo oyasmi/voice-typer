@@ -44,6 +44,8 @@ internal sealed class AsrSessionTimings
     public DecodeStats.DecodeMode? DecodeMode;
     public int HotwordHits;
     public long DecodeTicks;
+    /// <summary>经词汇表一致性过滤后、实际发给 LLM 的 <c>&lt;asr_hints&gt;</c> 条数（HINT-7）。</summary>
+    public int AsrHintCount;
 }
 
 internal enum DictationOutcome
@@ -216,6 +218,9 @@ internal sealed class DictationMetrics
             ("vocab_hits", Timings.DecodeMode is null ? "-" : Timings.HotwordHits.ToString(inv)),
             ("decode_ms", Timings.DecodeMode is null
                 ? "-" : Stopwatch.GetElapsedTime(0, Timings.DecodeTicks).TotalMilliseconds.ToString("F1", inv)),
+            // HINT-7：未启用校对时输出 -，启用校对时输出非负整数。
+            ("asr_hints", Timings.LlmResult is null or AsrSessionTimings.LlmOutcome.Off
+                ? "-" : Timings.AsrHintCount.ToString(inv)),
         };
         return "dictation " + string.Join(" ", fields.ConvertAll(f => f.Key + "=" + f.Value));
     }

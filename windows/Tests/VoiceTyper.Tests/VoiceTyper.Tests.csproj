@@ -50,5 +50,8 @@
           Link="Fixtures\vocabulary_cases.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\ctc_hotword_cases.json"
           Link="Fixtures\ctc_hotword_cases.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 局部声学低置信度备选（HINT-1 – HINT-4）的共享用例，规则见 macos/docs/ASR_HINTS_SPEC.md。同样是必需夹具。 -->
+    <None Include="..\..\..\macos\Tests\VoiceTyperTests\Fixtures\asr_hints_cases.json"
+          Link="Fixtures\asr_hints_cases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

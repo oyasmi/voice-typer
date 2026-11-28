@@ -144,6 +144,7 @@ internal sealed class VoiceTyperController : IDisposable
     private readonly IAudioCapturing _audio;
     private readonly ITextInserting _text;
     private readonly LlmCorrector? _llm;
+    private readonly CorrectionTraceLogger? _traceLogger;
     /// <summary>由 <c>config.Vocabulary</c> 编译；词汇变化会重建控制器（与其余配置段一致）。</summary>
     private readonly VocabularyReplacer _vocabulary;
     private readonly Func<long> _now;
@@ -200,9 +201,10 @@ internal sealed class VoiceTyperController : IDisposable
 
     /// <summary>生产环境入口：装配真实的钩子 / 麦克风服务。剪贴板服务由调用方（协调器）持有并借给
     /// 控制器：重建控制器不能丢掉尚未完成的剪贴板恢复状态，控制器 Dispose 时也不释放它。</summary>
-    public VoiceTyperController(AppConfig config, AsrService asrService, TextInsertionService textInsertion)
+    public VoiceTyperController(AppConfig config, AsrService asrService, TextInsertionService textInsertion,
+        CorrectionTraceLogger? traceLogger = null)
         : this(config, asrService, new HotkeyService(), new AudioCaptureService(), textInsertion,
-            CreateLlmCorrector(config), releaseTailCapture: TimeSpan.FromMilliseconds(150))
+            CreateLlmCorrector(config), releaseTailCapture: TimeSpan.FromMilliseconds(150), traceLogger: traceLogger)
     {
     }
 
@@ -218,7 +220,8 @@ internal sealed class VoiceTyperController : IDisposable
         Func<long>? now = null,
         Action<Action>? post = null,
         Func<TimeSpan, Action, IDisposable>? schedule = null,
-        TimeSpan? releaseTailCapture = null)
+        TimeSpan? releaseTailCapture = null,
+        CorrectionTraceLogger? traceLogger = null)
     {
         _config = config;
         _sessions = sessions;
@@ -226,6 +229,7 @@ internal sealed class VoiceTyperController : IDisposable
         _audio = audio;
         _text = text;
         _llm = llmCorrector;
+        _traceLogger = traceLogger;
         _vocabulary = new VocabularyReplacer(config.Vocabulary);
         _now = now ?? Stopwatch.GetTimestamp;
         _post = post ?? UiDispatcher.Post;
@@ -583,7 +587,8 @@ internal sealed class VoiceTyperController : IDisposable
 
     private void BeginDictationSession(long pressedAt)
     {
-        var session = _sessions.MakeSession(_llm, _vocabulary);
+        bool traceEnabled = _config.Llm.TraceLog && _traceLogger is not null;
+        var session = _sessions.MakeSession(_llm, _vocabulary, traceEnabled);
         // 说话期间并行建好纠错服务的连接，识别完成后的请求直接复用。
         _llm?.WarmUp();
         var metrics = new DictationMetrics
@@ -784,6 +789,7 @@ internal sealed class VoiceTyperController : IDisposable
         // 只有拿到文本的听写才会走到插入；其余收尾不再需要提前备份的剪贴板内容。
         if (outcome is not Outcome.Text) _text.DiscardPreparedBackup();
         metrics.Timings = utterance.Session.Timings;
+        var traceDraft = utterance.Session.TraceDraft;
         utterance.Session.Close();
         _sessions.SessionEnded();
         _audio.OnChunk = null;
@@ -797,7 +803,7 @@ internal sealed class VoiceTyperController : IDisposable
         {
             case Outcome.Text text:
                 // null = 修饰键仍被按住，插入已推迟；耗时摘要由推迟的流程在最终结局确定后上报。
-                if (HandleFinalText(text.Value, utterance.Target, metrics) is not { } inserted) return;
+                if (HandleFinalText(text.Value, utterance.Target, traceDraft, metrics) is not { } inserted) return;
                 result = inserted;
                 break;
             case Outcome.Failed failed:
@@ -866,7 +872,7 @@ internal sealed class VoiceTyperController : IDisposable
 
     /// <summary>插入最终文本并更新状态，返回本次听写的结局；返回 null 表示插入推迟了（见 <see cref="PendingInsert"/>）。
     /// 调用方（<see cref="Finish"/>）负责在调用前完成会话拆解。</summary>
-    private DictationOutcome? HandleFinalText(string text, ForegroundTarget target, DictationMetrics metrics)
+    private DictationOutcome? HandleFinalText(string text, ForegroundTarget target, CorrectionTraceDraft? traceDraft, DictationMetrics metrics)
     {
         var trimmed = (text ?? "").Trim();
 
@@ -887,9 +893,96 @@ internal sealed class VoiceTyperController : IDisposable
         // 上屏用的最终文本：位于识别契约之后的确定性格式化（R8-F2），与是否启用 LLM 无关。
         // 插入、复制兜底、重试、RecognizedText、FinalTextReady 一律用它；LLM 收到的仍是识别原文。
         var output = OutputFormatter.FormatForOutput(trimmed, _vocabulary);
+        EmitTraceRecordIfEnabled(traceDraft, output, metrics);
         FinalTextReady?.Invoke(output);
         StateChanged?.Invoke(AppStateInfo.Inserting);
         return TryInsertFinalText(new PendingInsert(output, target, metrics, _now(), Attempt: 0));
+    }
+
+    /// <summary>拼装并异步投递独立本机诊断记录（TRACE-3 / TRACE-4）；关闭时直接返回、零开销。</summary>
+    private void EmitTraceRecordIfEnabled(CorrectionTraceDraft? draft, string finalText, DictationMetrics metrics)
+    {
+        if (!_config.Llm.TraceLog || _traceLogger is not { } logger || draft is null) return;
+        if (metrics.Timings.LlmResult is not { } llmResult || llmResult == AsrSessionTimings.LlmOutcome.Off) return;
+
+        var timings = metrics.Timings;
+        int asrMs = timings.FinalizeStartedAt is { } asrStart && timings.AsrCompletedAt is { } asrEnd && asrEnd >= asrStart
+            ? (int)Stopwatch.GetElapsedTime(asrStart, asrEnd).TotalMilliseconds : 0;
+        int llmMs = timings.LlmStartedAt is { } llmStart && timings.LlmCompletedAt is { } llmEnd && llmEnd >= llmStart
+            ? (int)Stopwatch.GetElapsedTime(llmStart, llmEnd).TotalMilliseconds : 0;
+        double decodeMs = Math.Round(Stopwatch.GetElapsedTime(0, timings.DecodeTicks).TotalMilliseconds, 1);
+        double audioSec = Math.Round(timings.ReceivedSamples / 16000.0, 1);
+
+        string resultStr = llmResult switch
+        {
+            AsrSessionTimings.LlmOutcome.Corrected => "corrected",
+            AsrSessionTimings.LlmOutcome.FellBack => "fell_back",
+            AsrSessionTimings.LlmOutcome.Skipped => "skipped",
+            _ => "off",
+        };
+        string? thinkingParam = llmResult == AsrSessionTimings.LlmOutcome.Skipped
+            ? null
+            : draft.ThinkingParameter switch
+            {
+                LlmCorrector.ThinkingParameterUsage.Sent => "sent",
+                LlmCorrector.ThinkingParameterUsage.OmittedByCache => "omitted_by_cache",
+                LlmCorrector.ThinkingParameterUsage.RejectedThenOmitted => "rejected_then_omitted",
+                _ => null,
+            };
+
+        var items = new List<CorrectionTraceRecord.HintItem>(draft.ActiveHints.Count);
+        foreach (var h in draft.ActiveHints)
+        {
+            items.Add(new CorrectionTraceRecord.HintItem
+            {
+                Surface = h.Surface,
+                Alternatives = h.Alternatives,
+                BestMargin = Math.Round(h.BestMargin, 2),
+            });
+        }
+
+        var record = new CorrectionTraceRecord
+        {
+            Ts = CorrectionTraceLogger.Iso8601Timestamp(),
+            SessionId = metrics.SessionId.ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+            AppVersion = AppConstants.Version,
+            AudioSec = audioSec,
+            Asr = new CorrectionTraceRecord.AsrSection
+            {
+                LanguageSetting = _config.Asr.LanguageValue.ToYamlValue(),
+                DecodeMode = timings.DecodeMode == Asr.Hotword.DecodeStats.DecodeMode.Beam ? "beam" : "greedy",
+                VocabHits = timings.HotwordHits,
+                AsrMs = asrMs,
+                DecodeMs = decodeMs,
+                RawText = draft.AsrRawText,
+                ReplacedText = draft.AsrReplacedText,
+            },
+            Hints = new CorrectionTraceRecord.HintsSection
+            {
+                MarginThreshold = draft.MarginThreshold,
+                RawCount = draft.RawHintsCount,
+                ActiveCount = draft.ActiveHints.Count,
+                DroppedByVocab = draft.DroppedByVocab,
+                Items = items,
+            },
+            Llm = new CorrectionTraceRecord.LlmSection
+            {
+                Model = _config.Llm.Model,
+                Temperature = _config.Llm.Temperature,
+                GlossaryCount = draft.GlossaryCount,
+                HintsSent = draft.ActiveHints.Count > 0,
+                Result = resultStr,
+                FallbackReason = llmResult == AsrSessionTimings.LlmOutcome.FellBack ? draft.FallbackReason : null,
+                ThinkingParam = thinkingParam,
+                LlmMs = llmMs,
+                PromptTokens = draft.TokenUsage?.PromptTokens,
+                CompletionTokens = draft.TokenUsage?.CompletionTokens,
+                CachedTokens = draft.TokenUsage?.CachedTokens,
+                OutputText = llmResult == AsrSessionTimings.LlmOutcome.Corrected ? draft.LlmOutputText : null,
+                FinalText = finalText,
+            },
+        };
+        _ = Task.Run(() => logger.Append(record));
     }
 
     /// <summary>一次插入尝试。剪贴板备份未就绪或修饰键仍被按住时，可登记 <see cref="_pendingInsert"/> 并返回 null。</summary>

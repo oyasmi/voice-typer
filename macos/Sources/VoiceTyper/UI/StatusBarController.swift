@@ -9,6 +9,8 @@ struct QuickSettingsState: Equatable {
     var llmEnabled: Bool
     /// 已填写 Base URL；没填时无法开启智能校对。
     var llmConfigured: Bool
+    /// 是否正在本机记录校对诊断日志（TRACE-D8）。
+    var llmTraceLog: Bool = false
     /// 听写进行中：这些项禁用（`applyConfig` 本就会拒绝）。
     var isBusy: Bool
 }
@@ -349,7 +351,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
 
         llmMenuItem.state = state.llmEnabled ? .on : .off
-        llmMenuItem.title = state.llmConfigured ? L("智能校对") : L("智能校对（在设置中配置）")
+        if !state.llmConfigured {
+            llmMenuItem.title = L("智能校对（在设置中配置）")
+        } else if state.llmEnabled, state.llmTraceLog {
+            llmMenuItem.title = L("智能校对（记录中）")
+        } else {
+            llmMenuItem.title = L("智能校对")
+        }
         llmMenuItem.isEnabled = state.llmConfigured && !state.isBusy
         languageMenuItem.isEnabled = !state.isBusy
         microphoneMenuItem.isEnabled = !state.isBusy

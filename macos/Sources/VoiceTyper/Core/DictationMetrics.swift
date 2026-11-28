@@ -45,6 +45,8 @@ struct ASRSessionTimings: Equatable {
     var decodeMode: DecodeStats.Mode?
     var hotwordHits = 0
     var decodeNanos: UInt64 = 0
+    /// 经词汇表一致性过滤后、实际发给 LLM 的 `<asr_hints>` 条数（HINT-7）。
+    var asrHintCount = 0
 }
 
 /// 一次听写的耗时与结果摘要，收尾时以一行日志输出（`summaryLine()`）。
@@ -155,6 +157,9 @@ struct DictationMetrics {
             ("vocab_hits", timings.decodeMode == nil ? "-" : String(timings.hotwordHits)),
             ("decode_ms", timings.decodeMode == nil
                 ? "-" : String(format: "%.1f", locale: posix, Double(timings.decodeNanos) / 1_000_000)),
+            // HINT-7：未启用校对时输出 `-`，启用校对时输出非负整数。
+            ("asr_hints", (timings.llmResult == nil || timings.llmResult == .off)
+                ? "-" : String(timings.asrHintCount)),
         ]
         return "dictation " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
     }

@@ -294,7 +294,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     /// 重新加载并与录音并行——用户通常正在说第一句话，加载耗时对感知延迟几乎不可见。
     /// </summary>
     /// <param name="vocabulary">替换层快照（VOC-7）；听写中不会改配置，快照即可。</param>
-    public LocalAsrSession MakeSession(LlmCorrector? llmCorrector, VocabularyReplacer? vocabulary = null)
+    public LocalAsrSession MakeSession(LlmCorrector? llmCorrector, VocabularyReplacer? vocabulary = null, bool traceEnabled = false)
     {
         // SuspendedForIdle 下引擎已被 Dispose 且引用置 null，必须真正发起加载，
         // 否则空闲十分钟后每一次听写都拿不到引擎（R2-2）。
@@ -307,6 +307,7 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
         Interlocked.Increment(ref _activeSessions);
         return new LocalAsrSession(_pump, CurrentEngine, llmCorrector, EffectivePreviewWindowSamples,
             vocabulary: vocabulary ?? VocabularyReplacer.Empty,
+            traceEnabled: traceEnabled,
             engineLoadError: () => State switch
             {
                 AsrState.Failed => FailureMessage ?? L10n.T("模型加载失败"),
@@ -317,7 +318,10 @@ internal sealed class AsrService : IDictationSessionFactory, IDisposable
     }
 
     IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary) =>
-        MakeSession(corrector, vocabulary);
+        MakeSession(corrector, vocabulary, traceEnabled: false);
+
+    IDictationSession IDictationSessionFactory.MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary, bool traceEnabled) =>
+        MakeSession(corrector, vocabulary, traceEnabled);
 
     /// <summary>录音会话结束后由调用方（VoiceTyperController）调用，重新安排空闲卸载计时。</summary>
     public void SessionEnded()

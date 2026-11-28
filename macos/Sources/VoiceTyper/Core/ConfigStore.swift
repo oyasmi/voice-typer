@@ -138,6 +138,8 @@ final class ConfigStore {
           temperature: \(yamlNumber(config.llm.temperature))
           max_tokens: \(config.llm.maxTokens)
           timeout: \(yamlNumber(config.llm.timeout))
+          trace_log: \(config.llm.traceLog ? "true" : "false")
+          trace_log_path: \(yamlString(config.llm.traceLogPath))
         hotkey:
         \(hotkeyModifiersBlock)
           key: \(yamlString(config.hotkey.key))

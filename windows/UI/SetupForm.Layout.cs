@@ -247,6 +247,35 @@ internal sealed partial class SetupForm
         AddField(advanced, L10n.T("最大 Token"), L10n.T("限制纠错回复的长度。"), _llmMaxTokensField);
         AddField(advanced, L10n.T("超时（秒）"), L10n.T("超时后仍使用原识别文本。"), _llmTimeoutField);
         AddDisclosure(fields, L10n.T("高级设置"), advanced);
+
+        _llmTraceLogCheck.Text = L10n.T("记录校对日志（用于效果评估）");
+        _llmTraceLogCheck.AutoSize = true;
+        Add(fields, _llmTraceLogCheck);
+        var tracePanel = Stack();
+        _llmTraceLogPathField.PlaceholderText = L10n.T("留空默认 %TEMP%\\VoiceTyper\\correction_trace.jsonl");
+        AddField(tracePanel, L10n.T("日志路径"), L10n.T("开启后会将识别原文、声学备选与校对结果保存在本机，不会上传。默认写到系统临时目录；如需长期保留可自定义路径。"), _llmTraceLogPathField, fullWidth: true);
+        StyleButton(_revealTraceLogButton, L10n.T("打开日志目录"));
+        _revealTraceLogButton.Click += (_, _) => OnRevealTraceLog?.Invoke(_llmTraceLogPathField.Text);
+        StyleButton(_clearTraceLogButton, L10n.T("清空日志"));
+        _clearTraceLogButton.Click += (_, _) =>
+        {
+            var confirm = MessageBox.Show(
+                this,
+                L10n.T("确定删除本机保存的全部校对日志？此操作不可撤销。"),
+                L10n.T("清空校对日志"),
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+            if (confirm == DialogResult.OK)
+            {
+                OnClearTraceLog?.Invoke(_llmTraceLogPathField.Text);
+                SetMessage(_recognitionMessage, L10n.T("已清空本机校对日志。"), Muted);
+            }
+        };
+        Add(tracePanel, ButtonRow(_revealTraceLogButton, _clearTraceLogButton));
+        Add(fields, tracePanel);
+        _llmTraceLogCheck.CheckedChanged += (_, _) => tracePanel.Visible = _llmTraceLogCheck.Checked;
+        tracePanel.Visible = false;
+
         StyleButton(_llmTestButton, L10n.T("测试纠错"));
         _llmTestButton.Click += async (_, _) => await HandleTestLlmCorrection();
         Add(fields, _llmTestButton);
@@ -495,7 +524,8 @@ internal sealed partial class SetupForm
             ModeValue = (HotkeyMode)(_hotkeyModeCombo.SelectedItem ?? HotkeyMode.Hold) };
         draft.Llm = new LlmConfig { Enabled = _llmEnabledCheck.Checked, BaseUrl = _llmBaseUrlField.Text.Trim(),
             Model = _llmModelField.Text.Trim(), Temperature = (double)_llmTemperatureField.Value,
-            MaxTokens = (int)_llmMaxTokensField.Value, Timeout = (double)_llmTimeoutField.Value };
+            MaxTokens = (int)_llmMaxTokensField.Value, Timeout = (double)_llmTimeoutField.Value,
+            TraceLog = _llmTraceLogCheck.Checked, TraceLogPath = _llmTraceLogPathField.Text.Trim() };
         draft.Vocabulary = BuildVocabularyDraft();
         return draft;
     }

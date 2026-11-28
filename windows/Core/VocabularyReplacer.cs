@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VoiceTyper.Asr;
 using VoiceTyper.Asr.Hotword;
 
 namespace VoiceTyper.Core;
@@ -71,6 +72,53 @@ internal sealed class VocabularyReplacer
         foreach (var scalar in current) builder.Append(new Rune(scalar).ToString());
         return builder.ToString();
     }
+
+    /// <summary>
+    /// 词汇替换后的一致性过滤（HINT-5.3 / HINT-D7）：
+    /// 1. <c>Surface</c> 不再出现在替换后的文本中 → 丢弃并计入 <c>DroppedByVocab</c>；
+    /// 2. <c>Surface</c> 精确等于词汇表中任一 <c>term</c>（不区分大小写）→ 丢弃并计入 <c>DroppedByVocab</c>；
+    /// 3. 备选逐项过一遍 <see cref="Apply"/> 规整 alias，去重并剔除与 <c>Surface</c> 相同项；
+    /// 4. 防御性过滤含 <c>&lt;</c>、<c>&gt;</c>、<c>\n</c>、<c>\r</c> 的异常字符串。
+    /// </summary>
+    public (IReadOnlyList<AcousticHint> Active, int DroppedByVocab) ReconcileHints(
+        IReadOnlyList<AcousticHint>? hints,
+        string replacedText)
+    {
+        if (hints is null || hints.Count == 0) return (Array.Empty<AcousticHint>(), 0);
+        var loweredTerms = new HashSet<string>(Terms, StringComparer.OrdinalIgnoreCase);
+        var active = new List<AcousticHint>(hints.Count);
+        int droppedByVocab = 0;
+
+        foreach (var hint in hints)
+        {
+            if (ContainsUnsafeTagChars(hint.Surface)) continue;
+            if (!replacedText.Contains(hint.Surface, StringComparison.Ordinal) || loweredTerms.Contains(hint.Surface))
+            {
+                droppedByVocab++;
+                continue;
+            }
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var cleanedAlts = new List<string>(hint.Alternatives.Count);
+            foreach (var alt in hint.Alternatives)
+            {
+                var normalized = Apply(alt);
+                if (string.IsNullOrEmpty(normalized)
+                    || ContainsUnsafeTagChars(normalized)
+                    || string.Equals(normalized, hint.Surface, StringComparison.Ordinal)
+                    || !seen.Add(normalized))
+                {
+                    continue;
+                }
+                cleanedAlts.Add(normalized);
+            }
+            if (cleanedAlts.Count == 0) continue;
+            active.Add(new AcousticHint(hint.Surface, cleanedAlts, hint.BestMargin));
+        }
+        return (active, droppedByVocab);
+    }
+
+    private static bool ContainsUnsafeTagChars(string value) =>
+        value.IndexOfAny(new[] { '<', '>', '\n', '\r' }) >= 0;
 
     private int[] ApplyOnce(int[] text)
     {

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RecognitionSettingsView: View {
     @Bindable var vm: SettingsViewModel
+    @State private var showingClearTraceConfirm = false
 
     var body: some View {
         Form {
@@ -64,6 +65,26 @@ struct RecognitionSettingsView: View {
                             .frame(width: 60)
                             .multilineTextAlignment(.trailing)
                     }
+                    Toggle(L("记录校对日志（用于效果评估）"), isOn: $vm.llmTraceLog)
+                    if vm.llmTraceLog {
+                        TextField(
+                            L("日志路径"),
+                            text: $vm.llmTraceLogPath,
+                            prompt: Text(L("留空默认 /tmp/voice_typer/correction_trace.jsonl"))
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("开启后会将识别原文、声学备选与校对结果保存在本机，不会上传。"))
+                            Text(L("默认写到 /tmp/，重启后自动清空；如需长期保留可自定义路径。"))
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        HStack {
+                            Spacer()
+                            Button(L("在访达中显示")) { vm.revealTraceLog() }
+                            Button(L("清空日志"), role: .destructive) { showingClearTraceConfirm = true }
+                        }
+                        .disabled(vm.recognitionBusy)
+                    }
                 }
 
                 HStack {
@@ -92,6 +113,12 @@ struct RecognitionSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .alert(L("清空校对日志"), isPresented: $showingClearTraceConfirm) {
+            Button(L("取消"), role: .cancel) {}
+            Button(L("清空日志"), role: .destructive) { vm.clearTraceLog() }
+        } message: {
+            Text(L("确定删除本机保存的全部校对日志？此操作不可撤销。"))
+        }
     }
 
     @ViewBuilder

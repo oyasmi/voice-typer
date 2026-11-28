@@ -346,6 +346,7 @@ final class ASRService {
     func makeSession(
         llmCorrector: LLMCorrector?,
         vocabulary: VocabularyReplacer = .empty,
+        traceEnabled: Bool = false,
         now: @escaping MonotonicClock = systemMonotonicClock
     ) -> LocalASRSession {
         incrementActiveSessions()
@@ -358,6 +359,7 @@ final class ASRService {
             engineAccessor: { [weak self] in self?.currentEngine() },
             llmCorrector: llmCorrector,
             vocabulary: vocabulary,
+            traceEnabled: traceEnabled,
             engineUnavailable: { [weak self] in
                 // 加载失败或模型缺失时引擎不可能自己变好，终稿不必空等（R8-A1）。
                 switch self?.state {

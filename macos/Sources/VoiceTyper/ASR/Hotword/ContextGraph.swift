@@ -26,6 +26,8 @@ final class ContextGraph: Sendable {
     /// `(节点 << 32) | token` → 子节点。
     private let edges: [Int: Int32]
     private let fail: [Int32]
+    /// 每个节点在前缀树中的深度（根为 0），用于标记命中热词区间（HINT-1）。
+    private let depth: [Int]
     /// `S(node) = b × min(depth, Dmax)`。
     private let score: [Double]
     private let isEnd: [Bool]
@@ -83,6 +85,7 @@ final class ContextGraph: Sendable {
 
         self.edges = edges
         self.fail = fail
+        self.depth = depth
         self.isEnd = isEnd
         self.childTokens = childTokens
         self.rootTokens = childTokens[0]
@@ -129,5 +132,23 @@ final class ContextGraph: Sendable {
             next.hits += 1
         }
         return next
+    }
+
+    /// 在已选定的 token 序列上线性步进一遍，返回每个下标是否属于已命中的热词区间（HINT-1）。
+    func protectedMask(for tokens: [Int]) -> [Bool] {
+        var mask = [Bool](repeating: false, count: tokens.count)
+        var state = State()
+        for (i, token) in tokens.enumerated() {
+            state = step(state, token: token)
+            let node = Int(state.node)
+            if isEnd[node] {
+                let d = depth[node]
+                let start = max(0, i - d + 1)
+                for pos in start...i {
+                    mask[pos] = true
+                }
+            }
+        }
+        return mask
     }
 }

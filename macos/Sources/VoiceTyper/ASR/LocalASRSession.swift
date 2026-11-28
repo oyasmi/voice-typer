@@ -68,6 +68,8 @@ final class LocalASRSession {
     private let llmCorrector: LLMCorrector?
     /// 词汇替换层快照（VOC-7）。听写中不会改配置（`applyConfig` 会拒绝重建控制器），快照即可。
     private let vocabulary: VocabularyReplacer
+    /// 是否采集本机校对效果诊断快照（TRACE-4）；默认 false，关闭时零额外内存拷贝。
+    private let traceEnabled: Bool
     /// 引擎已确定不可能就绪（加载失败 / 模型缺失）。为 true 时 finalize 立即失败，不再空等。
     private let engineUnavailable: () -> Bool
     /// 单调时钟；会在 asrQueue 上被调用，必须线程安全（默认实现满足）。
@@ -75,6 +77,8 @@ final class LocalASRSession {
 
     /// 分阶段打点，会话收尾前由控制器读取并入 `DictationMetrics`。
     private(set) var timings = ASRSessionTimings()
+    /// 仅在 `traceEnabled == true` 且进入校对阶段时填充的轻量诊断草稿（TRACE-4）。
+    private(set) var traceDraft: CorrectionTraceDraft?
     private var hasReceivedAudio = false
     private var engineWaitStartedAt: UInt64?
 
@@ -124,6 +128,7 @@ final class LocalASRSession {
         engineAccessor: @escaping () -> (any SenseVoiceRecognizing)?,
         llmCorrector: LLMCorrector?,
         vocabulary: VocabularyReplacer = .empty,
+        traceEnabled: Bool = false,
         engineUnavailable: @escaping () -> Bool = { false },
         now: @escaping MonotonicClock = systemMonotonicClock
     ) {
@@ -131,6 +136,7 @@ final class LocalASRSession {
         self.engineAccessor = engineAccessor
         self.llmCorrector = llmCorrector
         self.vocabulary = vocabulary
+        self.traceEnabled = traceEnabled
         self.engineUnavailable = engineUnavailable
         self.now = now
     }
@@ -371,11 +377,17 @@ final class LocalASRSession {
     private func runFinalize(on buffer: RecognitionBuffer) {
         startFinalizeWatchdog()
         let clock = now
+        let shouldCollectHints = (llmCorrector != nil)
         timings.finalizeDispatchedAt = clock()
         asrQueue.async { [weak self] in
             guard let self, !self.cancelFlag.isSet else { return }
             let inferenceStartedAt = clock()
-            let result = Result { try buffer.finalize() }
+            let result = Result<RecognitionResult, Error> {
+                if shouldCollectHints {
+                    return try buffer.finalizeWithHints()
+                }
+                return RecognitionResult(text: try buffer.finalize(), hints: [])
+            }
             // 同在 asrQueue 上、紧跟终稿推理之后读取，不会被预览覆盖（预览已在松键时停止）。
             let decodeStats = buffer.lastDecodeStats
             Task { @MainActor [weak self] in
@@ -388,9 +400,9 @@ final class LocalASRSession {
                 self.finalizeWatchdog = nil
 
                 switch result {
-                case .success(let text):
+                case .success(let recognition):
                     self.timings.asrCompletedAt = self.now()
-                    self.completeWithASRText(text)
+                    self.completeWithASRText(recognition.text, hints: recognition.hints)
                 case .failure(let error):
                     AppLog.asr.error("离线复识别失败: \(String(describing: error), privacy: .public)")
                     self.onError?(error.localizedDescription)
@@ -418,12 +430,30 @@ final class LocalASRSession {
     ///
     /// LLM 收到的是替换后的文本（有意放宽 R8「LLM 输入保持 ASR 原貌」）：替换只改词条，
     /// few-shot 示例描述的「中英文紧挨着」的形态不受影响。
-    private func completeWithASRText(_ asrText: String) {
+    private func completeWithASRText(_ asrText: String, hints rawHints: [AcousticHint] = []) {
         let text = vocabulary.apply(asrText)
         guard let llmCorrector, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             timings.llmResult = .off
             onFinal?(text)
             return
+        }
+
+        let reconciled = vocabulary.reconcileHints(rawHints, inReplacedText: text)
+        let activeHints = reconciled.active
+        timings.asrHintCount = activeHints.count
+        if traceEnabled {
+            traceDraft = CorrectionTraceDraft(
+                asrRawText: asrText,
+                asrReplacedText: text,
+                marginThreshold: AcousticHintExtractor.Parameters.default.marginThreshold,
+                rawHintsCount: rawHints.count,
+                droppedByVocab: reconciled.droppedByVocab,
+                activeHints: activeHints,
+                glossaryCount: vocabulary.terms.count,
+                llmOutputText: nil,
+                tokenUsage: nil,
+                thinkingParameter: nil
+            )
         }
 
         onPartial?(text)
@@ -433,7 +463,9 @@ final class LocalASRSession {
         isCorrecting = true
         correctionTask = Task { @MainActor [weak self] in
             guard let self, !self.closed else { return }
-            let report = await llmCorrector.correctWithReport(text, glossary: self.vocabulary.terms)
+            let report = await llmCorrector.correctWithReport(
+                text, glossary: self.vocabulary.terms, hints: activeHints
+            )
             // 已被用户跳过（skipCorrection 已用原文收尾）或会话已关闭：迟到的结果一律忽略。
             guard !self.closed, self.isCorrecting else { return }
             self.isCorrecting = false
@@ -441,6 +473,14 @@ final class LocalASRSession {
             let outcome = report.outcome
             self.timings.llmCompletedAt = self.now()
             self.timings.llmRetriedWithoutThinking = (report.thinkingParameter == .rejectedThenOmitted)
+            if var draft = self.traceDraft {
+                draft.tokenUsage = report.tokenUsage
+                draft.thinkingParameter = report.thinkingParameter
+                if case .corrected(let correctedText) = outcome {
+                    draft.llmOutputText = correctedText
+                }
+                self.traceDraft = draft
+            }
             if case .fellBack = outcome {
                 self.timings.llmResult = .fellBack
                 // 回落原因交给控制器，在「已输入 · 未校对」里说明（R8-C1）；

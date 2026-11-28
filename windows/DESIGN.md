@@ -2307,3 +2307,14 @@ macOS 主机的 Release 测试工程编译通过。依照开发文档运行非 W
 3. 录音中切换到另一个窗口再松键，确认结果复制到剪贴板并提示目标窗口已变化，两个窗口均无自动粘贴。
    在管理员窗口中听写，确认模拟输入失败时有明确提示并可手动粘贴。
 4. 剪贴板中分别放入文本、图片或文件列表后成功听写，确认原内容恢复。在恢复等待期间再次手动复制，确认新内容得以保留。
+
+---
+
+## 36. 局部声学低置信度备选（`<asr_hints>`）与校对效果诊断记录（`feat/asr-hints`）
+
+按 `macos/docs/ASR_HINTS_SPEC.md`（HINT-1 – HINT-8）与 `macos/docs/ASR_HINTS_TRACE_SPEC.md`（TRACE-1 – TRACE-6）完成 Windows C# 同步实施：
+
+- **声学备选提取**：新增 `Asr/AcousticHintExtractor.cs`（贪心峰值核心帧 + 热词路径 Viterbi 强制对齐 + `ContextGraph.ProtectedMask` + `Vector<float>` 分块扫描 + 词/段分组与上下文锚点消歧）；`SenseVoiceEngine` 抽取共享 `RunInference<T>` 供 `Recognize` / `RecognizeWithHints` 复用；`LocalAsrSession` 仅在启用 LLM 校对的终稿路径采集并经 `VocabularyReplacer.ReconcileHints` 过滤后透传给 `LlmCorrector`；`DictationMetrics.SummaryLine()` 末尾追加 `asr_hints=`。
+- **Prompt 与防御**：三份 `correction.md` 同步新增 `<asr_hints>` 规则；`LlmCorrector` 扩展 `UserMessage`、追加第 9 组正反合一 few-shot、`ParseOutcome` 剥离回显并拦截残缺标签、容错解析 `usage`（`TokenUsage`）。
+- **独立诊断记录**：新增 `Llm/CorrectionTraceLogger.cs`、`llm.trace_log`（默认 `false`）与 `llm.trace_log_path`（留空默认 `%TEMP%\VoiceTyper\correction_trace.jsonl`），在 `SetupForm` 补齐开关、路径输入、隐私提示与打开/清空操作，托盘菜单开启期间显示「智能纠错（记录中）」。
+- **验证状态**：本轮在 Linux 环境通过 `dotnet build -p:EnableWindowsTargeting=true`（0 warning / 0 error），新增 `AcousticHintExtractorTests.cs`（链接共享夹具 `asr_hints_cases.json`）与 `CorrectionTraceLoggerTests.cs`；**尚未在真实 Windows 硬件上运行 `dotnet test` 与真机手工验收**，也尚未完成 Step 0 真实录音 Go / No-Go 评测，真机验证按两份规格的验收清单执行。

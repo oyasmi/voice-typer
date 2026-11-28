@@ -12,6 +12,8 @@ final class AppCoordinator {
     let textInsertionService = TextInsertionService()
     /// 最近的听写结果，只在内存（R8-D-2）：退出即清，不落盘、不进日志。
     private let dictationHistory = DictationHistory()
+    /// 独立本机校对效果诊断记录器（TRACE-4）；默认关闭，不创建文件。
+    private let traceLogger = CorrectionTraceLogger()
 
     private var setupWindowController: SetupWindowController?
     private var onboardingWindowController: OnboardingWindowController?
@@ -240,6 +242,7 @@ final class AppCoordinator {
             inputDevice: config.audio.inputDevice,
             llmEnabled: config.llm.enabled,
             llmConfigured: !config.llm.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            llmTraceLog: config.llm.traceLog,
             isBusy: isDictating
         )
     }
@@ -400,6 +403,12 @@ final class AppCoordinator {
             }
             controller.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
                 await self?.testLLMCorrection(llmConfig: llmConfig, apiKey: apiKey) ?? .failure(SimpleMessageError(message: L("应用未就绪")))
+            }
+            controller.onRevealTraceLog = { [weak self] draftPath in
+                self?.revealTraceLog(configuredPath: draftPath)
+            }
+            controller.onClearTraceLog = { [weak self] draftPath in
+                await self?.clearTraceLog(configuredPath: draftPath)
             }
             controller.historyEntriesProvider = { [weak self] in
                 self?.dictationHistory.entries ?? []
@@ -746,8 +755,31 @@ final class AppCoordinator {
     /// 总是注入同一个文本插入服务（R8-A2）；单独成函数以便测试断言。
     func makeController(llmAPIKey: String? = nil) -> VoiceTyperController {
         VoiceTyperController(
-            config: config, asrService: asrService, textInsertionService: textInsertionService, llmAPIKey: llmAPIKey
+            config: config,
+            asrService: asrService,
+            textInsertionService: textInsertionService,
+            llmAPIKey: llmAPIKey,
+            traceLogger: traceLogger
         )
+    }
+
+    private func revealTraceLog(configuredPath: String) {
+        let targetURL = CorrectionTraceLogger.resolvePath(configuredPath)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: targetURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([targetURL])
+        } else {
+            let dir = targetURL.deletingLastPathComponent()
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            NSWorkspace.shared.open(dir)
+        }
+    }
+
+    private func clearTraceLog(configuredPath: String) async {
+        await traceLogger.updatePath(configuredPath)
+        await traceLogger.clear()
+        // 恢复为当前已落盘配置对应的路径，避免未保存草稿污染写入器目标。
+        await traceLogger.updatePath(config.llm.traceLogPath)
     }
 
     // MARK: - 模型下载（委托给 ModelDownloadCoordinator，S-6）
@@ -1045,6 +1077,8 @@ final class AppCoordinator {
 
     private func reloadConfigurationFromDisk() throws {
         config = try configStore.loadOrCreate()
+        let tracePath = config.llm.traceLogPath
+        Task { await traceLogger.updatePath(tracePath) }
         // config.yaml 是界面语言的事实来源；这里顺带刷新 L10n 的 UserDefaults 镜像，
         // 让下次启动的菜单栏与主菜单（它们在配置读出来之前就构造完成）用上正确的语言。
         L10n.apply(config.ui.interfaceLanguage)

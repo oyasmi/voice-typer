@@ -113,6 +113,9 @@ internal sealed class TrayController : IDisposable
             var enabled = CanChangeSettings?.Invoke() ?? false;
             _languageItem.Enabled = _correctionItem.Enabled = enabled;
             _correctionItem.Checked = config.Llm.Enabled;
+            _correctionItem.Text = config.Llm.Enabled && config.Llm.TraceLog
+                ? L10n.T("智能纠错（记录中）")
+                : L10n.T("智能纠错");
             foreach (ToolStripMenuItem item in _languageItem.DropDownItems)
                 item.Checked = (AsrLanguage)item.Tag! == config.Asr.LanguageValue;
             foreach (ToolStripItem item in _inputItem.DropDownItems)

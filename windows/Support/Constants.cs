@@ -10,6 +10,8 @@ internal static class AppConstants
     public const string ConfigDirectoryName = "VoiceTyper";
     public const string ConfigFileName = "config.yaml";
     public const string LogFileName = "app.log";
+    public const string TraceLogDirectoryName = "VoiceTyper";
+    public const string TraceLogFileName = "correction_trace.jsonl";
     public const string SecretFileName = "llm_api_key.dat";
     public const string ModelSubdirectory = "models\\sensevoice-small";
 
@@ -58,6 +60,8 @@ internal static class AppConstants
     /// <summary>日志放本机目录而非漫游目录：它只对本机排障有意义，不该随域账户漫游到别的机器。</summary>
     public static string LogDirectory => Path.Combine(LocalDataDirectory, "logs");
     public static string LogFilePath => Path.Combine(LogDirectory, LogFileName);
+    /// <summary>校对效果诊断记录默认路径（TRACE-D3）：本机非漫游临时目录。</summary>
+    public static string DefaultTraceLogFilePath => Path.Combine(Path.GetTempPath(), TraceLogDirectoryName, TraceLogFileName);
     public static string SecretFilePath => Path.Combine(ConfigDirectory, SecretFileName);
 
     /// <summary>

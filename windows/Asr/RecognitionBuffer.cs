@@ -106,6 +106,13 @@ internal sealed class RecognitionBuffer
         return _engine.Recognize(buffer.AsSpan(0, count));
     }
 
+    /// <summary>终稿且启用 LLM 校对时调用：返回 1-best 文本与局部声学备选（HINT-5）。</summary>
+    public RecognitionResult FinalizeWithHints()
+    {
+        var (buffer, count) = Snapshot();
+        return _engine.RecognizeWithHints(buffer.AsSpan(0, count));
+    }
+
     /// <summary>把窗口前半段识别成文本固化，之后的预览不再重复识别这段音频。</summary>
     private void Roll(float[] buffer, int count)
     {

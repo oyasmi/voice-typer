@@ -184,8 +184,22 @@ log stream --predicate 'subsystem == "com.voicetyper.app" AND category == "metri
 | `insert_verify` / `clip_backup` | AX 插入回读判定（按写入前后的字符数）/ 提前备份剪贴板耗时（预判走 AX 不备份时为 `-`） |
 | `input` / `cold` | 实际输入设备类别（`builtin*` 表示自动改用内置麦克风）/ 引擎是否冷加载 |
 | `decode_mode` / `vocab_hits` / `decode_ms` | 终稿解码方式 / 实际采用的热词路径命中次数 / CTC 解码耗时（一位小数）。束搜索成功后回退贪心时仍记 `beam`，命中次数为 0 |
+| `asr_hints` | 实际发给 LLM 校对的局部声学备选条数（未启用校对时为 `-`；只记数量，不落文本） |
 
 词汇编译另有一行 `asr` 日志：`词汇已编译：entries=… sequences=… biased=… too_short=… unsupported=… truncated=… bias=… 耗时=…ms`。
+
+### 校对效果诊断记录与离线分析（`llm.trace_log`）
+
+需要评估 `<asr_hints>` 与 `correction.md` 在真实口述上的效果时，可在「设置 → 识别 → 智能校对」勾选
+「记录校对日志（用于效果评估）」（对应 `llm.trace_log: true`，默认关闭；`llm.trace_log_path` 留空时默认写入
+`/tmp/voice_typer/correction_trace.jsonl`，权限 `0700`/`0600`，单文件 5 MB、保留 `.1`/`.2` 共上限 15 MB，与主日志
+`OSLog` 与 `DictationMetrics` 完全隔离）。配合 `macos/scripts/eval_asr_hints.py` 可离线统计与重放：
+
+```bash
+python3 macos/scripts/eval_asr_hints.py --mode trace-summary --from-trace /tmp/voice_typer/correction_trace.jsonl
+python3 macos/scripts/eval_asr_hints.py --mode replay --from-trace /tmp/voice_typer/correction_trace.jsonl \
+  --base-url https://api.openai.com/v1 --api-key "$API_KEY" --model gpt-4o-mini
+```
 
 重置权限（调试授权流程时）：
 

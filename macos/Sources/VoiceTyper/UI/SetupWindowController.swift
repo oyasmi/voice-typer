@@ -46,6 +46,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
     var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
+    var onRevealTraceLog: ((String) -> Void)?
+    var onClearTraceLog: ((String) async -> Void)?
     /// 「词汇」页的「从最近结果添加」读取最近结果。
     var historyEntriesProvider: (() -> [DictationHistory.Entry])?
 
@@ -61,8 +63,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var permissionPollTimer: Timer?
 
     private static let contentWidth: CGFloat = 720
-    /// 以展开智能校对后的“识别”页为准，完整容纳最长页面且不留下过多空白。
-    private static let contentHeight: CGFloat = 540
+    /// 以展开智能校对后的“识别”页为准，完整容纳最长页面且不留下过多空白（TRACE-1）。
+    private static let contentHeight: CGFloat = 580
     /// 内容左右边距。grouped Form 在 NSHostingController 中自动边距会塌陷为 0、且会忽略
     /// SwiftUI 层的 padding，故在 AppKit 层给 hosting 视图加物理内缩，确保内容不贴边。
     private static let contentHInset: CGFloat = 20
@@ -234,6 +236,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         viewModel.onTestLLMCorrection = { [weak self] llmConfig, apiKey in
             await self?.onTestLLMCorrection?(llmConfig, apiKey) ?? .failure(SimpleMessageError(message: L("内部错误：测试通道不可用")))
         }
+        viewModel.onRevealTraceLog = { [weak self] path in self?.onRevealTraceLog?(path) }
+        viewModel.onClearTraceLog = { [weak self] path in await self?.onClearTraceLog?(path) }
         viewModel.onToggleLaunchAtLogin = { [weak viewModel] enabled in
             do {
                 try LaunchAtLogin.setEnabled(enabled)

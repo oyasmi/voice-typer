@@ -123,6 +123,8 @@ final class VoiceTyperController {
     private let config: AppConfig
     private let asrService: ASRService
     private let llmCorrector: LLMCorrector?
+    /// 独立本机校对效果诊断记录器（TRACE-4）；仅在 `config.llm.traceLog == true` 时启用。
+    private let traceLogger: CorrectionTraceLogger?
     /// 由 `config.vocabulary` 编译；词汇变化会重建控制器（`AppCoordinator.requiresControllerRebuild`）。
     private let vocabularyReplacer: VocabularyReplacer
     private let hotkeyService: HotkeyListening
@@ -224,6 +226,7 @@ final class VoiceTyperController {
         focusInspector: FocusInspecting = AXFocusInspector(),
         llmAPIKey: String? = nil,
         llmCorrectorOverride: LLMCorrector? = nil,
+        traceLogger: CorrectionTraceLogger? = nil,
         finalizeWatchdogTimeout: @escaping (Double) -> TimeInterval = VoiceTyperController.finalizeWatchdogTimeout(audioSeconds:),
         releaseTailCapture: TimeInterval = VoiceTyperController.defaultReleaseTailCapture,
         silenceProbeDelays: [TimeInterval] = VoiceTyperController.silenceProbeDelays,
@@ -244,6 +247,7 @@ final class VoiceTyperController {
         self.hotkeyService = hotkeyService
         self.audioCaptureService = audioCaptureService
         self.textInsertionService = textInsertionService
+        self.traceLogger = traceLogger
 
         if let llmCorrectorOverride {
             // 仅测试注入：让校对请求可被桩替换。
@@ -605,7 +609,13 @@ final class VoiceTyperController {
     // MARK: - 识别路径
 
     private func beginDictationSession(pressedAt: UInt64) {
-        let session = asrService.makeSession(llmCorrector: llmCorrector, vocabulary: vocabularyReplacer, now: now)
+        let traceEnabled = config.llm.traceLog && traceLogger != nil
+        let session = asrService.makeSession(
+            llmCorrector: llmCorrector,
+            vocabulary: vocabularyReplacer,
+            traceEnabled: traceEnabled,
+            now: now
+        )
         nextUtteranceID &+= 1
         let id = nextUtteranceID
         let utterance = Utterance(
@@ -757,6 +767,7 @@ final class VoiceTyperController {
         // 必须在 close() 之前取：这是会话内分阶段打点的唯一读取点。
         var metrics = utterance.metrics
         metrics.timings = utterance.session.timings
+        let traceDraft = utterance.session.traceDraft
         utterance.session.close()
         asrService.sessionEnded()
         audioCaptureService.onChunk = nil
@@ -768,7 +779,12 @@ final class VoiceTyperController {
         let result: DictationMetrics.Outcome
         switch outcome {
         case .text(let text):
-            result = handleFinalText(text, expectedFrontmostPID: utterance.expectedFrontmostPID, metrics: &metrics)
+            result = handleFinalText(
+                text,
+                expectedFrontmostPID: utterance.expectedFrontmostPID,
+                traceDraft: traceDraft,
+                metrics: &metrics
+            )
         case .failed(let message):
             handleRecognitionFailure(message, partial: partial, timedOut: metrics.timings.finalizeTimedOut)
             result = .failed
@@ -838,7 +854,10 @@ final class VoiceTyperController {
 
     /// 插入最终文本并发出结局，返回本次听写的度量结局。调用方（`finish(_:)`）负责在调用前完成会话拆解。
     private func handleFinalText(
-        _ text: String, expectedFrontmostPID: pid_t?, metrics: inout DictationMetrics
+        _ text: String,
+        expectedFrontmostPID: pid_t?,
+        traceDraft: CorrectionTraceDraft?,
+        metrics: inout DictationMetrics
     ) -> DictationMetrics.Outcome {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -854,6 +873,7 @@ final class VoiceTyperController {
 
         // 上屏用的最终文本：位于识别契约之后的确定性格式化（R8-F2），与是否启用 LLM 无关。
         let output = OutputFormatter.formatForOutput(trimmed, vocabulary: vocabularyReplacer)
+        emitTraceRecordIfEnabled(draft: traceDraft, finalText: output, metrics: metrics)
 
         // toggle 模式录音中途焦点可能移到了密码框：同一应用内的切换 PID 校验发现不了（R8-B2）。
         if focusInspector.isFocusedElementSecure() {
@@ -895,5 +915,87 @@ final class VoiceTyperController {
             emit(.finished(.error(L("插入失败，已复制到剪贴板，可手动粘贴"))))
             return .insertFailed
         }
+    }
+
+    /// 拼装并异步投递独立本机诊断记录（TRACE-3 / TRACE-4）；关闭时直接返回、零开销。
+    private func emitTraceRecordIfEnabled(
+        draft: CorrectionTraceDraft?,
+        finalText: String,
+        metrics: DictationMetrics
+    ) {
+        guard config.llm.traceLog, let traceLogger, let draft else { return }
+        guard let llmResult = metrics.timings.llmResult, llmResult != .off else { return }
+
+        let timings = metrics.timings
+        let asrMs: Int
+        if let start = timings.finalizeStartedAt, let end = timings.asrCompletedAt, end >= start {
+            asrMs = Int((end - start) / 1_000_000)
+        } else {
+            asrMs = 0
+        }
+        let llmMs: Int
+        if let start = timings.llmStartedAt, let end = timings.llmCompletedAt, end >= start {
+            llmMs = Int((end - start) / 1_000_000)
+        } else {
+            llmMs = 0
+        }
+        let decodeMs = (Double(timings.decodeNanos) / 1_000_000.0 * 10.0).rounded() / 10.0
+        let audioSec = (Double(timings.receivedSamples) / 16_000.0 * 10.0).rounded() / 10.0
+        let thinkingParam: String?
+        if llmResult == .skipped {
+            thinkingParam = nil
+        } else {
+            switch draft.thinkingParameter {
+            case .sent: thinkingParam = "sent"
+            case .omittedByCache: thinkingParam = "omitted_by_cache"
+            case .rejectedThenOmitted: thinkingParam = "rejected_then_omitted"
+            case .none: thinkingParam = nil
+            }
+        }
+        let items = draft.activeHints.map {
+            CorrectionTraceRecord.HintItem(
+                surface: $0.surface,
+                alternatives: $0.alternatives,
+                bestMargin: ($0.bestMargin * 100.0).rounded() / 100.0
+            )
+        }
+        let record = CorrectionTraceRecord(
+            ts: CorrectionTraceLogger.iso8601Timestamp(),
+            sessionId: String(format: "%04x", metrics.sessionID),
+            appVersion: AppConstants.version,
+            audioSec: audioSec,
+            asr: .init(
+                languageSetting: config.asr.language.rawValue,
+                decodeMode: timings.decodeMode?.rawValue ?? "greedy",
+                vocabHits: timings.hotwordHits,
+                asrMs: asrMs,
+                decodeMs: decodeMs,
+                rawText: draft.asrRawText,
+                replacedText: draft.asrReplacedText
+            ),
+            hints: .init(
+                marginThreshold: draft.marginThreshold,
+                rawCount: draft.rawHintsCount,
+                activeCount: draft.activeHints.count,
+                droppedByVocab: draft.droppedByVocab,
+                items: items
+            ),
+            llm: .init(
+                model: config.llm.model,
+                temperature: config.llm.temperature,
+                glossaryCount: draft.glossaryCount,
+                hintsSent: !draft.activeHints.isEmpty,
+                result: llmResult.rawValue,
+                fallbackReason: llmResult == .fellBack ? timings.llmFallbackReason?.rawValue : nil,
+                thinkingParam: thinkingParam,
+                llmMs: llmMs,
+                promptTokens: draft.tokenUsage?.promptTokens,
+                completionTokens: draft.tokenUsage?.completionTokens,
+                cachedTokens: draft.tokenUsage?.cachedTokens,
+                outputText: llmResult == .corrected ? draft.llmOutputText : nil,
+                finalText: finalText
+            )
+        )
+        Task { await traceLogger.append(record) }
     }
 }

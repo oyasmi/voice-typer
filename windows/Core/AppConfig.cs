@@ -54,6 +54,7 @@ internal sealed class AppConfig
         config.Llm.Temperature = ClampDouble(config.Llm.Temperature, ConfigLimits.TemperatureMin, ConfigLimits.TemperatureMax, "llm.temperature");
         config.Llm.MaxTokens = ClampInt(config.Llm.MaxTokens, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax, "llm.max_tokens");
         config.Llm.Timeout = ClampDouble(config.Llm.Timeout, ConfigLimits.TimeoutSecondsMin, ConfigLimits.TimeoutSecondsMax, "llm.timeout");
+        config.Llm.TraceLogPath = ValidatedTraceLogPath(config.Llm.TraceLogPath);
         config.UI.Opacity = ClampDouble(config.UI.Opacity, ConfigLimits.OpacityMin, ConfigLimits.OpacityMax, "ui.opacity");
         config.Hotkey = ValidatedHotkey(config.Hotkey);
         config.Audio ??= new AudioConfig();
@@ -64,6 +65,22 @@ internal sealed class AppConfig
         config.UI.HudPositionValue = HudPlacementExtensions.Parse(config.UI.HudPosition);
         config.Vocabulary = (config.Vocabulary ?? new VocabularyConfig()).Validated();
         return config;
+    }
+
+    /// <summary>校验 <c>llm.trace_log_path</c>（TRACE-1）：去首尾空白；含控制字符时回落空串并记 warning（不打印原串）。</summary>
+    private static string ValidatedTraceLogPath(string? raw)
+    {
+        var trimmed = (raw ?? "").Trim();
+        if (trimmed.Length == 0) return "";
+        foreach (var ch in trimmed)
+        {
+            if (ch < 0x20 || ch == 0x7F)
+            {
+                AppLog.Warn("config", "配置字段 llm.trace_log_path 含非法控制字符，已回落默认路径");
+                return "";
+            }
+        }
+        return trimmed;
     }
 
     /// <summary>
@@ -302,6 +319,14 @@ internal sealed class LlmConfig
     [YamlMember(Alias = "timeout")]
     public double Timeout { get; set; } = 5.0;
 
+    /// <summary>默认关闭的本机校对效果诊断记录开关（TRACE-1）。</summary>
+    [YamlMember(Alias = "trace_log")]
+    public bool TraceLog { get; set; } = false;
+
+    /// <summary>非必填；留空时使用 <c>%TEMP%\VoiceTyper\correction_trace.jsonl</c>（TRACE-D3）。</summary>
+    [YamlMember(Alias = "trace_log_path")]
+    public string TraceLogPath { get; set; } = "";
+
     public LlmConfig Clone() => new()
     {
         Enabled = Enabled,
@@ -310,6 +335,8 @@ internal sealed class LlmConfig
         Temperature = Temperature,
         MaxTokens = MaxTokens,
         Timeout = Timeout,
+        TraceLog = TraceLog,
+        TraceLogPath = TraceLogPath ?? "",
     };
 }
 

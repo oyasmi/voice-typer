@@ -24,6 +24,8 @@ internal sealed class ContextGraph
     /// <summary><c>(节点 &lt;&lt; 32) | token</c> → 子节点。</summary>
     private readonly Dictionary<long, int> _edges = new();
     private readonly int[] _fail;
+    /// <summary>每个节点在前缀树中的深度（根为 0），用于标记命中热词区间（HINT-1）。</summary>
+    private readonly int[] _depth;
     /// <summary><c>S(node) = b × min(depth, Dmax)</c>。</summary>
     private readonly double[] _score;
     private readonly bool[] _isEnd;
@@ -82,6 +84,7 @@ internal sealed class ContextGraph
         }
 
         _fail = fail;
+        _depth = depth.ToArray();
         _isEnd = isEnd.ToArray();
         _score = depth.Select(d => perTokenBias * Math.Min(d, maxScoredDepth)).ToArray();
     }
@@ -129,5 +132,26 @@ internal sealed class ContextGraph
             hits++;
         }
         return new State(node, committed, anchor, hits);
+    }
+
+    /// <summary>在已选定的 token 序列上线性步进一遍，返回每个下标是否属于已命中的热词区间（HINT-1）。</summary>
+    public bool[] ProtectedMask(IReadOnlyList<int> tokens)
+    {
+        var mask = new bool[tokens.Count];
+        var state = Root;
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            state = Step(state, tokens[i]);
+            if (_isEnd[state.Node])
+            {
+                int d = _depth[state.Node];
+                int start = Math.Max(0, i - d + 1);
+                for (int pos = start; pos <= i; pos++)
+                {
+                    mask[pos] = true;
+                }
+            }
+        }
+        return mask;
     }
 }

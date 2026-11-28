@@ -494,5 +494,21 @@ extension L10n {
         "（先在上面选中片段）": "(select a fragment above first)",
         "添加": "Add",
         "，": ", ",
+
+        // MARK: - 校对效果诊断记录（TRACE-1）
+        "记录校对日志（用于效果评估）": "Record proofreading log (for evaluation)",
+        "日志路径": "Log path",
+        "留空默认 /tmp/voice_typer/correction_trace.jsonl": "Leave empty for /tmp/voice_typer/correction_trace.jsonl",
+        "开启后会将识别原文、声学备选与校对结果保存在本机，不会上传。":
+            "When enabled, raw transcripts, acoustic hints, and proofreading outputs are saved locally and never uploaded.",
+        "默认写到 /tmp/，重启后自动清空；如需长期保留可自定义路径。":
+            "Saved under /tmp/ by default and cleared on reboot; set a custom path to keep logs longer.",
+        "在访达中显示": "Reveal in Finder",
+        "清空日志": "Clear Log",
+        "清空校对日志": "Clear Proofreading Log",
+        "确定删除本机保存的全部校对日志？此操作不可撤销。":
+            "Delete all locally saved proofreading logs? This action cannot be undone.",
+        "已清空本机校对日志。": "Local proofreading log cleared.",
+        "智能校对（记录中）": "AI proofreading (logging)",
     ]
 }

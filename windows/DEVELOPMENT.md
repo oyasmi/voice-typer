@@ -183,9 +183,15 @@ release_to_finalize=8 asr=310 llm=- llm_result=off insert=24 release_to_done=352
 
 `input=bluetooth*` 的星号表示由「自动」策略从系统默认输入切换而来。行末的 `decode_mode` / `vocab_hits` / `decode_ms`
 是终稿解码方式、实际采用的热词路径命中次数与 CTC 解码耗时（一位小数）。束搜索成功后回退贪心时仍记 `beam`，命中次数为 0。
+末尾的 `asr_hints` 为实际发给 LLM 校对的局部声学备选条数（未启用校对时为 `-`）。
 词汇编译另有一行 `[asr] 词汇已编译：entries=… sequences=… biased=…`。`key_lag` 至 `hud_ready` 拆解
 「按下热键到可以开口」的耗时，见 [DESIGN.md §18.3](DESIGN.md#183-新增耗时字段)；`final_wait` 等字段见
 [DESIGN.md §23.5](DESIGN.md#235-新增耗时字段)。设置窗口「诊断与帮助」页可查看最近 20 次听写的精简版。
+
+需要评估 `<asr_hints>` 与校对提示词在真实听写上的效果时，可在「设置 → 智能纠错」勾选「记录校对日志（用于效果评估）」
+（`llm.trace_log`，默认关闭；`llm.trace_log_path` 留空时默认写入 `%TEMP%\VoiceTyper\correction_trace.jsonl`，
+单文件 5 MB 滚动保留 2 份备份，与 `app.log` 及 `DictationMetrics` 完全隔离）。可使用仓库中的
+`macos/scripts/eval_asr_hints.py --mode trace-summary --from-trace <path>` 统计或 `--mode replay` 离线重放。
 
 ### 键盘钩子自愈
 

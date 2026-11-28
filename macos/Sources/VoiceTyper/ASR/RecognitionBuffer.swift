@@ -84,6 +84,11 @@ final class RecognitionBuffer: @unchecked Sendable {
         try engine.recognize(audioSnapshot())
     }
 
+    /// 终稿且启用 LLM 校对时调用：返回 1-best 文本与局部声学备选（HINT-5）。
+    func finalizeWithHints() throws -> RecognitionResult {
+        try engine.recognizeWithHints(audioSnapshot())
+    }
+
     /// 最近一次识别的解码统计（VOC-10）。只应在 asrQueue 上、紧跟 `finalize()` 之后读取。
     var lastDecodeStats: DecodeStats { engine.lastDecodeStats }
 

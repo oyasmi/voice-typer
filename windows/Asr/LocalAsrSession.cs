@@ -75,6 +75,7 @@ internal sealed class LocalAsrSession : IDictationSession
     private readonly LlmCorrector? _llmCorrector;
     /// <summary>词汇替换层快照（VOC-7）。听写中不会改配置（保存设置会拒绝重建控制器），快照即可。</summary>
     private readonly VocabularyReplacer _vocabulary;
+    private readonly bool _traceEnabled;
     private readonly int _previewWindowSamples;
     /// <summary>会话关闭时调用一次，归还 <see cref="AsrService"/> 的会话租约。</summary>
     private readonly Action? _onClosed;
@@ -83,6 +84,8 @@ internal sealed class LocalAsrSession : IDictationSession
 
     /// <summary>分阶段打点，会话收尾前由控制器读取并入 <see cref="DictationMetrics"/>。</summary>
     public AsrSessionTimings Timings { get; } = new();
+    /// <summary>仅在启用校对诊断记录且进入校对阶段时填充的轻量草稿（TRACE-4）。</summary>
+    public CorrectionTraceDraft? TraceDraft { get; private set; }
     private bool _hasReceivedAudio;
     private long? _engineWaitStartedAt;
     /// <summary>已经通知过"在等引擎"（<see cref="OnEngineWait"/>(true)），就绪时需要对应地通知结束。
@@ -143,13 +146,14 @@ internal sealed class LocalAsrSession : IDictationSession
 
     public LocalAsrSession(AsrPump pump, Func<IAsrEngine?> engineAccessor, LlmCorrector? llmCorrector,
         int previewWindowSamples, Func<string?>? engineLoadError = null, Action? onClosed = null,
-        VocabularyReplacer? vocabulary = null)
+        VocabularyReplacer? vocabulary = null, bool traceEnabled = false)
     {
         _onClosed = onClosed;
         _pump = pump;
         _engineAccessor = engineAccessor;
         _llmCorrector = llmCorrector;
         _vocabulary = vocabulary ?? VocabularyReplacer.Empty;
+        _traceEnabled = traceEnabled;
         _previewWindowSamples = previewWindowSamples;
         _engineLoadError = engineLoadError;
     }
@@ -487,15 +491,21 @@ internal sealed class LocalAsrSession : IDictationSession
             _finalizeWatchdogCts = cts;
             _ = RunFinalizeWatchdogAsync(timeout, cts);
         }
+        bool shouldCollectHints = _llmCorrector is not null;
         _pump.Post(() =>
         {
             if (_cancelled) return;
             // 松键时可能中止过一次预览（终止标志此时仍置位），终稿开跑前必须清掉。
             _engine?.ResetAbort();
             Timings.FinalizeRunStartedAt = Stopwatch.GetTimestamp();
-            string? text = null;
+            RecognitionResult recognition = new("", Array.Empty<AcousticHint>());
             Exception? error = null;
-            try { text = buffer.Finalize(); }
+            try
+            {
+                recognition = shouldCollectHints
+                    ? buffer.FinalizeWithHints()
+                    : new RecognitionResult(buffer.Finalize(), Array.Empty<AcousticHint>());
+            }
             catch (Exception ex) { error = ex; }
             // 同在 AsrPump 上、紧跟终稿推理之后读取，不会被预览覆盖。
             var decodeStats = _engine?.LastDecodeStats;
@@ -519,7 +529,7 @@ internal sealed class LocalAsrSession : IDictationSession
                     return;
                 }
                 Timings.AsrCompletedAt = Stopwatch.GetTimestamp();
-                CompleteWithAsrText(text ?? "");
+                CompleteWithAsrText(recognition.Text ?? "", recognition.Hints);
             });
         });
     }
@@ -529,7 +539,7 @@ internal sealed class LocalAsrSession : IDictationSession
     /// 结果，纠错中不会像"卡住"），再异步纠错，最终以纠错结果调用 OnFinal。这一步在跨进程架构下
     /// 没有意义（要多一次网络往返），进程内是免费的。LLM 收到的是替换后的文本（有意放宽「LLM 输入保持 ASR 原貌」）。
     /// </summary>
-    internal void CompleteWithAsrText(string asrText)
+    internal void CompleteWithAsrText(string asrText, IReadOnlyList<AcousticHint>? rawHints = null)
     {
         var text = _vocabulary.Apply(asrText);
         if (_llmCorrector is null || string.IsNullOrWhiteSpace(text))
@@ -539,10 +549,26 @@ internal sealed class LocalAsrSession : IDictationSession
             return;
         }
 
+        var (activeHints, droppedByVocab) = _vocabulary.ReconcileHints(rawHints, text);
+        Timings.AsrHintCount = activeHints.Count;
+        if (_traceEnabled)
+        {
+            TraceDraft = new CorrectionTraceDraft
+            {
+                AsrRawText = asrText,
+                AsrReplacedText = text,
+                MarginThreshold = AcousticHintExtractor.Parameters.Default.MarginThreshold,
+                RawHintsCount = rawHints?.Count ?? 0,
+                DroppedByVocab = droppedByVocab,
+                ActiveHints = activeHints,
+                GlossaryCount = _vocabulary.Terms.Count,
+            };
+        }
+
         OnPartial?.Invoke(text);
         OnCorrectionStarted?.Invoke();
         Timings.LlmStartedAt = Stopwatch.GetTimestamp();
-        _ = CorrectAndFinishAsync(text);
+        _ = CorrectAndFinishAsync(text, activeHints);
     }
 
     /// <summary>
@@ -556,14 +582,14 @@ internal sealed class LocalAsrSession : IDictationSession
         try { cts.Cancel(); } catch (ObjectDisposedException) { }
     }
 
-    private async Task CorrectAndFinishAsync(string text)
+    private async Task CorrectAndFinishAsync(string text, IReadOnlyList<AcousticHint> activeHints)
     {
         LlmCorrector.CorrectionReport report;
         var correctionCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
         _correctionCts = correctionCts;
         try
         {
-            report = await _llmCorrector!.CorrectWithReportAsync(text, _vocabulary.Terms, correctionCts.Token).ConfigureAwait(true);
+            report = await _llmCorrector!.CorrectWithReportAsync(text, _vocabulary.Terms, activeHints, correctionCts.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
@@ -581,6 +607,13 @@ internal sealed class LocalAsrSession : IDictationSession
         if (_closed) return;
         Timings.LlmCompletedAt = Stopwatch.GetTimestamp();
         Timings.LlmRetriedWithoutThinking = report.Thinking == LlmCorrector.ThinkingParameterUsage.RejectedThenOmitted;
+        if (TraceDraft is { } draft)
+        {
+            draft.TokenUsage = report.TokenUsage;
+            draft.ThinkingParameter = report.Thinking;
+            draft.FallbackReason = report.FallbackReason;
+            if (!report.Outcome.DidFallBack) draft.LlmOutputText = report.Outcome.Text;
+        }
         if (report.Outcome.DidFallBack)
         {
             Timings.LlmResult = AsrSessionTimings.LlmOutcome.FellBack;

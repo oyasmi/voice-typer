@@ -122,6 +122,8 @@ final class SettingsViewModel {
     var llmModel = "gpt-4o-mini"
     var llmTemperature = 0.0
     var llmTimeout = 5.0
+    var llmTraceLog = false
+    var llmTraceLogPath = ""
     var recognitionMessage = ""
     var recognitionMessageKind: SettingsMessageKind = .info
     var recognitionBusy = false
@@ -174,6 +176,10 @@ final class SettingsViewModel {
     var onCancelModelDownload: (() -> Void)?
     var onReloadModel: (() -> Void)?
     var onTestLLMCorrection: ((LLMConfig, String) async -> Result<LLMCorrector.TestResult, SimpleMessageError>)?
+    /// 在访达中显示当前解析的校对诊断日志路径（TRACE-1）。
+    var onRevealTraceLog: ((String) -> Void)?
+    /// 清空当前解析的校对诊断日志及备份（TRACE-1）。
+    var onClearTraceLog: ((String) async -> Void)?
     /// 「从最近结果添加」读取最近的听写结果（只在内存，R8-A2）。
     var historyEntriesProvider: (() -> [DictationHistory.Entry])?
 
@@ -191,6 +197,8 @@ final class SettingsViewModel {
         llmModel = config.llm.model
         llmTemperature = config.llm.temperature
         llmTimeout = config.llm.timeout
+        llmTraceLog = config.llm.traceLog
+        llmTraceLogPath = config.llm.traceLogPath
         hotkeyConfig = config.hotkey
         hotkeyDisplay = config.hotkey.displayString
         refreshFnConflictWarning()
@@ -257,6 +265,12 @@ final class SettingsViewModel {
         }
         if previous.llm.timeout != config.llm.timeout {
             llmTimeout = config.llm.timeout
+        }
+        if previous.llm.traceLog != config.llm.traceLog {
+            llmTraceLog = config.llm.traceLog
+        }
+        if previous.llm.traceLogPath != config.llm.traceLogPath {
+            llmTraceLogPath = config.llm.traceLogPath
         }
     }
 
@@ -344,6 +358,8 @@ final class SettingsViewModel {
                 self.loadedConfig = applied
                 self.llmTemperature = applied.llm.temperature
                 self.llmTimeout = applied.llm.timeout
+                self.llmTraceLog = applied.llm.traceLog
+                self.llmTraceLogPath = applied.llm.traceLogPath
                 self.recognitionMessage = L("设置已保存并生效。")
                 self.recognitionMessageKind = .success
             } catch {
@@ -370,8 +386,24 @@ final class SettingsViewModel {
             model: llmModel.trimmingCharacters(in: .whitespacesAndNewlines),
             temperature: llmTemperature,
             maxTokens: loadedConfig.llm.maxTokens,
-            timeout: llmTimeout
+            timeout: llmTimeout,
+            traceLog: llmTraceLog,
+            traceLogPath: llmTraceLogPath.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+    }
+
+    func revealTraceLog() {
+        onRevealTraceLog?(llmTraceLogPath)
+    }
+
+    func clearTraceLog() {
+        let path = llmTraceLogPath
+        Task { [weak self] in
+            guard let self else { return }
+            await self.onClearTraceLog?(path)
+            self.recognitionMessage = L("已清空本机校对日志。")
+            self.recognitionMessageKind = .info
+        }
     }
 
     func startModelDownload() {

@@ -58,6 +58,8 @@ internal sealed partial class SetupForm : Form
     /// <summary>请求重新加载模型；返回非 null 表示被拒绝（如正在听写），内容是展示给用户的原因。</summary>
     public Func<string?>? OnReloadModel;
     public Func<LlmConfig, string, Task<LlmTestResult>>? OnTestLlmCorrection;
+    public Action<string?>? OnRevealTraceLog;
+    public Action<string?>? OnClearTraceLog;
     /// <summary>用户手动点击"重新检测"。</summary>
     public Action? OnRetryMicProbe;
     /// <summary>权限页轮询触发的自动探测；与手动检测分开，协调器可在听写中跳过它。</summary>
@@ -116,6 +118,10 @@ internal sealed partial class SetupForm : Form
     private readonly NumericUpDown _llmTemperatureField = new();
     private readonly NumericUpDown _llmMaxTokensField = new();
     private readonly NumericUpDown _llmTimeoutField = new();
+    private readonly CheckBox _llmTraceLogCheck = new();
+    private readonly TextBox _llmTraceLogPathField = new();
+    private readonly Button _revealTraceLogButton = new();
+    private readonly Button _clearTraceLogButton = new();
     private readonly Button _llmTestButton = new();
     private readonly Label _recognitionMessage = new();
     private readonly Button _saveRecognitionButton = new();
@@ -298,6 +304,8 @@ internal sealed partial class SetupForm : Form
         _llmTemperatureField.Value = (decimal)Math.Clamp(config.Llm.Temperature, ConfigLimits.TemperatureMin, ConfigLimits.TemperatureMax);
         _llmMaxTokensField.Value = Math.Clamp(config.Llm.MaxTokens, ConfigLimits.MaxTokensMin, ConfigLimits.MaxTokensMax);
         _llmTimeoutField.Value = (decimal)Math.Clamp(config.Llm.Timeout, ConfigLimits.TimeoutSecondsMin, ConfigLimits.TimeoutSecondsMax);
+        _llmTraceLogCheck.Checked = config.Llm.TraceLog;
+        _llmTraceLogPathField.Text = config.Llm.TraceLogPath ?? "";
 
         var mods = config.Hotkey.Modifiers.Select(m => m.ToLowerInvariant()).ToHashSet();
         _modCtrl.Checked = mods.Contains("ctrl") || mods.Contains("control");

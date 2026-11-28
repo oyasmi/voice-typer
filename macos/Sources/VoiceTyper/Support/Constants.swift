@@ -20,6 +20,9 @@ enum AppConstants {
     static let silenceRMSThreshold: Float = 0.004
     static let appSupportDirectoryName = "VoiceTyper"
     static let configFileName = "config.yaml"
+    /// 校对效果诊断记录默认位置（TRACE-D3）：写到 `/tmp`，重启自动清理；用户可在设置中自定义路径。
+    static let defaultTraceLogDirectory = "/tmp/voice_typer"
+    static let defaultTraceLogFileName = "correction_trace.jsonl"
 }
 
 enum SystemSettingsURL {

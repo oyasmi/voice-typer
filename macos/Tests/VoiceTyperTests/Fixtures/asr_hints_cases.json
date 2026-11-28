@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "description": "局部声学低置信度备选（<asr_hints>）提取算法的共享用例（macOS Swift 与 Windows C# 两边读同一份）。每帧未列出的 token 分数为 floor。规则变更须先改 macos/docs/ASR_HINTS_SPEC.md。",
+  "tokens": [
+    "<unk>", "<s>", "</s>",
+    "<|zh|>", "<|NEUTRAL|>", "<|Speech|>", "<|withitn|>",
+    "，", "。", "呃", "嗯",
+    "密", "幂", "秘", "等", "度", "待",
+    "这", "个", "接", "口", "是", "的",
+    "公", "工", "事", "式", "发", "一", "下",
+    "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛",
+    "张", "三", "丰", "峰", "封", "风",
+    "▁Py", "▁py", "thon", "ton", "▁code", "code",
+    "a", "b"
+  ],
+  "floor": -20.0,
+  "margin_threshold": 2.5,
+  "cases": [
+    {
+      "name": "high_confidence_empty",
+      "note": "1. 全句高置信度（所有帧 Δ > τ）→ 空 hints",
+      "mode": "greedy",
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"这": 0.0, "密": -5.0},
+        {"<unk>": 0.0},
+        {"个": 0.0, "接": -4.0},
+        {"<unk>": 0.0}
+      ],
+      "expected_text": "这个",
+      "expected_hints": []
+    },
+    {
+      "name": "single_cjk_right_anchor",
+      "note": "2. 单个汉字低置信度 → 自动带右侧 1 字相邻上下文锚点",
+      "mode": "greedy",
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"密": 0.0, "幂": -0.6, "秘": -1.4},
+        {"<unk>": 0.0},
+        {"等": 0.0, "度": -6.0}
+      ],
+      "expected_text": "密等",
+      "expected_hints": [
+        {"surface": "密等", "alternatives": ["幂等", "秘等"]}
+      ]
+    },
+    {
+      "name": "repeated_cjk_expands_both_sides",
+      "note": "3. 句中重复片段 → 向另一侧扩展到 3 字消歧",
+      "mode": "greedy",
+      "frames": [
+        {"这": 0.0},
+        {"公": 0.0},
+        {"事": 0.0},
+        {"，": 0.0},
+        {"个": 0.0},
+        {"公": 0.0, "工": -0.5},
+        {"事": 0.0}
+      ],
+      "expected_text": "这公事，个公事",
+      "expected_hints": [
+        {"surface": "个公事", "alternatives": ["个工事"]}
+      ]
+    },
+    {
+      "name": "cjk_cluster_merge",
+      "note": "4. 连续 2–3 个低置信度汉字 → 合并为词级联合备选，按总分差排序",
+      "mode": "greedy",
+      "frames": [
+        {"密": 0.0, "幂": -0.4},
+        {"<unk>": 0.0},
+        {"等": 0.0, "度": -0.8}
+      ],
+      "expected_text": "密等",
+      "expected_hints": [
+        {"surface": "密等", "alternatives": ["幂等", "密度", "幂度"]}
+      ]
+    },
+    {
+      "name": "cjk_cluster_over_three_splits",
+      "note": "5. 超过 3 个连续低置信度汉字 → 按从左到右切分为长度 ≤ 3 的子簇",
+      "mode": "greedy",
+      "frames": [
+        {"甲": 0.0, "乙": -0.5},
+        {"<unk>": 0.0},
+        {"丙": 0.0, "丁": -0.6},
+        {"<unk>": 0.0},
+        {"戊": 0.0, "己": -0.7},
+        {"<unk>": 0.0},
+        {"庚": 0.0, "辛": -0.8}
+      ],
+      "expected_text": "甲丙戊庚",
+      "expected_hints": [
+        {"surface": "甲丙戊", "alternatives": ["乙丙戊", "甲丁戊", "甲丙己"]},
+        {"surface": "戊庚", "alternatives": ["戊辛"]}
+      ]
+    },
+    {
+      "name": "ascii_bpe_word_assembly_and_case_dedup",
+      "note": "6. 英文 BPE 子词低置信度 → 组装为完整英文词备选，大小写等价变体去重",
+      "mode": "greedy",
+      "frames": [
+        {"▁Py": 0.0, "▁py": -0.2},
+        {"<unk>": 0.0},
+        {"thon": 0.0, "ton": -0.9}
+      ],
+      "expected_text": "Python",
+      "expected_hints": [
+        {"surface": "Python", "alternatives": ["Pyton"]}
+      ]
+    },
+    {
+      "name": "filters_punct_blank_special_filler_leading_space_and_single_ascii",
+      "note": "7. 标点、blank、<|…|>、纯填充词、▁ 变体、单字母 ASCII 噪声 → 全部过滤",
+      "mode": "greedy",
+      "frames": [
+        {"<|zh|>": 0.0, "密": -0.1},
+        {"呃": 0.0, "嗯": -0.2, "密": -0.3},
+        {"，": 0.0, "。": -0.1, "密": -0.2},
+        {"▁code": 0.0, "code": -0.1},
+        {"密": 0.0, "a": -0.3, "，": -0.2, "<unk>": -0.1, "<|zh|>": -0.1, "幂": -1.0},
+        {"等": 0.0}
+      ],
+      "expected_text": "呃，code密等",
+      "expected_hints": [
+        {"surface": "密等", "alternatives": ["幂等"]}
+      ]
+    },
+    {
+      "name": "max_five_hints_by_margin_reordered_by_position",
+      "note": "8. 全句超过 5 处低置信度 → 按最小 bestMargin 保留前 5 处，最终按原文位置升序输出",
+      "mode": "greedy",
+      "frames": [
+        {"甲": 0.0, "乙": -2.0}, {"，": 0.0},
+        {"丙": 0.0, "丁": -0.4}, {"，": 0.0},
+        {"戊": 0.0, "己": -1.5}, {"，": 0.0},
+        {"庚": 0.0, "辛": -0.2}, {"，": 0.0},
+        {"密": 0.0, "幂": -1.0}, {"，": 0.0},
+        {"等": 0.0, "度": -0.8}
+      ],
+      "expected_text": "甲，丙，戊，庚，密，等",
+      "expected_hints": [
+        {"surface": "丙", "alternatives": ["丁"]},
+        {"surface": "戊", "alternatives": ["己"]},
+        {"surface": "庚", "alternatives": ["辛"]},
+        {"surface": "密", "alternatives": ["幂"]},
+        {"surface": "等", "alternatives": ["度"]}
+      ]
+    },
+    {
+      "name": "max_three_alts_tie_by_token_id",
+      "note": "9. 单处超过 3 个门限内备选 → 截断保留前 3 个（同分按 token id 升序）",
+      "mode": "greedy",
+      "frames": [
+        {"张": 0.0, "峰": -1.0, "封": -1.0, "风": -1.0, "丰": -1.0},
+        {"<unk>": 0.0},
+        {"三": 0.0}
+      ],
+      "expected_text": "张三",
+      "expected_hints": [
+        {"surface": "张三", "alternatives": ["丰三", "峰三", "封三"]}
+      ]
+    },
+    {
+      "name": "beam_hotword_protected_others_active",
+      "note": "10. 热词束搜索胜出路径 → 热词命中区间受保护不产出 hints，句中其余非热词低置信度位置正常产出",
+      "mode": "beam",
+      "preset": "standard",
+      "hotwords": [["张", "三", "丰"]],
+      "frames": [
+        {"<|zh|>": 0.0},
+        {"<|NEUTRAL|>": 0.0},
+        {"<|Speech|>": 0.0},
+        {"<|withitn|>": 0.0},
+        {"张": 0.0},
+        {"<unk>": 0.0},
+        {"三": 0.0},
+        {"<unk>": 0.0},
+        {"峰": 0.0, "丰": -1.2, "<unk>": -6.0},
+        {"<unk>": 0.0},
+        {"的": 0.0},
+        {"<unk>": 0.0},
+        {"密": 0.0, "幂": -0.5, "<unk>": -6.0},
+        {"<unk>": 0.0},
+        {"等": 0.0}
+      ],
+      "expected_text": "张三丰的密等",
+      "expected_hints": [
+        {"surface": "密等", "alternatives": ["幂等"]}
+      ]
+    },
+    {
+      "name": "greedy_peak_frame_beats_transition_frame",
+      "note": "11. 贪心多帧持续发射 → 选非 blank 峰值核心帧（x[y]-x[0] 最大）而非边缘过渡帧",
+      "mode": "greedy",
+      "frames": [
+        {"密": 0.5, "<unk>": 0.4, "秘": 0.3},
+        {"密": 5.0, "<unk>": -4.0, "幂": 4.2, "秘": -10.0},
+        {"<unk>": 0.0},
+        {"等": 5.0, "<unk>": -4.0}
+      ],
+      "expected_text": "密等",
+      "expected_hints": [
+        {"surface": "密等", "alternatives": ["幂等"]}
+      ]
+    }
+  ]
+}

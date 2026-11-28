@@ -66,3 +66,12 @@ Windows 侧同规则的 C# 实现应在 `VoiceTyper.Tests.csproj` 里 `Link` 同
 
 以上两份与 `text_format_cases.json` 同一约定：规则变更须先改规格；既有用例的期望值不得删改；新增用例须同时在
 两个平台通过。Windows 的 `VoiceTyper.Tests.csproj` 以 `Link` 引用同一份文件。
+
+## asr_hints_cases.json
+
+局部声学低置信度备选提取器（`AcousticHintExtractor`，HINT-1 – HINT-4）的共享用例（macOS
+`AcousticHintExtractorTests` 与 Windows `AcousticHintExtractorTests` 逐条读取）：覆盖全句高置信度空返回、
+单汉字上下文锚点扩展、重复片段双向扩展消歧、连续 2–3 汉字合并、超过 3 字切分、英文 BPE 词级组装与大小写去重、
+标点/blank/填充词/单字母 ASCII 过滤、全句 5 处硬上限与原文顺序重排、单处 3 备选截断、热词束搜索强制对齐保护区间，
+以及贪心多帧发射峰值核心帧选择共 11 例。规则见 `macos/docs/ASR_HINTS_SPEC.md`。Windows 的
+`VoiceTyper.Tests.csproj` 以 `Link` 引用同一份文件。

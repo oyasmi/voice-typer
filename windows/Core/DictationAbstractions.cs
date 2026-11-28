@@ -97,6 +97,8 @@ internal interface IDictationSession
     Action<bool>? OnEngineWait { get; set; }
     /// <summary>分阶段打点；收尾时由控制器并入 <see cref="DictationMetrics"/>。</summary>
     AsrSessionTimings Timings { get; }
+    /// <summary>仅在启用校对诊断记录且进入校对阶段时填充的轻量草稿（TRACE-4）。</summary>
+    CorrectionTraceDraft? TraceDraft => null;
     void SendAudio(byte[] data);
     /// <summary>松键后停止预览，但继续接受尾音；不改变终稿音频。</summary>
     void StopPreviews() { }
@@ -109,5 +111,7 @@ internal interface IDictationSession
 internal interface IDictationSessionFactory
 {
     IDictationSession MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary);
+    IDictationSession MakeSession(LlmCorrector? corrector, VocabularyReplacer vocabulary, bool traceEnabled) =>
+        MakeSession(corrector, vocabulary);
     void SessionEnded();
 }

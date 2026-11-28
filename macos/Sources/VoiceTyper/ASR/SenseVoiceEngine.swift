@@ -18,6 +18,8 @@ import OnnxRuntimeBindings
 /// （见 RecognitionBufferTests）而不必加载真实 ONNX 模型。
 protocol SenseVoiceRecognizing: AnyObject, Sendable {
     func recognize(_ samples: [Float]) throws -> String
+    /// 终稿启用 LLM 校对时调用：除 1-best 文本外，同步提取局部声学低置信度备选（HINT-5）。
+    func recognizeWithHints(_ samples: [Float]) throws -> RecognitionResult
     func setLanguage(_ language: ASRLanguage)
     /// 只在 asrQueue 上调用。编译在调用线程同步完成，返回报告供设置页显示（VOC-2）。
     func setVocabulary(_ vocabulary: VocabularyConfig) -> HotwordCompileReport?
@@ -26,6 +28,9 @@ protocol SenseVoiceRecognizing: AnyObject, Sendable {
 }
 
 extension SenseVoiceRecognizing {
+    func recognizeWithHints(_ samples: [Float]) throws -> RecognitionResult {
+        RecognitionResult(text: try recognize(samples), hints: [])
+    }
     /// 默认空实现：并非所有假实现（测试用）都关心语言切换。
     func setLanguage(_ language: ASRLanguage) {}
     func setVocabulary(_ vocabulary: VocabularyConfig) -> HotwordCompileReport? { nil }
@@ -51,6 +56,8 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
     /// 词表前缀树与 token 类别：第一次 `setVocabulary` 时懒构建，之后复用（与具体词汇无关）。
     private var tokenTrie: TokenTrie?
     private var tokenClasses: CTCPrefixBeamSearch.TokenClasses?
+    /// `<asr_hints>` 静态 token 属性表：首次提取备选时懒构建，之后复用（HINT-2）。
+    private var hintMetadata: AcousticHintExtractor.TokenMetadata?
     /// 当前词汇的上下文图；nil = 走贪心解码，金标准与既有输出逐字节不变（VOC-D4）。
     private var contextGraph: ContextGraph?
     private var beamParameters: CTCPrefixBeamSearch.Parameters?
@@ -183,12 +190,29 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
     /// - Parameter samples: 16kHz / mono / float32，范围 [-1, 1]。
     /// - Returns: 识别文本；样本不足一帧或识别为纯静音/纯标点时返回空字符串。
     func recognize(_ samples: [Float]) throws -> String {
+        try runInference(samples, emptyValue: "") { logits, numFrames, vocabSize in
+            decode(logits: logits, numFrames: numFrames, vocabSize: vocabSize)
+        }
+    }
+
+    /// 终稿且启用 LLM 校对时调用：与 `recognize(_:)` 共用同一推理主干，仅末步解码同步提取 `<asr_hints>`（HINT-5）。
+    func recognizeWithHints(_ samples: [Float]) throws -> RecognitionResult {
+        try runInference(samples, emptyValue: RecognitionResult(text: "", hints: [])) { logits, numFrames, vocabSize in
+            decodeWithHints(logits: logits, numFrames: numFrames, vocabSize: vocabSize)
+        }
+    }
+
+    private func runInference<T>(
+        _ samples: [Float],
+        emptyValue: T,
+        decode decodeFn: (UnsafePointer<Float>, Int, Int) -> T
+    ) throws -> T {
         // 提前返回（样本不足、静音）时不能留着上一次的统计。
         lastDecodeStats = DecodeStats(mode: contextGraph == nil ? .greedy : .beam, hotwordHits: 0, decodeNanos: 0)
-        guard samples.count >= fbankMinimumSamples else { return "" }
+        guard samples.count >= fbankMinimumSamples else { return emptyValue }
 
         let fbank = frontend.computeFlat(samples)
-        guard fbank.frameCount > 0 else { return "" }
+        guard fbank.frameCount > 0 else { return emptyValue }
         let normalized = applyLFRCMVNFlat(
             fbank.features,
             frameCount: fbank.frameCount,
@@ -197,7 +221,7 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             n: lfrN,
             stats: cmvn
         )
-        guard normalized.frameCount > 0 else { return "" }
+        guard normalized.frameCount > 0 else { return emptyValue }
 
         let featsLen = normalized.frameCount
         let dim = normalized.featureDim
@@ -247,13 +271,13 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             throw ConfigurationError.inconsistentDimensions("encoder_out_lens 输出为空")
         }
         let validFrames = lensData.bytes.loadUnaligned(as: Int32.self)
-        guard validFrames > 0 else { return "" }
+        guard validFrames > 0 else { return emptyValue }
 
         let shapeInfo = try logitsValue.tensorTypeAndShapeInfo()
         guard shapeInfo.elementType == .float else {
             throw ConfigurationError.inconsistentDimensions("ctc_logits 张量类型非 float32")
         }
-        guard let vocabSize = shapeInfo.shape.last?.intValue, vocabSize > 0 else { return "" }
+        guard let vocabSize = shapeInfo.shape.last?.intValue, vocabSize > 0 else { return emptyValue }
         // 只有拿到推理输出的实际 shape 才能知道 vocabSize；此前不匹配时 CTCDecoder 会
         // 静默跳过越界 id，表现为"识别成功但缺字"，比报错更难排查（R2-09）。
         guard vocabSize == tokens.count else {
@@ -267,10 +291,93 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
         let logitsData = try logitsValue.tensorData()
         let numFrames = Int(validFrames)
         let neededFloats = numFrames * vocabSize
-        guard logitsData.length >= neededFloats * MemoryLayout<Float>.size else { return "" }
+        guard logitsData.length >= neededFloats * MemoryLayout<Float>.size else { return emptyValue }
         return withExtendedLifetime(logitsData) {
             let base = logitsData.bytes.assumingMemoryBound(to: Float.self)
-            return decode(logits: base, numFrames: numFrames, vocabSize: vocabSize)
+            return decodeFn(base, numFrames, vocabSize)
+        }
+    }
+
+    private func resolvedHintMetadata() -> AcousticHintExtractor.TokenMetadata {
+        if let hintMetadata { return hintMetadata }
+        let created = AcousticHintExtractor.TokenMetadata(tokens: tokens)
+        hintMetadata = created
+        return created
+    }
+
+    /// 终稿启用 LLM 校对时的解码与局部声学备选提取（HINT-1 / HINT-5 / HINT-7）。
+    private func decodeWithHints(logits: UnsafePointer<Float>, numFrames: Int, vocabSize: Int) -> RecognitionResult {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let meta = resolvedHintMetadata()
+
+        func finishGreedy() -> RecognitionResult {
+            let (ids, aligned) = CTCDecoder.greedyAlignedTokens(
+                logits: logits, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens
+            )
+            var raw = ""
+            raw.reserveCapacity(ids.count * 2)
+            for id in ids where id >= 0 && id < tokens.count {
+                raw += tokens[id]
+            }
+            let text = TextPostprocessor.process(raw)
+            let hints = text.isEmpty ? [] : AcousticHintExtractor.extract(
+                logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                aligned: aligned, fullText: text, metadata: meta
+            )
+            lastDecodeStats = DecodeStats(
+                mode: .greedy, hotwordHits: 0, decodeNanos: DispatchTime.now().uptimeNanoseconds &- startedAt
+            )
+            return RecognitionResult(text: text, hints: hints)
+        }
+
+        guard let contextGraph, let beamParameters, let tokenClasses else {
+            return finishGreedy()
+        }
+        do {
+            let result = try CTCPrefixBeamSearch.decode(
+                logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                graph: contextGraph, classes: tokenClasses, parameters: beamParameters
+            )
+            var raw = ""
+            raw.reserveCapacity(result.tokens.count * 2)
+            for id in result.tokens where id >= 0 && id < tokens.count {
+                raw += tokens[id]
+            }
+            let text = TextPostprocessor.process(raw)
+            let hints: [AcousticHint]
+            if text.isEmpty {
+                hints = []
+            } else if result.hotwordHits > 0 {
+                if let aligned = AcousticHintExtractor.forcedAlign(
+                    logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                    tokens: result.tokens, tokenStrings: tokens, graph: contextGraph
+                ) {
+                    hints = AcousticHintExtractor.extract(
+                        logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                        aligned: aligned, fullText: text, metadata: meta
+                    )
+                } else {
+                    AppLog.asr.warning("热词路径强制对齐异常，放弃本次声学备选提取")
+                    hints = []
+                }
+            } else {
+                // 零命中时束搜索已回退贪心 token，直接按贪心核心帧对齐。
+                let (_, aligned) = CTCDecoder.greedyAlignedTokens(
+                    logits: logits, numFrames: numFrames, vocabSize: vocabSize, tokens: tokens
+                )
+                hints = AcousticHintExtractor.extract(
+                    logits: logits, numFrames: numFrames, vocabSize: vocabSize,
+                    aligned: aligned, fullText: text, metadata: meta
+                )
+            }
+            lastDecodeStats = DecodeStats(
+                mode: .beam, hotwordHits: result.hotwordHits,
+                decodeNanos: DispatchTime.now().uptimeNanoseconds &- startedAt
+            )
+            return RecognitionResult(text: text, hints: hints)
+        } catch {
+            AppLog.asr.error("热词束搜索失败，回退贪心解码: \(String(describing: error), privacy: .public)")
+            return finishGreedy()
         }
     }
 

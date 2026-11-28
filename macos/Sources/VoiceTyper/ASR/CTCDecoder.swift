@@ -49,4 +49,61 @@ enum CTCDecoder {
         }
         return ids
     }
+
+    /// 贪心解码并同时记录每个非特殊 token 的非 blank 峰值核心帧（HINT-1）。
+    /// 开头的 `<|…|>` 特殊标签仍保留在 `ids`（供 `TextPostprocessor` 走统一路径），但不进入 `aligned`。
+    static func greedyAlignedTokens(
+        logits: UnsafePointer<Float>,
+        numFrames: Int,
+        vocabSize: Int,
+        tokens: [String],
+        nonBlankMaxima: [Float]? = nil
+    ) -> (ids: [Int], aligned: [AlignedToken]) {
+        guard numFrames > 0, vocabSize > 0 else { return ([], []) }
+        var ids: [Int] = []
+        ids.reserveCapacity(numFrames)
+        var aligned: [AlignedToken] = []
+        aligned.reserveCapacity(numFrames)
+
+        func flushRun(_ id: Int, start: Int, end: Int) {
+            ids.append(id)
+            if aligned.isEmpty, id >= 0, id < tokens.count, TokenTrie.isSpecial(tokens[id]) {
+                return
+            }
+            var bestFrame = start
+            var bestAdv: Float = -.infinity
+            for f in start..<end {
+                let row = logits + f * vocabSize
+                let adv = row[id] - row[0]
+                if adv > bestAdv {
+                    bestAdv = adv
+                    bestFrame = f
+                }
+            }
+            aligned.append(AlignedToken(id: id, peakFrame: bestFrame, protectedByHotword: false))
+        }
+
+        var previous = -1
+        var runStart = 0
+        for t in 0..<numFrames {
+            let rowPtr = logits + t * vocabSize
+            var maxIdx: vDSP_Length = 0
+            if !(rowPtr[0] > (nonBlankMaxima?[t] ?? .infinity)) {
+                var maxVal: Float = 0
+                vDSP_maxvi(rowPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
+            }
+            let id = Int(maxIdx)
+            if id != previous {
+                if previous > 0 {
+                    flushRun(previous, start: runStart, end: t)
+                }
+                previous = id
+                runStart = t
+            }
+        }
+        if previous > 0 {
+            flushRun(previous, start: runStart, end: numFrames)
+        }
+        return (ids, aligned)
+    }
 }

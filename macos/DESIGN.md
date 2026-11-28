@@ -1648,6 +1648,18 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
 
 ---
 
+### 11.10 `<asr_hints>` 局部声学低置信度备选与校对效果诊断记录（`feat/asr-hints`）
+
+按 `macos/docs/ASR_HINTS_SPEC.md`（HINT-0 – HINT-8）与 `macos/docs/ASR_HINTS_TRACE_SPEC.md`（TRACE-1 – TRACE-6）完成 macOS Swift 核心、离线评测脚本与双端同步实施：
+
+- **声学备选提取与会话编排**：新增 `ASR/AcousticHintExtractor.swift`（`AlignedToken`、贪心峰值核心帧、热词束搜索单路径 Viterbi 强制对齐 + `ContextGraph.protectedMask`、`vDSP_maxv` 分块扫描、词/段分组、单汉字上下文锚点消歧与 5 处 × 3 备选硬上限）；`SenseVoiceEngine` 抽取共享 `runInference` 供 `recognize` / `recognizeWithHints` 复用；`LocalASRSession` 仅在启用 LLM 校对的终稿路径收集 hints，经 `VocabularyReplacer.reconcileHints` 过滤后送入 `LLMCorrector`；`DictationMetrics.summaryLine()` 末尾追加 `asr_hints=`（不新增 `String` 存储属性）。
+- **Prompt 与标签防御**：三份 `correction.md` 同步新增 `<asr_hints>` 规则；`LLMCorrector` 扩展 `userMessage`、新增第 9 组正反合一 few-shot、`parseOutcome` 先剥离成对回显标签并在残留未闭合标签时安全回落原文，同时容错提取 `TokenUsage`。
+- **独立本机诊断记录（默认关闭）**：新增 `LLM/CorrectionTraceLogger.swift`（默认 `/tmp/voice_typer/correction_trace.jsonl`，目录 `0700`、文件 `0600`，`lstat` / `O_NOFOLLOW` 校验非符号链接与属主 `getuid()`，5 MB × 2 滚动备份），`AppConfig.llm` 新增 `trace_log` / `trace_log_path`，在「设置 → 识别 → 智能校对」提供开关、自定义路径、在访达中显示与二次确认清空，菜单栏开启期间显示「智能校对（记录中）」。
+- **配套离线脚本与共享夹具**：新增 `macos/scripts/eval_asr_hints.py`（`--mode oracle / llm / trace-summary / replay`）与共享夹具 `macos/Tests/VoiceTyperTests/Fixtures/asr_hints_cases.json`（11 例）。
+- **验证状态（待 Apple Silicon 真机复核）**：本轮在 Linux 环境完成 Swift 代码编写、`VoiceTyper.xcodeproj/project.pbxproj` 登记、Python 参考实现与共享夹具校验、以及 Windows C# 全量编译（0 warning / 0 error）；**尚未在 macOS 上运行 `xcodebuild test`、也尚未完成 Step 0 真实录音 Go / No-Go 评测**。合入前请在 Apple Silicon Mac 上执行 `cd macos && ruby scripts/generate_xcodeproj.rb && xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platform=macOS' test` 并按两份规格的验收清单完成真机核验。
+
+---
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |

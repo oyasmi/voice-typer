@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EBD140E2C3D7C2878B8DAC81 /* asr_hints_cases.json in Resources */ = {isa = PBXBuildFile; fileRef = FF0EE67ADE2B1C3A4B587BA0 /* asr_hints_cases.json */; };
+		07C6666E4AA9CFF10A48A5D5 /* CorrectionTraceLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE80F93C3558EE2262B5152 /* CorrectionTraceLoggerTests.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		999199437847FAC84DB56939 /* AcousticHintExtractorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87B15DDB98540E8A1C57ECDB /* AcousticHintExtractorTests.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		1CF45BFB593D55F3A61A0075 /* CorrectionTraceLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25168D24AB5C721D8EBB0BB5 /* CorrectionTraceLogger.swift */; settings = {COMPILER_FLAGS = "-"; }; };
+		D18EB759327148B430E13F64 /* AcousticHintExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD6B838E546D87AEDF03A760 /* AcousticHintExtractor.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		005002019406CD9334EC937A /* EndToEndRecognitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36A65BDDD98E0054ED7EEC9 /* EndToEndRecognitionTests.swift */; settings = {COMPILER_FLAGS = "-"; }; };
 		03DF9C32A80C645791B1D379 /* ctc_hotword_cases.json in Resources */ = {isa = PBXBuildFile; fileRef = AFD1BE6E17DBBB8756F5C113 /* ctc_hotword_cases.json */; };
 		05C20C1EDF22F4EAF3A89001 /* CTCPrefixBeamSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 789DAA5BABE28921FD82E72D /* CTCPrefixBeamSearchTests.swift */; settings = {COMPILER_FLAGS = "-"; }; };
@@ -147,6 +152,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		FF0EE67ADE2B1C3A4B587BA0 /* asr_hints_cases.json */ = {isa = PBXFileReference; includeInIndex = 1; name = asr_hints_cases.json; path = Tests/VoiceTyperTests/Fixtures/asr_hints_cases.json; sourceTree = "<group>"; };
+		7DE80F93C3558EE2262B5152 /* CorrectionTraceLoggerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CorrectionTraceLoggerTests.swift; path = Tests/VoiceTyperTests/CorrectionTraceLoggerTests.swift; sourceTree = "<group>"; };
+		87B15DDB98540E8A1C57ECDB /* AcousticHintExtractorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AcousticHintExtractorTests.swift; path = Tests/VoiceTyperTests/AcousticHintExtractorTests.swift; sourceTree = "<group>"; };
+		25168D24AB5C721D8EBB0BB5 /* CorrectionTraceLogger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CorrectionTraceLogger.swift; path = Sources/VoiceTyper/LLM/CorrectionTraceLogger.swift; sourceTree = "<group>"; };
+		DD6B838E546D87AEDF03A760 /* AcousticHintExtractor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AcousticHintExtractor.swift; path = Sources/VoiceTyper/ASR/AcousticHintExtractor.swift; sourceTree = "<group>"; };
 		0109BA2EA0BE7D02AB74B42B /* OutputFormatterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OutputFormatterTests.swift; path = Tests/VoiceTyperTests/OutputFormatterTests.swift; sourceTree = "<group>"; };
 		068D26AB7290AC9F75F9340F /* StatusBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StatusBarController.swift; path = Sources/VoiceTyper/UI/StatusBarController.swift; sourceTree = "<group>"; };
 		0755B39657006D2785C7C6F4 /* LLMCorrectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LLMCorrectorTests.swift; path = Tests/VoiceTyperTests/LLMCorrectorTests.swift; sourceTree = "<group>"; };
@@ -304,6 +314,7 @@
 			children = (
 				A50F043CC707D66927E40B00 /* ASRService.swift */,
 				4EAE83D6BEE82EB1C34E8A35 /* CTCDecoder.swift */,
+				DD6B838E546D87AEDF03A760 /* AcousticHintExtractor.swift */,
 				D37CA757D143B55686429F71 /* FbankFrontend.swift */,
 				3F199EE15FF5A3ABA3E7E71C /* Hotword */,
 				238D3396CE79D85F89A26B3C /* LFRCMVN.swift */,
@@ -413,6 +424,7 @@
 			children = (
 				2EE908D4F037253E43FB0B39 /* LLMCapabilityStore.swift */,
 				E22980759D06163FA0D9C1FD /* LLMCorrector.swift */,
+				25168D24AB5C721D8EBB0BB5 /* CorrectionTraceLogger.swift */,
 				3FDB2E29B8C3EA9780F3DF13 /* LLMEndpoint.swift */,
 			);
 			name = LLM;
@@ -455,6 +467,7 @@
 			isa = PBXGroup;
 			children = (
 				AFD1BE6E17DBBB8756F5C113 /* ctc_hotword_cases.json */,
+				FF0EE67ADE2B1C3A4B587BA0 /* asr_hints_cases.json */,
 				5BF43D6D4CA64761F3A835C6 /* fbank_input.f32 */,
 				CF90176D3D38729CDA15EE2A /* fbank_parity_shapes.json */,
 				0B8B4968E0D3DAAC2765DDFD /* fbank_reference.f32 */,
@@ -564,6 +577,8 @@
 				4E71A0B008F1C775488F315A /* AudioChunkerTests.swift */,
 				9F0CAD90069A80F829DBFAD8 /* AudioInputDeviceTests.swift */,
 				789DAA5BABE28921FD82E72D /* CTCPrefixBeamSearchTests.swift */,
+				7DE80F93C3558EE2262B5152 /* CorrectionTraceLoggerTests.swift */,
+				87B15DDB98540E8A1C57ECDB /* AcousticHintExtractorTests.swift */,
 				7422A0665834D80E2D72126A /* ConfigMigratorTests.swift */,
 				63C6CBD72DE6EF749C918639 /* ConfigStoreTests.swift */,
 				1210E7AC155B6E74DC480A95 /* ContextGraphTests.swift */,
@@ -695,6 +710,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				03DF9C32A80C645791B1D379 /* ctc_hotword_cases.json in Resources */,
+				EBD140E2C3D7C2878B8DAC81 /* asr_hints_cases.json in Resources */,
 				5DCEAD9CA7FCFE44FB1F23E4 /* fbank_input.f32 in Resources */,
 				5C761B595C5D853DE3B44A2A /* fbank_parity_shapes.json in Resources */,
 				3EDCF4490D46B39EAA46C46F /* fbank_reference.f32 in Resources */,
@@ -720,6 +736,8 @@
 				41F9722E03B239E1ABEE2C04 /* AudioChunkerTests.swift in Sources */,
 				D757E24199E4D94C4B8BED82 /* AudioInputDeviceTests.swift in Sources */,
 				05C20C1EDF22F4EAF3A89001 /* CTCPrefixBeamSearchTests.swift in Sources */,
+				07C6666E4AA9CFF10A48A5D5 /* CorrectionTraceLoggerTests.swift in Sources */,
+				999199437847FAC84DB56939 /* AcousticHintExtractorTests.swift in Sources */,
 				3DBBCC210A944A22D26B402F /* ConfigMigratorTests.swift in Sources */,
 				C42F3FF3FBCBA6599446CD8D /* ConfigStoreTests.swift in Sources */,
 				1F8A3E92402004ABCD1A8567 /* ContextGraphTests.swift in Sources */,
@@ -764,6 +782,7 @@
 			files = (
 				CA0F1222C296122B95A52385 /* ASRService.swift in Sources */,
 				1BDC0C178B69D865FBE0D6B9 /* CTCDecoder.swift in Sources */,
+				D18EB759327148B430E13F64 /* AcousticHintExtractor.swift in Sources */,
 				A70AC72E323A0882C802CA24 /* FbankFrontend.swift in Sources */,
 				CFE103BE149700759F55BAC3 /* CTCPrefixBeamSearch.swift in Sources */,
 				921C9E1DA4CE0CEA184A1EAC /* ContextGraph.swift in Sources */,
@@ -792,6 +811,7 @@
 				895C3000576609B019EC4037 /* VoiceTyperControllerDependencies.swift in Sources */,
 				1FFE45F762863BB4202289F2 /* LLMCapabilityStore.swift in Sources */,
 				611C536EDE021481D6BCC7FA /* LLMCorrector.swift in Sources */,
+				1CF45BFB593D55F3A61A0075 /* CorrectionTraceLogger.swift in Sources */,
 				EADDA6B57EF5CC97BAE47EE3 /* LLMEndpoint.swift in Sources */,
 				EA6CF530E529F3650F9A8098 /* AudioCaptureService.swift in Sources */,
 				75B6BCDD89A0FB05DA04FE40 /* AudioInputDevice.swift in Sources */,

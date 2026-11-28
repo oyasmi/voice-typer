@@ -32,6 +32,8 @@ internal sealed class AppCoordinator : IDisposable
     private readonly AsrService _asrService = new();
     /// <summary>应用级唯一的剪贴板插入服务：控制器重建时只是借用它，剪贴板恢复状态不随控制器丢失。</summary>
     private readonly TextInsertionService _textInsertion = new();
+    /// <summary>独立本机校对效果诊断记录器（TRACE-4）；默认关闭，不创建文件。</summary>
+    private readonly CorrectionTraceLogger _traceLogger = new();
 
     /// <summary>设置页 / 引导页的「测试麦克风」。懒创建；听写开始、锁屏 / 睡眠、退出时都会停掉。</summary>
     private MicLevelTest? _micTest;
@@ -219,6 +221,7 @@ internal sealed class AppCoordinator : IDisposable
     private void ReloadConfigurationFromDisk()
     {
         _config = _configStore.LoadOrCreate(out var brokenConfigBackup);
+        _traceLogger.UpdatePath(_config.Llm.TraceLogPath);
         // config.yaml 是界面语言的事实来源（Program.Main 里的 Bootstrap 只是启动期的快照）。
         L10n.Apply(_config.UI.InterfaceLanguageValue);
         if (brokenConfigBackup is not null)
@@ -600,7 +603,7 @@ internal sealed class AppCoordinator : IDisposable
     private void EnsureController()
     {
         if (_controller is not null) return;
-        var controller = new VoiceTyperController(_config, _asrService, _textInsertion);
+        var controller = new VoiceTyperController(_config, _asrService, _textInsertion, _traceLogger);
         BindControllerEvents(controller);
         _controller = controller;
     }
@@ -981,6 +984,8 @@ internal sealed class AppCoordinator : IDisposable
         form.OnCancelModelDownload = _download.Cancel;
         form.OnReloadModel = ReloadModel;
         form.OnTestLlmCorrection = (llmConfig, apiKey) => TestLlmCorrectionAsync(llmConfig, apiKey);
+        form.OnRevealTraceLog = RevealTraceLog;
+        form.OnClearTraceLog = ClearTraceLog;
         form.OnRetryMicProbe = () => ProbeMicrophone(isFirstProbe: false);
         form.OnPollMicProbe = () => ProbeMicrophone(isFirstProbe: false, automatic: true);
         form.OnPreviewHudOpacity = PreviewHudOpacity;
@@ -999,6 +1004,47 @@ internal sealed class AppCoordinator : IDisposable
         form.OnLoadRecentResults = _recognitionHistory.NewestFirst;
         form.UpdateVocabularyReport(_asrService.VocabularyReport);
         _setupForm = form;
+    }
+
+    private void RevealTraceLog(string? draftPath)
+    {
+        try
+        {
+            var resolved = CorrectionTraceLogger.ResolvePath(draftPath);
+            if (System.IO.File.Exists(resolved))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{resolved}\"",
+                    UseShellExecute = true,
+                });
+            }
+            else
+            {
+                var dir = System.IO.Path.GetDirectoryName(resolved);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    System.IO.Directory.CreateDirectory(dir);
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = dir,
+                        UseShellExecute = true,
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("ui", $"打开校对日志目录失败: {ex.GetType().Name}");
+        }
+    }
+
+    private void ClearTraceLog(string? draftPath)
+    {
+        _traceLogger.UpdatePath(draftPath);
+        _traceLogger.Clear();
+        _traceLogger.UpdatePath(_config.Llm.TraceLogPath);
     }
 
     /// <summary>

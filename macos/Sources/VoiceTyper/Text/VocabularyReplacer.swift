@@ -57,6 +57,53 @@ struct VocabularyReplacer: Sendable {
         return String(String.UnicodeScalarView(current))
     }
 
+    /// 词汇替换后的一致性过滤（HINT-5.3 / HINT-D7）：
+    /// 1. `surface` 不再出现在替换后的文本中（已被确定性替换）→ 丢弃并计入 `droppedByVocab`；
+    /// 2. `surface` 精确等于词汇表中任一 `term`（不区分大小写）→ 丢弃并计入 `droppedByVocab`；
+    /// 3. 备选逐项过一遍 `apply` 规整 alias，去重并剔除与 `surface` 相同项；
+    /// 4. 防御性过滤含 `<`、`>`、`\n`、`\r` 的异常字符串。
+    func reconcileHints(
+        _ hints: [AcousticHint],
+        inReplacedText text: String
+    ) -> (active: [AcousticHint], droppedByVocab: Int) {
+        guard !hints.isEmpty else { return ([], 0) }
+        let loweredTerms = Set(terms.map { $0.lowercased() })
+        var active: [AcousticHint] = []
+        active.reserveCapacity(hints.count)
+        var droppedByVocab = 0
+
+        for hint in hints {
+            if Self.containsUnsafeTagChars(hint.surface) { continue }
+            if !text.contains(hint.surface) || loweredTerms.contains(hint.surface.lowercased()) {
+                droppedByVocab += 1
+                continue
+            }
+            var seen = Set<String>()
+            var cleanedAlts: [String] = []
+            cleanedAlts.reserveCapacity(hint.alternatives.count)
+            for alt in hint.alternatives {
+                let normalized = apply(alt)
+                guard !normalized.isEmpty,
+                      !Self.containsUnsafeTagChars(normalized),
+                      normalized != hint.surface,
+                      seen.insert(normalized).inserted
+                else { continue }
+                cleanedAlts.append(normalized)
+            }
+            guard !cleanedAlts.isEmpty else { continue }
+            active.append(AcousticHint(
+                surface: hint.surface,
+                alternatives: cleanedAlts,
+                bestMargin: hint.bestMargin
+            ))
+        }
+        return (active, droppedByVocab)
+    }
+
+    private static func containsUnsafeTagChars(_ value: String) -> Bool {
+        value.contains("<") || value.contains(">") || value.contains("\n") || value.contains("\r")
+    }
+
     // MARK: - 一轮替换
 
     private func applyOnce(_ text: [Unicode.Scalar]) -> [Unicode.Scalar] {
