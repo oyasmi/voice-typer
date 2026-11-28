@@ -34,6 +34,55 @@ final class TextInsertionServiceTests: XCTestCase {
         XCTAssertEqual(InsertionVerification.classify(before: 10, after: 10, expectedDelta: 0), .ok)
     }
 
+    // MARK: - 网页内容区跳过 AX 直接走粘贴
+
+    /// 网页内容区（AXWebArea 下）即使 kAXSelectedTextAttribute 报告可写，也必须跳过 AX 直接走粘贴，
+    /// 避免浏览器辅助功能层返回 .success 却静默吞掉输入（insert_verify=unchanged），且应短路后续 AX 查询。
+    func testWebAreaAlwaysFallsBackToPasteEvenWhenSelectedTextIsSettable() {
+        var queriedSelectedText = false
+        var queriedValue = false
+        let fallback = TextInsertionService.shouldFallbackToPaste(
+            inWebArea: { true },
+            isSelectedTextSettable: {
+                queriedSelectedText = true
+                return true
+            },
+            isValueSettable: {
+                queriedValue = true
+                return true
+            }
+        )
+        XCTAssertTrue(fallback)
+        XCTAssertFalse(queriedSelectedText, "命中 AXWebArea 后应立即短路，不再查询选区属性")
+        XCTAssertFalse(queriedValue, "命中 AXWebArea 后应立即短路，不再查询值属性")
+    }
+
+    /// 非网页控件（如浏览器地址栏、原生 App）：选区可写或值可写时仍优先走 AX，两者皆不可写才走粘贴。
+    func testNonWebAreaUsesAXWhenSelectedTextOrValueIsSettable() {
+        var queriedValue = false
+        XCTAssertFalse(TextInsertionService.shouldFallbackToPaste(
+            inWebArea: { false },
+            isSelectedTextSettable: { true },
+            isValueSettable: {
+                queriedValue = true
+                return false
+            }
+        ))
+        XCTAssertFalse(queriedValue, "选区可写时应短路，不再查询值属性")
+
+        XCTAssertFalse(TextInsertionService.shouldFallbackToPaste(
+            inWebArea: { false },
+            isSelectedTextSettable: { false },
+            isValueSettable: { true }
+        ))
+
+        XCTAssertTrue(TextInsertionService.shouldFallbackToPaste(
+            inWebArea: { false },
+            isSelectedTextSettable: { false },
+            isValueSettable: { false }
+        ))
+    }
+
     // MARK: - 连续粘贴兜底：pending 快照继承（避免覆盖用户最初的剪贴板）
 
     /// 临时恢复窗口内再次粘贴兜底，且剪贴板仍是上一段听写写入的临时文本、changeCount 未变：
