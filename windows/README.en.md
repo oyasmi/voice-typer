@@ -97,16 +97,17 @@ When AI text correction is enabled, your vocabulary list is also included in the
 
 Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to fix homophones, stutters, and punctuation:
 
-- When turned on, **only the recognized text** is sent to your configured endpoint — audio is never transmitted. To minimize latency, VoiceTyper pre-warms the network connection when recording begins (sending neither your key nor any text). Your API key is encrypted with Windows DPAPI under your user account.
+- When turned on, **only the recognized text** (along with your custom vocabulary and low-confidence acoustic alternatives) is sent to your configured endpoint — audio is never transmitted. To minimize latency, VoiceTyper pre-warms the network connection when recording begins (sending neither your key nor any text). Your API key is encrypted with Windows DPAPI under your user account.
 - Press your hotkey again during correction to skip waiting and insert the raw transcript immediately (for single-modifier hotkeys like Right <kbd>Ctrl</kbd>, tap and release the key by itself; chords like Right <kbd>Ctrl</kbd> + <kbd>C</kbd> won't accidentally skip).
 - If correction times out or errors out, the raw transcript is inserted automatically.
+- To evaluate correction quality, you can optionally enable **Record proofreading logs (for evaluation)** (off by default); entries stay strictly on your PC in the temporary folder or a custom path, are never uploaded, and can be cleared anytime from Settings.
 
 ## Privacy
 
 - Audio stays strictly in RAM — never written to disk and never uploaded.
 - Works completely offline once the speech model is downloaded; **Check for Updates** connects only when you click it manually.
 - No account and no usage limits.
-- Logs and copied diagnostics never contain recognized text or custom vocabulary; the last transcription and the 20-entry history live in RAM only and clear on exit.
+- Standard logs and copied diagnostics never contain recognized text or custom vocabulary (proofreading records are only saved locally if you explicitly enable **Record proofreading logs**, which is off by default); the last transcription and the 20-entry history live in RAM only and clear on exit.
 
 ## FAQ
 

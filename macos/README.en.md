@@ -95,15 +95,16 @@ When AI proofreading is enabled, your vocabulary list is also shared with the pr
 
 Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to polish homophones, stutters, and punctuation:
 
-- When turned on, **only the recognized text** is sent to your configured endpoint — audio is never transmitted. Your API key is stored in the macOS Keychain.
+- When turned on, **only the recognized text** (along with your custom vocabulary and low-confidence acoustic alternatives) is sent to your configured endpoint — audio is never transmitted. Your API key is stored in the macOS Keychain.
 - Press your hotkey again while proofreading is running to skip it immediately and insert the raw transcript.
 - If the request times out or fails, VoiceTyper falls back to the raw transcript automatically and briefly notes why in the overlay.
+- To evaluate proofreading quality, you can optionally enable **Record proofreading logs (for evaluation)** (off by default); entries stay strictly on your Mac in the temporary folder or a custom path, are never uploaded, and can be cleared anytime from Settings.
 
 ## Privacy
 
 - Audio stays strictly in RAM — never written to disk and never uploaded.
 - Works completely offline once the model is downloaded; no account or usage limits.
-- Diagnostic logs never contain recognized text or custom vocabulary; **Recent Results** exist in memory only and are wiped on quit.
+- Standard diagnostic logs never contain recognized text or custom vocabulary (proofreading records are only saved locally if you explicitly enable **Record proofreading logs**, which is off by default); **Recent Results** exist in memory only and are wiped on quit.
 
 ## FAQ
 

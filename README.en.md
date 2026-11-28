@@ -61,7 +61,7 @@ Spoken audio carries far more personal context than final written text. **On-dev
 
 - **Audio never leaves your computer**: Recordings are processed strictly in memory — never written to disk and never uploaded anywhere.
 - **Works completely offline**: Once the speech model is downloaded on first launch, no internet connection is needed. Update checks happen only when you click them manually.
-- **Zero transcript logging**: Diagnostic logs never contain recognized text or custom vocabulary entries; recent history lives in RAM only and vanishes when you quit.
+- **Zero transcript logging by default**: Standard diagnostic logs never contain recognized text or custom vocabulary entries; optional proofreading trace logs (off by default, for local quality evaluation) are saved only locally and never uploaded. Recent history lives in RAM only and vanishes when you quit.
 - **Clear boundaries for AI proofreading**: Off by default. When enabled, **only the recognized text** (never audio) is sent to the endpoint you configure, and your API key is stored encrypted in the macOS Keychain or Windows DPAPI. Point it at a local LLM to stay 100% offline.
 
 ## FAQ

@@ -2310,7 +2310,7 @@ macOS 主机的 Release 测试工程编译通过。依照开发文档运行非 W
 
 ---
 
-## 36. 局部声学低置信度备选（`<asr_hints>`）与校对效果诊断记录（`feat/asr-hints`）
+## 36. 局部声学低置信度备选（`<asr_hints>`）与校对效果诊断记录（纳入 3.6.3）
 
 按 `macos/docs/ASR_HINTS_SPEC.md`（HINT-1 – HINT-8）与 `macos/docs/ASR_HINTS_TRACE_SPEC.md`（TRACE-1 – TRACE-6）完成 Windows C# 同步实施：
 
