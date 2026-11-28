@@ -43,6 +43,7 @@ enum UpdateChecker {
     static func checkForUpdate(currentVersion: String = AppConstants.version) async throws -> Outcome {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
 
@@ -62,7 +63,8 @@ enum UpdateChecker {
             throw CheckError.malformedResponse
         }
 
-        let pageURL = (json["html_url"] as? String).flatMap(URL.init(string:))
+        let parsedURL = (json["html_url"] as? String).flatMap(URL.init(string:))
+        let pageURL = (parsedURL?.scheme?.lowercased() == "https" ? parsedURL : nil)
             ?? AppConstants.repositoryURL.appendingPathComponent("releases")
 
         guard let tag = json["tag_name"] as? String,
@@ -88,7 +90,10 @@ enum UpdateChecker {
 
         for character in raw {
             if character.isASCII, character.isNumber, let value = character.wholeNumberValue {
-                current = (current ?? 0) * 10 + value
+                let (mul, overflow1) = (current ?? 0).multipliedReportingOverflow(by: 10)
+                let (sum, overflow2) = mul.addingReportingOverflow(value)
+                guard !overflow1, !overflow2 else { return nil }
+                current = sum
                 started = true
             } else if character == "." {
                 if let value = current {

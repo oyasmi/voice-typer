@@ -106,6 +106,8 @@ final class SettingsViewModel {
     var modelDownloadError: String?
     var engineStatus = L("检查中")
     var hotkeyDisplay = "Fn🌐"
+    /// 递增时通知 `HotkeyRecorder` 静默退出录制态（如录制中被预设按钮接管）。
+    private(set) var hotkeyRecordingCancelNonce = 0
 
     // MARK: 语音模型（即时保存）
     var language: ASRLanguage = .auto
@@ -204,6 +206,8 @@ final class SettingsViewModel {
         modelMessage = ""
         recognitionMessage = ""
         hotkeyMessage = ""
+        generalMessage = ""
+        vocabularyMessage = ""
 
         // 读取失败（而非"从未保存过"）必须让用户看得见，否则智能校对会静默停在
         // "开着但从来没生效过"——现象只是不断 401，没有任何信号指向密钥本身（R4-06）。
@@ -336,7 +340,10 @@ final class SettingsViewModel {
             }
             do {
                 try await self.onSaveConfig?(config)
-                self.loadedConfig = config
+                let applied = config.validated()
+                self.loadedConfig = applied
+                self.llmTemperature = applied.llm.temperature
+                self.llmTimeout = applied.llm.timeout
                 self.recognitionMessage = L("设置已保存并生效。")
                 self.recognitionMessageKind = .success
             } catch {
@@ -444,17 +451,20 @@ final class SettingsViewModel {
     /// 切换按住 / 按一次 的触发方式。复用 `applyHotkey` 的校验与落盘路径。
     func applyHotkeyMode(_ mode: HotkeyMode) {
         guard mode != hotkeyConfig.mode else { return }
+        hotkeyRecordingCancelNonce &+= 1
         var updated = hotkeyConfig
         updated.mode = mode
         applyHotkey(updated, successMessage: LF("触发方式已改为「%@」。", mode.displayName))
     }
 
     func resetHotkeyToFn() {
+        hotkeyRecordingCancelNonce &+= 1
         applyHotkey(HotkeyConfig(modifiers: [], key: "fn", mode: hotkeyConfig.mode))
     }
 
     /// 外接键盘没有 Fn 时的推荐选择：单击右 ⌘。
     func resetHotkeyToRightCommand() {
+        hotkeyRecordingCancelNonce &+= 1
         applyHotkey(HotkeyConfig(modifiers: [], key: ModifierHotkey.rightCommand.rawValue, mode: hotkeyConfig.mode))
     }
 
@@ -489,15 +499,18 @@ final class SettingsViewModel {
 
     func commitHUDOpacity() {
         var updated = loadedConfig
+        let previous = loadedConfig.ui.opacity
         updated.ui.opacity = hudOpacity
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.onSaveConfig?(updated)
-                self.loadedConfig = updated
+                self.loadedConfig = updated.validated()
+                self.generalMessage = ""
             } catch {
-                // 不静默吞掉异常（AGENTS.md）：失败不更新 loadedConfig（避免以错误基线覆盖
-                // 后续即时保存），并把失败告知用户，而不是只吞掉。
+                // 不静默吞掉异常（AGENTS.md）：失败回滚 UI 与 HUD 预览，避免显示未生效的值。
+                self.hudOpacity = previous
+                self.onPreviewHUDOpacity?(previous)
                 self.generalMessage = LF("HUD 透明度保存失败：%@", error.localizedDescription)
                 self.generalMessageKind = .error
             }

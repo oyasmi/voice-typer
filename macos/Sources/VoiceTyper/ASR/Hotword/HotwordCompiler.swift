@@ -132,6 +132,7 @@ enum HotwordCompiler {
     static func compile(_ vocabulary: VocabularyConfig, trie: TokenTrie, now: MonotonicClock = systemMonotonicClock) -> Output {
         let startedAt = now()
         var collected: [[Int]] = []
+        var seenSequences: Set<[Int]> = []
         var entries: [HotwordCompileReport.Entry] = []
         entries.reserveCapacity(vocabulary.entries.count)
 
@@ -147,10 +148,15 @@ enum HotwordCompiler {
                     sawTooShort = true
                 case .sequences(let found):
                     for sequence in found {
+                        if seenSequences.contains(sequence) {
+                            added = true
+                            continue
+                        }
                         guard collected.count < maxTotalSequences else {
                             hitLimit = true
                             break
                         }
+                        seenSequences.insert(sequence)
                         collected.append(sequence)
                         added = true
                     }

@@ -96,8 +96,12 @@ struct ModifierTapRecognizer {
         state = .idle
     }
 
-    /// 目标键是否处于按住（含已作废但尚未抬起）。Esc 取消的生效窗口以它为准。
+    /// 目标键是否处于按住（含已作废但尚未抬起）。
     var isHolding: Bool { state != .idle }
+
+    /// 目标键是否处于干净按住（未因组合键/鼠标点击作废）。Esc 取消只在此状态下拦截，
+    /// 避免用户执行完「右 ⌘ + A」尚未松开右 ⌘ 时误吞前台应用的 Esc。
+    var isHoldingClean: Bool { state == .holdingClean }
 
     mutating func handle(_ input: Input) -> Output? {
         switch (state, input) {

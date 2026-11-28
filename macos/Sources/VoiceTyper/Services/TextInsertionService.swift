@@ -480,6 +480,10 @@ final class TextInsertionService {
     }
 
     private func simulatePaste() -> Bool {
+        // 无辅助功能权限时 CGEvent.post(.cghidEventTap) 会被系统静默丢弃而不报错，
+        // 若仍返回 true，上层会误判已插入并在 1 秒后还原剪贴板，导致文本丢失。
+        guard AXIsProcessTrusted() else { return false }
+
         // 键码是物理键位，目标应用按当前布局把它翻译成字符：Dvorak 下 ANSI_V 键位是 k，
         // 固定发它会变成 ⌘K。每次现查（用户可能随时切换布局，开销可忽略）。
         let keyCode = PasteKeyResolver.currentPasteKeyCode()
@@ -530,24 +534,27 @@ enum PasteKeyResolver {
         }
         let layoutID = property(kTISPropertyInputSourceID) as? String
         let layoutName = property(kTISPropertyLocalizedName) as? String
-        guard let layoutData = property(kTISPropertyUnicodeKeyLayoutData) else {
+        guard let layoutData = property(kTISPropertyUnicodeKeyLayoutData) as? Data,
+              !layoutData.isEmpty else {
             AppLog.app.warning("当前键盘布局没有字符映射数据，模拟粘贴回落到 QWERTY 的 V 键位")
             return qwertyV
         }
-        let data = layoutData as! CFData
-        let layout = unsafeBitCast(CFDataGetBytePtr(data), to: UnsafePointer<UCKeyboardLayout>.self)
         let keyboardType = UInt32(LMGetKbdType())
 
-        return pasteKeyCode(layoutID: layoutID, layoutName: layoutName) { code in
-            var deadKeyState: UInt32 = 0
-            var chars = [UniChar](repeating: 0, count: 4)
-            var length = 0
-            let status = UCKeyTranslate(
-                layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, keyboardType,
-                OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, chars.count, &length, &chars
-            )
-            guard status == noErr, length > 0 else { return nil }
-            return String(utf16CodeUnits: chars, count: length)
+        return layoutData.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return qwertyV }
+            let layout = baseAddress.assumingMemoryBound(to: UCKeyboardLayout.self)
+            return pasteKeyCode(layoutID: layoutID, layoutName: layoutName) { code in
+                var deadKeyState: UInt32 = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                var length = 0
+                let status = UCKeyTranslate(
+                    layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, keyboardType,
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, chars.count, &length, &chars
+                )
+                guard status == noErr, length > 0 else { return nil }
+                return String(utf16CodeUnits: chars, count: length)
+            }
         }
     }
 }

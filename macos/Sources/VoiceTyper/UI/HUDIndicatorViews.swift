@@ -159,6 +159,7 @@ final class WaveformView: NSView {
 
         for (index, bar) in bars.enumerated() {
             bar.removeAnimation(forKey: "recognizing")
+            guard !HUDMotion.reduceMotion else { continue }
             let anim = CABasicAnimation(keyPath: "transform.scale.y")
             anim.fromValue = 0.4
             anim.toValue = 1.0

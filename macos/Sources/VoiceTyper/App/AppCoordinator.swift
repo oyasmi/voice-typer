@@ -85,6 +85,8 @@ final class AppCoordinator {
     private var reauthorizationNotice: String?
     /// 系统唤醒 / 解锁等通知常常成串到达，1 秒内只重装一次热键监听。
     private var lastHotkeyReinstall: Date?
+    /// 防止用户连点「检查更新」并发弹出多个请求与模态框。
+    private var isCheckingForUpdates = false
 
     func start() {
         // 必须先于任何 AX 调用：之后各处只在具体元素上设超时（见 `AXMessaging`）。
@@ -621,7 +623,10 @@ final class AppCoordinator {
             }
         case .idle:
             activateReadyState()
-        default:
+        case .error(let message):
+            recordingHUDController?.hideHUD()
+            gateHotkeyListening(reason: message)
+        case .paused, .booting, .recording, .recognizing, .inserting:
             break
         }
 
@@ -774,14 +779,16 @@ final class AppCoordinator {
                 // 自动重试用尽：窗口都不可见时，浮窗提示一次并指向设置（不受「不显示」影响，R8-C5）。
                 self.recordingHUDController?.showError(L("语音模型下载失败，请到「设置 → 识别」查看并重试"))
             }
+            let errorReason = LF("模型下载失败: %@", reason)
             if !self.isPaused {
                 self.readiness = self.permissions.allRequiredGranted
-                    ? .error(LF("模型下载失败: %@", reason))
+                    ? .error(errorReason)
                     : .setupRequired
             }
             if self.permissions.allRequiredGranted {
-                self.forcedPresentations.insert(.model)
-                self.setupControllerIfNeeded(forceShow: true, preferredTab: .recognition)
+                self.gateHotkeyListening(reason: errorReason)
+                // 走统一的 presentBlockingGuidance 去重，避免自动退避重试期间反复抢焦点（B7）。
+                self.presentBlockingGuidance(.model, preferredTab: .recognition)
             }
             self.updateStatusUI()
             self.syncAuxiliaryWindows()
@@ -822,8 +829,11 @@ final class AppCoordinator {
 
     /// 只在用户主动点菜单时跑一次，不做后台自动检查（见 `UpdateChecker` 的注释）。
     private func checkForUpdates() {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
         Task { [weak self] in
             guard let self else { return }
+            defer { self.isCheckingForUpdates = false }
             do {
                 let outcome = try await UpdateChecker.checkForUpdate()
                 self.presentUpdateOutcome(outcome)
@@ -1085,8 +1095,9 @@ final class AppCoordinator {
         if rebuildsController {
             try reloadAndReevaluateAfterSettingsChange()
         } else {
-            // 只有 ui 段变化：不重建控制器，只更新内存配置与 HUD/设置窗口显示。
+            // 只有 ui 段变化：不重建控制器，只更新内存配置、界面语言与 HUD/设置窗口显示。
             config = updatedConfig.validated()
+            L10n.apply(config.ui.interfaceLanguage)
             recordingHUDController?.updateConfig(config.ui)
             setupWindowController?.syncAppliedConfig(config)
         }

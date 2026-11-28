@@ -59,7 +59,10 @@ struct DownloadStats {
     }
 
     static func durationString(seconds: Double) -> String {
-        let total = max(1, Int(seconds.rounded(.up)))
+        guard seconds.isFinite, seconds > 0 else { return LF("%d 秒", 1) }
+        // 防止极低下载速度导致 Double→Int 溢出崩溃，上限封顶 24 小时。
+        let clamped = min(seconds, 86_400)
+        let total = max(1, Int(clamped.rounded(.up)))
         if total < 60 { return LF("%d 秒", total) }
         return LF("%d 分 %d 秒", total / 60, total % 60)
     }

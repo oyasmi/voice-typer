@@ -50,6 +50,9 @@ enum LLMEndpoint {
             return .failure(.insecurePlaintextHost(host))
         }
 
+        while components.path.hasSuffix("/") {
+            components.path.removeLast()
+        }
         if !components.path.hasSuffix("/chat/completions") {
             components.path += "/chat/completions"
         }

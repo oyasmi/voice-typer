@@ -439,6 +439,25 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertTrue(vm.recognitionMessage.contains("LLM API 错误 (401)"))
         XCTAssertEqual(vm.recognitionMessageKind, .error)
     }
+
+    /// M-21：Base URL 含 query 参数且路径以 `/` 结尾时，不拼出双斜杠 `//chat/completions`。
+    func testEndpointResolveWithQueryAndTrailingSlash() throws {
+        let resolved = try LLMEndpoint.resolve(
+            "https://example.openai.azure.com/openai/deployments/gpt4/?api-version=2024-02-01"
+        ).get()
+        XCTAssertEqual(
+            resolved.absoluteString,
+            "https://example.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-01"
+        )
+    }
+
+    /// M-12：取消请求不归类为网络/服务失败（fallbackReason 为 nil）且保留原文。
+    func testCancelledRequestReturnsNilFallbackReason() async {
+        StubURLProtocol.failure = URLError(.cancelled)
+        let report = await makeCorrector(session: makeSession()).correctWithReport("原文")
+        assertFellBack(report.outcome, "原文")
+        XCTAssertNil(report.fallbackReason)
+    }
 }
 
 /// 拦截所有请求，交给测试用例设置的 handler 决定响应。

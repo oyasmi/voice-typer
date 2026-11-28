@@ -83,14 +83,17 @@ struct HotkeyEventFilter {
         // (a) 热键仍处于激活态（录音中）；
         // (b) 已松开但控制器打开了 `acceptsCancelWhenInactive`（识别中，结果尚未上屏）。
         // 放在热键分支之前，Fn 与组合键两种模式都能触发。
-        // 单独修饰键模式下"按住中"以识别器为准（含已作废但尚未抬起的阶段）。
-        let isHolding = modifierRecognizer?.isHolding ?? isActive
+        // 单独修饰键模式下只认干净按住（已作废的手势不应再误吞前台应用的 Esc）。
+        let isHolding = modifierRecognizer?.isHoldingClean ?? isActive
         if isHolding || acceptsCancelWhenInactive,
            case .keyDown(let keyCode, _, _) = input,
            keyCode == Int64(kVK_Escape) {
             // 这个 Esc 同样要喂给识别器使手势作废，否则松开修饰键时会多发一个 `.ended`，
             // toggle 模式下会被误当作一次"单击"而开始新录音。
             _ = modifierRecognizer?.handle(.keyDown)
+            // 组合键 / Fn 取消后同步复位 isActive，避免松键时再多发一次 `.release`
+            // （`consumedKeyCodes` 保留，主键 keyUp 仍配对吞掉）。
+            isActive = false
             consumedKeyCodes.insert(keyCode)
             return Decision(actions: [.cancel], consume: true)
         }

@@ -155,7 +155,8 @@ enum AudioInputDevice {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr else {
             return []
         }
-        return ids.compactMap { id in
+        let actualCount = min(ids.count, Int(size) / MemoryLayout<AudioDeviceID>.size)
+        return ids.prefix(actualCount).compactMap { id in
             guard hasInputStreams(id), let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) else { return nil }
             return AudioDeviceInfo(
                 id: id,

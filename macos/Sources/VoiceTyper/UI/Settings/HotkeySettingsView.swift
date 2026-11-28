@@ -11,6 +11,7 @@ struct HotkeySettingsView: View {
                 Spacer()
                 HotkeyRecorder(
                     config: vm.hotkeyConfig,
+                    cancelNonce: vm.hotkeyRecordingCancelNonce,
                     onBegin: { vm.beginHotkeyRecording() },
                     onCapture: { vm.applyRecordedHotkey($0) },
                     onCancel: { vm.cancelHotkeyRecording() }

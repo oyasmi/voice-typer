@@ -63,6 +63,7 @@ enum FocusGeometry {
         guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowObject) == .success,
               let windowObject, CFGetTypeID(windowObject) == AXUIElementGetTypeID() else { return nil }
         let window = windowObject as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, AXMessaging.probeTimeout)
 
         var positionObject: CFTypeRef?
         var sizeObject: CFTypeRef?
@@ -107,13 +108,19 @@ enum FocusGeometry {
             return cocoaRect(fromAX: rect, primaryScreenHeight: primaryHeight)
         }
 
-        var candidates: [CGRect] = []
-        if let rect = bounds(location: selection.location, length: 0) { candidates.append(rect) }
-        if let rect = bounds(location: selection.location, length: 1) { candidates.append(rect) }
+        if let rect = bounds(location: selection.location, length: 0), isPlausibleCaret(rect, screenFrames: frames) {
+            return rect
+        }
+        if let rect = bounds(location: selection.location, length: 1), isPlausibleCaret(rect, screenFrames: frames) {
+            return rect
+        }
         if selection.location > 0, let previous = bounds(location: selection.location - 1, length: 1) {
             // 前一个字符的后沿就是插入点。
-            candidates.append(CGRect(x: previous.maxX, y: previous.minY, width: 0, height: previous.height))
+            let rect = CGRect(x: previous.maxX, y: previous.minY, width: 0, height: previous.height)
+            if isPlausibleCaret(rect, screenFrames: frames) {
+                return rect
+            }
         }
-        return candidates.first { isPlausibleCaret($0, screenFrames: frames) }
+        return nil
     }
 }

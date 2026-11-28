@@ -1614,6 +1614,40 @@ XCTest 的性能用例按 Debug 构建运行，只断言 2s 上限（Linux Debug
 
 ---
 
+## 11.9 R11：面向小修小改的深度审查与修复（M-01 ~ M-22 + 高性价比 P2）
+
+在 R10 基础上对 `macos/` 全量模块（App / Core / ASR / Services / LLM / Support / UI / Entitlements）做逐文件细节审查，按性价比筛选并落地了本轮小修小改（未引入大重构）：
+
+- **UI 与交互可靠性（M-01 ~ M-03、M-17、M-22、P2-2/3）**：
+  - `RecordingHUDController` 初始化补齐 `hudPosition = config.hudPosition`；`showPreview` 补 `phase` 守卫、`showTransient` 隐藏态先 `refreshAnchors()`、`previewOpacity` 补 `setExpanded(false)`、`frameDidChangeNotification` 改 selector 观察者防泄漏；`present`/`dismiss` 与 `WaveformView.settleThenPulse` 完整遵守 `HUDMotion.reduceMotion`。
+  - `StatusBarController` 对主菜单及 3 个子菜单设置 `autoenablesItems = false`，使所有 `isEnabled = false` 真正生效；`StatusMenuHeaderView.setWarning` 保留 `max(frame.width, Self.width)`。
+  - `HotkeyRecorderView` 补 `resignFirstResponder`、窗口 `willClose`/`didResignKey` 监听、`viewDidChangeEffectiveAppearance` 外观同步，并通过 `SettingsViewModel.hotkeyRecordingCancelNonce` 在点击预设按钮/切换触发方式时静默退出录制态。
+  - `SettingsViewModel` 保存成功后用 `config.validated()` 同步 `loadedConfig` 与数值草稿、`commitHUDOpacity` 失败回滚 UI 与预览、`load()` 清空 `generalMessage`/`vocabularyMessage`；`SetupWindowController` 恢复位置前校验屏幕可见区、隐藏态自动停轮询并同步 `launchAtLogin`；`OnboardingWindowController` 隐藏后重开重置步骤与试用态；`SelectableTextView` 补 `isProgrammaticUpdate` 守卫且空白选区不清空已编辑 `term`。
+- **热键、录音与文本插入（M-04、M-08、M-09、M-11、M-13、M-14、P2-1/5）**：
+  - `TextInsertionService.simulatePaste()` 入口校验 `AXIsProcessTrusted()`，无权限直接回落剪贴板兜底；`PasteKeyResolver` 去掉强制转型 `as! CFData`。
+  - `HotkeyService` 用锁保护的 `WorkerLifecycle` 消除启动超时与 `CFRunLoopRun()` 的 TOCTOU 竞态，并在 `stop()` 主动停机期间屏蔽 `.tapDisabledByUserInput` 误重启用，补 `deinit`。
+  - `AudioCaptureService` 将 `AVAudioEngineConfigurationChange` 监听提前到 `engine.prepare()` 之前，将 `converter` 不可变捕获进 tap 闭包，`append` 防御 `sampleRate == 0`，补 `deinit`；`AudioInputDevice.allInputDevices()` 按实际 `size` 截断。
+  - `HotkeyPhysicalState.isHeld` 对组合键优先检查主键 `.hidSystemState`；`HotkeyEventFilter` / `ModifierTapRecognizer` 仅在 `.holdingClean` 拦截 `Esc` 并在组合键取消时复位 `isActive`；`VoiceTyperController` 过滤非录音期/迟到电平、补录窗口立撤静音探针、抑制单独修饰键识别中按下期误提示。
+  - `Resources/VoiceTyper.entitlements` 补齐 Hardened Runtime 麦克风权限 `com.apple.security.device.audio-input`。
+- **ASR、下载、配置与安全（M-05 ~ M-07、M-10、M-12、M-15、M-16、M-18 ~ M-21、P2-4/5/7/8）**：
+  - `SenseVoiceEngine` 保留 `NSMutableData` 直接读底层内存兑现 F-07a 零拷贝，并校验 `encoder_out_lens`/`ctc_logits` 字节数与 `elementType`。
+  - `ASRService.unloadNow(dueToIdle: true)` 补 `isLoadInFlight` 与 `loadGeneration` 校验；`LocalASRSession` 先追加尾样本再 `triggerCapOnce()` 且不派发无谓预览、冷启动 `pendingAudio` 同步检语音能量、修复 `runFinalize` 短路反转；`CTCPrefixBeamSearch` 跳过 `pb == -.infinity` 的不可达树节点分配；`HotwordCompiler` 跨词条/别名全局去重。
+  - `ModelDownloader` 将 `probeRangeSupport` 纳入 `activeSegmentedTask`、将 `performDownload` 的 `defer` 移至 `try await` 之前并清理竞态/搬运失败残留的临时文件；`ModelDownloadCoordinator.cancel()` 在重试倒计时期间清空错误提示并回调 `onCancelled`。
+  - `AppCoordinator` 在 `reevaluateReadiness()` 显式处理 `.error` 分支、`onFailed` 改走 `presentBlockingGuidance` 去重并更新门禁、`checkForUpdates` 防并发重入、纯 UI 变更同步 `L10n.apply`。
+  - `AppConfig.validatedHotkey` 过滤非法修饰键并清理 `fn` 多余 `modifiers`；`ConfigStore` 迁移后返回校验对象并完善 `yamlString` 控制字符转义；`KeychainStore.saveLLMAPIKey` 补 `kSecUseAuthenticationUIFail`、`OSStatus` 日志与 ACL 冲突删除重建；`LLMCorrector` 区分取消并脱敏错误日志；`LLMEndpoint` 剥离 `components.path` 末尾 `/`；`FocusGeometry` 补窗口超时与 `caretRect` 短路；`UpdateChecker` 防版本号溢出并补资源超时与 `https` 校验；`DownloadStats` 防极低速 `Int` 溢出；`DictationMetrics` 固定 `en_US_POSIX`；`ConfigMigrator` 路径改 `.private`。
+- **有意跳过的低性价比项**：`LaunchAtLogin.requiresApproval`（需新增多处 UI 状态与双语文案）、`AudioInputDevice` channel-1 静音回落（不同驱动差异大，无真机易误拒可用麦）、`SettingsViewModel` 全量异步串行队列与 `AppCoordinator` 架构拆分（留作后续大改专项）。
+
+### 验证状态与待 macOS 真机复核清单
+
+本轮在 Linux 环境完成静态审查、entitlements XML 校验与 6 组新增单元测试编写，**尚未在 macOS Xcode 真机编译运行 `xcodebuild test`**。合入后请在 Apple Silicon Mac 上按序复核：
+
+1. 运行 `cd macos && xcodebuild -project VoiceTyper.xcodeproj -scheme VoiceTyper -destination 'platform=macOS' test`，确认全量测试（含新增用例）通过且无 Swift 6 并发警告。
+2. **浮窗位置持久化与菜单禁用**：将浮窗位置改为「右下角」或「不显示」后重启应用，确认生效；听写中打开菜单栏确认「暂停听写 / 识别语言 / 麦克风 / 智能校对」呈不可点击状态。
+3. **热键录制边界**：点击热键录制框进入录制态后分别测试「直接关窗 / 点击其他控件 / 点击『使用 Fn』预设按钮」，确认全局热键立即恢复且应用内其他输入框可正常打字。
+4. **权限缺失粘贴兜底 & 组合键松修饰键**：临时关闭辅助功能权限听写一次，确认未静默丢文本且走剪贴板兜底提示；设为组合键（如 `⌃⌥Space`）按住说话期间松开 `⌃⌥` 仅按住 `Space` 超过 2 秒，确认不提前截断。
+
+---
+
 ## 12. 决策记录
 
 | # | 决策 | 结论 | 说明 |

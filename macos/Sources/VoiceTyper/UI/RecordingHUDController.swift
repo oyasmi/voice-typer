@@ -92,6 +92,7 @@ final class RecordingHUDController: NSWindowController {
         )
         self.init(window: panel)
         self.hudOpacity = config.opacity
+        self.hudPosition = config.hudPosition
 
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
@@ -173,7 +174,7 @@ final class RecordingHUDController: NSWindowController {
     /// 显示流式 partial 文本。本地识别引擎给出的是**全量**预览，
     /// 这里整体替换而非追加。有内容时展开 HUD，短暂清空时防抖收起。
     func showPreview(_ text: String) {
-        guard !suppressesProgressHUD else { return }
+        guard !suppressesProgressHUD, phase == .recording || phase == .recognizing else { return }
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasText {
             cancelCollapse()
@@ -490,6 +491,7 @@ final class RecordingHUDController: NSWindowController {
             currentHudWidth = Self.compactWidth(status: statusLabel.stringValue)
             present(height: Self.compactHeight)
         } else {
+            setExpanded(false)
             updateHudWidth(for: "", animated: true)
         }
 
@@ -652,6 +654,10 @@ final class RecordingHUDController: NSWindowController {
             HUDMotion.popInAnimation(bounds: CGRect(x: 0, y: 0, width: 16, height: 16)), forKey: "hudPopIn"
         )
         statusLabel.layer?.add(HUDMotion.textRiseAnimation(), forKey: "hudTextRise")
+        // 窗口尚未显示时先解析落屏锚点，确保紧接着的 updateHudWidth / layoutPreviewText 按目标屏计算宽度。
+        if window?.isVisible != true {
+            refreshAnchors()
+        }
         if expanded {
             updateHudWidth(for: message, animated: window?.isVisible == true)
             // 错误文案可能不短（"目标窗口已变化，结果已复制到剪贴板"），走与预览同一套
@@ -829,16 +835,21 @@ final class RecordingHUDController: NSWindowController {
             return
         }
 
-        let startFrame = NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: currentHudWidth, height: height)
+        let reduceMotion = HUDMotion.reduceMotion
+        let startFrame = reduceMotion
+            ? endFrame
+            : NSRect(x: anchorOrigin.x, y: anchorOrigin.y - 10, width: currentHudWidth, height: height)
 
         window.setFrame(startFrame, display: false)
         window.alphaValue = 0
         window.orderFrontRegardless()
 
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
+            ctx.duration = reduceMotion ? HUDMotion.reducedMotionDuration : 0.18
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().setFrame(endFrame, display: true)
+            if !reduceMotion {
+                window.animator().setFrame(endFrame, display: true)
+            }
             window.animator().alphaValue = 1
         } completionHandler: { [weak self] in
             MainActor.assumeIsolated { self?.window?.invalidateShadow() }
@@ -851,7 +862,7 @@ final class RecordingHUDController: NSWindowController {
             return
         }
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.22
+            ctx.duration = HUDMotion.reduceMotion ? HUDMotion.reducedMotionDuration : 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
         } completionHandler: { [weak self] in
@@ -990,12 +1001,13 @@ final class RecordingHUDController: NSWindowController {
         // 压缩阻力低于 timeLabel 的 `.required`，保证被牺牲的总是状态行而不是计时。
         statusLabel.wantsLayer = true
         statusLabel.postsFrameChangedNotifications = true
-        // 观察者随 statusLabel（由本控制器持有、同生命周期）一起消亡，无需单独移除。
+        // 使用 selector 观察者（macOS 10.11+ 自动随对象释放注销），避免 block 观察者 token 泄漏。
         NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification, object: statusLabel, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.syncShimmerFrame() }
-        }
+            self,
+            selector: #selector(handleStatusLabelFrameDidChange(_:)),
+            name: NSView.frameDidChangeNotification,
+            object: statusLabel
+        )
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.cell?.usesSingleLineMode = true
         statusLabel.cell?.wraps = false
@@ -1096,6 +1108,10 @@ final class RecordingHUDController: NSWindowController {
     private func displayText(for text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? L("正在聆听…") : trimmed
+    }
+
+    @objc private func handleStatusLabelFrameDidChange(_ notification: Notification) {
+        syncShimmerFrame()
     }
 
     // MARK: - 计时器

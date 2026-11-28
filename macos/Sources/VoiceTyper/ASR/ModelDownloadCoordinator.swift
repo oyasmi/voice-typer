@@ -135,9 +135,15 @@ final class ModelDownloadCoordinator {
 
     /// 用户主动取消下载：同时取消尚未触发的自动退避重试。
     func cancel() {
+        let hadPendingRetry = retryTask != nil
         retryTask?.cancel()
         retryTask = nil
-        activeDownloader?.cancel()
+        if let downloader = activeDownloader {
+            downloader.cancel()
+        } else if hadPendingRetry {
+            errorMessage = nil
+            onCancelled?()
+        }
     }
 
     private func handleFailure(_ error: Error) {

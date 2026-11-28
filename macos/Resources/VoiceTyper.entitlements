@@ -3,12 +3,11 @@
 <plist version="1.0">
 <dict>
 	<!--
-	刻意不加任何强化运行时例外（allow-jit / allow-unsigned-executable-memory /
-	disable-library-validation）：onnxruntime.framework 在打包时会被 build_xcode.sh
-	用与主程序相同的签名身份重新签名，CPU 执行提供程序不需要运行时代码生成，因此不应该
-	需要这些例外。若未来升级 ONNX Runtime 版本后在强化运行时下崩溃，先确认崩溃报告里的
-	具体异常码，再按需添加对应的最小例外——不要为了让崩溃消失就无差别打开一堆例外，
-	那样会削弱强化运行时本该提供的保护（R3-16）。
+	Hardened Runtime 下访问麦克风（AVAudioEngine）必须声明此权限；仅在 Developer ID +
+	强化运行时签名时强制校验，ad-hoc 默认不开启强化运行时，提前补齐避免正式签名后
+	麦克风被 TCC 拒绝。其余 JIT / unsigned memory 等安全例外继续刻意不加（R3-16）。
 	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

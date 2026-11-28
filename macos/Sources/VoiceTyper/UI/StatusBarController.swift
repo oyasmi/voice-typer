@@ -102,6 +102,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     override init() {
         super.init()
 
+        // AppKit 默认 autoenablesItems = true，打开菜单时会按 target/action 自动重启用所有菜单项，
+        // 覆盖掉手动设置的 isEnabled = false（例如听写中禁用暂停/切语言/切麦、空历史禁用复制）。
+        [menu, recentSubmenu, languageSubmenu, microphoneSubmenu].forEach { $0.autoenablesItems = false }
+
         headerItem.view = headerView
 
         [pauseMenuItem, setupMenuItem, onboardingMenuItem, checkUpdatesMenuItem,

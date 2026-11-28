@@ -80,7 +80,6 @@ final class AudioCaptureService: @unchecked Sendable {
     /// 让 `deliveryQueue.async` 的入队动作也发生在同一把锁内，即可让"入队顺序"严格
     /// 遵循锁定义的临界区顺序，从根上同时解决两个问题，见下方 `append`/`stop` 实现。
     private let lock = NSLock()
-    private var converter: AVAudioConverter?
     private var chunker: AudioChunker
     private var isRunning = false
     private var configurationChangeObserver: (any NSObjectProtocol)?
@@ -106,6 +105,10 @@ final class AudioCaptureService: @unchecked Sendable {
     init(chunkSamples: Int = 3200) {
         self.chunkSamples = chunkSamples
         self.chunker = AudioChunker(chunkSamples: chunkSamples)
+    }
+
+    deinit {
+        removeConfigurationChangeObserver()
     }
 
     /// - Parameter inputPolicy: 输入设备策略。设备在录音开始前解析一次，录音中不切换。
@@ -158,22 +161,10 @@ final class AudioCaptureService: @unchecked Sendable {
                 userInfo: [NSLocalizedDescriptionKey: L("无法创建音频格式转换器")]
             )
         }
-        self.converter = converter
 
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.append(buffer: buffer)
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            inputNode.removeTap(onBus: 0)
-            self.converter = nil
-            throw error
-        }
-
+        // 先注册配置变更监听再启动引擎：钉住非默认设备时，AUHAL 可能在 prepare()/start() 期间就发出
+        // 配置变更并自动停机；若晚于 start() 注册会漏接通知导致录音全程静音。
+        removeConfigurationChangeObserver()
         engineGeneration &+= 1
         let generation = engineGeneration
         configurationChangeObserver = NotificationCenter.default.addObserver(
@@ -185,6 +176,21 @@ final class AudioCaptureService: @unchecked Sendable {
             DispatchQueue.main.async {
                 self?.handleConfigurationChangeDuringRecording(generation: generation)
             }
+        }
+
+        inputNode.removeTap(onBus: 0)
+        // converter 以不可变局部引用捕获进 tap 闭包，避免重启引擎时主线程写 / 音频线程读的竞态。
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            self?.append(buffer: buffer, converter: converter)
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            removeConfigurationChangeObserver()
+            throw error
         }
     }
 
@@ -318,13 +324,14 @@ final class AudioCaptureService: @unchecked Sendable {
         }
     }
 
-    private func append(buffer: AVAudioPCMBuffer) {
-        guard let converter else {
+    private func append(buffer: AVAudioPCMBuffer, converter: AVAudioConverter) {
+        guard buffer.frameLength > 0, buffer.format.sampleRate > 0 else { return }
+
+        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
+        guard ratio.isFinite, ratio > 0 else {
             lock.lock(); droppedConversionFailedCount += 1; lock.unlock()
             return
         }
-
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let targetFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
 
         guard let convertedBuffer = AVAudioPCMBuffer(

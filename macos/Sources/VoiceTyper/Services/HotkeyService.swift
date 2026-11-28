@@ -35,9 +35,52 @@ private final class WorkerLifecycle: @unchecked Sendable {
     let shutdownSemaphore = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var _cancelled = false
+    private var _stopping = false
+    private var _runLoop: CFRunLoop?
+    private var _tap: CFMachPort?
+
     var cancelled: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return _cancelled }
-        set { lock.lock(); _cancelled = newValue; lock.unlock() }
+        lock.lock(); defer { lock.unlock() }; return _cancelled
+    }
+
+    var isStoppingOrCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }; return _cancelled || _stopping
+    }
+
+    /// 启动超时时调用：若 worker 已登记 runLoop/tap，立即停掉并唤醒，消除超时与进入 RunLoop 的 TOCTOU 竞态。
+    func cancel() {
+        lock.lock()
+        _cancelled = true
+        let tap = _tap
+        let rl = _runLoop
+        lock.unlock()
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let rl {
+            // 若 cancel() 恰好落在 registerRunning 之后、CFRunLoopRun() 进入之前，
+            // 单纯 CFRunLoopStop 可能被错过；额外排入一个 block 确保进入 RunLoop 后立刻退出。
+            CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) {
+                CFRunLoopStop(rl)
+            }
+            CFRunLoopStop(rl)
+            CFRunLoopWakeUp(rl)
+        }
+    }
+
+    /// `stop()` 主动停机前先置位，避免 `tapEnable(false)` 引发的 `.tapDisabledByUserInput` 误触发重新启用。
+    func markStopping() {
+        lock.lock()
+        _stopping = true
+        lock.unlock()
+    }
+
+    /// worker 进入 `CFRunLoopRun()` 前原子登记；若此时已被取消则返回 false。
+    func registerRunning(runLoop: CFRunLoop, tap: CFMachPort) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !_cancelled else { return false }
+        _runLoop = runLoop
+        _tap = tap
+        return true
     }
 }
 
@@ -45,8 +88,10 @@ private final class WorkerLifecycle: @unchecked Sendable {
 /// 内存由 `Unmanaged.passRetained` 管理，在 worker 线程退出时释放。
 private final class TapContext: @unchecked Sendable {
     weak var service: HotkeyService?
-    init(_ service: HotkeyService) {
+    let lifecycle: WorkerLifecycle
+    init(_ service: HotkeyService, lifecycle: WorkerLifecycle) {
         self.service = service
+        self.lifecycle = lifecycle
     }
 }
 
@@ -109,9 +154,9 @@ final class HotkeyService: @unchecked Sendable {
         }
 
         self.filter = HotkeyEventFilter(hotkey: hotkey)
-        let context = TapContext(self)
         let startupBox = StartupResultBox()
         let lifecycle = WorkerLifecycle()
+        let context = TapContext(self, lifecycle: lifecycle)
         workerLifecycle = lifecycle
         self.workerThread = Thread { [weak self] in
             self?.runEventLoop(startupBox: startupBox, lifecycle: lifecycle, context: context)
@@ -120,10 +165,9 @@ final class HotkeyService: @unchecked Sendable {
         workerThread?.start()
 
         if startupBox.semaphore.wait(timeout: .now() + 2) == .timedOut {
-            // 不清空 eventTap/runLoop、不等待——worker 可能仍卡在 tapCreate 里。
-            // 标记取消：worker 会在下一个检查点（tapCreate 返回后）自行清理退出，
-            // 存入 abandonedLifecycle 给下一次 start() 在继续前等待。
-            lifecycle.cancelled = true
+            // 不清空 eventTap/runLoop、不等待——worker 可能仍卡在 tapCreate 里；
+            // 若 worker 恰好已登记 runLoop/tap，cancel() 会立即停掉并唤醒它。
+            lifecycle.cancel()
             abandonedLifecycle = lifecycle
             workerLifecycle = nil
             workerThread = nil
@@ -141,7 +185,13 @@ final class HotkeyService: @unchecked Sendable {
         isRunning = true
     }
 
+    deinit {
+        stop()
+    }
+
     func stop() {
+        workerLifecycle?.markStopping()
+
         // 禁用 tap 阻止新事件进入回调
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
@@ -154,7 +204,9 @@ final class HotkeyService: @unchecked Sendable {
 
         // 等待 worker 线程完成清理（超时 2 秒防止死锁）
         if workerThread != nil, let lifecycle = workerLifecycle {
-            _ = lifecycle.shutdownSemaphore.wait(timeout: .now() + 2)
+            if lifecycle.shutdownSemaphore.wait(timeout: .now() + 2) == .timedOut {
+                abandonedLifecycle = lifecycle
+            }
         }
 
         // worker 线程已退出，安全清理主线程侧引用
@@ -202,7 +254,9 @@ final class HotkeyService: @unchecked Sendable {
             // 系统在回调超时等情况下会禁用 tap；若不重新启用，全局热键会静默失效
             // 直到重启应用。这里检测到禁用事件立即恢复。
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                ctx.service?.reenableTap()
+                if !ctx.lifecycle.isStoppingOrCancelled {
+                    ctx.service?.reenableTap()
+                }
                 return Unmanaged.passUnretained(event)
             }
             if ctx.service?.handle(eventType: type, event: event) == true {
@@ -271,7 +325,8 @@ final class HotkeyService: @unchecked Sendable {
             return
         }
 
-        if lifecycle.cancelled {
+        let currentRunLoop = CFRunLoopGetCurrent()
+        guard lifecycle.registerRunning(runLoop: currentRunLoop, tap: tap) else {
             CFMachPortInvalidate(tap)
             Unmanaged<TapContext>.fromOpaque(contextPtr).release()
             lifecycle.shutdownSemaphore.signal()
@@ -279,7 +334,6 @@ final class HotkeyService: @unchecked Sendable {
         }
 
         self.runLoopSource = source
-        let currentRunLoop = CFRunLoopGetCurrent()
         self.runLoop = currentRunLoop
 
         CFRunLoopAddSource(currentRunLoop, source, .commonModes)

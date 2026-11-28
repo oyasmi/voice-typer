@@ -113,7 +113,8 @@ struct DictationMetrics {
 
     /// 单行摘要：字段顺序固定，缺失值输出 `-`。
     func summaryLine() -> String {
-        let audioSeconds = String(format: "%.1f", Double(timings.receivedSamples) / 16000.0)
+        let posix = Locale(identifier: "en_US_POSIX")
+        let audioSeconds = String(format: "%.1f", locale: posix, Double(timings.receivedSamples) / 16000.0)
         let asrNanos = Self.interval(timings.finalizeStartedAt, timings.asrCompletedAt)
         let llmNanos = Self.interval(timings.llmStartedAt, timings.llmCompletedAt)
         let input = inputTransport.map { $0.rawValue + (inputSwitchedByAuto ? "*" : "") } ?? "-"
@@ -153,7 +154,7 @@ struct DictationMetrics {
             ("decode_mode", timings.decodeMode?.rawValue ?? "-"),
             ("vocab_hits", timings.decodeMode == nil ? "-" : String(timings.hotwordHits)),
             ("decode_ms", timings.decodeMode == nil
-                ? "-" : String(format: "%.1f", Double(timings.decodeNanos) / 1_000_000)),
+                ? "-" : String(format: "%.1f", locale: posix, Double(timings.decodeNanos) / 1_000_000)),
         ]
         return "dictation " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
     }

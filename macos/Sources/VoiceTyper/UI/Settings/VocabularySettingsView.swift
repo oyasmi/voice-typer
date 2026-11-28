@@ -238,8 +238,10 @@ private struct VocabularyFromHistorySheet: View {
             term = ""
         }
         .onChange(of: heard) { _, newValue in
-            // 预填选中的片段，用户把它改成正确写法即可。
-            term = newValue
+            // 预填选中的片段，用户把它改成正确写法即可；误点空白清空选区时不冲掉已编辑的 term。
+            if !newValue.isEmpty {
+                term = newValue
+            }
         }
     }
 }
@@ -266,21 +268,25 @@ private struct SelectableTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.selection = $selection
         guard let textView = scrollView.documentView as? NSTextView, textView.string != text else { return }
+        context.coordinator.isProgrammaticUpdate = true
+        defer { context.coordinator.isProgrammaticUpdate = false }
         textView.string = text
         textView.setSelectedRange(NSRange(location: 0, length: 0))
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
-        private var selection: Binding<String>
+        var selection: Binding<String>
+        var isProgrammaticUpdate = false
 
         init(selection: Binding<String>) {
             self.selection = selection
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard !isProgrammaticUpdate, let textView = notification.object as? NSTextView else { return }
             let range = textView.selectedRange()
             let selected = (textView.string as NSString).substring(with: range)
             selection.wrappedValue = selected.trimmingCharacters(in: .whitespacesAndNewlines)

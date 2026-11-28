@@ -13,15 +13,24 @@ enum HotkeyPhysicalState {
 
     /// - Fn：`maskSecondaryFn`。
     /// - 单独修饰键：设备相关的左右位（复用 `ModifierHotkey` 的位定义）。
-    /// - 组合键：所需修饰键都还按着——**不检查主键**：被吞的主键不一定更新物理状态，
-    ///   而主键松开时本来就有 keyUp 事件，丢的主要是修饰键侧的事件。
-    static func isHeld(_ hotkey: HotkeyConfig, flags: UInt64) -> Bool {
+    /// - 组合键：先查主键底层 HID 物理状态（`.hidSystemState` 不受主动 tap 吞事件影响），
+    ///   支持用户激活后先松开修饰键、仅按住主键说话；若主键未按下再检查修饰键 flags。
+    static func isHeld(
+        _ hotkey: HotkeyConfig,
+        flags: UInt64,
+        keyStateProvider: ((CGKeyCode) -> Bool)? = nil
+    ) -> Bool {
         let key = hotkey.key.lowercased()
         if let modifier = ModifierHotkey(rawValue: key) {
             return flags & modifier.deviceMask != 0
         }
         if key == "fn" {
             return CGEventFlags(rawValue: flags).contains(.maskSecondaryFn)
+        }
+        if let code = HotkeyService.keyCodeValue(for: key) {
+            let mainKeyDown = keyStateProvider?(CGKeyCode(code))
+                ?? CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code))
+            if mainKeyDown { return true }
         }
         let required = Set(hotkey.modifiers.map { $0.lowercased() })
         let cgFlags = CGEventFlags(rawValue: flags)

@@ -48,8 +48,9 @@ final class ConfigStore {
                 fileManager: fileManager,
                 legacyURLOverride: legacyConfigURLOverride
             ) {
-                try save(config: migrated)
-                return migrated
+                let validated = migrated.validated()
+                try save(config: validated)
+                return validated
             }
         }
         try ensureDefaultFiles()
@@ -154,9 +155,23 @@ final class ConfigStore {
     }
 
     private func yamlString(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        var escaped = ""
+        escaped.reserveCapacity(value.count)
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\\": escaped += "\\\\"
+            case "\"": escaped += "\\\""
+            case "\n": escaped += "\\n"
+            case "\r": escaped += "\\r"
+            case "\t": escaped += "\\t"
+            default:
+                if scalar.value < 0x20 || scalar.value == 0x7F {
+                    escaped += String(format: "\\u%04X", scalar.value)
+                } else {
+                    escaped.unicodeScalars.append(scalar)
+                }
+            }
+        }
         return "\"\(escaped)\""
     }
 

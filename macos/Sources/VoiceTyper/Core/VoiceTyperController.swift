@@ -392,6 +392,11 @@ final class VoiceTyperController {
             skipCorrectionByUser()
             return
         }
+        // 单独修饰键 hold 模式在识别中按下时抑制了忙提示（避免组合快捷键误弹），干净单击松开时再告知。
+        if config.hotkey.isModifierOnly, config.hotkey.mode == .hold, active?.phase == .recognizing {
+            emit(.warning(L("上一段听写尚未完成")))
+            return
+        }
         switch config.hotkey.mode {
         case .hold:
             if active == nil, config.hotkey.isModifierOnly {
@@ -422,7 +427,7 @@ final class VoiceTyperController {
     private func beginRecording(pressedAt: UInt64, announcesRefusal: Bool = true) {
         guard isRunning else { return }
         guard active == nil else {
-            emit(.warning(L("上一段听写尚未完成")))
+            if announcesRefusal { emit(.warning(L("上一段听写尚未完成"))) }
             return
         }
         // 密码框里不听写：开了智能校对会把口述内容发给第三方服务，口述密码本身也不安全（R8-D-3）。
@@ -493,6 +498,8 @@ final class VoiceTyperController {
     private func beginTailCapture(for utterance: Utterance) {
         utterance.isStoppingCapture = true
         utterance.announcedRecognizing = true
+        // 已对外切入「识别中」，立即撤掉静音探针避免补录窗口内误闪录音期静音提示。
+        utterance.cancelSilenceProbes()
         hotkeyService.acceptsCancelWhenInactive = true
         emit(.phaseChanged(.recognizing))
         let item = DispatchWorkItem { [weak self, weak utterance] in
@@ -522,8 +529,11 @@ final class VoiceTyperController {
     }
 
     private func handleLevel(_ level: Float, receivedAt: UInt64) {
-        guard let utterance = active else { return }
-        if utterance.metrics.firstBufferAt == nil, receivedAt >= utterance.metrics.pressedAt {
+        // 过滤非录音阶段或上一段听写残留在主队列中的迟到电平，避免跨会话污染 peakLevel。
+        guard let utterance = active,
+              utterance.phase == .recording,
+              receivedAt >= utterance.metrics.pressedAt else { return }
+        if utterance.metrics.firstBufferAt == nil {
             utterance.metrics.firstBufferAt = receivedAt
         }
         utterance.peakLevel = max(utterance.peakLevel, level)

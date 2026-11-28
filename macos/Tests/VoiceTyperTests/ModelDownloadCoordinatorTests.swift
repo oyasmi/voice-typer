@@ -117,4 +117,26 @@ final class ModelDownloadCoordinatorTests: XCTestCase {
         XCTAssertEqual(cancelledCallbackCount, 1)
         XCTAssertNil(coordinator.errorMessage, "用户主动取消不应留下失败错误文案")
     }
+
+    func testCancelDuringRetryCountdownClearsErrorAndNotifiesCancelled() async {
+        var cancelledCallbackCount = 0
+        let coordinator = ModelDownloadCoordinator(
+            retryDelays: [60],
+            downloaderFactory: {
+                let stub = StubDownloader()
+                stub.behavior = { _ in throw URLError(.notConnectedToInternet) }
+                return stub
+            },
+            sleep: { _ in try? await Task.sleep(nanoseconds: 5_000_000_000) }
+        )
+        coordinator.onCancelled = { cancelledCallbackCount += 1 }
+
+        coordinator.start()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertNotNil(coordinator.errorMessage)
+
+        coordinator.cancel()
+        XCTAssertNil(coordinator.errorMessage)
+        XCTAssertEqual(cancelledCallbackCount, 1)
+    }
 }

@@ -68,7 +68,7 @@ final class StatusMenuHeaderView: NSView {
         let hasWarning = !(text ?? "").isEmpty
         warningLabel.stringValue = text ?? ""
         warningLabel.isHidden = !hasWarning
-        setFrameSize(NSSize(width: Self.width, height: hasWarning ? Self.warningHeight : Self.height))
+        setFrameSize(NSSize(width: max(frame.width, Self.width), height: hasWarning ? Self.warningHeight : Self.height))
     }
 
     func update(state: AppState, hotkeyDisplay: String, engineStatus: String) {

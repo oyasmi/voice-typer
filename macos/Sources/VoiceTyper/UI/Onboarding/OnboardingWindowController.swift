@@ -74,6 +74,12 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     func presentWindow() {
         ensureUIBuilt()
         guard let window else { return }
+        // 复用隐藏后的引导窗重新打开时回到欢迎页并清空旧试用态，避免停留在上次的第 4 步。
+        if !window.isVisible {
+            viewModel.step = .welcome
+            viewModel.resetTrial()
+            viewModel.trialText = ""
+        }
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)

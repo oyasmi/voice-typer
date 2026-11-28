@@ -123,6 +123,18 @@ final class HotwordCompilerTests: XCTestCase {
         XCTAssertEqual(output.report.entries.last?.status, .truncated)
     }
 
+    /// 跨词条/别名编译出相同 token 序列时全局去重，不重复计入 sequenceCount，且两词条仍均标 biased。
+    func testCompileDeduplicatesSequencesAcrossEntriesAndAliases() {
+        let trie = TokenTrie(tokens: makeTokens())
+        let output = HotwordCompiler.compile(VocabularyConfig(entries: [
+            VocabularyEntry(term: "张三丰"),
+            VocabularyEntry(term: "别名词", aliases: ["张三丰"]),
+        ]), trie: trie)
+        XCTAssertEqual(output.sequences.count, 1)
+        XCTAssertEqual(output.report.sequenceCount, 1)
+        XCTAssertEqual(output.report.entries.map(\.status), [.biased, .biased])
+    }
+
     // MARK: - 真实词表（无模型时跳过）
 
     func testRealTokensSplitHanPerCharacterAndEnglishIntoRealPieces() throws {

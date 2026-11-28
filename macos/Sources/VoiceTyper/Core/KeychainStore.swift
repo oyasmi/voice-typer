@@ -64,10 +64,15 @@ enum KeychainStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            // 禁止阻塞式系统授权弹窗（与 loadLLMAPIKeyResult 保持一致，避免 ad-hoc 重签后卡住主线程）。
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
 
         guard !trimmed.isEmpty else {
             let status = SecItemDelete(baseQuery as CFDictionary)
+            if status != errSecSuccess && status != errSecItemNotFound {
+                AppLog.app.error("删除 Keychain 密钥失败 (OSStatus=\(status, privacy: .public))")
+            }
             return status == errSecSuccess || status == errSecItemNotFound
         }
 
@@ -78,12 +83,28 @@ enum KeychainStore {
         ]
 
         let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        // 条目不存在，或因 ad-hoc 重签导致旧条目 ACL 拒绝更新时，删除旧条目后重建。
+        if updateStatus == errSecItemNotFound
+            || updateStatus == errSecAuthFailed
+            || updateStatus == errSecInteractionNotAllowed {
+            if updateStatus != errSecItemNotFound {
+                let deleteStatus = SecItemDelete(baseQuery as CFDictionary)
+                if deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound {
+                    AppLog.app.warning("重建 Keychain 密钥前删除旧条目失败 (OSStatus=\(deleteStatus, privacy: .public))")
+                }
+            }
             var addQuery = baseQuery
             attributes.forEach { addQuery[$0.key] = $0.value }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                AppLog.app.error("写入 Keychain 密钥失败 (OSStatus=\(addStatus, privacy: .public))")
+            }
             return addStatus == errSecSuccess
         }
-        return updateStatus == errSecSuccess
+        AppLog.app.error("更新 Keychain 密钥失败 (OSStatus=\(updateStatus, privacy: .public))")
+        return false
     }
 }

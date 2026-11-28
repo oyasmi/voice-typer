@@ -188,12 +188,35 @@ actor LLMCorrector {
                 return CorrectionReport(outcome: outcome, thinkingParameter: usage, fallbackReason: .emptyResult)
             }
             return CorrectionReport(outcome: outcome, thinkingParameter: usage)
+        } catch is CancellationError {
+            return CorrectionReport(outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: nil)
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            return CorrectionReport(outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: nil)
         } catch {
-            AppLog.llm.warning("LLM 校对失败，使用原始文本: \(String(describing: error), privacy: .public)")
+            // 不直接打印 String(describing: error)：URLError 的 userInfo 含完整请求 URL，
+            // 可能泄露用户私有域名或附带的 query token。只记录脱敏后的分类与错误码。
+            let reason = Self.fallbackReason(for: error)
+            let summary = Self.sanitizedErrorSummary(error)
+            AppLog.llm.warning("LLM 校对失败，使用原始文本（reason=\(reason.rawValue, privacy: .public), detail=\(summary, privacy: .public)）")
             return CorrectionReport(
-                outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: Self.fallbackReason(for: error)
+                outcome: .fellBack(text), thinkingParameter: usage, fallbackReason: reason
             )
         }
+    }
+
+    private static func sanitizedErrorSummary(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            return "URLError(\(urlError.code.rawValue))"
+        }
+        if let llmError = error as? LLMError {
+            switch llmError {
+            case .invalidBaseURL: return "invalidBaseURL"
+            case .missingModel: return "missingModel"
+            case .httpStatus(let code): return "httpStatus(\(code))"
+            case .invalidResponse: return "invalidResponse"
+            }
+        }
+        return String(describing: type(of: error))
     }
 
     /// 供设置页「测试校对」按钮使用：与 `correct` 不同，失败时把具体错误抛出而不是回落

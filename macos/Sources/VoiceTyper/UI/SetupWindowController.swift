@@ -151,14 +151,20 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         ensureUIBuilt()
         guard let window else { return }
         if let preferredOrigin {
-            window.setFrameOrigin(preferredOrigin)
+            let candidateFrame = NSRect(origin: preferredOrigin, size: window.frame.size)
+            if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(candidateFrame) }) {
+                window.setFrameOrigin(preferredOrigin)
+            } else {
+                window.center()
+            }
         } else {
             window.center()
         }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
 
-        // 用户可能刚在系统设置里改过「按下🌐键」；每次窗口出现时重新探测一次。
+        // 同步菜单栏可能改动过的「开机自启」，并重新探测系统「按下🌐键」设置。
+        viewModel.launchAtLogin = LaunchAtLogin.isEnabled
         viewModel.refreshFnConflictWarning()
 
         if !viewModel.permissions.allRequiredGranted {
@@ -182,7 +188,15 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private func startPermissionPollIfNeeded() {
         guard permissionPollTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.onRetryReadinessCheck?()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // 窗口通过 orderOut 隐藏时不会触发 windowWillClose，检测到不可见后自动停表。
+                guard self.window?.isVisible == true else {
+                    self.stopPermissionPoll()
+                    return
+                }
+                self.onRetryReadinessCheck?()
+            }
         }
         timer.tolerance = 0.5
         permissionPollTimer = timer

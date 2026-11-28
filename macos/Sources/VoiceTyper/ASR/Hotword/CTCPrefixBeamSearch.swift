@@ -229,8 +229,12 @@ enum CTCPrefixBeamSearch {
                     let delta = Double(row[k]) - peak
                     if k == last {
                         // 停留在同一个 token；重复 token 之间必须隔 blank 才算新发射。
-                        accumulate(hypothesis.prefix, pb: -.infinity, pnb: hypothesis.pnb + delta)
-                        accumulate(child(of: hypothesis.prefix, token: k), pb: -.infinity, pnb: hypothesis.pb + delta)
+                        if hypothesis.pnb > -.infinity {
+                            accumulate(hypothesis.prefix, pb: -.infinity, pnb: hypothesis.pnb + delta)
+                        }
+                        if hypothesis.pb > -.infinity {
+                            accumulate(child(of: hypothesis.prefix, token: k), pb: -.infinity, pnb: hypothesis.pb + delta)
+                        }
                     } else {
                         accumulate(child(of: hypothesis.prefix, token: k), pb: -.infinity, pnb: total + delta)
                     }

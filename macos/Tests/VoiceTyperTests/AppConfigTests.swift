@@ -157,4 +157,21 @@ final class AppConfigTests: XCTestCase {
         XCTAssertFalse(VocabularyConfig(bias: .off, entries: [VocabularyEntry(term: "Claude")]).biasesRecognition)
         XCTAssertTrue(VocabularyConfig(bias: .light, entries: [VocabularyEntry(term: "Claude")]).biasesRecognition)
     }
+
+    /// M-06：非法修饰键名必须被过滤；若过滤后无有效修饰键则回落 fn，防止单字母劫持；fn 忽略多余 modifiers。
+    func testValidatedHotkeyFiltersUnsupportedModifiersAndStripsFnModifiers() {
+        var unsupported = AppConfig()
+        unsupported.hotkey = HotkeyConfig(modifiers: ["super", "meta"], key: "d", mode: .toggle)
+        let validatedUnsupported = unsupported.validated()
+        XCTAssertEqual(validatedUnsupported.hotkey, HotkeyConfig(modifiers: [], key: "fn", mode: .toggle))
+
+        var mixed = AppConfig()
+        mixed.hotkey = HotkeyConfig(modifiers: ["Option", "super", "option"], key: "D", mode: .hold)
+        let validatedMixed = mixed.validated()
+        XCTAssertEqual(validatedMixed.hotkey, HotkeyConfig(modifiers: ["option"], key: "d", mode: .hold))
+
+        var fnWithMods = AppConfig()
+        fnWithMods.hotkey = HotkeyConfig(modifiers: ["command"], key: "fn", mode: .toggle)
+        XCTAssertEqual(fnWithMods.validated().hotkey, HotkeyConfig(modifiers: [], key: "fn", mode: .toggle))
+    }
 }

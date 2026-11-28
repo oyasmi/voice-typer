@@ -292,9 +292,10 @@ final class ASRService {
     ///   误判为"尚未加载"从而立即触发自动预加载（F-04）。`reload()` 内部调用时传 false。
     private func unloadNow(dueToIdle: Bool) async {
         idleScheduler.cancel()
-        if dueToIdle && hasActiveSessions() {
+        if dueToIdle && (hasActiveSessions() || isLoadInFlight) {
             return
         }
+        let capturedGeneration = loadGeneration
         // hop 到 asrQueue 只是为了让"卸载"与"推理"在时序上不交叉；引擎引用本身
         // 已经用 engineLock 保护，跨线程读写是安全的。
         // 空闲卸载在真正置空引擎前再核对一次活跃会话租约，防止主线程刚检查完、
@@ -313,6 +314,10 @@ final class ASRService {
             }
         }
         if outcome.abortedBySession {
+            return
+        }
+        // 等待期间若有新的加载开始或完成，放弃修改状态，避免把刚加载的新引擎误标为 .suspendedForIdle。
+        if dueToIdle && (capturedGeneration != loadGeneration || isLoadInFlight) {
             return
         }
         guard outcome.hadEngine else { return }

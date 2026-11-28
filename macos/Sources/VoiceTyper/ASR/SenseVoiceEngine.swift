@@ -238,11 +238,21 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             throw ConfigurationError.inconsistentDimensions("推理输出缺失 ctc_logits/encoder_out_lens")
         }
 
-        let lensData = try lensValue.tensorData() as Data
-        let validFrames = lensData.withUnsafeBytes { $0.load(as: Int32.self) }
+        let lensInfo = try lensValue.tensorTypeAndShapeInfo()
+        guard lensInfo.elementType == .int32 else {
+            throw ConfigurationError.inconsistentDimensions("encoder_out_lens 张量类型非 int32")
+        }
+        let lensData = try lensValue.tensorData()
+        guard lensData.length >= MemoryLayout<Int32>.size else {
+            throw ConfigurationError.inconsistentDimensions("encoder_out_lens 输出为空")
+        }
+        let validFrames = lensData.bytes.loadUnaligned(as: Int32.self)
         guard validFrames > 0 else { return "" }
 
         let shapeInfo = try logitsValue.tensorTypeAndShapeInfo()
+        guard shapeInfo.elementType == .float else {
+            throw ConfigurationError.inconsistentDimensions("ctc_logits 张量类型非 float32")
+        }
         guard let vocabSize = shapeInfo.shape.last?.intValue, vocabSize > 0 else { return "" }
         // 只有拿到推理输出的实际 shape 才能知道 vocabSize；此前不匹配时 CTCDecoder 会
         // 静默跳过越界 id，表现为"识别成功但缺字"，比报错更难排查（R2-09）。
@@ -252,14 +262,14 @@ final class SenseVoiceEngine: SenseVoiceRecognizing, @unchecked Sendable {
             )
         }
 
-        let logitsData = try logitsValue.tensorData() as Data
+        // 保留 NSMutableData，不桥接为值类型 Data：后者为保证不可变语义会对整块 logits 做深拷贝
+        // （120s 约 200MB / 300s 约 500MB），直接读 ORT 底层内存才能兑现 F-07a 零拷贝。
+        let logitsData = try logitsValue.tensorData()
         let numFrames = Int(validFrames)
         let neededFloats = numFrames * vocabSize
-        // 直接在 ORT 输出的底层内存上解码，不构造中间 [Float] 副本：300 秒音频场景下
-        // 可省去约 500MB 的峰值内存（logits 与 Swift 副本同时驻留）（F-07a）。
-        return logitsData.withUnsafeBytes { raw -> String in
-            guard raw.count >= neededFloats * MemoryLayout<Float>.size,
-                  let base = raw.bindMemory(to: Float.self).baseAddress else { return "" }
+        guard logitsData.length >= neededFloats * MemoryLayout<Float>.size else { return "" }
+        return withExtendedLifetime(logitsData) {
+            let base = logitsData.bytes.assumingMemoryBound(to: Float.self)
             return decode(logits: base, numFrames: numFrames, vocabSize: vocabSize)
         }
     }

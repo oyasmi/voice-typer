@@ -70,11 +70,57 @@ final class HotkeyRecorderView: NSView {
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let oldWindow = window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: oldWindow)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: oldWindow)
+        }
         super.viewWillMove(toWindow: newWindow)
         // 窗口关闭或视图移除时若仍在录制，务必停止并恢复全局热键。
         if newWindow == nil, isRecording {
             cancelRecording()
         }
+        if let newWindow {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleWindowDidResignOrClose(_:)),
+                name: NSWindow.willCloseNotification,
+                object: newWindow
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleWindowDidResignOrClose(_:)),
+                name: NSWindow.didResignKeyNotification,
+                object: newWindow
+            )
+        }
+    }
+
+    override func resignFirstResponder() -> Bool {
+        if isRecording {
+            cancelRecording()
+        }
+        return super.resignFirstResponder()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        updateAppearance()
+    }
+
+    @objc private func handleWindowDidResignOrClose(_ notification: Notification) {
+        if isRecording {
+            cancelRecording()
+        }
+    }
+
+    /// 外部操作（如点击预设热键按钮）接管热键更新时静默退出录制态：
+    /// 不触发 `onCancelRecording`，由新的保存流程负责恢复全局热键。
+    func abortRecordingSilently() {
+        guard isRecording else { return }
+        stopMonitor()
+        isRecording = false
+        updateAppearance()
     }
 
     private func startRecording() {
@@ -224,11 +270,19 @@ final class HotkeyRecorderView: NSView {
 /// SwiftUI 包装。
 struct HotkeyRecorder: NSViewRepresentable {
     let config: HotkeyConfig
+    var cancelNonce: Int = 0
     let onBegin: () -> Bool
     let onCapture: (HotkeyConfig) -> Void
     let onCancel: () -> Void
 
+    final class Coordinator {
+        var lastCancelNonce: Int = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> HotkeyRecorderView {
+        context.coordinator.lastCancelNonce = cancelNonce
         let view = HotkeyRecorderView()
         view.onBeginRecording = onBegin
         view.onCapture = onCapture
@@ -241,6 +295,10 @@ struct HotkeyRecorder: NSViewRepresentable {
         view.onBeginRecording = onBegin
         view.onCapture = onCapture
         view.onCancelRecording = onCancel
+        if context.coordinator.lastCancelNonce != cancelNonce {
+            context.coordinator.lastCancelNonce = cancelNonce
+            view.abortRecordingSilently()
+        }
         // 录制期间不要用外部 config 覆盖正在捕获的状态。
         if !view.isRecording {
             view.config = config

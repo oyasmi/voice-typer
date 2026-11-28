@@ -45,7 +45,7 @@ enum ConfigMigrator {
         if let opacity = legacy.ui?.opacity {
             config.ui.opacity = opacity
         }
-        AppLog.app.info("已从旧客户端配置迁移热键与 HUD 透明度: \(legacyURL.path, privacy: .public)")
+        AppLog.app.info("已从旧客户端配置迁移热键与 HUD 透明度: \(legacyURL.path, privacy: .private)")
         return config
     }
 }

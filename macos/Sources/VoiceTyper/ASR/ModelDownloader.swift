@@ -68,8 +68,8 @@ final class ModelDownloader: NSObject {
     /// 分段是优化，单连接是那条经过实测与多轮修复的可靠路径——出问题时应该回落到它，
     /// 而不是反复用同一个可能不被服务端支持的方式撞墙。
     private var segmentedDownloadDisabled = false
-    /// 正在进行的分段下载任务，供 `cancel()` 中断。
-    private var activeSegmentedTask: Task<Void, Error>?
+    /// 正在进行的分段下载任务（含 Range 探测），供 `cancel()` 中断。
+    private var activeSegmentedTask: Task<Bool, Error>?
 
     private var activeTask: URLSessionDownloadTask?
     private var activeContinuation: CheckedContinuation<URL, Error>?
@@ -243,6 +243,13 @@ final class ModelDownloader: NSObject {
             try? FileManager.default.removeItem(at: resumeDataURL)
         }
 
+        // defer 必须在 try await 之前注册：抛错或取消时同样清空活跃任务与进度回调引用。
+        defer {
+            activeTask = nil
+            activeContinuation = nil
+            activeProgressHandler = nil
+        }
+
         let tmpURL: URL = try await withCheckedThrowingContinuation { continuation in
             self.activeContinuation = continuation
             let task: URLSessionDownloadTask
@@ -255,16 +262,15 @@ final class ModelDownloader: NSObject {
             task.resume()
         }
 
-        defer {
-            activeTask = nil
-            activeContinuation = nil
-            activeProgressHandler = nil
-        }
-
         // URLSessionDownloadDelegate 把文件放在系统临时目录，回调返回前必须原地移走。
-        try? FileManager.default.removeItem(at: partURL)
-        try FileManager.default.moveItem(at: tmpURL, to: partURL)
-        try? FileManager.default.removeItem(at: resumeDataURL)
+        do {
+            try? FileManager.default.removeItem(at: partURL)
+            try FileManager.default.moveItem(at: tmpURL, to: partURL)
+            try? FileManager.default.removeItem(at: resumeDataURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw error
+        }
     }
 
     // MARK: - 分段并行下载
@@ -288,15 +294,17 @@ final class ModelDownloader: NSObject {
     ) async throws -> Bool {
         if isCancelled { throw DownloadError.cancelled }
 
-        guard let probe = await probeRangeSupport(Self.remoteURL(for: spec.name)) else {
-            AppLog.model.info("服务端未确认支持 Range 请求，\(spec.name, privacy: .public) 走单连接下载")
-            segmentedDownloadDisabled = true
-            return false
-        }
-
         do {
-            let task = Task { [weak self] in
-                guard let self else { return }
+            // 将 Range 探测也纳入 activeSegmentedTask：弱网/断网期间用户点击取消可立即打断探测，
+            // 避免挂死至 URLSession 默认超时且误置 segmentedDownloadDisabled。
+            let task = Task<Bool, Error> { [weak self] in
+                guard let self else { return false }
+                guard let probe = await self.probeRangeSupport(Self.remoteURL(for: spec.name)) else {
+                    if self.isCancelled || Task.isCancelled { throw DownloadError.cancelled }
+                    AppLog.model.info("服务端未确认支持 Range 请求，\(spec.name, privacy: .public) 走单连接下载")
+                    self.segmentedDownloadDisabled = true
+                    return false
+                }
                 try await self.runSegments(
                     spec,
                     totalBytes: probe.totalBytes,
@@ -305,10 +313,11 @@ final class ModelDownloader: NSObject {
                     partURL: partURL,
                     onProgress: onProgress
                 )
+                return true
             }
             activeSegmentedTask = task
             defer { activeSegmentedTask = nil }
-            try await task.value
+            guard try await task.value else { return false }
 
             if isCancelled { throw DownloadError.cancelled }
             guard await Self.sha256Matches(partURL, spec.sha256) else {
@@ -661,8 +670,13 @@ extension ModelDownloader: URLSessionDownloadDelegate {
             return
         }
         Task { @MainActor in
-            self.activeContinuation?.resume(returning: stagedURL)
-            self.activeContinuation = nil
+            if let continuation = self.activeContinuation {
+                self.activeContinuation = nil
+                continuation.resume(returning: stagedURL)
+            } else {
+                // 取消或异常已先于本回调消费了 continuation，清理已搬出的临时文件避免泄漏。
+                try? FileManager.default.removeItem(at: stagedURL)
+            }
         }
     }
 

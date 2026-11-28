@@ -246,4 +246,28 @@ final class HotkeyEventFilterTests: XCTestCase {
             [.press], "复位后识别器回到空闲，新的按下重新开始"
         )
     }
+
+    /// M-14：单独修饰键因组合快捷键作废后，尚未松开修饰键时按 Esc 不应误吞前台应用的 Esc。
+    func testInvalidatedModifierDoesNotConsumeEscape() {
+        var f = filter(key: "right_command")
+        _ = f.handle(.flagsChanged(keyCode: 54, flags: command | 0x10), acceptsCancelWhenInactive: false)
+        XCTAssertEqual(down(&f, Int64(kVK_ANSI_C), flags: command | 0x10).actions, [.gestureCancelled])
+        XCTAssertEqual(down(&f, escape, flags: command | 0x10), HotkeyEventFilter.Decision())
+    }
+
+    /// M-14：组合键按 Esc 取消后复位激活态，松开主键不再多发一次 release（keyUp 仍配对吞掉）。
+    func testComboEscapeResetsActiveStateSoReleaseIsNotEmitted() {
+        var f = filter(key: "space", modifiers: ["option"])
+        XCTAssertEqual(down(&f, space, flags: option), HotkeyEventFilter.Decision(actions: [.press], consume: true))
+        XCTAssertEqual(down(&f, escape, flags: option), HotkeyEventFilter.Decision(actions: [.cancel], consume: true))
+        XCTAssertEqual(up(&f, escape), HotkeyEventFilter.Decision(actions: [], consume: true))
+        XCTAssertEqual(up(&f, space), HotkeyEventFilter.Decision(actions: [], consume: true))
+    }
+
+    /// M-13：组合键激活后先松修饰键、仅按住主键时，物理状态仍判为按住。
+    func testPhysicalStateKeepsComboHeldWhileMainKeyIsDown() {
+        let combo = HotkeyConfig(modifiers: ["option"], key: "space", mode: .hold)
+        XCTAssertTrue(HotkeyPhysicalState.isHeld(combo, flags: 0, keyStateProvider: { $0 == CGKeyCode(kVK_Space) }))
+        XCTAssertFalse(HotkeyPhysicalState.isHeld(combo, flags: 0, keyStateProvider: { _ in false }))
+    }
 }

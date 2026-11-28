@@ -79,11 +79,34 @@ struct AppConfig: Codable {
             }
             return HotkeyConfig(modifiers: [], key: key, mode: hotkey.mode)
         }
-        guard key == "fn" || !hotkey.modifiers.isEmpty else {
-            AppLog.app.warning("配置字段 hotkey 未搭配修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
+        if key == "fn" {
+            if !hotkey.modifiers.isEmpty {
+                AppLog.app.warning("配置字段 hotkey.modifiers 与 fn 同时出现，已忽略 modifiers")
+            }
+            return HotkeyConfig(modifiers: [], key: "fn", mode: hotkey.mode)
+        }
+        let supportedModifiers: Set<String> = ["cmd", "command", "ctrl", "control", "alt", "option", "shift"]
+        var validModifiers: [String] = []
+        var seenModifiers: Set<String> = []
+        var droppedModifiers: [String] = []
+        for raw in hotkey.modifiers {
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if supportedModifiers.contains(normalized) {
+                if seenModifiers.insert(normalized).inserted {
+                    validModifiers.append(normalized)
+                }
+            } else {
+                droppedModifiers.append(raw)
+            }
+        }
+        if !droppedModifiers.isEmpty {
+            AppLog.app.warning("配置字段 hotkey.modifiers 含不支持的修饰键(\(droppedModifiers.joined(separator: ","), privacy: .public))，已忽略")
+        }
+        guard !validModifiers.isEmpty else {
+            AppLog.app.warning("配置字段 hotkey 未搭配有效修饰键(\(hotkey.key, privacy: .public))，已回落为默认热键 fn")
             return HotkeyConfig(mode: hotkey.mode)
         }
-        return hotkey
+        return HotkeyConfig(modifiers: validModifiers, key: key, mode: hotkey.mode)
     }
 }
 

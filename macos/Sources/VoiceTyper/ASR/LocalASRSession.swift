@@ -148,9 +148,19 @@ final class LocalASRSession {
             // 引擎仍在加载：先攒着，下次 sendAudio（或 finalize）时补上。
             // pendingAudio 同样严格不超过单段上限——引擎长时间不就绪时不能无限积累
             // （R3-03 同源）；单个超大 chunk 也只追加剩余容量内的部分。
-            let accepted = acceptWithinCap(samples, currentCount: pendingAudio.count)
-            pendingAudio.append(contentsOf: accepted)
-            timings.receivedSamples += accepted.count
+            let (accepted, hitCap) = acceptWithinCap(samples, currentCount: pendingAudio.count)
+            if !accepted.isEmpty {
+                pendingAudio.append(contentsOf: accepted)
+                timings.receivedSamples += accepted.count
+                // 冷启动阶段同步检测语音能量：引擎在停顿期就绪后，首轮预览才不会被静音门控误跳过。
+                if !hasSpeechSinceLastPreview, Self.containsSpeech(accepted) {
+                    hasSpeechSinceLastPreview = true
+                }
+            }
+            if hitCap {
+                triggerCapOnce()
+                return
+            }
             if !notifiedRecordingWait, pendingAudio.count >= Self.engineWaitRecordingNoticeSamples {
                 notifiedRecordingWait = true
                 onEngineWait?(.recording)
@@ -158,29 +168,32 @@ final class LocalASRSession {
             return
         }
 
-        let accepted = acceptWithinCap(samples, currentCount: buffer.sampleCount)
-        guard !accepted.isEmpty else { return }
-        timings.receivedSamples += accepted.count
-        samplesSinceLastPreviewStart += accepted.count
+        let (accepted, hitCap) = acceptWithinCap(samples, currentCount: buffer.sampleCount)
+        if !accepted.isEmpty {
+            timings.receivedSamples += accepted.count
+            samplesSinceLastPreviewStart += accepted.count
 
-        if Self.containsSpeech(accepted) {
-            hasSpeechSinceLastPreview = true
+            if Self.containsSpeech(accepted) {
+                hasSpeechSinceLastPreview = true
+            }
+            buffer.append(accepted)
         }
-        buffer.append(accepted)
+        if hitCap {
+            // 先完成尾样本追加再通知上限，且不再派发无谓的预览推理。
+            triggerCapOnce()
+            return
+        }
+        guard !accepted.isEmpty else { return }
         schedulePreview()
     }
 
     /// 统一的单段上限裁剪：pendingAudio 与已创建 buffer 共用。
-    /// - 返回可安全追加的样本前缀，保证 `currentCount + 返回值.count <= maxSessionSamples`，
-    ///   即单个 chunk 也不会跨越上限。
-    /// - 仅当本次 chunk **严格超过**剩余容量时触发一次 `onWarning` + `onSessionCapped`
-    ///   （控制器据此走与松键相同的收尾路径）；恰好填满不触发，保留"下一入口才触发"的
-    ///   既有兼容语义。
-    private func acceptWithinCap(_ samples: [Float], currentCount: Int) -> [Float] {
+    /// - 返回可安全追加的样本前缀及是否严格越过剩余容量，保证调用方先追加完样本再触发
+    ///   `onSessionCapped`（避免同步 finalize 丢失尾样本或违反 RecognitionBuffer 契约）。
+    private func acceptWithinCap(_ samples: [Float], currentCount: Int) -> (accepted: [Float], hitCap: Bool) {
         let remaining = max(0, Self.maxSessionSamples - currentCount)
-        guard samples.count > remaining else { return samples }
-        triggerCapOnce()
-        return Array(samples.prefix(remaining))
+        guard samples.count > remaining else { return (samples, false) }
+        return (Array(samples.prefix(remaining)), true)
     }
 
     private func triggerCapOnce() {
@@ -360,7 +373,7 @@ final class LocalASRSession {
         let clock = now
         timings.finalizeDispatchedAt = clock()
         asrQueue.async { [weak self] in
-            if self?.cancelFlag.isSet == true { return }
+            guard let self, !self.cancelFlag.isSet else { return }
             let inferenceStartedAt = clock()
             let result = Result { try buffer.finalize() }
             // 同在 asrQueue 上、紧跟终稿推理之后读取，不会被预览覆盖（预览已在松键时停止）。

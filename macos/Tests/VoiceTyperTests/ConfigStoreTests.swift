@@ -152,4 +152,16 @@ final class ConfigStoreTests: XCTestCase {
         try store.save(config: empty)
         XCTAssertEqual(try store.loadOrCreate().vocabulary, VocabularyConfig(bias: .off, entries: []))
     }
+
+    /// M-19：字段含换行/制表符等控制字符时仍可安全写盘并原样读回，不损坏 config.yaml。
+    func testControlCharactersInStringsRoundTripSafely() throws {
+        var config = AppConfig()
+        config.llm.model = "gpt-4o\nmini\t#v1"
+        config.asr.modelDir = "/tmp/model\rdir"
+        try store.save(config: config)
+        let loaded = try store.loadOrCreate()
+        XCTAssertFalse(store.lastLoadFellBackToDefaults)
+        XCTAssertEqual(loaded.llm.model, config.llm.model)
+        XCTAssertEqual(loaded.asr.modelDir, config.asr.modelDir)
+    }
 }
