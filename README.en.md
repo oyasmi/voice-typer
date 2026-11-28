@@ -45,7 +45,7 @@ VoiceTyper lives quietly in your macOS menu bar or Windows system tray. Reply to
   - Uses your built-in microphone automatically when Bluetooth headphones are connected so music won't pause or drop into low-bitrate call audio;
   - Automatically skips password fields on macOS. Transcripts from cancelled or unsuccessful dictation can be recovered from recent history.
   - Supports both **hold-to-talk** and **press-to-toggle** for longer passages.
-- **Optional AI proofreading**: Off by default. Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio) to clean up slips of the tongue and homophones.
+- **Optional AI proofreading**: Off by default. Connect any OpenAI-compatible endpoint (including local models via Ollama or LM Studio), which uses your custom vocabulary and candidate alternatives for low-confidence segments to clean up slips of the tongue and homophones.
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ Spoken audio carries far more personal context than final written text. **On-dev
 - **Audio never leaves your computer**: Recordings are processed strictly in memory — never written to disk and never uploaded anywhere.
 - **Works completely offline**: Once the speech model is downloaded on first launch, no internet connection is needed. Update checks happen only when you click them manually.
 - **Zero transcript logging by default**: Standard diagnostic logs never contain recognized text or custom vocabulary entries; optional proofreading trace logs (off by default, for local quality evaluation) are saved only locally and never uploaded. Recent history lives in RAM only and vanishes when you quit.
-- **Clear boundaries for AI proofreading**: Off by default. When enabled, **only the recognized text** (never audio) is sent to the endpoint you configure, and your API key is stored encrypted in the macOS Keychain or Windows DPAPI. Point it at a local LLM to stay 100% offline.
+- **Clear boundaries for AI proofreading**: Off by default. When enabled, **only the recognized text** (along with your custom vocabulary and candidate alternatives for low-confidence segments — never audio) is sent to the endpoint you configure, and your API key is stored encrypted in the macOS Keychain or Windows DPAPI. Point it at a local LLM to stay 100% offline.
 
 ## FAQ
 
@@ -85,7 +85,9 @@ Almost anywhere you can paste works seamlessly. Password fields, certain fullscr
 
 ### How mature is the Windows version?
 
-The Windows app uses native system tray and WinForms controls, and core dictation and model downloading have been verified on real Windows hardware. Recent UX refinements, arm64 laptops, extended sessions, and multi-monitor DPI scaling are still undergoing systematic hardware acceptance testing. Please [open an issue](https://github.com/oyasmi/voice-typer/issues) if anything behaves unexpectedly.
+**The Windows version is ready for everyday use.** Built with a native system tray and WinForms UI, it stays in feature parity with macOS across core capabilities (local offline recognition, live preview with self-correction, custom vocabulary, AI proofreading, tray quick toggles, and recent history recovery), and is distributed as both an installer and a portable ZIP.
+
+Inference currently runs on CPU only, and a few system behaviors differ slightly from macOS (for example, Windows does not automatically skip password fields; see [Known Limitations](windows/README.en.md#known-limitations)). Feedback on arm64 devices and multi-monitor DPI scaling is always welcome — please [open an issue](https://github.com/oyasmi/voice-typer/issues) if anything behaves unexpectedly.
 
 ## Contributing
 

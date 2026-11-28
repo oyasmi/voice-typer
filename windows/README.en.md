@@ -7,7 +7,7 @@
 VoiceTyper is a lightweight system tray voice typing app for Windows: hold the right-hand <kbd>Ctrl</kbd> key in any window, speak, and release — punctuated text lands right at your cursor. Speech recognition runs 100% locally on your PC; audio is never uploaded.
 
 > [!NOTE]
-> **Current status**: The Windows app uses a native system tray and WinForms interface, and core dictation and model downloading have been verified on real Windows hardware. Recent UX refinements — along with systematic acceptance testing on arm64 laptops, extended sessions, and multi-monitor DPI setups — are still in progress. Please [report any issues](#reporting-issues) you run into.
+> **Current status**: The Windows edition is ready for everyday dictation and stays in feature parity with macOS across core capabilities. Inference currently runs on CPU only; if you run into anything unexpected on arm64 laptops or multi-monitor DPI setups, please [report an issue](#reporting-issues).
 
 ## Installation & Requirements
 
