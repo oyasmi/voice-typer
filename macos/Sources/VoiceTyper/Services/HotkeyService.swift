@@ -325,7 +325,7 @@ final class HotkeyService: @unchecked Sendable {
             return
         }
 
-        let currentRunLoop = CFRunLoopGetCurrent()
+        let currentRunLoop = RunLoop.current.getCFRunLoop()
         guard lifecycle.registerRunning(runLoop: currentRunLoop, tap: tap) else {
             CFMachPortInvalidate(tap)
             Unmanaged<TapContext>.fromOpaque(contextPtr).release()
