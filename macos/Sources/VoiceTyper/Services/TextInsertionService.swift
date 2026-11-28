@@ -100,7 +100,9 @@ final class TextInsertionService {
     /// 回读在这段延迟之后异步进行，不占用「松键 → 出字」的关键路径。
     private static let verifyDelay: TimeInterval = 0.05
     /// 沿 `kAXParentAttribute` 向上查找 `AXWebArea` 的最大层数。
-    private static let maxWebAreaAncestorDepth = 20
+    /// 原生控件通常 4–8 层即到达 `AXApplication` 结束，放宽上限对原生应用无额外开销，
+    /// 可避免深层嵌套的现代网页（iframe / 多层容器）漏判 `AXWebArea`。
+    private static let maxWebAreaAncestorDepth = 64
 
     private let pasteboard = NSPasteboard.general
     private var pendingRestoreTask: Task<Void, Never>?
@@ -189,15 +191,30 @@ final class TextInsertionService {
         return DispatchTime.now().uptimeNanoseconds &- started
     }
 
+    /// 纯函数：根据焦点元素的特性判断是否应跳过 AX、直接走粘贴兜底。
+    /// 网页内容区（`AXWebArea` 内）即使 `kAXSelectedText` 报告可写，也一律走粘贴；
+    /// 使用闭包保留短路求值，避免发起多余的跨进程 AX 查询。
+    nonisolated static func shouldFallbackToPaste(
+        inWebArea: () -> Bool,
+        isSelectedTextSettable: () -> Bool,
+        isValueSettable: () -> Bool
+    ) -> Bool {
+        if inWebArea() { return true }
+        if isSelectedTextSettable() { return false }
+        return !isValueSettable()
+    }
+
     /// 当前焦点是否大概率要走粘贴兜底。与 `insertUsingAccessibility` 的判断顺序一致；
     /// 任何一步查询失败都按「要粘贴」处理（多备份一次，比漏备份安全）。
     private static func predictsPasteFallback() -> Bool {
         guard AXIsProcessTrusted(), let element = AXMessaging.focusedElement(timeout: AXMessaging.probeTimeout) else {
             return true
         }
-        if isAttributeSettable(element, kAXSelectedTextAttribute) { return false }
-        if hasWebAreaAncestor(element, timeout: AXMessaging.probeTimeout) { return true }
-        return !isAttributeSettable(element, kAXValueAttribute)
+        return shouldFallbackToPaste(
+            inWebArea: { hasWebAreaAncestor(element, timeout: AXMessaging.probeTimeout) },
+            isSelectedTextSettable: { isAttributeSettable(element, kAXSelectedTextAttribute) },
+            isValueSettable: { isAttributeSettable(element, kAXValueAttribute) }
+        )
     }
 
     private static func isAttributeSettable(_ element: AXUIElement, _ attribute: String) -> Bool {
@@ -245,6 +262,14 @@ final class TextInsertionService {
             return .notApplicable
         }
 
+        // 网页内容区（AXWebArea 下，含 Edge / Chrome / Electron / WebView）里的输入框：
+        // 即使 kAXSelectedTextAttribute 报告可写且写入返回 .success，实测在 Edge 等浏览器的
+        // 网页输入框中仍会被静默忽略（insert_verify=unchanged），整值替换更会绕过前端框架状态。
+        // 因此只要焦点处于网页内容区，一律跳过 AX 写入，直接走剪贴板粘贴。
+        if Self.hasWebAreaAncestor(element, timeout: AXMessaging.insertionTimeout) {
+            return .notApplicable
+        }
+
         // 回读素材：写入前的字符数与选区长度（都是便宜的查询，不读整段值）。
         let countBefore = Self.characterCount(of: element)
         let selectedRange = selectedTextRange(for: element)
@@ -263,12 +288,6 @@ final class TextInsertionService {
             default:
                 break
             }
-        }
-
-        // 网页控件（前端框架接管的输入框）整值替换可能只改到辅助功能层，下一次按键文字就消失：
-        // 不做整值替换，直接走粘贴（R8-A3a）。`kAXSelectedText` 路径不受影响。
-        if Self.hasWebAreaAncestor(element, timeout: AXMessaging.insertionTimeout) {
-            return .notApplicable
         }
 
         guard Self.isAttributeSettable(element, kAXValueAttribute) else {
