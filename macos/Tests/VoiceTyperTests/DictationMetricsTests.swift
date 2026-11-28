@@ -34,22 +34,22 @@ final class DictationMetricsTests: XCTestCase {
                 + "first_buffer=162 audio=4.2s release_to_finalize=3 engine_wait=0 asr=71 llm=812 "
                 + "llm_result=corrected llm_retry=0 insert=34 insert_path=ax release_to_done=921 "
                 + "previews=7 previews_skipped=3 preview_max=88 cold=0 finalize_timeout=0 llm_fail=- preview_avg=- final_wait=- tail_speech=- insert_verify=- clip_backup=- "
-                + "decode_mode=- vocab_hits=- decode_ms=-"
+                + "decode_mode=- vocab_hits=- decode_ms=- asr_hints=0"
         )
     }
 
-    /// VOC-10：终稿解码方式、热词命中与解码耗时追加在末尾；耗时保留一位小数。
+    /// VOC-10 / HINT-7：终稿解码方式、热词命中、解码耗时与 asr_hints 追加在末尾；耗时保留一位小数。
     func testDecodeFieldsAppendedAtEnd() {
         var metrics = DictationMetrics(sessionID: 3, mode: .hold, hotkey: .fn, pressedAt: 0)
         metrics.timings.decodeMode = .beam
         metrics.timings.hotwordHits = 2
         metrics.timings.decodeNanos = 1_260_000
-        XCTAssertTrue(metrics.summaryLine().hasSuffix("clip_backup=- decode_mode=beam vocab_hits=2 decode_ms=1.3"))
+        XCTAssertTrue(metrics.summaryLine().hasSuffix("clip_backup=- decode_mode=beam vocab_hits=2 decode_ms=1.3 asr_hints=-"))
 
         metrics.timings.decodeMode = .greedy
         metrics.timings.hotwordHits = 0
         metrics.timings.decodeNanos = 300_000
-        XCTAssertTrue(metrics.summaryLine().hasSuffix("decode_mode=greedy vocab_hits=0 decode_ms=0.3"))
+        XCTAssertTrue(metrics.summaryLine().hasSuffix("decode_mode=greedy vocab_hits=0 decode_ms=0.3 asr_hints=-"))
     }
 
     func testIntervalNeverGoesNegative() {

@@ -28,7 +28,7 @@ internal static class AcousticHintExtractor
 {
     /// <summary>提取算法参数（HINT-4.5）；不进入 <c>config.yaml</c>。</summary>
     internal sealed record Parameters(
-        double MarginThreshold = 2.5,
+        double MarginThreshold = 1.15,
         int MaxHintsPerUtterance = 5,
         int MaxAltsPerHint = 3,
         int MaxMergedCjkLength = 3,
@@ -46,6 +46,13 @@ internal static class AcousticHintExtractor
             "呃", "嗯", "啊", "额", "哦", "噢", "唉", "哎",
         };
 
+        private static readonly HashSet<string> ThirdPersonPronouns = new(StringComparer.Ordinal)
+        {
+            "他", "她", "它",
+        };
+
+        private static readonly HashSet<int> NumeralRunes = new("0123456789零〇一二两三四五六七八九十百千万亿".EnumerateRunes().Select(r => r.Value));
+
         public int Count { get; }
         public bool[] IsExcluded { get; }
         public bool[] HasLeadingSpace { get; }
@@ -56,6 +63,8 @@ internal static class AcousticHintExtractor
         public bool[] IsPureFiller { get; }
         public bool[] IsSingleAsciiLetter { get; }
         public bool[] IsPureAscii { get; }
+        public bool[] IsThirdPersonPronoun { get; }
+        public bool[] IsPureNumeral { get; }
 
         public TokenMetadata(IReadOnlyList<string> tokens)
         {
@@ -70,6 +79,8 @@ internal static class AcousticHintExtractor
             IsPureFiller = new bool[n];
             IsSingleAsciiLetter = new bool[n];
             IsPureAscii = new bool[n];
+            IsThirdPersonPronoun = new bool[n];
+            IsPureNumeral = new bool[n];
 
             for (int i = 0; i < n; i++)
             {
@@ -85,12 +96,14 @@ internal static class AcousticHintExtractor
                 bool hasSub = false;
                 bool allAscii = s.Length > 0;
                 bool allAsciiAlnum = s.Length > 0;
+                bool allNumeral = s.Length > 0;
                 foreach (var rune in s.EnumerateRunes())
                 {
                     int v = rune.Value;
                     if (scalarCount == 0) firstScalar = v;
                     scalarCount++;
                     if (v > 0x7F) allAscii = false;
+                    if (!NumeralRunes.Contains(v)) allNumeral = false;
                     bool isAsciiAlnum = (v >= '0' && v <= '9') || (v >= 'A' && v <= 'Z') || (v >= 'a' && v <= 'z');
                     if (!isAsciiAlnum) allAsciiAlnum = false;
                     if (isAsciiAlnum
@@ -104,6 +117,7 @@ internal static class AcousticHintExtractor
                 IsSubstantive[i] = hasSub;
                 IsPureAscii[i] = allAscii;
                 IsAsciiWordPart[i] = allAsciiAlnum;
+                IsPureNumeral[i] = allNumeral;
                 if (scalarCount == 1)
                 {
                     IsCjkChar[i] = firstScalar >= 0x4E00 && firstScalar <= 0x9FFF;
@@ -111,6 +125,7 @@ internal static class AcousticHintExtractor
                         || (firstScalar >= 'a' && firstScalar <= 'z');
                 }
                 IsPureFiller[i] = PureFillers.Contains(s);
+                IsThirdPersonPronoun[i] = ThirdPersonPronouns.Contains(s);
             }
         }
     }
@@ -294,6 +309,8 @@ internal static class AcousticHintExtractor
             bool yPureAscii = metadata.IsPureAscii[y];
             string yLower = yPureAscii ? yStripped.ToLowerInvariant() : yStripped;
             bool yIsCjk = metadata.IsCjkChar[y];
+            bool yIsPronoun = metadata.IsThirdPersonPronoun[y];
+            bool yIsNumeral = metadata.IsPureNumeral[y];
 
             var rawCands = new List<(double Delta, int Id, string Text)>(parameters.FrameTopK + 2);
             for (int blockStart = 0; blockStart < vocabSize; blockStart += ScanBlock)
@@ -320,6 +337,9 @@ internal static class AcousticHintExtractor
                         continue;
                     }
                     if (yIsCjk && metadata.IsSingleAsciiLetter[k]) continue;
+                    // 同音无声学区分度等价类过滤：「他/她/它」互换、数字写法互换。
+                    if (yIsPronoun && metadata.IsThirdPersonPronoun[k]) continue;
+                    if (yIsNumeral && metadata.IsPureNumeral[k]) continue;
                     rawCands.Add((delta, k, kStripped));
                 }
             }
@@ -403,6 +423,7 @@ internal static class AcousticHintExtractor
                         {
                             string key = combo.Word.ToLowerInvariant();
                             if (string.Equals(key, baseLower, StringComparison.Ordinal)) continue;
+                            if (IsMalformedAsciiAlt(key, baseLower)) continue;
                             if (!bestByNorm.TryGetValue(key, out var prev)
                                 || combo.Delta < prev.Delta
                                 || (combo.Delta == prev.Delta && string.CompareOrdinal(combo.Word, prev.Word) < 0))
@@ -607,6 +628,31 @@ internal static class AcousticHintExtractor
             if (v > max) max = v;
         }
         return max;
+    }
+
+    /// <summary>过滤英文 BPE 子词笛卡尔积产生的畸形叠词（如 antigravityvity）。</summary>
+    private static bool IsMalformedAsciiAlt(string candidateLower, string baseLower)
+    {
+        int cLen = candidateLower.Length;
+        int bLen = baseLower.Length;
+        if (cLen > bLen + 2) return true;
+        if (bLen >= 3 && cLen < Math.Max(2, bLen - 2)) return true;
+        for (int i = 2; i < cLen; i++)
+        {
+            if (candidateLower[i] == candidateLower[i - 1] && candidateLower[i] == candidateLower[i - 2])
+                return true;
+        }
+        for (int subLen = 3; subLen <= 5; subLen++)
+        {
+            if (cLen >= subLen * 2)
+            {
+                int tailStart = cLen - subLen;
+                int prevStart = tailStart - subLen;
+                if (candidateLower.AsSpan(prevStart, subLen).SequenceEqual(candidateLower.AsSpan(tailStart, subLen)))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static int CountOccurrences(string needle, string haystack)

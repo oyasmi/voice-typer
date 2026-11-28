@@ -77,7 +77,7 @@ internal sealed class LlmCorrector : IDisposable
             for (int i = 0; i < hints.Count; i++)
             {
                 if (i > 0) sb.Append('\n');
-                sb.Append('「').Append(hints[i].Surface).Append("」可能是：").Append(string.Join(" / ", hints[i].Alternatives));
+                sb.Append('「').Append(hints[i].Surface).Append("」备选：").Append(string.Join(" / ", hints[i].Alternatives));
             }
             sb.Append("\n</asr_hints>\n");
         }
@@ -123,10 +123,10 @@ internal sealed class LlmCorrector : IDisposable
         ("assistant", "需要准备的材料如下：\n1. 身份证复印件\n2. 学历证明\n3. 近期照片"),
         ("user", Wrap("周报。")),
         ("assistant", "周报"),
-        // 第 9 组正反合一示例（HINT-6.3）：同时示范采纳合理声学备选与拒绝噪声备选。
-        ("user", "<asr_hints>\n「密等」可能是：幂等 / 密度\n「处理」可能是：出力 / 储理\n</asr_hints>\n"
-            + Wrap("这个接口需要保证密等性，超时之后自动降级处理")),
-        ("assistant", "这个接口需要保证幂等性，超时之后自动降级处理。"),
+        // 第 9 组正反合一示例（HINT-6.3）：同时示范采纳合理声学备选、拒绝通顺词/人名噪声备选且不吞相邻字。
+        ("user", "<asr_hints>\n「密等」备选：幂等 / 密度\n「持器」备选：湿器 / 池器\n「张明」备选：章明 / 张铭\n</asr_hints>\n"
+            + Wrap("这个接口需要保证密等性，张明建议继续佩戴间隙保持器")),
+        ("assistant", "这个接口需要保证幂等性，张明建议继续佩戴间隙保持器。"),
     };
 
     /// <param name="httpClient">仅供测试注入打桩的 HttpClient（配合 <c>HttpMessageHandler</c> mock）。</param>

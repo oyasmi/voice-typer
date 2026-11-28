@@ -155,13 +155,14 @@ final class AcousticHintExtractorTests: XCTestCase {
             AcousticHint(surface: "将近", alternatives: ["降级"], bestMargin: 0.8),
         ]
         let msg = LLMCorrector.userMessage("测试文本", glossary: ["VoiceTyper", "SenseVoice"], hints: hints)
+        XCTAssertEqual(AcousticHintExtractor.Parameters.default.marginThreshold, 1.15, accuracy: 1e-9)
         XCTAssertEqual(
             msg,
             """
             <glossary>VoiceTyper、SenseVoice</glossary>
             <asr_hints>
-            「密等」可能是：幂等 / 密度
-            「将近」可能是：降级
+            「密等」备选：幂等 / 密度
+            「将近」备选：降级
             </asr_hints>
             <asr_text>
             测试文本

@@ -214,10 +214,10 @@ public class VocabularyTests
     public void DecodeFieldsAppendedAtEnd()
     {
         var metrics = new DictationMetrics();
-        Assert.EndsWith("decode_mode=- vocab_hits=- decode_ms=-", metrics.SummaryLine());
+        Assert.EndsWith("decode_mode=- vocab_hits=- decode_ms=- asr_hints=-", metrics.SummaryLine());
         metrics.Timings.DecodeMode = DecodeStats.DecodeMode.Beam;
         metrics.Timings.HotwordHits = 2;
         metrics.Timings.DecodeTicks = System.Diagnostics.Stopwatch.Frequency * 13 / 10_000; // 1.3ms
-        Assert.EndsWith("decode_mode=beam vocab_hits=2 decode_ms=1.3", metrics.SummaryLine());
+        Assert.EndsWith("decode_mode=beam vocab_hits=2 decode_ms=1.3 asr_hints=-", metrics.SummaryLine());
     }
 }

@@ -11,7 +11,9 @@
     "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛",
     "张", "三", "丰", "峰", "封", "风",
     "▁Py", "▁py", "thon", "ton", "▁code", "code",
-    "a", "b"
+    "a", "b",
+    "他", "她", "它", "俩", "3", "4", "十", "四",
+    "▁anti", "gravity", "vity", "gravityvity"
   ],
   "floor": -20.0,
   "margin_threshold": 2.5,
@@ -207,6 +209,36 @@
       "expected_hints": [
         {"surface": "密等", "alternatives": ["幂等"]}
       ]
+    },
+    {
+      "name": "filters_third_person_pronoun_and_numeral_swaps",
+      "note": "12. 过滤无声学区分度的「他/她/它」互换与数字等价写法互换",
+      "mode": "greedy",
+      "frames": [
+        {"他": 0.0, "她": -0.1, "它": -0.2},
+        {"<unk>": 0.0},
+        {"俩": 0.0},
+        {"<unk>": 0.0},
+        {"3": 0.0, "三": -0.2},
+        {"<unk>": 0.0},
+        {"四": 0.0, "4": -0.3},
+        {"<unk>": 0.0},
+        {"十": 0.0}
+      ],
+      "expected_text": "他俩3四十",
+      "expected_hints": []
+    },
+    {
+      "name": "filters_malformed_ascii_bpe_duplication",
+      "note": "13. 过滤英文 BPE 笛卡尔积产生的畸形叠词（如 antigravityvity）",
+      "mode": "greedy",
+      "frames": [
+        {"▁anti": 0.0},
+        {"<unk>": 0.0},
+        {"gravity": 0.0, "gravityvity": -0.4}
+      ],
+      "expected_text": "antigravity",
+      "expected_hints": []
     }
   ]
 }

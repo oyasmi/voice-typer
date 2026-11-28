@@ -73,15 +73,16 @@ _HINTS_FEW_SHOT: list[dict[str, str]] = [
         "role": "user",
         "content": (
             "<asr_hints>\n"
-            "「密等」可能是：幂等 / 密度\n"
-            "「处理」可能是：出力 / 储理\n"
+            "「密等」备选：幂等 / 密度\n"
+            "「持器」备选：湿器 / 池器\n"
+            "「张明」备选：章明 / 张铭\n"
             "</asr_hints>\n"
             "<asr_text>\n"
-            "这个接口需要保证密等性，超时之后自动降级处理\n"
+            "这个接口需要保证密等性，张明建议继续佩戴间隙保持器\n"
             "</asr_text>"
         ),
     },
-    {"role": "assistant", "content": "这个接口需要保证幂等性，超时之后自动降级处理。"},
+    {"role": "assistant", "content": "这个接口需要保证幂等性，张明建议继续佩戴间隙保持器。"},
 ]
 
 
@@ -462,7 +463,7 @@ def format_user_message(text: str, glossary: Sequence[str] = (), hints: Sequence
     if glossary:
         parts.append(f"<glossary>{'、'.join(glossary)}</glossary>")
     if hints:
-        lines = [f"「{h.surface}」可能是：{' / '.join(h.alternatives)}" for h in hints]
+        lines = [f"「{h.surface}」备选：{' / '.join(h.alternatives)}" for h in hints]
         parts.append("<asr_hints>\n" + "\n".join(lines) + "\n</asr_hints>")
     parts.append(f"<asr_text>\n{text}\n</asr_text>")
     return "\n".join(parts)

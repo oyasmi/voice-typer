@@ -35,7 +35,7 @@ struct RecognitionResult: Equatable, Sendable {
 enum AcousticHintExtractor {
     /// 提取算法参数（HINT-4.5）；不进入 `config.yaml`。
     struct Parameters: Equatable, Sendable {
-        var marginThreshold: Double = 2.5
+        var marginThreshold: Double = 1.15
         var maxHintsPerUtterance: Int = 5
         var maxAltsPerHint: Int = 3
         var maxMergedCJKLength: Int = 3
@@ -57,8 +57,14 @@ enum AcousticHintExtractor {
         let isPureFiller: [Bool]
         let isSingleASCIILetter: [Bool]
         let isPureASCII: [Bool]
+        let isThirdPersonPronoun: [Bool]
+        let isPureNumeral: [Bool]
 
         private static let pureFillers: Set<String> = ["呃", "嗯", "啊", "额", "哦", "噢", "唉", "哎"]
+        private static let thirdPersonPronouns: Set<String> = ["他", "她", "它"]
+        private static let numeralScalars: Set<Unicode.Scalar> = Set(
+            "0123456789零〇一二两三四五六七八九十百千万亿".unicodeScalars
+        )
 
         init(tokens: [String]) {
             let n = tokens.count
@@ -71,6 +77,8 @@ enum AcousticHintExtractor {
             var isPureFiller = [Bool](repeating: false, count: n)
             var isSingleASCIILetter = [Bool](repeating: false, count: n)
             var isPureASCII = [Bool](repeating: false, count: n)
+            var isThirdPersonPronoun = [Bool](repeating: false, count: n)
+            var isPureNumeral = [Bool](repeating: false, count: n)
 
             for i in 0..<n {
                 let tok = tokens[i]
@@ -84,9 +92,11 @@ enum AcousticHintExtractor {
                 var hasSub = false
                 var allASCII = !scalars.isEmpty
                 var allASCIIAlnum = !scalars.isEmpty
+                var allNumeral = !scalars.isEmpty
                 for sc in scalars {
                     let v = sc.value
                     if v > 0x7F { allASCII = false }
+                    if !Self.numeralScalars.contains(sc) { allNumeral = false }
                     let isAsciiAlnum = (v >= 0x30 && v <= 0x39)
                         || (v >= 0x41 && v <= 0x5A)
                         || (v >= 0x61 && v <= 0x7A)
@@ -101,12 +111,14 @@ enum AcousticHintExtractor {
                 isSubstantive[i] = hasSub
                 isPureASCII[i] = allASCII
                 isASCIIWordPart[i] = allASCIIAlnum
+                isPureNumeral[i] = allNumeral
                 if scalars.count == 1 {
                     let v = scalars[0].value
                     isCJKChar[i] = (v >= 0x4E00 && v <= 0x9FFF)
                     isSingleASCIILetter[i] = (v >= 0x41 && v <= 0x5A) || (v >= 0x61 && v <= 0x7A)
                 }
                 isPureFiller[i] = Self.pureFillers.contains(s)
+                isThirdPersonPronoun[i] = Self.thirdPersonPronouns.contains(s)
             }
 
             self.count = n
@@ -119,6 +131,8 @@ enum AcousticHintExtractor {
             self.isPureFiller = isPureFiller
             self.isSingleASCIILetter = isSingleASCIILetter
             self.isPureASCII = isPureASCII
+            self.isThirdPersonPronoun = isThirdPersonPronoun
+            self.isPureNumeral = isPureNumeral
         }
     }
 
@@ -314,6 +328,8 @@ enum AcousticHintExtractor {
             let yPureASCII = metadata.isPureASCII[y]
             let yLower = yPureASCII ? yStripped.lowercased() : yStripped
             let yIsCJK = metadata.isCJKChar[y]
+            let yIsPronoun = metadata.isThirdPersonPronoun[y]
+            let yIsNumeral = metadata.isPureNumeral[y]
 
             var rawCands: [(delta: Double, id: Int, text: String)] = []
             rawCands.reserveCapacity(parameters.frameTopK + 2)
@@ -336,6 +352,9 @@ enum AcousticHintExtractor {
                         if kStripped == yStripped { continue }
                         if yPureASCII, metadata.isPureASCII[k], kStripped.lowercased() == yLower { continue }
                         if yIsCJK, metadata.isSingleASCIILetter[k] { continue }
+                        // 同音无声学区分度等价类过滤：「他/她/它」互换、数字写法互换。
+                        if yIsPronoun, metadata.isThirdPersonPronoun[k] { continue }
+                        if yIsNumeral, metadata.isPureNumeral[k] { continue }
                         rawCands.append((delta: delta, id: k, text: kStripped))
                     }
                 }
@@ -417,6 +436,7 @@ enum AcousticHintExtractor {
                         for combo in combos {
                             let key = combo.word.lowercased()
                             if key == baseLower { continue }
+                            if isMalformedASCIIAlt(candidateLower: key, baseLower: baseLower) { continue }
                             if let prev = bestByNorm[key] {
                                 if combo.delta < prev.delta || (combo.delta == prev.delta && combo.word < prev.word) {
                                     bestByNorm[key] = combo
@@ -587,6 +607,39 @@ enum AcousticHintExtractor {
         return winners.map {
             AcousticHint(surface: $0.surface, alternatives: $0.alternatives, bestMargin: $0.bestMargin)
         }
+    }
+
+    /// 过滤英文 BPE 子词笛卡尔积产生的畸形叠词（如 `antigravityvity`、`HPpV` 类超长或连续叠字噪声）。
+    private static func isMalformedASCIIAlt(candidateLower: String, baseLower: String) -> Bool {
+        let cBytes = Array(candidateLower.utf8)
+        let bLen = baseLower.utf8.count
+        let cLen = cBytes.count
+        if cLen > bLen + 2 { return true }
+        if bLen >= 3, cLen < max(2, bLen - 2) { return true }
+        // 连续 3 个相同字符（如 ggg / ppp）
+        if cLen >= 3 {
+            for idx in 2..<cLen {
+                if cBytes[idx] == cBytes[idx - 1], cBytes[idx] == cBytes[idx - 2] {
+                    return true
+                }
+            }
+        }
+        // 末尾出现长度 3...5 的立即重复子串（如 vityvity）
+        for subLen in 3...5 {
+            if cLen >= subLen * 2 {
+                let tailStart = cLen - subLen
+                let prevStart = tailStart - subLen
+                var same = true
+                for k in 0..<subLen {
+                    if cBytes[prevStart + k] != cBytes[tailStart + k] {
+                        same = false
+                        break
+                    }
+                }
+                if same { return true }
+            }
+        }
+        return false
     }
 
     private static func countOccurrences(of needle: String, in haystack: String) -> Int {

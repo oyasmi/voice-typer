@@ -146,8 +146,9 @@ public class AcousticHintExtractorTests
             new("将近", new[] { "降级" }, 0.8),
         };
         var msg = LlmCorrector.UserMessage("测试文本", new[] { "VoiceTyper", "SenseVoice" }, hints);
+        Assert.Equal(1.15, AcousticHintExtractor.Parameters.Default.MarginThreshold, precision: 6);
         Assert.Equal(
-            "<glossary>VoiceTyper、SenseVoice</glossary>\n<asr_hints>\n「密等」可能是：幂等 / 密度\n「将近」可能是：降级\n</asr_hints>\n<asr_text>\n测试文本\n</asr_text>",
+            "<glossary>VoiceTyper、SenseVoice</glossary>\n<asr_hints>\n「密等」备选：幂等 / 密度\n「将近」备选：降级\n</asr_hints>\n<asr_text>\n测试文本\n</asr_text>",
             msg);
     }
 

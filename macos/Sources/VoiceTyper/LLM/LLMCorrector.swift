@@ -34,7 +34,7 @@ actor LLMCorrector {
             prefix += "<glossary>\(glossary.joined(separator: "、"))</glossary>\n"
         }
         if !hints.isEmpty {
-            let lines = hints.map { "「\($0.surface)」可能是：\($0.alternatives.joined(separator: " / "))" }
+            let lines = hints.map { "「\($0.surface)」备选：\($0.alternatives.joined(separator: " / "))" }
             prefix += "<asr_hints>\n\(lines.joined(separator: "\n"))\n</asr_hints>\n"
         }
         return prefix + wrap(text)
@@ -73,13 +73,13 @@ actor LLMCorrector {
         ["role": "assistant", "content": "需要准备的材料如下：\n1. 身份证复印件\n2. 学历证明\n3. 近期照片"],
         ["role": "user", "content": wrap("周报。")],
         ["role": "assistant", "content": "周报"],
-        // 第 9 组正反合一示例（HINT-6.3）：同时示范采纳合理声学备选与拒绝噪声备选。
+        // 第 9 组正反合一示例（HINT-6.3）：同时示范采纳合理声学备选、拒绝通顺词/人名噪声备选且不吞相邻字。
         [
             "role": "user",
-            "content": "<asr_hints>\n「密等」可能是：幂等 / 密度\n「处理」可能是：出力 / 储理\n</asr_hints>\n"
-                + wrap("这个接口需要保证密等性，超时之后自动降级处理"),
+            "content": "<asr_hints>\n「密等」备选：幂等 / 密度\n「持器」备选：湿器 / 池器\n「张明」备选：章明 / 张铭\n</asr_hints>\n"
+                + wrap("这个接口需要保证密等性，张明建议继续佩戴间隙保持器"),
         ],
-        ["role": "assistant", "content": "这个接口需要保证幂等性，超时之后自动降级处理。"],
+        ["role": "assistant", "content": "这个接口需要保证幂等性，张明建议继续佩戴间隙保持器。"],
     ]
 
     /// - Parameters:
