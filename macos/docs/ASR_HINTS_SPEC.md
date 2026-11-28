@@ -1,6 +1,6 @@
 # VoiceTyper · 局部声学低置信度备选（`<asr_hints>`）探索与实施规格
 
-[← macOS 目录](../README.md) · [架构设计](../DESIGN.md) · [自定义词汇规格](VOCABULARY_SPEC.md) · [R8 规格](UX_R8_SPEC.md)
+[← macOS 目录](../README.md) · [架构设计](../DESIGN.md) · [自定义词汇规格](VOCABULARY_SPEC.md) · [R8 规格](UX_R8_SPEC.md) · [附加规格：诊断记录](ASR_HINTS_TRACE_SPEC.md)
 
 | 项 | 内容 |
 | --- | --- |
@@ -52,13 +52,13 @@
 - 不改变录音中实时预览（`preview()`）的行为，预览阶段永不提取 hints。
 - 不在未开启 LLM 校对时以任何形式修改 1-best 文本或向用户界面展示候选。
 - 不把 `<blank>` 作为“可删除该字”的备选暴露给 LLM（防止诱导过度删字，违背 `correction.md` 删词禁令）。
-- 不新增 `config.yaml` 配置项或设置页 UI 开关。
+- 不新增控制 `<asr_hints>` 开关或阈值的 `config.yaml` 配置项与 UI 控件（仅附加规格 [`ASR_HINTS_TRACE_SPEC.md`](ASR_HINTS_TRACE_SPEC.md) 提供一个默认关闭的本机诊断记录开关 `llm.trace_log`，用于效果观察与 Prompt 优化）。
 - 不修改 SenseVoice 模型、特征前端（fbank / LFR / CMVN）、`TextPostprocessor` 与既有金标准夹具。
 
 ### 1.5 不变量（任何改动都不得破坏）
 
 - **识别契约不动**：`SenseVoiceRecognizing.recognize(_:)`、`CTCDecoder.decode`、`TextPostprocessor.process` 与既有金标准测试（`EndToEndRecognitionTests`、`ctc_hotword_cases.json`）保持逐字不变。
-- **隐私红线**：任何日志、度量均**不得**出现 hint 文本（原片段或备选词）；`DictationMetrics` 不得新增 `String` 存储属性（反射测试钉死）。
+- **隐私红线**：主日志（`OSLog` / `app.log`）与度量（`DictationMetrics`）**永不得**出现 hint 文本（原片段或备选词），`DictationMetrics` 不得新增 `String` 存储属性（反射测试钉死）。用于效果评估的文本级诊断记录只能通过附加规格 [`ASR_HINTS_TRACE_SPEC.md`](ASR_HINTS_TRACE_SPEC.md) 中默认关闭的 `llm.trace_log` 显式开启，并写入物理隔离的独立本机 JSONL 文件。
 - **线程与性能**：提取只在 `asrQueue` / `AsrPump` 上执行，直接读取 `ctc_logits` 底层内存（零拷贝），不阻塞主线程 / UI 线程；任何内部异常只放弃 hints（回落为空数组），绝不导致听写或校对失败。
 - **跨平台确定性**：macOS（Swift）与 Windows（C#）实现同一提取算法，同分排序规则完全固定，共用 `macos/Tests/VoiceTyperTests/Fixtures/asr_hints_cases.json`。
 
@@ -76,7 +76,7 @@
 | HINT-D6 | 位置消歧与词级呈现 | 连续 2–3 个低置信度汉字合并为词段联合打分；孤立单汉字自动扩展 1 字相邻上下文锚点；英文 BPE 子词归属到完整英文词 span 后生成词级备选（§4.4） |
 | HINT-D7 | 词汇表优先级 | 已由 CTC 热词偏置命中、或经 `VocabularyReplacer.apply` 替换消失的片段不产出/丢弃 hint；已是精确 `term` 的片段不再挑战；备选词本身同步过一遍 `VocabularyReplacer.apply` 并去重（§5.3） |
 | HINT-D8 | Prompt 放置与缓存 | `<asr_hints>` 放在最后一条 `user` 消息、`<asr_text>` 之前（与 `<glossary>` 并列），空 hints 时不附带标签；`systemPrompt` 新增 1 条规则，`fewShotMessages` 新增 1 组**正反合一**示例，整体保持前缀缓存稳定（§6） |
-| HINT-D9 | 用户配置与 UI | **无新增配置项、无 UI 开关**，作为智能校对的透明内部增强 |
+| HINT-D9 | 用户配置与 UI | `<asr_hints>` 本身**无新增配置项、无 UI 开关**，作为智能校对的透明内部增强；效果观察所需的默认关闭记录开关 `llm.trace_log` 见附加规格 [`ASR_HINTS_TRACE_SPEC.md`](ASR_HINTS_TRACE_SPEC.md) |
 | HINT-D10 | 门禁先行 | 先完成 Step 0 离线评测（真实录音 + 多款快模型），满足 §8.4 Go 门槛后才进入 macOS / Windows 生产代码实施；若帧级提取（B1）在 Step 0 明显弱于束搜索 Diff（B2），则切换底层候选源为 B2，上层 `<asr_hints>` 协议与 Prompt 保持不变 |
 
 ---
@@ -403,7 +403,7 @@ internal readonly record struct RecognitionResult(string Text, IReadOnlyList<Aco
 - `DictationMetrics.summaryLine()` 末尾追加 1 个字段（沿用 R8 / VOC-10 末尾追加约定，不改变既有字段顺序）：
   - `asr_hints=<数量>`（当 `llmResult == nil || llmResult == .off` 时输出 `-`，启用了校对时输出非负整数如 `0`、`2`、`5`）；
 - `DecodeStats.decodeNanos` / `DecodeTicks` 包含 `AcousticHintExtractor` 耗时，便于直接从线上 `decode_ms` 观察提取开销；
-- **隐私红线**：`DictationMetrics` 不新增 `String` 存储属性（继续通过反射测试）；任何级别日志（含 `.debug`）均**不得**记录 `AcousticHint.surface` 或 `alternatives`。
+- **隐私红线**：`DictationMetrics` 不新增 `String` 存储属性（继续通过反射测试）；主系统日志（`OSLog` / `app.log`，含 `.debug`）均**不得**记录 `AcousticHint.surface` 或 `alternatives`。需要观察真实文本与校对前后效果时，统一走附加规格 [`ASR_HINTS_TRACE_SPEC.md`](ASR_HINTS_TRACE_SPEC.md) 中默认关闭的独立本机诊断记录（`llm.trace_log`）。
 
 ---
 

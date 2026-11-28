@@ -92,7 +92,8 @@ Windows 实现尚未完成真实 Windows 硬件验证。涉及发布、性能或
   代码注释里的评审编号在 `REVIEW_HISTORY.md` 反查。历轮评审的原文已删除，需要时从 git 历史找回。
 - `macos/docs/` 保存 macOS 待实施的规格：`UX_R8_SPEC.md`（R8 用户体验打磨，`R8-xx` 编号）、
   `VOCABULARY_SPEC.md`（自定义词汇与 CTC 热词偏置，`VOC-xx` 编号，取代 R8-F1）、
-  `ASR_HINTS_SPEC.md`（局部声学低置信度备选 `<asr_hints>`，`HINT-xx` 编号，探索验证中）。实施结果分别
+  `ASR_HINTS_SPEC.md`（局部声学低置信度备选 `<asr_hints>`，`HINT-xx` 编号，探索验证中）及其附加规格
+  `ASR_HINTS_TRACE_SPEC.md`（默认关闭的本机校对诊断记录，`TRACE-xx` 编号）。实施结果分别
   回写 `macos/DESIGN.md` 与 `macos/CHANGELOG.md`。
 - `client-server/README.md` 和 `client-server/PROTOCOL.md` 只描述旧客户端—服务端架构；协议文件不
   约束 `macos/` 或 `windows/` 的进程内接口。
